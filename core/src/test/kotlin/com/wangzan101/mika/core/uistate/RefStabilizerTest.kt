@@ -31,7 +31,7 @@ class RefStabilizerTest {
         assertEquals("w1", a.snapshotId)
         assertTrue(st.resolve(a.ref("搜索"), "w1") is Resolved.Current)
         // 别的前缀的同号编号不是这块屏的
-        assertEquals(Resolved.Stale, st.resolve(a.ref("搜索"), "p1"))
+        assertEquals(Resolved.Stale(StaleCause.SnapshotUnknown), st.resolve(a.ref("搜索"), "p1"))
     }
 
     @Test fun unchangedElementKeepsRef() {
@@ -125,8 +125,8 @@ class RefStabilizerTest {
         val st = RefStabilizer()
         val a = st.next(shot(el("一", 100, 100), el("二", 200, 200)))
         st.next(shot(el("二", 200, 200)))
-        assertEquals(Resolved.Stale, st.resolve(a.ref("一"), "s1"))
-        assertEquals(Resolved.Stale, st.resolve(a.ref("一"), "s2"))
+        assertEquals(Resolved.Stale(StaleCause.RefRetired), st.resolve(a.ref("一"), "s1"))
+        assertEquals(Resolved.Stale(StaleCause.RefRetired), st.resolve(a.ref("一"), "s2"))
     }
 
     @Test fun refNotInGivenSnapshotOrUnknownSnapshotIsStale() {
@@ -134,10 +134,10 @@ class RefStabilizerTest {
         st.next(shot(el("一", 100, 100)))
         val b = st.next(shot(el("一", 100, 100), el("二", 200, 200)))
         // @e2 是第二屏才有的:配第一屏的 snapshotId 不成立
-        assertEquals(Resolved.Stale, st.resolve(b.ref("二"), "s1"))
-        assertEquals(Resolved.Stale, st.resolve(b.ref("一"), "s9"))
-        assertEquals(Resolved.Stale, st.resolve(b.ref("一"), "port2"))
-        assertEquals(Resolved.Stale, st.resolve("@e99", "s2"))
+        assertEquals(Resolved.Stale(StaleCause.RefNotInSnapshot), st.resolve(b.ref("二"), "s1"))
+        assertEquals(Resolved.Stale(StaleCause.SnapshotUnknown), st.resolve(b.ref("一"), "s9"))
+        assertEquals(Resolved.Stale(StaleCause.SnapshotUnknown), st.resolve(b.ref("一"), "port2"))
+        assertEquals(Resolved.Stale(StaleCause.RefRetired), st.resolve("@e99", "s2"))
     }
 
     @Test fun singleSameNameNewRowGetsNewRef() {
@@ -196,7 +196,7 @@ class RefStabilizerTest {
         st.next(shot(el("确定", 500, 700)))
         val d = st.next(shot(el("确定", 500, 800)))
         assertEquals(a.ref("确定"), d.ref("确定"))
-        assertEquals(Resolved.Stale, st.resolve(a.ref("确定"), "s1"))
+        assertEquals(Resolved.Stale(StaleCause.ElementMoved), st.resolve(a.ref("确定"), "s1"))
         assertTrue(st.resolve(a.ref("确定"), "s3") is Resolved.Current)
     }
 }
