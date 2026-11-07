@@ -40,6 +40,7 @@ internal object PhoneDdzTurn : PhoneTool {
     private const val SETTLE_POLLS = 16
     private const val NO_HAND_POLLS = 60
     private const val NEW_HAND_GAP = 8
+    private const val LIFT_POLLS = 4
     /** 点了结算的继续,等它关掉、开始发牌。 */
     private const val CONTINUE_MS = 1500L
 
@@ -203,6 +204,8 @@ internal object PhoneDdzTurn : PhoneTool {
         }
         if (tap != null && !ctx.screen.quickTap(tap.first, tap.second)) return refused("tap_failed")
         markSingle(ctx, advisor)
+        // 上一手剩下的牌不算数:不清掉,新发的一手会被当成手牌对不上
+        turn.expectedHand = null
         turn.handsLeft = a.int("hands", 1, 10) ?: 1
         turn.won = 0
         turn.atTable = seated
@@ -313,7 +316,11 @@ internal object PhoneDdzTurn : PhoneTool {
                 if (!ctx.screen.quickTap(view.cardX(index), DdzScreen.CARD_Y)) return null
                 delay(TAP_GAP_MS)
             }
-            delay(SETTLE_MS)
+            // 抬牌有动画:还没抬到位就再点一下,会把它点回去。多看几帧,真没抬起来才重点
+            repeat(LIFT_POLLS) {
+                delay(SETTLE_MS)
+                read(ctx)?.takeIf { it.lifted == want }?.let { return it }
+            }
         }
         return read(ctx)?.takeIf { it.lifted == want }
     }

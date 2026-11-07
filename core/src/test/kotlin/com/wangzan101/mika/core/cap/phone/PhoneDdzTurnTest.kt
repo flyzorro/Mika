@@ -366,6 +366,21 @@ class PhoneDdzTurnTest {
         }
     }
 
+    @Test fun startForgetsTheHandLeftFromTheLastGame() = runTest {
+        val saved = PhoneDdzTurn.advise
+        try {
+            PhoneDdzTurn.advise = { _, _ -> """{"play":[]}""" }
+            val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(lobbyFrame("vd_stage_continue"), full("vd_hand_follow"), fullBlank)))
+            val dispatcher = toolDispatcher(game)
+            // 上一手打到只剩王和三张 5
+            PhoneDdzTurn.useTracker(dispatcher.ctx, DdzTracker(), expectedHand = listOf("BJ", "5", "5", "5"))
+            val start = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
+            assertFalse(start.toString().contains("hand_drift"))
+        } finally {
+            PhoneDdzTurn.advise = saved
+        }
+    }
+
     @Test fun continuingIntoAFreshHandLetsDouZeroFollow() = runTest {
         val saved = PhoneDdzTurn.advise
         try {

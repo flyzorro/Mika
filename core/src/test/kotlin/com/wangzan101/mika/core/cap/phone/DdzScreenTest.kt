@@ -27,6 +27,7 @@ class DdzScreenTest {
         val lead = DdzScreen.read(frame("vd_stage_lead"))
         assertEquals(DdzPhase.Lead, lead.phase)
         assertEquals(20, lead.handCount)
+        val joker = DdzScreen.read(frame("vd_stage_joker555"))
         // 模型自己点过最后那张 4;闯关的手牌整体高 32 像素
         assertEquals(setOf(19), lead.lifted)
         assertEquals(emptySet<Int>(), DdzScreen.read(frame("vd_stage_call")).lifted)
