@@ -63,6 +63,8 @@ internal object PhoneDdzTurn : PhoneTool {
         var settling = 0
         /** DouZero 出完这一手后手里该剩的牌;下一手认到的不一样,就是有张牌认错、点到了别的牌。 */
         var expectedHand: List<String>? = null
+        /** 刚点了继续闯关,还没看到这一手的手牌。 */
+        var joining = false
         var advisor: String? = null
         var tracker: DdzTracker? = null
         val decisions = mutableListOf<Long>()
@@ -177,14 +179,16 @@ internal object PhoneDdzTurn : PhoneTool {
         if (tap != null && !ctx.screen.quickTap(tap.first, tap.second)) return refused("tap_failed")
         markSingle(ctx, advisor)
         turn.atTable = seated
-        // 继续闯关可能回到打了一半的一手:没看到开头,这一手不交给 DouZero,下一次叫分重新记
-        turn.tracker = if (stage?.second == true) DdzTracker().apply { fail("joined_mid_game") } else null
+        turn.tracker = null
+        // 继续闯关可能回到打了一半的一手:头一帧看手牌张数再定
+        turn.joining = stage?.second == true
         val next = awaitDecision(ctx, turn, DdzPhase.Other, moved = true, polls = AGAIN_POLLS)
         turn.seenAt = now()
         return ToolExecution(buildJsonObject {
             put("ok", true)
             put("phase", next.phase.name.lowercase())
             put("handCount", next.handCount)
+            turn.tracker?.broken?.let { put("douzeroOff", it) }
         }, image = if (ctx.config.visionEnabled) ctx.screen.quickShot() else null, changed = true)
     }
 
@@ -345,7 +349,12 @@ internal object PhoneDdzTurn : PhoneTool {
 
     /** 把这一帧喂给这一局的出牌历史;叫分时还没开局,换一局重新记。 */
     private fun track(turn: Turn, frame: com.wangzan101.mika.core.uistate.RawFrame, view: DdzView) {
-        if (view.phase == DdzPhase.Call) { turn.tracker = null; turn.expectedHand = null; return }
+        if (view.phase == DdzPhase.Call) { turn.tracker = null; turn.expectedHand = null; turn.joining = false; return }
+        // 农民 17 张、地主 20 张说明自己还没出过牌,在那之前的出牌都还摆在桌上,接得上;别的张数是打了一半,这一手不交给 DouZero
+        if (turn.joining && view.handCount > 0) {
+            turn.joining = false
+            if (view.handCount != 17 && view.handCount != 20) turn.tracker = DdzTracker().apply { fail("joined_mid_game") }
+        }
         val tracker = turn.tracker ?: DdzTracker().also { turn.tracker = it }
         val mine = view.phase == DdzPhase.Follow || view.phase == DdzPhase.Lead
         val seat = if (mine) DdzSeat.Me else when (DdzCards.clock(frame)) {

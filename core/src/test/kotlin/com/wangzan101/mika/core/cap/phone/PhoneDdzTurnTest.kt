@@ -321,6 +321,30 @@ class PhoneDdzTurnTest {
         assertFalse(DdzCards.singleStageTable(lobbyFrame("vd_hand_follow")))
     }
 
+    @Test fun continuingIntoAHalfPlayedHandLeavesItToTheModel() = runTest {
+        val saved = PhoneDdzTurn.advise
+        try {
+            PhoneDdzTurn.advise = { _, _ -> """{"play":[]}""" }
+            // 回到的是打了一半的一手(手里 7 张):DouZero 不接
+            val half = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(lobbyFrame("vd_stage_continue"), full("vd_stage_leftpass_rightQQQ6"), fullBlank)))
+            assertEquals("joined_mid_game", run(half, """{"action":"start","advisor":"http://mac:3426"}""").text("douzeroOff"))
+        } finally {
+            PhoneDdzTurn.advise = saved
+        }
+    }
+
+    @Test fun continuingIntoAFreshHandLetsDouZeroFollow() = runTest {
+        val saved = PhoneDdzTurn.advise
+        try {
+            PhoneDdzTurn.advise = { _, _ -> """{"play":[]}""" }
+            // 新发的一手(农民 17 张):接得上
+            val fresh = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(lobbyFrame("vd_stage_continue"), full("vd_hand_follow"), fullBlank)))
+            assertFalse(run(fresh, """{"action":"start","advisor":"http://mac:3426"}""").toString().contains("joined_mid_game"))
+        } finally {
+            PhoneDdzTurn.advise = saved
+        }
+    }
+
     @Test fun theStagePageIsTellApartFromTheLobbyAndTheTable() {
         assertTrue(DdzCards.singleStage(lobbyFrame("vd_stage")))
         assertFalse(DdzCards.singleStage(lobbyFrame("vd_lobby")))
