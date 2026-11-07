@@ -164,9 +164,8 @@ internal object PhoneDdzTurn : PhoneTool {
     private suspend fun start(a: Args, ctx: ToolContext, turn: Turn): ToolExecution {
         val advisor = a.str("advisor") ?: throw ArgError("advisor", "required")
         val page = ctx.screen.rawFrame(DdzCards.LOBBY_ROWS + DdzScreen.ROWS) ?: return refused("no_frame")
-        // 已经坐在闯关的牌桌上(报完名才问到这个工具):还在叫分、加倍就从这里接,出过牌了历史接不上
+        // 已经坐在闯关的牌桌上(模型自己点了下一关、继续闯关):从这里接,下面按头一帧的手牌张数看是不是打了一半
         val seated = DdzCards.singleStageTable(page)
-        if (seated && DdzScreen.read(page).phase !in setOf(DdzPhase.Call, DdzPhase.Double)) return refused("game_already_started")
         val stage = if (DdzCards.singleStage(page)) DdzCards.stageButton(page) ?: return refused("no_stage_button") else null
         val tap = when {
             seated -> null
@@ -179,8 +178,8 @@ internal object PhoneDdzTurn : PhoneTool {
         markSingle(ctx, advisor)
         turn.atTable = seated
         turn.tracker = null
-        // 继续闯关可能回到打了一半的一手:头一帧看手牌张数再定
-        turn.joining = stage?.second == true
+        // 继续闯关、或者已经坐在桌上,可能是打了一半的一手:头一帧看手牌张数再定
+        turn.joining = seated || stage?.second == true
         val next = awaitDecision(ctx, turn, DdzPhase.Other, moved = true, polls = AGAIN_POLLS)
         turn.seenAt = now()
         return ToolExecution(buildJsonObject {

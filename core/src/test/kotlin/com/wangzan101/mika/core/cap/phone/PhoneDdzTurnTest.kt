@@ -333,6 +333,18 @@ class PhoneDdzTurnTest {
         }
     }
 
+    @Test fun startAtAStageTableHalfwayThroughLeavesTheHandToTheModel() = runTest {
+        val saved = PhoneDdzTurn.advise
+        try {
+            PhoneDdzTurn.advise = { _, _ -> """{"play":[]}""" }
+            val table = full("vd_stage_leftpass_rightQQQ6")
+            val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(table, table, fullBlank)))
+            assertEquals("joined_mid_game", run(game, """{"action":"start","advisor":"http://mac:3426"}""").text("douzeroOff"))
+        } finally {
+            PhoneDdzTurn.advise = saved
+        }
+    }
+
     @Test fun continuingIntoAFreshHandLetsDouZeroFollow() = runTest {
         val saved = PhoneDdzTurn.advise
         try {
