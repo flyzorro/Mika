@@ -75,5 +75,64 @@ class ServerTest(unittest.TestCase):
             ADVISOR.act(env.acting_player_position, names(info.player_hand_cards), names(info.three_landlord_cards), history)
 
 
+class BottomCardTest(unittest.TestCase):
+    def test_a_misread_bottom_card_does_not_stop_the_game(self):
+        env = new_game(11)
+        env.step()
+        info = env.game_infoset
+        seat, hand = env.acting_player_position, names(info.player_hand_cards)
+        history = [names(m) for m in info.card_play_action_seq]
+        # 底牌认成了已经不可能有的牌:我手里的那几张再加两张大王
+        wrong = [hand[0], "BJ", "BJ"]
+        self.assertTrue(ADVISOR.act(seat, hand, wrong, history) is not None)
+
+
+class RibbonCardTest(unittest.TestCase):
+    """地主最后一张认不准记成 ?:只有一种补法时补上、出牌不变;补法不止一种就报错,不瞎猜。"""
+
+    def test_a_pair_or_longer_play_is_completed(self):
+        filled = ambiguous = 0
+        for seed in range(60):
+            env = new_game(seed)
+            for _ in range(random.Random(seed).randint(3, 25)):
+                env.step()
+                if env.game_over:
+                    break
+            if env.game_over:
+                continue
+            info = env.game_infoset
+            history = [names(m) for m in info.card_play_action_seq]
+            landlord_moves = [i for i in range(0, len(history), 3) if len(history[i]) >= 2]
+            if not landlord_moves:
+                continue
+            i = landlord_moves[-1]
+            masked = [list(m) for m in history]
+            masked[i] = masked[i][:-1] + ["?"]
+            seat, hand, bottom = env.acting_player_position, names(info.player_hand_cards), names(info.three_landlord_cards)
+            try:
+                got = ADVISOR.act(seat, hand, bottom, masked)
+            except Exception as e:
+                self.assertIn("ambiguous_card", str(e))
+                ambiguous += 1
+                continue
+            self.assertEqual(sorted(ADVISOR.act(seat, hand, bottom, history)), sorted(got), f"seed {seed}")
+            filled += 1
+        self.assertGreater(filled, 10)
+
+    def test_a_single_card_is_too_open_to_guess(self):
+        for seed in range(200):
+            env = new_game(seed)
+            env.step()
+            info = env.game_infoset
+            history = [names(m) for m in info.card_play_action_seq]
+            if len(history[0]) == 1:
+                break
+        else:
+            self.fail("找不到地主先出单张的一局")
+        with self.assertRaises(Exception) as caught:
+            ADVISOR.act(env.acting_player_position, names(info.player_hand_cards), names(info.three_landlord_cards), [["?"]] + history[1:])
+        self.assertIn("ambiguous_card", str(caught.exception))
+
+
 if __name__ == "__main__":
     unittest.main()

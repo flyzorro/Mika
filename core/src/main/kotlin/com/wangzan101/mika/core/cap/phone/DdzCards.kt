@@ -29,9 +29,14 @@ internal object DdzCards {
     /** 桌面上的 10 和手牌样本有点走样,所以主要看和第二像的拉不拉得开;带绶带认错的那几张都拉不开。 */
     private const val SURE = 0.28
     private const val MARGIN = 0.08
-    /** 底牌更小,笔画少。 */
-    private const val BOTTOM_SURE = 0.25
-    private const val BOTTOM_MARGIN = 0.05
+    /**
+     * 底牌更小,5 和 6 这种只差几笔。底牌认错只让 DouZero 少一点参考、出的牌照样合规(DouZero 服务会把对不上的底牌丢掉;
+     * 出牌历史错了才会对不上),所以取最像的那个,不为它停掉整局。
+     */
+    private const val BOTTOM_SURE = 0.3
+    private const val BOTTOM_MARGIN = 0.0
+    /** 认不准、留给 DouZero 服务按牌规补的那一张。 */
+    const val UNKNOWN = "?"
     private const val CONTENT_WIDTH = 2292.0
 
     private val handGlyphs by lazy { load("/ddz/hand.txt", HAND_W * HAND_H) }
@@ -42,8 +47,11 @@ internal object DdzCards {
 
     /** 手牌从左到右;有一张认不准、或者不是从大到小排的(还在发牌),返回 null。 */
     fun hand(frame: RawFrame, view: DdzView): List<String>? {
+        val k = content(frame).second
+        // Mika 的屏横向放大约 5%,字也跟着变宽:切的窗口一起放大,缩放到同样大小后才对得上
+        val width = (60 * k).roundToInt()
         val ranks = (0 until view.handCount).map { i ->
-            val (ink, red) = handGlyph(frame, view.handLeft + i * view.pitch + 8) ?: return null
+            val (ink, red) = handGlyph(frame, view.handLeft + (i * view.pitch).roundToInt() + (8 * k).roundToInt(), width) ?: return null
             nearest(handGlyphs, boxSig(ink, HAND_W, HAND_H), sure = 0.2, margin = 0.0)?.let { joker(it, red) } ?: return null
         }
         return ranks.takeIf { it.zipWithNext().all { (a, b) -> ORDER.getValue(a) >= ORDER.getValue(b) } }
@@ -57,8 +65,9 @@ internal object DdzCards {
         val cards = strip(frame, x0, x1, 220, 420, pitch = 53 * k, width = 103 * k, glyphRows = 60, glyphWidth = (44 * k).toInt(), k = k)
         if (cards == null) return if (passed(frame, side, bar, k)) DdzSeen.Pass else DdzSeen.Empty
         val ranks = cards.toMutableList()
-        val last = ranks.lastIndex
-        if (ranks[last] == null && last > 0) ranks[last] = byShape(ranks.subList(0, last).filterNotNull().takeIf { it.size == last })
+        // 地主出的最后一张右上角压着绶带,常认不准:记成 ?,由 DouZero 服务按牌规补(凑得成合规牌型、
+        // 压得过上家、牌还有剩的只有一种才补,否则这一手对不上)。别的牌认不准就是认不准。
+        if (ranks.last() == null && ranks.size > 1 && ranks.dropLast(1).all { it != null }) ranks[ranks.lastIndex] = UNKNOWN
         return if (ranks.any { it == null }) DdzSeen.Unsure else DdzSeen.Cards(ranks.map { it!! })
     }
 
@@ -68,6 +77,47 @@ internal object DdzCards {
         val cards = strip(frame, bar + (1050 * k).toInt(), bar + (1380 * k).toInt(), 5, 105, pitch = 44 * k, width = 57 * k,
             glyphRows = 46, glyphWidth = (32 * k).toInt(), k = k, minRows = 60, sure = BOTTOM_SURE, margin = BOTTOM_MARGIN) ?: return null
         return cards.takeIf { it.size == 3 && it.all { r -> r != null } }?.map { it!! }
+    }
+
+    /** 认大厅、闯关页要读的行。 */
+    val LOBBY_ROWS: List<Int> = ((60 until 105) + (885 until 925)).toList()
+
+    private val lobbyRibbon by lazy { mark("/ddz/lobby.txt") }
+    private val stageTitle by lazy { mark("/ddz/stage.txt") }
+    private const val MARK_W = 96
+    private const val MARK_H = 20
+
+    /**
+     * 是不是大厅、右下角快速开始上面标着「单机模式」。只认 Mika 的屏(铺满、没有黑边):主屏左边有黑边,
+     * 上面还压着 Mika 自己的悬浮胶囊,认不准。真人模式的标签字不一样,对不上。
+     */
+    fun singleLobby(frame: RawFrame): Boolean = matches(frame, 2125, 885, 195, 40, lobbyRibbon, MARK_SLACK, ::cream)
+
+    /** 是不是单机模式里的闯关页(左上角写着「闯关模式」,报名首次免费、过关奖励金币)。同样只认 Mika 的屏。 */
+    fun singleStage(frame: RawFrame): Boolean = matches(frame, 190, 60, 255, 45, stageTitle, STAGE_SLACK) { min(it) > 200 }
+
+    /** 这块地方的字和记下的样子差不多:同一位置、同一大小,差的格子不超过 [slack]。 */
+    private inline fun matches(frame: RawFrame, x: Int, y: Int, w: Int, h: Int, mark: BooleanArray, slack: Double, ink: (Int) -> Boolean): Boolean {
+        if (frame.height != 1080 || frame.width != 2412 || DdzScreen.blackBar(frame) != 0) return false
+        val sig = boxSig(Array(h) { r -> BooleanArray(w) { c -> ink(frame.pixel(x + c, y + r)) } }, MARK_W, MARK_H)
+        return sig.indices.count { sig[it] != mark[it] } <= slack * sig.size
+    }
+
+    private const val MARK_SLACK = 0.05
+    /** 标题字大、笔画多,同一页前后帧也有几格差;别的页差三成。 */
+    private const val STAGE_SLACK = 0.08
+
+    private fun mark(path: String): BooleanArray {
+        val hex = javaClass.getResourceAsStream(path)!!.bufferedReader().readLines().first { !it.startsWith("#") }.trim()
+        val bytes = hex.chunked(2).map { it.toInt(16) }
+        return BooleanArray(MARK_W * MARK_H) { i -> bytes[i / 8] shr (7 - i % 8) and 1 == 1 }
+    }
+
+    private fun cream(p: Int): Boolean {
+        val r = p shr 16 and 0xff
+        val g = p shr 8 and 0xff
+        val b = p and 0xff
+        return r > 200 && g > 170 && b > 110 && r - b < 140
     }
 
     /** 闹钟在谁桌前;在自己这里或者没有为 null。 */
@@ -104,14 +154,15 @@ internal object DdzCards {
             if (run >= minRows) { top = y0 + i - minRows + 1; break }
         }
         if (top < 0) return null
-        val probe = top + minRows
+        // 牌面贴着区域底边时探测行不能越出读到的行
+        val probe = minOf(top + minRows, y1 - 1)
         val span = DdzScreen.runs(right - x0, gap = 12, minWidth = 40) { white(x0 + it, probe) }.maxByOrNull { it.last - it.first } ?: return null
         val n = ((span.last - span.first + 1 - width) / pitch).roundToInt() + 1
         if (n !in 1..20) return null
         return (0 until n).map { i ->
             val cx = x0 + span.first + (i * pitch).toInt() + 3
-            // 只有最后一张右上角可能压着绶带;前面的牌右边是下一张,点数(10 有两位)可以看全
-            val wide = (if (i == n - 1) minOf(glyphWidth.toDouble(), pitch) else pitch).toInt() - 3
+            // 只有最后一张右上角可能压着绶带;前面的牌点数(10 有两位)可以看全,但别碰到下一张牌左边的阴影
+            val wide = (if (i == n - 1) minOf(glyphWidth.toDouble(), pitch) - 3 else minOf(pitch - 8, 48 * k)).toInt()
             val ink = Array(glyphRows) { r -> BooleanArray(wide) { c -> textInk(frame.pixel(cx + c, top + 4 + r)) } }
             val box = rankBox(ink) ?: return@map null
             val red = share(frame, cx, top + 4, ink) { r, g, _ -> r > 140 && g < 100 } > 0.5
@@ -119,27 +170,12 @@ internal object DdzCards {
         }
     }
 
-    /**
-     * 绶带挡住的最后一张,按牌型补:别的点数都是 m 张、只有最后那个点数少一张(对子、三张、连对、飞机),补那个点数;
-     * 都是单张且连着(顺子,从大到小排),补下一个。补不出为 null。
-     */
-    private fun byShape(rest: List<String>?): String? {
-        if (rest.isNullOrEmpty()) return null
-        val counts = rest.groupingBy { it }.eachCount()
-        val last = rest.last()
-        val m = counts.values.max()
-        if (counts.all { (rank, n) -> n == if (rank == last) m - 1 else m } || counts.size == 1) return last
-        val ord = rest.map { ORDER.getValue(it) }
-        val straight = m == 1 && ord.zipWithNext().all { (a, b) -> a - b == 1 } && ord.last() > ORDER.getValue("3")
-        return if (straight) RANKS[ord.last() - 1] else null
-    }
-
-    private fun handGlyph(frame: RawFrame, x: Int): Pair<Array<BooleanArray>, Boolean>? {
+    private fun handGlyph(frame: RawFrame, x: Int, width: Int): Pair<Array<BooleanArray>, Boolean>? {
         val rows = 600 until 800
-        val top = rows.firstOrNull { y -> (x until x + 60).count { card(frame.pixel(it, y)) } > 48 } ?: return null
-        val ink = { y: Int -> (x until x + 60).count { min(frame.pixel(it, y)) < 150 } >= 3 }
+        val top = rows.firstOrNull { y -> (x until x + width).count { card(frame.pixel(it, y)) } > width * 0.8 } ?: return null
+        val ink = { y: Int -> (x until x + width).count { min(frame.pixel(it, y)) < 150 } >= 3 }
         val start = (top until 800 - 84).firstOrNull(ink) ?: return null
-        val glyph = Array(84) { r -> BooleanArray(60) { c -> min(frame.pixel(x + c, start + r)) < 150 } }
+        val glyph = Array(84) { r -> BooleanArray(width) { c -> min(frame.pixel(x + c, start + r)) < 150 } }
         return glyph to (share(frame, x, start, glyph) { r, _, b -> r - b > 60 } > 0.5)
     }
 
@@ -184,19 +220,19 @@ internal object DdzCards {
         }
     }
 
+    /** 最像的点数;够像([sure] 以内)、又和第二像的点数拉得开([margin])才算认准,否则 null。 */
     private fun nearest(glyphs: List<Exemplar>, sig: BooleanArray, sure: Double, margin: Double): String? {
-        var best = Double.MAX_VALUE
-        var bestRank = ""
         val byRank = HashMap<String, Double>()
         for (g in glyphs) {
             var diff = 0
             for (i in sig.indices) if (sig[i] != g.bits[i]) diff++
             val d = diff.toDouble() / sig.size
             if (d < (byRank[g.rank] ?: Double.MAX_VALUE)) byRank[g.rank] = d
-            if (d < best) { best = d; bestRank = g.rank }
         }
-        val second = byRank.filterKeys { it != bestRank }.values.minOrNull() ?: 1.0
-        return bestRank.takeIf { best <= sure && second - best >= margin }
+        val ranked = byRank.toList().sortedBy { it.second }
+        val (best, d) = ranked.firstOrNull() ?: return null
+        val second = ranked.getOrNull(1)?.second ?: 1.0
+        return best.takeIf { d <= sure && second - d >= margin }
     }
 
     private fun joker(rank: String, red: Boolean) = if (rank == "JOKER") (if (red) "BJ" else "SJ") else rank

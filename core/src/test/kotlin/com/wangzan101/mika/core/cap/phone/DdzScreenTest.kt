@@ -22,7 +22,7 @@ class DdzScreenTest {
 
     @Test fun readsTheHandOnMikasFullWidthDisplay() {
         val view = DdzScreen.read(frame("vd_17"))
-        assertEquals(101, view.pitch)
+        assertEquals(101.0, view.pitch, 1.0)
         assertEquals(17, view.handCount)
         assertEquals(emptySet<Int>(), view.lifted)
         assertEquals(20, DdzScreen.read(frame("vd_20")).handCount)

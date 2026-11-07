@@ -12,18 +12,18 @@ internal data class DdzButton(val left: Int, val right: Int, val y: Int, val col
     val x: Int get() = (left + right) / 2
 }
 
-/** [handLeft] 手牌左缘;[pitch] 相邻两张牌的间距;[lifted] 抬起的牌的序号(从左数,0 起)。 */
+/** [handLeft] 手牌左缘;[pitch] 相邻两张牌的间距(不取整);[lifted] 抬起的牌的序号(从左数,0 起)。 */
 internal data class DdzView(
     val phase: DdzPhase,
     val buttons: List<DdzButton>,
     val handLeft: Int,
-    val pitch: Int,
+    val pitch: Double,
     val handCount: Int,
     val lifted: Set<Int>,
 ) {
     /** 第 [index] 张牌露出来的那一条的中点;最后一张整张露出。 */
     fun cardX(index: Int): Int =
-        handLeft + index * pitch + (if (index == handCount - 1) DdzScreen.CARD_WIDTH else pitch) / 2
+        handLeft + (index * pitch + (if (index == handCount - 1) DdzScreen.CARD_WIDTH.toDouble() else pitch) / 2).roundToInt()
 }
 
 /**
@@ -58,16 +58,16 @@ internal object DdzScreen {
     val ROWS = listOf(BUTTON_ROW, CALL_ROW, AUTO_ROW, RESULT_ROW, HAND_ROW, LIFT_ROW_FULL_WIDTH)
 
     fun read(frame: RawFrame): DdzView {
-        if (frame.height != FRAME_HEIGHT) return DdzView(DdzPhase.Other, emptyList(), 0, 0, 0, emptySet())
+        if (frame.height != FRAME_HEIGHT) return DdzView(DdzPhase.Other, emptyList(), 0, 0.0, 0, emptySet())
         val pitch = pitch(frame)
         val liftRow = if (pitch > BASE_PITCH) LIFT_ROW_FULL_WIDTH else LIFT_ROW
-        val (handLeft, handCount) = hand(frame, pitch)
+        val (handLeft, handCount, step) = hand(frame, pitch)
         // 抬起的牌点数字上移到这一行;抬起的牌还会盖住右边一张,所以不能只看这一条是不是牌面
         val lifted = (0 until handCount).filterTo(LinkedHashSet()) { i ->
-            val x = handLeft + i * pitch + 8
+            val x = handLeft + (i * step).roundToInt() + 8
             (x until x + 70).count { !isCard(frame.pixel(it, liftRow)) } >= 6
         }
-        fun view(phase: DdzPhase, buttons: List<DdzButton>) = DdzView(phase, buttons, handLeft, pitch, handCount, lifted)
+        fun view(phase: DdzPhase, buttons: List<DdzButton>) = DdzView(phase, buttons, handLeft, step, handCount, lifted)
         val result = buttons(frame, RESULT_ROW).filter { it.color == DdzColor.Yellow && it.right - it.left >= MIN_RESULT_BUTTON }
         if (result.size == 1) return view(DdzPhase.Result, result.map { it.copy(y = RESULT_TAP_Y) })
         val auto = buttons(frame, AUTO_ROW).filter { it.color == DdzColor.Blue }
@@ -90,11 +90,15 @@ internal object DdzScreen {
     /** 主屏左边留的黑边宽度;Mika 的屏没有。 */
     fun blackBar(frame: RawFrame): Int = (0 until frame.width).firstOrNull { frame.pixel(it, HAND_ROW) and 0xffffff > 0x101010 } ?: 0
 
-    private fun hand(frame: RawFrame, pitch: Int): Pair<Int, Int> {
+    /** 手牌左缘、张数(按标称间距数),和按这一帧手牌宽度量出的实际间距。 */
+    private fun hand(frame: RawFrame, pitch: Int): Triple<Int, Int, Double> {
         val span = runs(frame.width, gap = 70, minWidth = 150) { isCard(frame.pixel(it, HAND_ROW)) }
-            .maxByOrNull { it.last - it.first } ?: return 0 to 0
+            .maxByOrNull { it.last - it.first } ?: return Triple(0, 0, pitch.toDouble())
         val width = span.last - span.first + 1
-        return span.first to ((width - CARD_WIDTH).toDouble() / pitch).roundToInt() + 1
+        val count = ((width - CARD_WIDTH).toDouble() / pitch).roundToInt() + 1
+        // 间距按内容宽度算、不取整(Mika 的屏上是 101.03,取整后 20 张牌累起来差好几像素);
+        // 不按量出的手牌宽度算:主屏上量的那一行贴着牌的圆角,两头各少几像素
+        return Triple(span.first, count, BASE_PITCH * (frame.width - blackBar(frame)) / BASE_CONTENT_WIDTH)
     }
 
     private fun buttons(frame: RawFrame, y: Int): List<DdzButton> = DdzColor.entries.flatMap { color ->

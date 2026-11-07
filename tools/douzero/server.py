@@ -8,7 +8,10 @@
 POST /act  {"seat": "landlord" | "landlord_down" | "landlord_up",
             "hand": ["3", "3", ..., "BJ"],         # 自己此刻的手牌
             "bottom": ["9", "8", "7"],              # 三张底牌
-            "history": [["3"], [], ["5"], ...]}     # 从地主第一手起每一手,[] 是不出
+            "history": [["3"], [], ["5", "?"], ...]} # 从地主第一手起每一手,[] 是不出,? 是认不准的一张
+
+? 是地主出的最后一张:右上角压着绶带,手机上常认不准。按牌规补:15 种点数挨个代进去,
+凑得成合规牌型、压得过上家、牌还有剩的只有一种才补上;有几种都说得通就报 ambiguous_card。
 -> {"play": ["5", "5"]} 或 {"error": "..."}
 """
 import json
@@ -63,6 +66,35 @@ class Replay:
         return move
 
 
+def legal(move, before):
+    """[move] 接在 [before] 这串出牌后面合不合规:让 DouZero 的牌局按只拿着这手牌来生成能出的牌。"""
+    probe = GameEnv({s: None for s in SEATS})
+    probe.acting_player_position = "landlord"
+    probe.info_sets["landlord"].player_hand_cards = list(move)
+    probe.card_play_action_seq = list(before)
+    return sorted(move) in [sorted(m) for m in probe.get_legal_card_play_actions()]
+
+
+def resolve(hand, history):
+    """把历史里的 ? 按牌规补上。history 里除 ? 外已是点数。"""
+    known = [c for m in history for c in m if c != "?"]
+    pool = Counter(minus(minus(DECK, hand), known))
+    out = []
+    for move in history:
+        if "?" not in move:
+            out.append(move)
+            continue
+        if move.count("?") > 1:
+            raise Mismatch("ambiguous_card")
+        rest = [c for c in move if c != "?"]
+        fits = [r for r in sorted(set(DECK)) if pool[r] > 0 and legal(rest + [r], out)]
+        if len(fits) != 1:
+            raise Mismatch("ambiguous_card")
+        pool[fits[0]] -= 1
+        out.append(sorted(rest + fits))
+    return out
+
+
 def deal(seat, hand, bottom, history):
     played = {s: [] for s in SEATS}
     for i, move in enumerate(history):
@@ -74,8 +106,9 @@ def deal(seat, hand, bottom, history):
     hands = {seat: list(hand)}
     others = [s for s in SEATS if s != seat]
     if seat != "landlord":
-        # 底牌是地主的,没打出去的那几张一定还在地主手里
-        kept = list((Counter(bottom) - Counter(played["landlord"])).elements())
+        # 底牌是地主的,没打出去的那几张一定还在地主手里。底牌那么小的字可能认错:看不见的牌里根本没有的那张丢掉,
+        # 它只是 DouZero 的一点参考,不为它停掉整局
+        kept = list(((Counter(bottom) - Counter(played["landlord"])) & Counter(unseen)).elements())
         hands["landlord"] = kept
         unseen = minus(unseen, kept)
     for s in others:
@@ -113,7 +146,7 @@ class Advisor:
 
     def act(self, seat, hand, bottom, history):
         hand, bottom = cards(hand), cards(bottom)
-        history = [cards(m) for m in history]
+        history = resolve(hand, [[c if c == "?" else cards([c])[0] for c in m] for m in history])
         if len(history) % 3 != SEATS.index(seat):
             raise Mismatch("not_your_turn")
         start = deal(seat, hand, bottom, history)
@@ -138,13 +171,15 @@ def handler(advisor):
             try:
                 body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))))
                 move = advisor.act(body["seat"], body["hand"], body.get("bottom", []), body.get("history", []))
-                self.reply(200, {"play": [NAMES[c] for c in move], "ms": round((time.perf_counter() - started) * 1000)})
+                self.reply(200, {"play": [NAMES[c] for c in move], "ms": round((time.perf_counter() - started) * 1000)}, body)
             except Mismatch as e:
-                self.reply(200, {"error": str(e)})
+                self.reply(200, {"error": str(e)}, body)
             except (KeyError, ValueError, TypeError) as e:
                 self.reply(400, {"error": f"bad_request:{e}"})
 
-        def reply(self, code, data):
+        def reply(self, code, data, request=None):
+            # 每次一行:问了什么、答了什么,对不上时拿来查是哪一手读错了
+            print(json.dumps({"t": time.strftime("%H:%M:%S"), "request": request, "reply": data}, ensure_ascii=False), flush=True)
             raw = json.dumps(data, ensure_ascii=False).encode()
             self.send_response(code)
             self.send_header("Content-Type", "application/json")

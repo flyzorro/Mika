@@ -1,14 +1,15 @@
 package com.wangzan101.mika.core.cap.phone
 
-/** 牌桌上的三家;出牌顺序是 我 → 左 → 右 → 我。 */
-internal enum class DdzSeat { Me, Left, Right;
+/** 牌桌上的三家,按出牌顺序:我 → 右 → 左 → 我(逆时针;下家在右边,上家在左边)。 */
+internal enum class DdzSeat { Me, Right, Left;
     val next: DdzSeat get() = entries[(ordinal + 1) % 3]
 }
 
 /**
  * 记这一局的出牌历史,给 DouZero 用。谁在出牌看闹钟在谁桌前(轮到自己时看按钮);闹钟一离开某家,
  * 他这一手就出完了,读他的出牌区。闹钟跳过了谁(两家出得太快,两次轮询之间就过去了),跳过的也算出完。
- * 叫完地主后第一个出牌的就是地主。读不出、对不上就记下原因,这一局不再给 DouZero 算。
+ * 地主的第一手一定是出牌:底牌翻开后头一回在谁的出牌区看到牌,谁就是地主,这手就是第一手;
+ * 轮到自己先出、手里 20 张,地主就是自己。在那之前的闹钟是加倍时的,不算。读不出、对不上就记下原因,这一局不再给 DouZero 算。
  */
 internal class DdzTracker {
     var landlord: DdzSeat? = null
@@ -25,22 +26,37 @@ internal class DdzTracker {
     private val waiting = ArrayDeque<Pair<DdzSeat, Int>>()
 
     /**
-     * 每一帧喂进来:[turn] 此刻轮到谁(没人或看不出为 null),[read] 读某家出牌区,[bottom] 读底牌。
-     * 只在叫完地主、底牌翻开之后才开始记。
+     * 每一帧喂进来:[turn] 此刻轮到谁(没人或看不出为 null),[read] 读某家出牌区,[bottom] 读底牌,
+     * [leadingWith20] 此刻轮到自己先出、手里 20 张。
      */
-    fun observe(turn: DdzSeat?, read: (DdzSide) -> DdzSeen, bottom: () -> List<String>?) {
+    fun observe(turn: DdzSeat?, read: (DdzSide) -> DdzSeen, bottom: () -> List<String>?, leadingWith20: Boolean = false) {
         if (broken != null) return
-        if (this.bottom == null) {
-            this.bottom = bottom() ?: return
+        // 底牌只是给 DouZero 的参考,认不出(比如里面有张王,竖着写的字太小)也照样记;叫分、加倍时出牌区只有字,不会当成牌
+        if (this.bottom == null) this.bottom = bottom()
+        if (landlord == null) {
+            if (leadingWith20) {
+                landlord = DdzSeat.Me
+                active = DdzSeat.Me
+                return
+            }
+            for (side in DdzSide.entries) {
+                val seen = read(side)
+                // 地主的第一手认不准:不能等下一家,否则会把下一家当成地主
+                if (seen == DdzSeen.Unsure) return fail("unsure_first_play")
+                if (seen !is DdzSeen.Cards) continue
+                val seat = if (side == DdzSide.Left) DdzSeat.Left else DdzSeat.Right
+                landlord = seat
+                history += seen.ranks
+                // 他出完了,闹钟已经到了下一家
+                active = seat.next
+                return
+            }
+            return
         }
         resolve(read)
         if (turn == null || turn == active) return
-        val from = active
+        val from = active ?: return
         active = turn
-        if (from == null) {
-            if (landlord == null) landlord = turn
-            return
-        }
         // from 出完了,中间被跳过的也出完了
         var seat: DdzSeat = from
         while (seat != turn) {
@@ -56,16 +72,19 @@ internal class DdzTracker {
         if (active != DdzSeat.Me) return fail("not_my_turn")
         if (waiting.isNotEmpty()) return fail("unread_before_me")
         history += cards
+        // 出完就轮到下家:两家出得太快、闹钟又回到我这里时,才看得出中间那两手
+        active = DdzSeat.Me.next
     }
 
     /** 轮到自己时能不能交给 DouZero:别家的都读到了、历史没断。 */
-    fun ready(): Boolean = broken == null && landlord != null && bottom != null && waiting.isEmpty() && active == DdzSeat.Me
+    fun ready(): Boolean = broken == null && landlord != null && waiting.isEmpty() && active == DdzSeat.Me
 
     /** 自己在 DouZero 里的位置。 */
     fun seat(): String = when (landlord) {
         DdzSeat.Me -> "landlord"
-        DdzSeat.Left -> "landlord_up"
-        else -> "landlord_down"
+        // 地主在左边,我就是他的下家;在右边,我就是他的上家
+        DdzSeat.Left -> "landlord_down"
+        else -> "landlord_up"
     }
 
     fun fail(reason: String) { if (broken == null) broken = reason }
