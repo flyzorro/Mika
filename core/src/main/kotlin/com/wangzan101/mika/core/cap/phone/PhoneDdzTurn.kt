@@ -40,6 +40,23 @@ internal object PhoneDdzTurn : PhoneTool {
     private const val SETTLE_POLLS = 16
     private const val NO_HAND_POLLS = 60
     private const val NEW_HAND_GAP = 8
+    /** 点了结算的继续,等它关掉、开始发牌。 */
+    private const val CONTINUE_MS = 1500L
+
+    /**
+     * 叫几分:大王 3、小王 2、每个 2 算 1、每个炸弹 2、每两个 A 算 1;7 分以上叫三分,5 分以上叫二分,不然不叫。
+     * 闯关里输了扣分、低于 3 分淘汰,牌一般就不当地主。
+     */
+    internal fun bidLevel(hand: List<String>): Int {
+        val count = hand.groupingBy { it }.eachCount()
+        val score = (if ("BJ" in count) 3 else 0) + (if ("SJ" in count) 2 else 0) + (count["2"] ?: 0) +
+            2 * count.count { (rank, n) -> n == 4 && rank != "BJ" && rank != "SJ" } + (count["A"] ?: 0) / 2
+        return when {
+            score >= 7 -> 3
+            score >= 5 -> 2
+            else -> 0
+        }
+    }
     private const val TAP_GAP_MS = 60L
     private const val SETTLE_MS = 250L
     private const val VERDICT_MS = 800L
@@ -66,6 +83,11 @@ internal object PhoneDdzTurn : PhoneTool {
         var joining = false
         /** 连着几帧没有手牌:一手打完了,下一次看到手牌就是新发的一手。 */
         var noHand = 0
+        /** 这次还要连着打几手(闯关赢了自己点继续);赢了几手。 */
+        var handsLeft = 1
+        var won = 0
+        /** 这一轮叫分已经按过了:按完按钮还会留几帧。 */
+        var bid = false
         var advisor: String? = null
         var tracker: DdzTracker? = null
         val decisions = mutableListOf<Long>()
@@ -101,6 +123,7 @@ internal object PhoneDdzTurn : PhoneTool {
         "hand" to ranks("Your whole hand, left to right."),
         "play" to ranks("The cards to play."),
         "level" to buildJsonObject { put("type", "integer"); put("description", "call: 0-3.") },
+        "hands" to buildJsonObject { put("type", "integer"); put("description", "start: how many 闯关 hands to play in a row before returning, 1-10 (default 1).") },
     ), listOf("action"))
 
     private fun ranks(text: String) = buildJsonObject {
@@ -145,6 +168,7 @@ internal object PhoneDdzTurn : PhoneTool {
             move.note?.let { put("note", it) }
             put("phase", next.phase.name.lowercase())
             put("handCount", next.handCount)
+            if (turn.won > 0) put("handsWon", turn.won)
             if (turn.decisions.isNotEmpty()) {
                 // DouZero 这次替模型打了几手、每手从轮到自己到牌出去花了多久
                 put("autoPlayed", turn.decisions.size)
@@ -179,6 +203,8 @@ internal object PhoneDdzTurn : PhoneTool {
         }
         if (tap != null && !ctx.screen.quickTap(tap.first, tap.second)) return refused("tap_failed")
         markSingle(ctx, advisor)
+        turn.handsLeft = a.int("hands", 1, 10) ?: 1
+        turn.won = 0
         turn.atTable = seated
         turn.tracker = null
         // 继续闯关、或者已经坐在桌上,可能是打了一半的一手:头一帧看手牌张数再定
@@ -189,6 +215,7 @@ internal object PhoneDdzTurn : PhoneTool {
             put("ok", true)
             put("phase", next.phase.name.lowercase())
             put("handCount", next.handCount)
+            if (turn.won > 0) put("handsWon", turn.won)
             turn.tracker?.broken?.let { put("douzeroOff", it) }
         }, image = if (ctx.config.visionEnabled) ctx.screen.quickShot() else null, changed = true)
     }
@@ -320,9 +347,35 @@ internal object PhoneDdzTurn : PhoneTool {
                 if (view.phase != DdzPhase.Other) turn.atTable = true
                 // 进过牌桌又回了大厅:下一局可能进的是真人场,单机标记作废,要再 start 一次
                 if (turn.single && turn.atTable && view.phase == DdzPhase.Other && DdzCards.singleLobby(frame)) { turn.single = false; return view }
+                // 闯关赢了一手:还要接着打就自己点黄色的继续(不点蓝色的离开),马上发下一手;否则交回模型
+                if (turn.single && DdzCards.stageWin(frame)) {
+                    turn.tracker = null
+                    turn.expectedHand = null
+                    turn.won++
+                    val next = DdzCards.stageContinue(frame)
+                    if (turn.handsLeft <= 1 || next == null || ctx.screen.peek().packageName != PACKAGE) return view.copy(phase = DdzPhase.Result)
+                    turn.handsLeft--
+                    ctx.screen.quickTap(next.first, next.second)
+                    delay(CONTINUE_MS)
+                    empty = 0
+                    budget = polls
+                    left = true
+                    continue
+                }
+                if (view.phase != DdzPhase.Call) turn.bid = false
                 dealt(turn, view)
                 if (turn.single) track(turn, frame, view)
                 when (view.phase) {
+                    // 单机局叫分按牌力定,不等模型(叫分只有十来秒);灰的分数点不了,按不叫算
+                    DdzPhase.Call -> when {
+                        !turn.single -> if (left || view.phase != from) return view
+                        !turn.bid -> {
+                            val hand = DdzCards.hand(frame, view) ?: return view
+                            val button = view.buttons[bidLevel(hand)].takeIf { it.color != DdzColor.Gray } ?: view.buttons[0]
+                            if (press(button, ctx).moved) turn.bid = true
+                            left = true
+                        }
+                    }
                     DdzPhase.AutoPlay -> {
                         left = true
                         // 等的时候前台可能换了,点之前再认一次;点了等它退出托管,别连着点

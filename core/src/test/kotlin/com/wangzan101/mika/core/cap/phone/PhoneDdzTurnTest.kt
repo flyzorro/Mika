@@ -292,7 +292,7 @@ class PhoneDdzTurnTest {
     @Test fun startAlsoSignsUpOnTheSinglePlayerStagePage() = runTest {
         val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(lobbyFrame("vd_stage"), fullBlank, full("call"))))
         assertEquals("true", run(game, """{"action":"start","advisor":"http://mac:3426"}""").text("ok"))
-        assertEquals("只点了报名", 1, game.taps.size)
+        // 头一下是报名;后面的是进了牌桌自己叫的分
         assertTrue(game.taps[0].first in 1150..1250 && game.taps[0].second == 920)
     }
 
@@ -300,9 +300,9 @@ class PhoneDdzTurnTest {
         assertTrue(DdzCards.singleStage(lobbyFrame("vd_stage_continue")))
         val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(lobbyFrame("vd_stage_continue"), fullBlank, full("call"))))
         assertEquals("true", run(game, """{"action":"start","advisor":"http://mac:3426"}""").text("ok"))
-        // 绿色的继续闯关在 710-1144,蓝色的放弃闯关从 1250 起
-        assertEquals(1, game.taps.size)
+        // 绿色的继续闯关在 710-1144,蓝色的放弃闯关从 1250 起;后面的是自己叫的分
         assertTrue(game.taps[0].first in 850..1000)
+        assertTrue(game.taps.none { (x, y) -> x in 1250..1680 && y == 920 })
     }
 
     @Test fun waitingInTheLobbyReturnsAtOnce() = runTest {
@@ -316,7 +316,9 @@ class PhoneDdzTurnTest {
         val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(lobbyFrame("vd_stage_call"), full("vd_stage_call"))))
         val result = run(game, """{"action":"start","advisor":"http://mac:3426"}""")
         assertEquals("call", result.text("phase"))
-        assertTrue("已经在牌桌上,什么都不点", game.taps.isEmpty())
+        // 已经在牌桌上,不点报名;叫分按牌力自己叫:双王、两个 2、QQQQ 炸弹、两个 A,叫三分(最右边的黄色按钮),只按一次
+        assertEquals(1, game.taps.size)
+        assertTrue(game.taps[0].first > 1700)
         assertTrue(DdzCards.singleStageTable(lobbyFrame("vd_stage_call")))
         assertFalse(DdzCards.singleStageTable(lobbyFrame("vd_hand_follow")))
     }
@@ -374,6 +376,31 @@ class PhoneDdzTurnTest {
         } finally {
             PhoneDdzTurn.advise = saved
         }
+    }
+
+    @Test fun aWonStageHandIsContinuedOnlyWhenMoreHandsAreWanted() = runTest {
+        val win = full("vd_stage_win_leave_continue")
+        assertTrue(DdzCards.stageWin(win))
+        assertTrue(DdzCards.stageWin(full("vd_stage_win_cleared")))
+        assertFalse(DdzCards.stageWin(full("vd_stage_call")))
+        // 没过关:左边蓝色离开、右边黄色继续,点继续
+        assertTrue(DdzCards.stageContinue(win)!!.first in 1400..1560)
+        assertTrue(DdzCards.stageContinue(full("vd_stage_win_cleared"))!!.first in 1130..1290)
+        // 别家在出牌,工具等着;然后这一手赢了
+        val table = full("vd_stage_right_clock")
+        val more = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(table, table, win, fullBlank)))
+        val two = run(more, """{"action":"start","advisor":"http://mac:3426","hands":2}""")
+        assertTrue("点了继续", more.taps.any { (x, y) -> x in 1400..1560 && y == 765 })
+        assertEquals("1", two.text("handsWon"))
+        val once = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(table, table, win, fullBlank)))
+        assertEquals("result", run(once, """{"action":"start","advisor":"http://mac:3426"}""").text("phase"))
+        assertFalse("只打一手就不点继续", once.taps.any { (_, y) -> y == 765 })
+    }
+
+    @Test fun bidsFollowTheHandsStrength() {
+        assertEquals(3, PhoneDdzTurn.bidLevel("BJ SJ 2 2 A A Q Q Q Q J J 10 9 9 5 4".split(' ')))
+        assertEquals(2, PhoneDdzTurn.bidLevel("BJ 2 2 K K Q J 10 9 8 7 6 5 5 4 3 3".split(' ')))
+        assertEquals(0, PhoneDdzTurn.bidLevel("2 K K Q J 10 9 8 7 6 5 5 4 4 3 3 3".split(' ')))
     }
 
     @Test fun theStagePageIsTellApartFromTheLobbyAndTheTable() {

@@ -58,7 +58,7 @@ internal object DdzCards {
     private val tableGlyphs by lazy { load("/ddz/table.txt", TABLE_W * TABLE_H) }
 
     /** 认牌要读的行;只在要认的那一刻读,平时轮询只读 [DdzScreen.ROWS]。 */
-    val ROWS: List<Int> = ((5 until 105) + (STAGE_PLAY_Y0 until 420) + (HAND_TOP until 800)).toList()
+    val ROWS: List<Int> = ((5 until 105) + (STAGE_PLAY_Y0 until 420) + (HAND_TOP until 800) + STAGE_CONTINUE_SCAN_Y).toList()
 
     /** 手牌从左到右;有一张认不准、或者不是从大到小排的(还在发牌),返回 null。 */
     fun hand(frame: RawFrame, view: DdzView): List<String>? {
@@ -111,6 +111,7 @@ internal object DdzCards {
     private val lobbyRibbon by lazy { mark("/ddz/lobby.txt") }
     private val stageTitle by lazy { mark("/ddz/stage.txt") }
     private val stageTableTitle by lazy { mark("/ddz/stage_table.txt") }
+    private val stageWinBanner by lazy { mark("/ddz/stage_win.txt") }
     private const val MARK_W = 96
     private const val MARK_H = 20
 
@@ -135,6 +136,21 @@ internal object DdzCards {
         at { r, g, b -> r > 225 && g in 131..214 && b < 120 }?.let { return it to false }
         return at { r, g, b -> g > 150 && r < 140 && b < 120 }?.let { it to true }
     }
+
+    /**
+     * 闯关打完一手赢了的结算(正中金色的「胜利」),[stageContinue] 是它的黄色「继续」:过了关只有这一个,
+     * 没过关左边还有蓝色的「离开」。输了的结算不认:可能有看视频复活之类的按钮,交给模型。
+     */
+    fun stageWin(frame: RawFrame): Boolean = matches(frame, 1030, 130, 360, 120, stageWinBanner, STAGE_SLACK) { p ->
+        (p shr 16 and 0xff) > 200 && (p shr 8 and 0xff) > 150 && (p and 0xff) < 140
+    }
+
+    /** 结算上黄色「继续」的中线;找不到为 null。在字下面那一行量(字会把黄色切开),点按钮正中。 */
+    fun stageContinue(frame: RawFrame): Pair<Int, Int>? = DdzScreen.runs(frame.width, gap = 30, minWidth = 300) { x ->
+        frame.pixel(x, STAGE_CONTINUE_SCAN_Y).let { p -> (p shr 16 and 0xff) > 225 && (p shr 8 and 0xff) in 131..214 && (p and 0xff) < 120 }
+    }.lastOrNull()?.let { (it.first + it.last) / 2 to STAGE_CONTINUE_Y }
+    private const val STAGE_CONTINUE_SCAN_Y = 805
+    private const val STAGE_CONTINUE_Y = 765
 
     /** 是不是闯关的牌桌(右上角写着「闯关模式」):闯关只在单机模式里有。同样只认 Mika 的屏。 */
     fun singleStageTable(frame: RawFrame): Boolean = matches(frame, 1830, 8, 190, 52, stageTableTitle, STAGE_SLACK) { min(it) > 200 }
