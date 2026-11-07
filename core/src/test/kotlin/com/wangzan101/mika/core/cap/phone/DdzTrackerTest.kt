@@ -116,6 +116,16 @@ class DdzTrackerTest {
         assertEquals("unread_right", tracker.broken)
     }
 
+    @Test fun leadingWithTwentyCardsUndoesAPlayMisreadBeforeIt() {
+        right = DdzSeen.Cards(listOf("?9,Q,6"))
+        see(null)
+        assertEquals(DdzSeat.Right, tracker.landlord)
+        tracker.observe(DdzSeat.Me, { DdzSeen.Empty }, { bottom }, leadingWith20 = true, leading = true)
+        assertEquals(DdzSeat.Me, tracker.landlord)
+        assertTrue(tracker.history.isEmpty())
+        assertTrue(tracker.ready())
+    }
+
     @Test fun aGuessedCardIsOnlyTrustedFromTheLandlord() {
         // 我是地主,左家是农民:他那张认不准的不能按猜的补
         tracker.observe(DdzSeat.Me, { DdzSeen.Empty }, { bottom }, leadingWith20 = true, leading = true)

@@ -50,6 +50,8 @@ internal object DdzCards {
     /** 左家的牌紧贴着他的张数框(368-432)右边,从 450 起。 */
     private val STAGE_LEFT = 440 to 1100
     private val STAGE_RIGHT = 1300 to 2005
+    private const val STAGE_LEFT_EDGE = 460
+    private const val STAGE_RIGHT_EDGE = 1990
     private const val CONTENT_WIDTH = 2292.0
 
     private val handGlyphs by lazy { load("/ddz/hand.txt", HAND_W * HAND_H) }
@@ -76,7 +78,10 @@ internal object DdzCards {
         val stage = singleStageTable(frame)
         val cards = if (stage) {
             val (x0, x1) = if (side == DdzSide.Left) STAGE_LEFT else STAGE_RIGHT
-            strip(frame, x0, x1, STAGE_PLAY_Y0, STAGE_PLAY_Y1, pitch = 67.5, width = 130.0, glyphRows = 76, glyphWidth = 58, k = k * STAGE_SCALE, minRows = 150, probeNearBottom = true)
+            // 左家的牌从 450 往右排,右家的排到 2000 为止;正中翻开的三张底牌两边都不挨着
+            val edge = if (side == DdzSide.Left) STAGE_LEFT_EDGE else STAGE_RIGHT_EDGE
+            val anchored = (STAGE_PLAY_Y0 until STAGE_PLAY_Y1).count { y -> frame.pixel(edge, y).let { p -> min(p) > 190 && spread(p) < 45 } } >= 100
+            if (!anchored) null else strip(frame, x0, x1, STAGE_PLAY_Y0, STAGE_PLAY_Y1, pitch = 67.5, width = 130.0, glyphRows = 76, glyphWidth = 58, k = k * STAGE_SCALE, minRows = 150, probeNearBottom = true)
         } else {
             val (x0, x1) = if (side == DdzSide.Left) bar + (280 * k).toInt() to bar + (880 * k).toInt()
             else bar + (1360 * k).toInt() to bar + (1990 * k).toInt()

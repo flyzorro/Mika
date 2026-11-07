@@ -33,6 +33,12 @@ internal class DdzTracker {
         if (broken != null) return
         // 底牌只是给 DouZero 的参考,认不出(比如里面有张王,竖着写的字太小)也照样记;叫分、加倍时出牌区只有字,不会当成牌
         if (this.bottom == null) this.bottom = bottom()
+        // 轮到自己先出、手里 20 张,一定是地主、还没人出过牌:之前认成别家出的牌(比如翻底牌的动画)作废
+        if (leadingWith20 && landlord != DdzSeat.Me) {
+            landlord = null
+            history.clear()
+            waiting.clear()
+        }
         if (landlord == null) {
             if (leadingWith20) {
                 landlord = DdzSeat.Me

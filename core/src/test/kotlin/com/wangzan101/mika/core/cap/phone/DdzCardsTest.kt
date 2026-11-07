@@ -76,6 +76,10 @@ class DdzCardsTest {
         assertEquals(DdzSeen.Empty, DdzCards.play(clock, DdzSide.Left))
         assertEquals(DdzSeen.Empty, DdzCards.play(clock, DdzSide.Right))
         assertEquals(DdzSide.Right, DdzCards.clock(clock))
+        // 叫完地主在正中翻开的三张底牌,不是谁出的牌
+        val reveal = frame("vd_stage_bottom_reveal")
+        assertEquals(DdzSeen.Empty, DdzCards.play(reveal, DdzSide.Left))
+        assertEquals(DdzSeen.Empty, DdzCards.play(reveal, DdzSide.Right))
         // 左家的牌贴着他的张数框
         val joker = frame("vd_stage_leftjoker_rightpass")
         assertEquals(DdzSeen.Pass, DdzCards.play(joker, DdzSide.Right))
