@@ -115,4 +115,14 @@ class DdzTrackerTest {
         repeat(10) { see(DdzSeat.Left) }
         assertEquals("unread_right", tracker.broken)
     }
+
+    @Test fun whenILeadAgainTheClearedTableMeansBothPassed() {
+        // 地主是我,先出的顺子没人要;闯关的牌桌清了桌,两家的「不出」都没留下
+        tracker.observe(DdzSeat.Me, { DdzSeen.Empty }, { bottom }, leadingWith20 = true, leading = true)
+        tracker.mine(listOf("5", "6", "7", "8", "9"))
+        tracker.observe(DdzSeat.Me, { DdzSeen.Empty }, { bottom }, leading = true)
+        assertNull(tracker.broken)
+        assertTrue(tracker.ready())
+        assertEquals(listOf(listOf("5", "6", "7", "8", "9"), emptyList(), emptyList()), tracker.history)
+    }
 }

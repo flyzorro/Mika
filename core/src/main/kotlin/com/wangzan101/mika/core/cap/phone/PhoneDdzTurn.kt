@@ -362,7 +362,7 @@ internal object PhoneDdzTurn : PhoneTool {
             DdzSide.Right -> DdzSeat.Right
             null -> null
         }
-        tracker.observe(seat, { DdzCards.play(frame, it) }, { DdzCards.bottom(frame) }, view.phase == DdzPhase.Lead && view.handCount == 20)
+        tracker.observe(seat, { DdzCards.play(frame, it) }, { DdzCards.bottom(frame) }, view.phase == DdzPhase.Lead && view.handCount == 20, view.phase == DdzPhase.Lead)
     }
 
     private enum class Auto { Played, Settling, Off }

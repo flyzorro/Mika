@@ -27,9 +27,9 @@ internal class DdzTracker {
 
     /**
      * 每一帧喂进来:[turn] 此刻轮到谁(没人或看不出为 null),[read] 读某家出牌区,[bottom] 读底牌,
-     * [leadingWith20] 此刻轮到自己先出、手里 20 张。
+     * [leadingWith20] 此刻轮到自己先出、手里 20 张,[leading] 此刻轮到自己先出。
      */
-    fun observe(turn: DdzSeat?, read: (DdzSide) -> DdzSeen, bottom: () -> List<String>?, leadingWith20: Boolean = false) {
+    fun observe(turn: DdzSeat?, read: (DdzSide) -> DdzSeen, bottom: () -> List<String>?, leadingWith20: Boolean = false, leading: Boolean = false) {
         if (broken != null) return
         // 底牌只是给 DouZero 的参考,认不出(比如里面有张王,竖着写的字太小)也照样记;叫分、加倍时出牌区只有字,不会当成牌
         if (this.bottom == null) this.bottom = bottom()
@@ -53,7 +53,9 @@ internal class DdzTracker {
             }
             return
         }
-        resolve(read)
+        // 轮到自己先出,说明上一轮最后出牌的是自己、后面两家都没要;闯关的牌桌一轮结束就清桌,连「不出」都不留
+        val seen = if (leading) { side: DdzSide -> read(side).let { if (it == DdzSeen.Empty) DdzSeen.Pass else it } } else read
+        resolve(seen)
         if (turn == null || turn == active) return
         val from = active ?: return
         active = turn
@@ -63,7 +65,7 @@ internal class DdzTracker {
             if (seat != DdzSeat.Me) waiting.addLast(seat to READ_TRIES)
             seat = seat.next
         }
-        resolve(read)
+        resolve(seen)
     }
 
     /** 自己这一手出了什么([] 是不出);工具按下去之后马上记。 */
