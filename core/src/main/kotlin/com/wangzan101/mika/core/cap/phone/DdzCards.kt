@@ -92,6 +92,7 @@ internal object DdzCards {
 
     /** 三张底牌;没摆出来或认不准为 null。 */
     fun bottom(frame: RawFrame): List<String>? {
+        if (singleStageTable(frame)) return stageBottom(frame)
         val (bar, k) = content(frame)
         val cards = strip(frame, bar + (1050 * k).toInt(), bar + (1380 * k).toInt(), 5, 105, pitch = 44 * k, width = 57 * k,
             glyphRows = 46, glyphWidth = (32 * k).toInt(), k = k, minRows = 60, sure = BOTTOM_SURE, margin = BOTTOM_MARGIN) ?: return null
@@ -279,6 +280,32 @@ internal object DdzCards {
             on >= 0.4 * (r1 - r0) * (c1 - c0)
         }
     }
+
+    /**
+     * 闯关牌桌的底牌:顶上正中三张分开摆的小牌,点数在左、花色在右。按第 10 行的白色牌面找出三张,
+     * 每张按列切开,头一段墨迹是点数(10 的 1 很窄,和后面的 0 并成一段)。
+     */
+    private fun stageBottom(frame: RawFrame): List<String>? {
+        fun white(x: Int) = frame.pixel(x, 10).let { p -> min(p) > 190 && spread(p) < 45 }
+        val cards = DdzScreen.runs(1380, gap = 3, minWidth = 60) { x -> x >= 1040 && white(x) }
+        if (cards.size != 3) return null
+        return cards.map { card ->
+            val x = card.first + 3
+            val all = Array(46) { r -> BooleanArray(card.last - card.first - 6) { c ->
+                frame.pixel(x + c, 8 + r).let { p -> maxOf(p shr 16 and 0xff, p shr 8 and 0xff, p and 0xff) < 120 || ((p shr 16 and 0xff) > 120 && (p shr 8 and 0xff) < 100 && (p and 0xff) < 100) }
+            } }
+            val segments = DdzScreen.runs(all[0].size, gap = 1, minWidth = 0) { c -> all.any { it[c] } }
+            val first = segments.firstOrNull() ?: return null
+            val end = (if (first.last - first.first < 12) segments.getOrNull(1) ?: first else first).last
+            val ink = Array(all.size) { r -> all[r].copyOfRange(0, end + 1) }
+            val box = rankBox(ink) ?: return null
+            val red = share(frame, x, 8, ink) { r, g, _ -> r - g > 50 } > 0.5
+            // 样本是经典牌桌的底牌,闯关的字体略有不同(K 差 0.31);底牌只是参考,放宽些、但要和第二像的拉开
+            sure(ranked(tableGlyphs, boxSig(box, TABLE_W, TABLE_H)), STAGE_BOTTOM_SURE, STAGE_BOTTOM_MARGIN)?.let { joker(it, red) } ?: return null
+        }
+    }
+    private const val STAGE_BOTTOM_SURE = 0.36
+    private const val STAGE_BOTTOM_MARGIN = 0.03
 
     /** 一张桌面牌:[rank] 认准了的点数,认不准为 null;[guesses] 字形从像到不像的几个点数,给认不准的绶带牌用。 */
     private class Read(val rank: String?, val guesses: List<String>)

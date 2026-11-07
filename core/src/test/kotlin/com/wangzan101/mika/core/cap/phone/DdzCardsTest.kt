@@ -94,6 +94,10 @@ class DdzCardsTest {
         assertEquals(listOf("9", "8", "3"), DdzCards.bottom(frame("table_left55")))
         // 6 和 5 在底牌那么小的字上只差几笔
         assertEquals(listOf("6", "9", "J"), DdzCards.bottom(frame("vd_bottom_69J")))
+        // 闯关牌桌:三张分开摆在顶上正中
+        assertEquals(listOf("3", "8", "7"), DdzCards.bottom(frame("vd_stage_landlord19")))
+        assertEquals(listOf("K", "4", "9"), DdzCards.bottom(frame("vd_stage_lead")))
+        assertEquals(listOf("9", "4", "5"), DdzCards.bottom(frame("vd_stage_leftpass_rightQQQ6")))
     }
 
     @Test fun seesWhoseTurnItIs() {
