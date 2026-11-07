@@ -81,7 +81,7 @@ internal object DdzCards {
             // 左家的牌从 450 往右排,右家的排到 2000 为止;正中翻开的三张底牌两边都不挨着
             val edge = if (side == DdzSide.Left) STAGE_LEFT_EDGE else STAGE_RIGHT_EDGE
             val anchored = (STAGE_PLAY_Y0 until STAGE_PLAY_Y1).count { y -> frame.pixel(edge, y).let { p -> min(p) > 190 && spread(p) < 45 } } >= 100
-            if (!anchored) null else strip(frame, x0, x1, STAGE_PLAY_Y0, STAGE_PLAY_Y1, pitch = 67.5, width = 130.0, glyphRows = 76, glyphWidth = 58, k = k * STAGE_SCALE, minRows = 150, probeNearBottom = true)
+            if (!anchored) null else strip(frame, x0, x1, STAGE_PLAY_Y0, STAGE_PLAY_Y1, pitch = 67.5, width = 130.0, glyphRows = 76, glyphWidth = 58, k = k * STAGE_SCALE, wideLast = 72, minRows = 150, probeNearBottom = true)
         } else {
             val (x0, x1) = if (side == DdzSide.Left) bar + (280 * k).toInt() to bar + (880 * k).toInt()
             else bar + (1360 * k).toInt() to bar + (1990 * k).toInt()
@@ -200,6 +200,7 @@ internal object DdzCards {
     private fun strip(
         frame: RawFrame, x0: Int, x1: Int, y0: Int, y1: Int, pitch: Double, width: Double, glyphRows: Int, glyphWidth: Int,
         k: Double, minRows: Int = 100, sure: Double = SURE, margin: Double = MARGIN, probeNearBottom: Boolean = false,
+        wideLast: Int? = null,
     ): List<Read>? {
         val right = minOf(x1, frame.width)
         fun white(x: Int, y: Int) = frame.pixel(x, y).let { p -> min(p) > 190 && spread(p) < 45 }
@@ -223,12 +224,17 @@ internal object DdzCards {
         return (0 until n).map { i ->
             val cx = x0 + span.first + (i * pitch).toInt() + 3
             // 只有最后一张右上角可能压着绶带;前面的牌点数(10 有两位)可以看全,但别碰到下一张牌左边的阴影
-            val wide = (if (i == n - 1) minOf(glyphWidth.toDouble(), pitch) - 3 else minOf(pitch - 8, 48 * k)).toInt()
-            val ink = Array(glyphRows) { r -> BooleanArray(wide) { c -> textInk(frame.pixel(cx + c, top + 4 + r)) } }
-            val box = rankBox(ink) ?: return@map Read(null, emptyList())
-            val red = share(frame, cx, top + 4, ink) { r, g, _ -> r - g > 50 } > 0.5
-            val ranked = ranked(tableGlyphs, boxSig(box, TABLE_W, TABLE_H))
-            Read(sure(ranked, sure, margin)?.let { joker(it, red) }, ranked.take(GUESSES).map { joker(it.first, red) })
+            // 最后一张整张露着:窄了 10 的 0 会切掉,宽了地主的绶带会进来;给了 [wideLast] 就两种都量,取更像的
+            val widths = if (i == n - 1) listOfNotNull(glyphWidth, wideLast).map { (minOf(it.toDouble(), pitch) - 3).toInt() }.distinct()
+            else listOf(minOf(pitch - 8, 48 * k).toInt())
+            widths.mapNotNull { wide ->
+                val ink = Array(glyphRows) { r -> BooleanArray(wide) { c -> textInk(frame.pixel(cx + c, top + 4 + r)) } }
+                val box = rankBox(ink) ?: return@mapNotNull null
+                val red = share(frame, cx, top + 4, ink) { r, g, _ -> r - g > 50 } > 0.5
+                ranked(tableGlyphs, boxSig(box, TABLE_W, TABLE_H)).map { joker(it.first, red) to it.second }
+            }.minByOrNull { it.first().second }
+                ?.let { ranked -> Read(sure(ranked, sure, margin), ranked.take(GUESSES).map { it.first }) }
+                ?: Read(null, emptyList())
         }
     }
 
