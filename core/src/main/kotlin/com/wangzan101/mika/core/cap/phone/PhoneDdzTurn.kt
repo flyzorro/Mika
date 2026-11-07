@@ -209,7 +209,8 @@ internal object PhoneDdzTurn : PhoneTool {
         turn.tracker = null
         // 继续闯关、或者已经坐在桌上,可能是打了一半的一手:头一帧看手牌张数再定
         turn.joining = seated || stage?.second == true
-        val next = awaitDecision(ctx, turn, DdzPhase.Other, moved = true, polls = AGAIN_POLLS)
+        // 叫分、别家出牌都可能要等一阵:和 wait 一样等;不在牌桌上的话十来秒没手牌就回来
+        val next = awaitDecision(ctx, turn, DdzPhase.Other, moved = true, polls = MAX_POLLS)
         turn.seenAt = now()
         return ToolExecution(buildJsonObject {
             put("ok", true)
@@ -351,9 +352,11 @@ internal object PhoneDdzTurn : PhoneTool {
                 if (turn.single && DdzCards.stageWin(frame)) {
                     turn.tracker = null
                     turn.expectedHand = null
-                    turn.won++
+                    if (turn.handsLeft <= 1) { turn.won++; return view.copy(phase = DdzPhase.Result) }
+                    // 「胜利」先出来,「继续」按钮晚一点才画上:没有就再等一帧
                     val next = DdzCards.stageContinue(frame)
-                    if (turn.handsLeft <= 1 || next == null || ctx.screen.peek().packageName != PACKAGE) return view.copy(phase = DdzPhase.Result)
+                    if (next == null || ctx.screen.peek().packageName != PACKAGE) { waitOrSteer { delay(POLL_MS) } ?: return last; continue }
+                    turn.won++
                     turn.handsLeft--
                     ctx.screen.quickTap(next.first, next.second)
                     delay(CONTINUE_MS)
