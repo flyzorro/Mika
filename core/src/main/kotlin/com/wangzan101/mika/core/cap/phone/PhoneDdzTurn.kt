@@ -164,14 +164,18 @@ internal object PhoneDdzTurn : PhoneTool {
     private suspend fun start(a: Args, ctx: ToolContext, turn: Turn): ToolExecution {
         val advisor = a.str("advisor") ?: throw ArgError("advisor", "required")
         val page = ctx.screen.rawFrame(DdzCards.LOBBY_ROWS + DdzScreen.ROWS) ?: return refused("no_frame")
-        val (x, y) = when {
+        // 已经坐在闯关的牌桌上(报完名才问到这个工具):还在叫分、加倍就从这里接,出过牌了历史接不上
+        val seated = DdzCards.singleStageTable(page)
+        if (seated && DdzScreen.read(page).phase !in setOf(DdzPhase.Call, DdzPhase.Double)) return refused("game_already_started")
+        val tap = when {
+            seated -> null
             DdzCards.singleLobby(page) -> QUICK_START_X to QUICK_START_Y
             DdzCards.singleStage(page) -> SIGN_UP_X to SIGN_UP_Y
             else -> return refused("not_single_player_lobby")
         }
-        if (!ctx.screen.quickTap(x, y)) return refused("tap_failed")
+        if (tap != null && !ctx.screen.quickTap(tap.first, tap.second)) return refused("tap_failed")
         markSingle(ctx, advisor)
-        turn.atTable = false
+        turn.atTable = seated
         turn.tracker = null
         val next = awaitDecision(ctx, turn, DdzPhase.Other, moved = true, polls = AGAIN_POLLS)
         turn.seenAt = now()

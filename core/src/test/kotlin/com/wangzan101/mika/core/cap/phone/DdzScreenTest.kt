@@ -14,6 +14,16 @@ class DdzScreenTest {
     @Test fun recognisesEveryPhase() {
         assertEquals(DdzPhase.Result, DdzScreen.read(frame("result")).phase)
         assertEquals(DdzPhase.Call, DdzScreen.read(frame("call")).phase)
+        // 闯关里别人叫过二分:一分、二分变灰,字把按钮颜色切断的那一行认不出
+        val stage = DdzScreen.read(frame("vd_stage_call"))
+        assertEquals(DdzPhase.Call, stage.phase)
+        assertEquals(listOf(DdzColor.Blue, DdzColor.Gray, DdzColor.Gray, DdzColor.Yellow), stage.buttons.map { it.color })
+        val lead = DdzScreen.read(frame("vd_stage_lead"))
+        assertEquals(DdzPhase.Lead, lead.phase)
+        assertEquals(20, lead.handCount)
+        // 模型自己点过最后那张 4;闯关的手牌整体高 32 像素
+        assertEquals(setOf(19), lead.lifted)
+        assertEquals(emptySet<Int>(), DdzScreen.read(frame("vd_stage_call")).lifted)
         assertEquals(DdzPhase.Double, DdzScreen.read(frame("double")).phase)
         assertEquals(DdzPhase.Follow, DdzScreen.read(frame("follow_lifted")).phase)
         assertEquals(DdzPhase.Lead, DdzScreen.read(frame("lead")).phase)

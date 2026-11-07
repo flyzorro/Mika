@@ -17,6 +17,8 @@ class DdzCardsTest {
 
     @Test fun readsHandsLeftToRight() {
         assertEquals("SJ 2 2 2 A A A A Q J 10 9 9 8 7 3 3".split(' '), hand("hand_t1"))
+        // 闯关牌桌:手牌更高
+        assertEquals("BJ SJ 2 2 A A Q Q Q Q J J 10 9 9 5 4".split(' '), hand("vd_stage_call"))
         assertEquals("BJ SJ 2 2 A A A K Q J J 10 10 9 9 8 5".split(' '), hand("hand_k2"))
     }
 

@@ -38,13 +38,15 @@ internal object DdzCards {
     /** 认不准、留给 DouZero 服务按牌规补的那一张,后面跟着猜的几个点数。 */
     const val UNKNOWN = "?"
     private const val GUESSES = 3
+    /** 手牌的牌顶从这里往下找:闯关牌桌上抬起的牌顶在 582;再往上是按钮。 */
+    private const val HAND_TOP = 560
     private const val CONTENT_WIDTH = 2292.0
 
     private val handGlyphs by lazy { load("/ddz/hand.txt", HAND_W * HAND_H) }
     private val tableGlyphs by lazy { load("/ddz/table.txt", TABLE_W * TABLE_H) }
 
     /** 认牌要读的行;只在要认的那一刻读,平时轮询只读 [DdzScreen.ROWS]。 */
-    val ROWS: List<Int> = ((5 until 105) + (220 until 420) + (600 until 800)).toList()
+    val ROWS: List<Int> = ((5 until 105) + (220 until 420) + (HAND_TOP until 800)).toList()
 
     /** 手牌从左到右;有一张认不准、或者不是从大到小排的(还在发牌),返回 null。 */
     fun hand(frame: RawFrame, view: DdzView): List<String>? {
@@ -81,10 +83,11 @@ internal object DdzCards {
     }
 
     /** 认大厅、闯关页要读的行。 */
-    val LOBBY_ROWS: List<Int> = ((60 until 105) + (885 until 925)).toList()
+    val LOBBY_ROWS: List<Int> = ((5 until 105) + (885 until 925)).toList()
 
     private val lobbyRibbon by lazy { mark("/ddz/lobby.txt") }
     private val stageTitle by lazy { mark("/ddz/stage.txt") }
+    private val stageTableTitle by lazy { mark("/ddz/stage_table.txt") }
     private const val MARK_W = 96
     private const val MARK_H = 20
 
@@ -96,6 +99,9 @@ internal object DdzCards {
 
     /** 是不是单机模式里的闯关页(左上角写着「闯关模式」,报名首次免费、过关奖励金币)。同样只认 Mika 的屏。 */
     fun singleStage(frame: RawFrame): Boolean = matches(frame, 190, 60, 255, 45, stageTitle, STAGE_SLACK) { min(it) > 200 }
+
+    /** 是不是闯关的牌桌(右上角写着「闯关模式」):闯关只在单机模式里有。同样只认 Mika 的屏。 */
+    fun singleStageTable(frame: RawFrame): Boolean = matches(frame, 1830, 8, 190, 52, stageTableTitle, STAGE_SLACK) { min(it) > 200 }
 
     /** 这块地方的字和记下的样子差不多:同一位置、同一大小,差的格子不超过 [slack]。 */
     private inline fun matches(frame: RawFrame, x: Int, y: Int, w: Int, h: Int, mark: BooleanArray, slack: Double, ink: (Int) -> Boolean): Boolean {
@@ -173,7 +179,7 @@ internal object DdzCards {
     }
 
     private fun handGlyph(frame: RawFrame, x: Int, width: Int): Pair<Array<BooleanArray>, Boolean>? {
-        val rows = 600 until 800
+        val rows = HAND_TOP until 800
         val top = rows.firstOrNull { y -> (x until x + width).count { card(frame.pixel(it, y)) } > width * 0.8 } ?: return null
         val ink = { y: Int -> (x until x + width).count { min(frame.pixel(it, y)) < 150 } >= 3 }
         val start = (top until 800 - 84).firstOrNull(ink) ?: return null
