@@ -185,7 +185,9 @@ internal object DdzCards {
     private fun passed(frame: RawFrame, side: DdzSide, bar: Int, k: Double, stage: Boolean): Boolean {
         if (stage) {
             val (x0, x1) = if (side == DdzSide.Left) STAGE_LEFT else STAGE_RIGHT
-            return count(frame, x0, x1, 150, 230) { r, g, b -> minOf(r, g, b) > 235 && maxOf(r, g, b) - minOf(r, g, b) < 25 } >= 300
+            val white = { r: Int, g: Int, b: Int -> minOf(r, g, b) > 235 && maxOf(r, g, b) - minOf(r, g, b) < 25 }
+            // 「不出」只是 160-215 那一条字;正在飞过来、还没认出来的牌面一直白到 340,不能当成不出
+            return count(frame, x0, x1, 150, 230, white) >= 300 && count(frame, x0, x1, 260, 340, white) < 50
         }
         val x = bar + ((if (side == DdzSide.Left) 320 else 1830) * k).toInt()
         return count(frame, x, x + (160 * k).toInt(), 320, 410) { r, g, b -> minOf(r, g, b) > 235 && maxOf(r, g, b) - minOf(r, g, b) < 25 } >= 300

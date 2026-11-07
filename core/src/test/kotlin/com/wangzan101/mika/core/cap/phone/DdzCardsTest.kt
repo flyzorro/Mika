@@ -84,6 +84,9 @@ class DdzCardsTest {
         val straight = frame("vd_stage_right_straight_leftpass")
         assertEquals(DdzSeen.Cards("A K Q J 10".split(' ')), DdzCards.play(straight, DdzSide.Right))
         assertEquals(DdzSeen.Pass, DdzCards.play(straight, DdzSide.Left))
+        // 右家新一轮先出的顺子;左家的「不出」是上一轮留下的
+        val lead = frame("vd_stage_right_lead76543")
+        assertEquals(DdzSeen.Cards("7 6 5 4 3".split(' ')), DdzCards.play(lead, DdzSide.Right))
         // 叫完地主在正中翻开的三张底牌,不是谁出的牌
         val reveal = frame("vd_stage_bottom_reveal")
         assertEquals(DdzSeen.Empty, DdzCards.play(reveal, DdzSide.Left))
