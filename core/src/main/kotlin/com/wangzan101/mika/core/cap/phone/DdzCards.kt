@@ -35,8 +35,9 @@ internal object DdzCards {
      */
     private const val BOTTOM_SURE = 0.3
     private const val BOTTOM_MARGIN = 0.0
-    /** 认不准、留给 DouZero 服务按牌规补的那一张。 */
+    /** 认不准、留给 DouZero 服务按牌规补的那一张,后面跟着猜的几个点数。 */
     const val UNKNOWN = "?"
+    private const val GUESSES = 3
     private const val CONTENT_WIDTH = 2292.0
 
     private val handGlyphs by lazy { load("/ddz/hand.txt", HAND_W * HAND_H) }
@@ -64,10 +65,10 @@ internal object DdzCards {
         else bar + (1360 * k).toInt() to bar + (1990 * k).toInt()
         val cards = strip(frame, x0, x1, 220, 420, pitch = 53 * k, width = 103 * k, glyphRows = 60, glyphWidth = (44 * k).toInt(), k = k)
         if (cards == null) return if (passed(frame, side, bar, k)) DdzSeen.Pass else DdzSeen.Empty
-        val ranks = cards.toMutableList()
-        // 地主出的最后一张右上角压着绶带,常认不准:记成 ?,由 DouZero 服务按牌规补(凑得成合规牌型、
-        // 压得过上家、牌还有剩的只有一种才补,否则这一手对不上)。别的牌认不准就是认不准。
-        if (ranks.last() == null && ranks.size > 1 && ranks.dropLast(1).all { it != null }) ranks[ranks.lastIndex] = UNKNOWN
+        val ranks = cards.map { it.rank }.toMutableList()
+        // 地主出的最后一张右上角压着绶带,常认不准:记成 ?,后面按字形从像到不像带上几个点数(如 ?5,6,9),
+        // 由 DouZero 服务按牌规补:只有一种补法就用它,有几种就取头一个说得通的。别的牌认不准就是认不准。
+        if (ranks.last() == null && ranks.dropLast(1).all { it != null }) ranks[ranks.lastIndex] = UNKNOWN + cards.last().guesses.joinToString(",")
         return if (ranks.any { it == null }) DdzSeen.Unsure else DdzSeen.Cards(ranks.map { it!! })
     }
 
@@ -76,7 +77,7 @@ internal object DdzCards {
         val (bar, k) = content(frame)
         val cards = strip(frame, bar + (1050 * k).toInt(), bar + (1380 * k).toInt(), 5, 105, pitch = 44 * k, width = 57 * k,
             glyphRows = 46, glyphWidth = (32 * k).toInt(), k = k, minRows = 60, sure = BOTTOM_SURE, margin = BOTTOM_MARGIN) ?: return null
-        return cards.takeIf { it.size == 3 && it.all { r -> r != null } }?.map { it!! }
+        return cards.map { it.rank }.takeIf { it.size == 3 && it.all { r -> r != null } }?.map { it!! }
     }
 
     /** 认大厅、闯关页要读的行。 */
@@ -143,7 +144,7 @@ internal object DdzCards {
     private fun strip(
         frame: RawFrame, x0: Int, x1: Int, y0: Int, y1: Int, pitch: Double, width: Double, glyphRows: Int, glyphWidth: Int,
         k: Double, minRows: Int = 100, sure: Double = SURE, margin: Double = MARGIN,
-    ): List<String?>? {
+    ): List<Read>? {
         val right = minOf(x1, frame.width)
         fun white(x: Int, y: Int) = frame.pixel(x, y).let { p -> min(p) > 190 && spread(p) < 45 }
         val rich = (y0 until y1).map { y -> (x0 until right).count { white(it, y) } >= (30 * k).toInt() }
@@ -164,9 +165,10 @@ internal object DdzCards {
             // 只有最后一张右上角可能压着绶带;前面的牌点数(10 有两位)可以看全,但别碰到下一张牌左边的阴影
             val wide = (if (i == n - 1) minOf(glyphWidth.toDouble(), pitch) - 3 else minOf(pitch - 8, 48 * k)).toInt()
             val ink = Array(glyphRows) { r -> BooleanArray(wide) { c -> textInk(frame.pixel(cx + c, top + 4 + r)) } }
-            val box = rankBox(ink) ?: return@map null
+            val box = rankBox(ink) ?: return@map Read(null, emptyList())
             val red = share(frame, cx, top + 4, ink) { r, g, _ -> r > 140 && g < 100 } > 0.5
-            nearest(tableGlyphs, boxSig(box, TABLE_W, TABLE_H), sure, margin)?.let { joker(it, red) }
+            val ranked = ranked(tableGlyphs, boxSig(box, TABLE_W, TABLE_H))
+            Read(sure(ranked, sure, margin)?.let { joker(it, red) }, ranked.take(GUESSES).map { joker(it.first, red) })
         }
     }
 
@@ -220,8 +222,11 @@ internal object DdzCards {
         }
     }
 
-    /** 最像的点数;够像([sure] 以内)、又和第二像的点数拉得开([margin])才算认准,否则 null。 */
-    private fun nearest(glyphs: List<Exemplar>, sig: BooleanArray, sure: Double, margin: Double): String? {
+    /** 一张桌面牌:[rank] 认准了的点数,认不准为 null;[guesses] 字形从像到不像的几个点数,给认不准的绶带牌用。 */
+    private class Read(val rank: String?, val guesses: List<String>)
+
+    /** 每个点数最像的样本有多像,从像到不像排。 */
+    private fun ranked(glyphs: List<Exemplar>, sig: BooleanArray): List<Pair<String, Double>> {
         val byRank = HashMap<String, Double>()
         for (g in glyphs) {
             var diff = 0
@@ -229,11 +234,17 @@ internal object DdzCards {
             val d = diff.toDouble() / sig.size
             if (d < (byRank[g.rank] ?: Double.MAX_VALUE)) byRank[g.rank] = d
         }
-        val ranked = byRank.toList().sortedBy { it.second }
+        return byRank.toList().sortedBy { it.second }
+    }
+
+    /** 最像的点数;够像([sure] 以内)、又和第二像的点数拉得开([margin])才算认准,否则 null。 */
+    private fun sure(ranked: List<Pair<String, Double>>, sure: Double, margin: Double): String? {
         val (best, d) = ranked.firstOrNull() ?: return null
         val second = ranked.getOrNull(1)?.second ?: 1.0
         return best.takeIf { d <= sure && second - d >= margin }
     }
+
+    private fun nearest(glyphs: List<Exemplar>, sig: BooleanArray, sure: Double, margin: Double): String? = sure(ranked(glyphs, sig), sure, margin)
 
     private fun joker(rank: String, red: Boolean) = if (rank == "JOKER") (if (red) "BJ" else "SJ") else rank
 

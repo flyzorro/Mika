@@ -134,5 +134,24 @@ class RibbonCardTest(unittest.TestCase):
         self.assertIn("ambiguous_card", str(caught.exception))
 
 
+class GuessTest(unittest.TestCase):
+    def test_the_first_guess_that_fits_is_used(self):
+        for seed in range(200):
+            env = new_game(seed)
+            env.step()
+            info = env.game_infoset
+            history = [names(m) for m in info.card_play_action_seq]
+            hand = names(info.player_hand_cards)
+            jokers = [j for j in ["SJ", "BJ"] if j in hand]
+            if len(history[0]) == 1 and jokers:
+                break
+        seat, bottom = env.acting_player_position, names(info.three_landlord_cards)
+        truth = history[0][0]
+        want = sorted(ADVISOR.act(seat, hand, bottom, history))
+        # 头一个猜的是自己手里的王,别人不可能出,说不通;第二个才对
+        got = sorted(ADVISOR.act(seat, hand, bottom, [["?" + jokers[0] + "," + truth]] + history[1:]))
+        self.assertEqual(want, got)
+
+
 if __name__ == "__main__":
     unittest.main()

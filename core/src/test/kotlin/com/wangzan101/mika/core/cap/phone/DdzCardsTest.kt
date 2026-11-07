@@ -37,7 +37,8 @@ class DdzCardsTest {
         val ranks = (seen as DdzSeen.Cards).ranks
         val want = expected.split(' ')
         assertEquals(want.dropLast(1), ranks.dropLast(1))
-        assertTrue(ranks.last() == want.last() || ranks.last() == DdzCards.UNKNOWN)
+        // 认不准时带的猜测不一定对(99988 的 8 猜成了 7、J、5):多张的牌型由服务按牌规补
+        assertTrue("$ranks", ranks.last() == want.last() || ranks.last().startsWith(DdzCards.UNKNOWN))
     }
 
     @Test fun theLandlordsRibbonCardIsReadOrLeftForTheRules() {
@@ -47,9 +48,10 @@ class DdzCardsTest {
         assertRibbonPlay("9 9 9 8 8", DdzCards.play(frame("vd_right_99988"), DdzSide.Right))
     }
 
-    @Test fun aSingleRibbonCardItCannotReadIsUnsureNotGuessed() {
+    @Test fun aSingleRibbonCardItCannotReadIsLeftForTheRulesWithGuesses() {
         val frame = frame("table_left10_right8")
-        assertEquals(DdzSeen.Unsure, DdzCards.play(frame, DdzSide.Left))
+        // 单张什么都说得通,只能靠猜:最像的就是 10
+        assertEquals(DdzSeen.Cards(listOf("?10,K,9")), DdzCards.play(frame, DdzSide.Left))
         assertEquals(DdzSeen.Cards(listOf("8")), DdzCards.play(frame, DdzSide.Right))
     }
 

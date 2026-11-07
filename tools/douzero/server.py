@@ -11,7 +11,9 @@ POST /act  {"seat": "landlord" | "landlord_down" | "landlord_up",
             "history": [["3"], [], ["5", "?"], ...]} # 从地主第一手起每一手,[] 是不出,? 是认不准的一张
 
 ? 是地主出的最后一张:右上角压着绶带,手机上常认不准。按牌规补:15 种点数挨个代进去,
-凑得成合规牌型、压得过上家、牌还有剩的只有一种才补上;有几种都说得通就报 ambiguous_card。
+凑得成合规牌型、压得过上家、牌还有剩的只有一种就补上;有几种都说得通时(单张、三带一的那一张),
+手机可以在 ? 后面按字形从像到不像带上几个点数(如 "?5,6,9"),取其中头一个说得通的,一个都不在就报 ambiguous_card。
+猜错了,后面的出牌在重放里会不合规,照样对得出来。
 -> {"play": ["5", "5"]} 或 {"error": "..."}
 """
 import json
@@ -77,21 +79,24 @@ def legal(move, before):
 
 def resolve(hand, history):
     """把历史里的 ? 按牌规补上。history 里除 ? 外已是点数。"""
-    known = [c for m in history for c in m if c != "?"]
+    known = [c for m in history for c in m if not isinstance(c, str)]
     pool = Counter(minus(minus(DECK, hand), known))
     out = []
     for move in history:
-        if "?" not in move:
+        unknown = [c for c in move if isinstance(c, str)]
+        if not unknown:
             out.append(move)
             continue
-        if move.count("?") > 1:
+        if len(unknown) > 1:
             raise Mismatch("ambiguous_card")
-        rest = [c for c in move if c != "?"]
+        guesses = [RANKS.get(g.upper()) for g in unknown[0][1:].split(",") if g]
+        rest = [c for c in move if not isinstance(c, str)]
         fits = [r for r in sorted(set(DECK)) if pool[r] > 0 and legal(rest + [r], out)]
-        if len(fits) != 1:
+        pick = fits[0] if len(fits) == 1 else next((g for g in guesses if g in fits), None)
+        if pick is None:
             raise Mismatch("ambiguous_card")
-        pool[fits[0]] -= 1
-        out.append(sorted(rest + fits))
+        pool[pick] -= 1
+        out.append(sorted(rest + [pick]))
     return out
 
 
@@ -146,7 +151,7 @@ class Advisor:
 
     def act(self, seat, hand, bottom, history):
         hand, bottom = cards(hand), cards(bottom)
-        history = resolve(hand, [[c if c == "?" else cards([c])[0] for c in m] for m in history])
+        history = resolve(hand, [[str(c) if str(c).startswith("?") else cards([c])[0] for c in m] for m in history])
         if len(history) % 3 != SEATS.index(seat):
             raise Mismatch("not_your_turn")
         start = deal(seat, hand, bottom, history)
