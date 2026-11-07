@@ -63,7 +63,7 @@ internal object DdzCards {
         // Mika 的屏横向放大约 5%,字也跟着变宽:切的窗口一起放大,缩放到同样大小后才对得上
         val width = (60 * k).roundToInt()
         val ranks = (0 until view.handCount).map { i ->
-            val (ink, red) = handGlyph(frame, view.handLeft + (i * view.pitch).roundToInt() + (8 * k).roundToInt(), width) ?: return null
+            val (ink, red) = handGlyph(frame, view.handLeft + (i * view.pitch).roundToInt() + (8 * k).roundToInt(), width, view.handRow) ?: return null
             nearest(handGlyphs, boxSig(ink, HAND_W, HAND_H), sure = 0.2, margin = 0.0)?.let { joker(it, red) } ?: return null
         }
         return ranks.takeIf { it.zipWithNext().all { (a, b) -> ORDER.getValue(a) >= ORDER.getValue(b) } }
@@ -219,11 +219,20 @@ internal object DdzCards {
         }
     }
 
-    private fun handGlyph(frame: RawFrame, x: Int, width: Int): Pair<Array<BooleanArray>, Boolean>? {
-        val rows = HAND_TOP until 800
-        val top = rows.firstOrNull { y -> (x until x + width).count { card(frame.pixel(it, y)) } > width * 0.8 } ?: return null
+    private fun handGlyph(frame: RawFrame, x: Int, width: Int, from: Int): Pair<Array<BooleanArray>, Boolean>? {
+        // 从牌面上往上走,走出牌面(桌布、炸弹的火苗)为止:上方自己刚出的牌和手牌之间隔着一道桌布
+        // (闯关牌桌上只隔二十几像素),不会连成一张
+        // 走到一行大半是蓝色桌布或橙色火苗为止;牌面上的字(连红字边上的粉色)都不算
+        fun offCard(y: Int) = (x until x + width).count { frame.pixel(it, y).let { p ->
+            val r = p shr 16 and 0xff
+            val g = p shr 8 and 0xff
+            val b = p and 0xff
+            b - r > 50 || (r > 200 && g > 130 && b < 100)
+        } } > width / 2
+        val top = (from downTo HAND_TOP).firstOrNull(::offCard)?.plus(1) ?: return null
         val ink = { y: Int -> (x until x + width).count { min(frame.pixel(it, y)) < 150 } >= 3 }
-        val start = (top until 800 - 84).firstOrNull(ink) ?: return null
+        // 牌顶那一行左上是圆角,背景的暗色会当成墨
+        val start = (top + 4 until 800 - 84).firstOrNull(ink) ?: return null
         val glyph = Array(84) { r -> BooleanArray(width) { c -> min(frame.pixel(x + c, start + r)) < 150 } }
         return glyph to (share(frame, x, start, glyph) { r, _, b -> r - b > 60 } > 0.5)
     }

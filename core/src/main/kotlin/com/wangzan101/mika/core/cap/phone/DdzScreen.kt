@@ -20,6 +20,8 @@ internal data class DdzView(
     val pitch: Double,
     val handCount: Int,
     val lifted: Set<Int>,
+    /** 一定在每张手牌牌面上的一行(没抬的牌顶下方):从这里往上找牌顶。 */
+    val handRow: Int = DdzScreen.HAND_ROW,
 ) {
     /** 第 [index] 张牌露出来的那一条的中点;最后一张整张露出。 */
     fun cardX(index: Int): Int =
@@ -51,7 +53,7 @@ internal object DdzScreen {
     private const val RESULT_ROW = 870
     private const val RESULT_TAP_Y = 895
     /** 量手牌宽度的行:两种屏上都在牌面内,也避开最后一张右上角的地主绶带。 */
-    private const val HAND_ROW = 676
+    const val HAND_ROW = 676
     /** 看牌抬没抬的行:牌顶往下一点,没抬的牌这里还没有字。Mika 的屏上牌桌整体高 26 像素。 */
     private const val LIFT_ROW = 676
     private const val LIFT_ROW_FULL_WIDTH = 650
@@ -78,7 +80,7 @@ internal object DdzScreen {
             val x = handLeft + (i * step).roundToInt() + 8
             (x until x + 70).count { !isCard(frame.pixel(it, liftRow)) } >= 6
         }
-        fun view(phase: DdzPhase, buttons: List<DdzButton>) = DdzView(phase, buttons, handLeft, step, handCount, lifted)
+        fun view(phase: DdzPhase, buttons: List<DdzButton>) = DdzView(phase, buttons, handLeft, step, handCount, lifted, HAND_ROW + dy)
         val result = buttons(frame, RESULT_ROW).filter { it.color == DdzColor.Yellow && it.right - it.left >= MIN_RESULT_BUTTON }
         if (result.size == 1) return view(DdzPhase.Result, result.map { it.copy(y = RESULT_TAP_Y) })
         val auto = buttons(frame, AUTO_ROW).filter { it.color == DdzColor.Blue }
