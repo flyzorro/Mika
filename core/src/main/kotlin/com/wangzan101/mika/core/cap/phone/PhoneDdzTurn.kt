@@ -366,8 +366,9 @@ internal object PhoneDdzTurn : PhoneTool {
     /** 把这一帧喂给这一局的出牌历史;叫分时还没开局,换一局重新记。 */
     private fun track(turn: Turn, frame: com.wangzan101.mika.core.uistate.RawFrame, view: DdzView) {
         if (view.phase == DdzPhase.Call) { turn.tracker = null; turn.expectedHand = null; turn.joining = false; return }
-        // 农民 17 张、地主 20 张说明自己还没出过牌,在那之前的出牌都还摆在桌上,接得上;别的张数是打了一半,这一手不交给 DouZero
-        if (turn.joining && view.handCount > 0) {
+        // 农民 17 张、地主 20 张说明自己还没出过牌,在那之前的出牌都还摆在桌上,接得上;别的张数是打了一半,这一手不交给 DouZero。
+        // 发牌时手牌一张张多起来,要等到加倍或者轮到自己才数
+        if (turn.joining && view.phase != DdzPhase.Other) {
             turn.joining = false
             if (view.handCount != 17 && view.handCount != 20) turn.tracker = DdzTracker().apply { fail("joined_mid_game") }
         }

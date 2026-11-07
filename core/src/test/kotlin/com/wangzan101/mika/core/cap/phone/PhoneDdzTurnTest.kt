@@ -368,8 +368,8 @@ class PhoneDdzTurnTest {
         val saved = PhoneDdzTurn.advise
         try {
             PhoneDdzTurn.advise = { _, _ -> """{"play":[]}""" }
-            // 新发的一手(农民 17 张):接得上
-            val fresh = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(lobbyFrame("vd_stage_continue"), full("vd_hand_follow"), fullBlank)))
+            // 新发的一手(农民 17 张):接得上;发牌时手里还没 17 张(闯关的牌桌上别人出牌时也是 other)不算
+            val fresh = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(lobbyFrame("vd_stage_continue"), full("vd_stage_right_clock"), full("vd_hand_follow"), fullBlank)))
             assertFalse(run(fresh, """{"action":"start","advisor":"http://mac:3426"}""").toString().contains("joined_mid_game"))
         } finally {
             PhoneDdzTurn.advise = saved
