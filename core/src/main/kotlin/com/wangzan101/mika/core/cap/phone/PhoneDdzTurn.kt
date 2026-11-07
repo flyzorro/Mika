@@ -33,8 +33,6 @@ internal object PhoneDdzTurn : PhoneTool {
     /** 再来一局几秒就发牌;过了这么久还没有多半是弹窗,交给模型看。 */
     private const val AGAIN_POLLS = 60
     /** Mika 屏上大厅右下角的快速开始。 */
-    private const val QUICK_START_X = 2140
-    private const val QUICK_START_Y = 995
     /** Mika 屏上闯关页的报名。 */
     private const val STAGE_BUTTON_Y = 920
     private const val AUTO_CANCEL_MS = 600L
@@ -172,7 +170,8 @@ internal object PhoneDdzTurn : PhoneTool {
         val stage = if (DdzCards.singleStage(page)) DdzCards.stageButton(page) ?: return refused("no_stage_button") else null
         val tap = when {
             seated -> null
-            DdzCards.singleLobby(page) -> QUICK_START_X to QUICK_START_Y
+            // 大厅的快速开始进的是要金币的经典场,金币不够就弹救济金:让模型去免费的闯关
+            DdzCards.singleLobby(page) -> return refused("use_stage_mode")
             stage != null -> stage.first to STAGE_BUTTON_Y
             else -> return refused("not_single_player_lobby")
         }

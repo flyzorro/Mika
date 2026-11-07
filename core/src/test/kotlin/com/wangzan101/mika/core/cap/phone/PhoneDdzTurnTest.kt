@@ -261,11 +261,11 @@ class PhoneDdzTurnTest {
         return RawFrame(image.width, image.height, (DdzScreen.ROWS + DdzCards.ROWS + DdzCards.LOBBY_ROWS).distinct().associateWith { image.getRGB(0, it, image.width, 1, null, 0, image.width) })
     }
 
-    @Test fun startOnlyFromTheSinglePlayerLobby() = runTest {
+    @Test fun theLobbySendsTheModelToTheFreeStageMode() = runTest {
+        // 快速开始进的经典场要金币,不够就弹救济金
         val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(lobbyFrame("vd_lobby"), fullBlank, full("call"))))
-        val result = run(game, """{"action":"start","advisor":"http://mac:3426"}""")
-        assertEquals("true", result.text("ok"))
-        assertEquals("只点了快速开始", listOf(2140 to 995), game.taps)
+        assertEquals("use_stage_mode", run(game, """{"action":"start","advisor":"http://mac:3426"}""").text("error"))
+        assertTrue(game.taps.isEmpty())
     }
 
     @Test fun theLobbyLingeringRightAfterStartDoesNotCancelSinglePlayer() = runTest {
@@ -273,7 +273,7 @@ class PhoneDdzTurnTest {
         val saved = PhoneDdzTurn.advise
         PhoneDdzTurn.advise = { _, body -> asked += body; """{"play":[]}""" }
         try {
-            val lobby = lobbyFrame("vd_lobby")
+            val lobby = lobbyFrame("vd_stage")
             val follow = full("hand_t1")
             val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(lobby, lobby, lobby, fullBlank, full("call"))))
             val dispatcher = toolDispatcher(game)
