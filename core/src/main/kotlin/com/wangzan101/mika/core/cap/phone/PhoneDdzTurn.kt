@@ -39,6 +39,7 @@ internal object PhoneDdzTurn : PhoneTool {
     /** 轮到自己时别家的牌还没落下最多再等几帧(约 1.2 秒,倒计时有 15 秒)。 */
     private const val SETTLE_POLLS = 8
     private const val NO_HAND_POLLS = 60
+    private const val NEW_HAND_GAP = 8
     private const val TAP_GAP_MS = 60L
     private const val SETTLE_MS = 250L
     private const val VERDICT_MS = 800L
@@ -63,6 +64,8 @@ internal object PhoneDdzTurn : PhoneTool {
         var expectedHand: List<String>? = null
         /** 刚点了继续闯关,还没看到这一手的手牌。 */
         var joining = false
+        /** 连着几帧没有手牌:一手打完了,下一次看到手牌就是新发的一手。 */
+        var noHand = 0
         var advisor: String? = null
         var tracker: DdzTracker? = null
         val decisions = mutableListOf<Long>()
@@ -118,7 +121,7 @@ internal object PhoneDdzTurn : PhoneTool {
         // 模型在两次调用之间自己点过屏幕(关弹窗,也可能回大厅进了真人场):这里看不到它去过哪,单机标记作废,要再 start
         if (turn.single && ctx.evidence.actions != turn.actionsSeen) turn.single = false
         if (action == "start") return start(a, ctx, turn).also { turn.actionsSeen = ctx.evidence.actions }
-        val view = takeBackControl(read(ctx) ?: return refused("no_frame"), ctx)
+        val view = takeBackControl(read(ctx) ?: return refused("no_frame"), ctx).also { dealt(turn, it) }
         val thinkMs = turn.seenAt?.let { now() - it } ?: 0
         val tapStart = now()
         val move = move(action, a, view, ctx, turn, thinkMs)
@@ -317,6 +320,7 @@ internal object PhoneDdzTurn : PhoneTool {
                 if (view.phase != DdzPhase.Other) turn.atTable = true
                 // 进过牌桌又回了大厅:下一局可能进的是真人场,单机标记作废,要再 start 一次
                 if (turn.single && turn.atTable && view.phase == DdzPhase.Other && DdzCards.singleLobby(frame)) { turn.single = false; return view }
+                dealt(turn, view)
                 if (turn.single) track(turn, frame, view)
                 when (view.phase) {
                     DdzPhase.AutoPlay -> {
@@ -343,6 +347,20 @@ internal object PhoneDdzTurn : PhoneTool {
             waitOrSteer { delay(POLL_MS) } ?: return last
         }
         return last
+    }
+
+    /**
+     * 叫分、加倍可能发生在模型两次调用之间,工具没看见;连着几帧没手牌、又出现手牌,就当新发了一手,
+     * 上一手的历史(和打了一半不接的标记)作废,按头一帧的张数重新定接不接。
+     */
+    private fun dealt(turn: Turn, view: DdzView) {
+        if (view.handCount == 0 && view.phase == DdzPhase.Other) { turn.noHand++; return }
+        if (turn.noHand >= NEW_HAND_GAP) {
+            turn.tracker = null
+            turn.expectedHand = null
+            turn.joining = true
+        }
+        turn.noHand = 0
     }
 
     /** 把这一帧喂给这一局的出牌历史;叫分时还没开局,换一局重新记。 */

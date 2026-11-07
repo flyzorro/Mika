@@ -345,6 +345,25 @@ class PhoneDdzTurnTest {
         }
     }
 
+    @Test fun aNewDealAfterAHalfPlayedHandIsFollowedAgain() = runTest {
+        val saved = PhoneDdzTurn.advise
+        try {
+            PhoneDdzTurn.advise = { _, _ -> """{"play":[]}""" }
+            val half = full("vd_stage_leftpass_rightQQQ6")
+            val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(half, half, fullBlank)))
+            val dispatcher = toolDispatcher(game)
+            fun args(json: String) = Args(PhoneDdzTurn.def, Json.parseToJsonElement(json).jsonObject)
+            assertEquals("joined_mid_game", PhoneDdzTurn.execute(args("""{"action":"start","advisor":"http://mac:3426"}"""), dispatcher.ctx).text("douzeroOff"))
+            // 这一手打完、桌上空了一阵,叫分在两次调用之间过去了:新发的 17 张接得上
+            game.frames.addAll(List(10) { fullBlank } + listOf(full("vd_hand_follow"), fullBlank))
+            PhoneDdzTurn.execute(args("""{"action":"wait"}"""), dispatcher.ctx)
+            val next = PhoneDdzTurn.execute(args("""{"action":"wait"}"""), dispatcher.ctx)
+            assertFalse(next.toString().contains("joined_mid_game"))
+        } finally {
+            PhoneDdzTurn.advise = saved
+        }
+    }
+
     @Test fun continuingIntoAFreshHandLetsDouZeroFollow() = runTest {
         val saved = PhoneDdzTurn.advise
         try {
