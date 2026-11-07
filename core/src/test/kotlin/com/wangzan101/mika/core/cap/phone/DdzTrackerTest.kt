@@ -63,6 +63,7 @@ class DdzTrackerTest {
         tracker.mine(listOf("4"))
         right = DdzSeen.Cards(listOf("6"))
         left = DdzSeen.Cards(listOf("7"))
+        see(null) // 我的按钮没了,两家的闹钟都没赶上
         see(DdzSeat.Me) // 闹钟从我这里转了一圈又回来:右、左都出完了
         assertEquals(listOf(listOf("4"), listOf("6"), listOf("7")), tracker.history)
     }
@@ -144,12 +145,30 @@ class DdzTrackerTest {
         assertTrue(tracker.ready())
     }
 
+    @Test fun myButtonsLingeringRightAfterIPlayAreNotMyNextTurn() {
+        tracker.observe(DdzSeat.Me, { DdzSeen.Empty }, { bottom }, leadingWith20 = true, leading = true)
+        tracker.mine(listOf("9", "10", "J", "Q", "K"))
+        // 出牌按钮还留在画面上、两家的牌还没出:不能当成两家都不要、又轮到我
+        repeat(3) { tracker.observe(DdzSeat.Me, { DdzSeen.Empty }, { bottom }, leading = true) }
+        assertEquals(1, tracker.history.size)
+        assertFalse(tracker.ready())
+        // 右家出了更大的顺子,左家不要,这才轮到我
+        right = DdzSeen.Cards("A K Q J 10".split(' '))
+        left = DdzSeen.Pass
+        see(DdzSeat.Right)
+        see(DdzSeat.Me)
+        assertEquals(listOf("A", "K", "Q", "J", "10"), tracker.history[1])
+        assertEquals(emptyList<String>(), tracker.history[2])
+        assertTrue(tracker.ready())
+    }
+
     @Test fun aGuessedCardIsOnlyTrustedFromTheLandlord() {
         // 我是地主,左家是农民:他那张认不准的不能按猜的补
         tracker.observe(DdzSeat.Me, { DdzSeen.Empty }, { bottom }, leadingWith20 = true, leading = true)
         tracker.mine(listOf("9"))
         right = DdzSeen.Pass
         left = DdzSeen.Cards(listOf("?4,K,J"))
+        see(null)
         repeat(10) { see(DdzSeat.Me) }
         assertEquals("unsure_left", tracker.broken)
     }
@@ -158,6 +177,7 @@ class DdzTrackerTest {
         // 地主是我,先出的顺子没人要;闯关的牌桌清了桌,两家的「不出」都没留下
         tracker.observe(DdzSeat.Me, { DdzSeen.Empty }, { bottom }, leadingWith20 = true, leading = true)
         tracker.mine(listOf("5", "6", "7", "8", "9"))
+        see(DdzSeat.Right)
         tracker.observe(DdzSeat.Me, { DdzSeen.Empty }, { bottom }, leading = true)
         assertNull(tracker.broken)
         assertTrue(tracker.ready())

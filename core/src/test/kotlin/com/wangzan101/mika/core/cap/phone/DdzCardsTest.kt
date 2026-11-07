@@ -80,6 +80,10 @@ class DdzCardsTest {
         // 右家单出一张 10(两位数,比别的点数宽);左家地主的 Q 压着绶带
         val ten = frame("vd_stage_right10_leftQ")
         assertEquals(DdzSeen.Cards(listOf("10")), DdzCards.play(ten, DdzSide.Right))
+        // 右家出的顺子 10-A,不是「不出」
+        val straight = frame("vd_stage_right_straight_leftpass")
+        assertEquals(DdzSeen.Cards("A K Q J 10".split(' ')), DdzCards.play(straight, DdzSide.Right))
+        assertEquals(DdzSeen.Pass, DdzCards.play(straight, DdzSide.Left))
         // 叫完地主在正中翻开的三张底牌,不是谁出的牌
         val reveal = frame("vd_stage_bottom_reveal")
         assertEquals(DdzSeen.Empty, DdzCards.play(reveal, DdzSide.Left))

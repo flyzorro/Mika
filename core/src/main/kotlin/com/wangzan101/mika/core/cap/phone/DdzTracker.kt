@@ -23,6 +23,8 @@ internal class DdzTracker {
 
     private var active: DdzSeat? = null
     private var firstUnsure = 0
+    /** 自己出完以后见过不是自己的回合了没有:刚按下出牌,按钮还会在画面上留几帧,那不是又轮到自己。 */
+    private var leftMe = true
     /** 出完了、还没读到他出了什么的几家,按出牌顺序。 */
     private val waiting = ArrayDeque<Pair<DdzSeat, Int>>()
 
@@ -65,6 +67,8 @@ internal class DdzTracker {
         }
         // 轮到自己先出,说明上一轮最后出牌的是自己、后面两家都没要;闯关的牌桌一轮结束就清桌,连「不出」都不留
         val seen = if (leading) { side: DdzSide -> read(side).let { if (it == DdzSeen.Empty) DdzSeen.Pass else it } } else read
+        if (turn != DdzSeat.Me) leftMe = true
+        if (turn == DdzSeat.Me && !leftMe) return
         resolve(seen)
         if (turn == null || turn == active) return
         val from = active ?: return
@@ -84,6 +88,7 @@ internal class DdzTracker {
         if (active != DdzSeat.Me) return fail("not_my_turn")
         if (waiting.isNotEmpty()) return fail("unread_before_me")
         history += cards
+        leftMe = false
         // 出完就轮到下家:两家出得太快、闹钟又回到我这里时,才看得出中间那两手
         active = DdzSeat.Me.next
     }
