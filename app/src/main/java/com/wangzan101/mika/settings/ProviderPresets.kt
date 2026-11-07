@@ -85,6 +85,8 @@ object ProviderPresets {
         // 自己机器上跑的:地址是本机的默认端口,跑在电脑上时改成电脑的局域网地址;不要 Key
         ProviderPreset("Ollama", ProviderConfig.Kind.OpenAiCompat, "http://127.0.0.1:11434/v1", caps(), selfHosted = true),
         ProviderPreset("LM Studio", ProviderConfig.Kind.OpenAiCompat, "http://127.0.0.1:1234/v1", caps(), selfHosted = true),
+        // 本地网关,一个地址转发用户在 Magpie 里配好的各家模型;跑在别的机器上时要填那边的网关 Key
+        ProviderPreset("Magpie", ProviderConfig.Kind.OpenAiCompat, "http://127.0.0.1:3425/v1", caps(), selfHosted = true),
         ProviderPreset("自定义", ProviderConfig.Kind.OpenAiCompat, "", caps()),
     )
 
