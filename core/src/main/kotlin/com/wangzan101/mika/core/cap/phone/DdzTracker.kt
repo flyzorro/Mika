@@ -95,7 +95,10 @@ internal class DdzTracker {
         while (waiting.isNotEmpty()) {
             val (seat, tries) = waiting.first()
             when (val seen = read(if (seat == DdzSeat.Left) DdzSide.Left else DdzSide.Right)) {
-                is DdzSeen.Cards -> history += seen.ranks
+                // 只有地主的牌压着绶带;农民的牌认不准就是认不准,不能按猜的补
+                is DdzSeen.Cards -> if (seat != landlord && seen.ranks.any { it.startsWith(DdzCards.UNKNOWN) }) {
+                    return fail("unsure_${seat.name.lowercase()}")
+                } else history += seen.ranks
                 DdzSeen.Pass -> history += emptyList<String>()
                 DdzSeen.Unsure -> return fail("unsure_${seat.name.lowercase()}")
                 // 牌还在飞过来:下一帧再读,读几次都空就算漏了

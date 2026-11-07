@@ -116,6 +116,16 @@ class DdzTrackerTest {
         assertEquals("unread_right", tracker.broken)
     }
 
+    @Test fun aGuessedCardIsOnlyTrustedFromTheLandlord() {
+        // 我是地主,左家是农民:他那张认不准的不能按猜的补
+        tracker.observe(DdzSeat.Me, { DdzSeen.Empty }, { bottom }, leadingWith20 = true, leading = true)
+        tracker.mine(listOf("9"))
+        right = DdzSeen.Pass
+        left = DdzSeen.Cards(listOf("?4,K,J"))
+        see(DdzSeat.Me)
+        assertEquals("unsure_left", tracker.broken)
+    }
+
     @Test fun whenILeadAgainTheClearedTableMeansBothPassed() {
         // 地主是我,先出的顺子没人要;闯关的牌桌清了桌,两家的「不出」都没留下
         tracker.observe(DdzSeat.Me, { DdzSeen.Empty }, { bottom }, leadingWith20 = true, leading = true)
