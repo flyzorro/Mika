@@ -85,10 +85,10 @@ internal object DdzScreen {
         return view(DdzPhase.Other, emptyList())
     }
 
-    private fun pitch(frame: RawFrame): Int {
-        val blackBar = (0 until frame.width).firstOrNull { frame.pixel(it, HAND_ROW) and 0xffffff > 0x101010 } ?: 0
-        return (BASE_PITCH * (frame.width - blackBar) / BASE_CONTENT_WIDTH).roundToInt()
-    }
+    private fun pitch(frame: RawFrame): Int = (BASE_PITCH * (frame.width - blackBar(frame)) / BASE_CONTENT_WIDTH).roundToInt()
+
+    /** 主屏左边留的黑边宽度;Mika 的屏没有。 */
+    fun blackBar(frame: RawFrame): Int = (0 until frame.width).firstOrNull { frame.pixel(it, HAND_ROW) and 0xffffff > 0x101010 } ?: 0
 
     private fun hand(frame: RawFrame, pitch: Int): Pair<Int, Int> {
         val span = runs(frame.width, gap = 70, minWidth = 150) { isCard(frame.pixel(it, HAND_ROW)) }
@@ -123,7 +123,7 @@ internal object DdzScreen {
         return minOf(r, g, b) > 140 && maxOf(r, g, b) - minOf(r, g, b) < 40
     }
 
-    private inline fun runs(width: Int, gap: Int, minWidth: Int, hit: (Int) -> Boolean): List<IntRange> {
+    inline fun runs(width: Int, gap: Int, minWidth: Int, hit: (Int) -> Boolean): List<IntRange> {
         val found = mutableListOf<IntRange>()
         var start = -1
         var last = -1

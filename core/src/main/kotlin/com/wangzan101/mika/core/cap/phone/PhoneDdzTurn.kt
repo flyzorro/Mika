@@ -38,7 +38,33 @@ internal object PhoneDdzTurn : PhoneTool {
     /** 这一手过了这么久就不再问模型,直接保底,免得倒计时走完。 */
     private const val RETRY_BUDGET_MS = 8_000L
 
-    private class Turn { var seenAt: Long? = null; var rejected = 0 }
+    /**
+     * [single]:这一局是确认过的单机局(见 [markSingle]),只有它为真才让 DouZero 出牌,真人局不用。
+     * [advisor]:DouZero 服务地址。[tracker]:这一局的出牌历史;记不下去了这一局剩下的交还模型。
+     */
+    private class Turn {
+        var seenAt: Long? = null
+        var rejected = 0
+        var single = false
+        var advisor: String? = null
+        var tracker: DdzTracker? = null
+        val decisions = mutableListOf<Long>()
+    }
+
+    /** 记下这是单机局、DouZero 在哪;回到大厅或换了 App 由调用方清掉。 */
+    internal fun markSingle(ctx: ToolContext, advisor: String) {
+        val turn = ctx[STATE] ?: Turn().also { ctx[STATE] = it }
+        turn.single = true
+        turn.advisor = advisor
+    }
+
+    /** 测试用:换上一段已经记好的出牌历史。 */
+    internal fun useTracker(ctx: ToolContext, tracker: DdzTracker) {
+        (ctx[STATE] ?: Turn().also { ctx[STATE] = it }).tracker = tracker
+    }
+
+    /** 问 DouZero;测试里换掉。返回响应正文,连不上为 null。 */
+    internal var advise: suspend (url: String, body: String) -> String? = { url, body -> DdzAdvisor.post(url, body) }
 
     override val verb = Verb.PhoneGame
     override val risk = Risk.Write
@@ -71,7 +97,7 @@ internal object PhoneDdzTurn : PhoneTool {
         val tapMs = now() - tapStart
         val waitStart = now()
         val next = when {
-            move.moved || action == "wait" -> awaitDecision(ctx, view.phase, move.moved, if (action == "again") AGAIN_POLLS else MAX_POLLS)
+            move.moved || action == "wait" -> awaitDecision(ctx, turn, view.phase, move.moved, if (action == "again") AGAIN_POLLS else MAX_POLLS)
             else -> read(ctx) ?: view
         }
         val waitMs = now() - waitStart
@@ -87,6 +113,13 @@ internal object PhoneDdzTurn : PhoneTool {
             move.note?.let { put("note", it) }
             put("phase", next.phase.name.lowercase())
             put("handCount", next.handCount)
+            if (turn.decisions.isNotEmpty()) {
+                // DouZero 这次替模型打了几手、每手从轮到自己到牌出去花了多久
+                put("autoPlayed", turn.decisions.size)
+                put("autoMs", JsonArray(turn.decisions.map(::JsonPrimitive)))
+                turn.decisions.clear()
+            }
+            turn.tracker?.broken?.let { put("douzeroOff", it) }
             put("timing", buildJsonObject {
                 put("thinkMs", thinkMs); put("tapMs", tapMs); put("waitMs", waitMs); put("shotMs", shotMs)
             })
@@ -198,14 +231,20 @@ internal object PhoneDdzTurn : PhoneTool {
         return read(ctx) ?: view
     }
 
-    /** 等到又该玩家决定;[moved] 刚动过手时,同一阶段要先离开过才算新的一手。托管了就取消。 */
-    private suspend fun awaitDecision(ctx: ToolContext, from: DdzPhase, moved: Boolean, polls: Int): DdzView {
+    /**
+     * 等到又该玩家决定;[moved] 刚动过手时,同一阶段要先离开过才算新的一手。托管了就取消。
+     * 单机局里每一帧也喂给出牌历史;轮到自己出牌、历史又对得上时不交还模型,由 DouZero 出完接着等。
+     */
+    private suspend fun awaitDecision(ctx: ToolContext, turn: Turn, from: DdzPhase, moved: Boolean, polls: Int): DdzView {
         var left = !moved
         var last = DdzView(DdzPhase.Other, emptyList(), 0, 0, 0, emptySet())
-        repeat(polls) {
-            val view = read(ctx)
+        var budget = polls
+        while (budget-- > 0) {
+            val frame = ctx.screen.rawFrame(if (turn.single) FULL_ROWS else DdzScreen.ROWS)
+            val view = frame?.let(DdzScreen::read)
             if (view != null) {
                 last = view
+                if (turn.single) track(turn, frame, view)
                 when (view.phase) {
                     DdzPhase.AutoPlay -> {
                         left = true
@@ -214,7 +253,15 @@ internal object PhoneDdzTurn : PhoneTool {
                     }
                     // 加倍只有约 5 秒,模型来不及,让它走完就是不加倍
                     DdzPhase.Other, DdzPhase.Double -> left = true
-                    else -> if (left || view.phase != from) return view
+                    DdzPhase.Result -> {
+                        turn.tracker = null
+                        if (left || view.phase != from) return view
+                    }
+                    else -> if (left || view.phase != from) {
+                        if (!byDouZero(ctx, turn, frame, view)) return view
+                        left = false
+                        budget = polls
+                    }
                 }
             }
             // 用户插了话就不等了:这一手已经做完,模型接着读那句话
@@ -223,7 +270,72 @@ internal object PhoneDdzTurn : PhoneTool {
         return last
     }
 
+    /** 把这一帧喂给这一局的出牌历史;叫分时还没开局,换一局重新记。 */
+    private fun track(turn: Turn, frame: com.wangzan101.mika.core.uistate.RawFrame, view: DdzView) {
+        if (view.phase == DdzPhase.Call) { turn.tracker = null; return }
+        val tracker = turn.tracker ?: DdzTracker().also { turn.tracker = it }
+        val mine = view.phase == DdzPhase.Follow || view.phase == DdzPhase.Lead
+        val seat = if (mine) DdzSeat.Me else when (DdzCards.clock(frame)) {
+            DdzSide.Left -> DdzSeat.Left
+            DdzSide.Right -> DdzSeat.Right
+            null -> null
+        }
+        tracker.observe(seat, { DdzCards.play(frame, it) }, { DdzCards.bottom(frame) })
+    }
+
+    /**
+     * 轮到自己出牌:历史对得上就问 DouZero 出这一手,返回 true 接着等;对不上(读漏、认不准、DouZero 不认这段历史)
+     * 这一手用提示保底、这一局剩下的交还模型,返回 false。
+     */
+    private suspend fun byDouZero(ctx: ToolContext, turn: Turn, frame: com.wangzan101.mika.core.uistate.RawFrame, view: DdzView): Boolean {
+        val tracker = turn.tracker ?: return false
+        val advisor = turn.advisor ?: return false
+        if (!turn.single || tracker.broken != null) return false
+        val started = now()
+        val hand = DdzCards.hand(frame, view)
+        val reason = when {
+            !tracker.ready() -> "history_not_ready"
+            hand == null -> "hand_unreadable"
+            tracker.landlord == DdzSeat.Me && tracker.history.isEmpty() && hand.size != 20 -> "landlord_mismatch"
+            else -> null
+        }
+        val play = if (reason == null) askDouZero(advisor, tracker, hand!!) else null
+        val failure = reason ?: play?.exceptionOrNull()?.message
+        if (failure == null && play != null) {
+            val cards = play.getOrThrow()
+            val done = if (cards.isEmpty()) view.phase == DdzPhase.Follow && press(view.buttons[0], ctx).moved
+            else pick(hand!!, cards)?.let { select(it, ctx) }?.let { confirm(view, ctx) } == true
+            if (done) {
+                tracker.mine(cards)
+                turn.decisions += now() - started
+                return true
+            }
+            tracker.fail("douzero_move_failed")
+        } else tracker.fail(failure ?: "douzero_unknown")
+        // 这一手保底,剩下的交还模型
+        if (view.phase == DdzPhase.Follow) hint(view, ctx) else smallest(view, ctx)
+        return false
+    }
+
+    private suspend fun askDouZero(url: String, tracker: DdzTracker, hand: List<String>): Result<List<String>> {
+        val body = buildJsonObject {
+            put("seat", tracker.seat())
+            put("hand", JsonArray(hand.map(::JsonPrimitive)))
+            put("bottom", JsonArray(tracker.bottom.orEmpty().map(::JsonPrimitive)))
+            put("history", JsonArray(tracker.history.map { m -> JsonArray(m.map(::JsonPrimitive)) }))
+        }.toString()
+        val reply = advise(url, body)?.let { runCatching { kotlinx.serialization.json.Json.parseToJsonElement(it) as? JsonObject }.getOrNull() }
+            ?: return Result.failure(IllegalStateException("douzero_unreachable"))
+        (reply["error"] as? JsonPrimitive)?.contentOrNull?.let { return Result.failure(IllegalStateException("douzero_$it")) }
+        val play = (reply["play"] as? JsonArray)?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull }
+            ?: return Result.failure(IllegalStateException("douzero_bad_reply"))
+        return Result.success(play)
+    }
+
     private suspend fun read(ctx: ToolContext): DdzView? = ctx.screen.rawFrame(DdzScreen.ROWS)?.let(DdzScreen::read)
+
+    /** 单机局里每一帧都要认牌,一次把这些行读全。 */
+    private val FULL_ROWS = (DdzScreen.ROWS + DdzCards.ROWS).distinct()
 
     private fun wrongPhase(phase: DdzPhase) = Move(false, "wrong_phase", phase.name.lowercase())
 

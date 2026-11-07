@@ -12,6 +12,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Assert.assertEquals
@@ -183,6 +184,75 @@ class PhoneDdzTurnTest {
         assertEquals("other", run(game, """{"action":"again"}""").text("phase"))
         assertTrue(testScheduler.currentTime - started <= 10_000)
         assertEquals(1, game.taps.size)
+    }
+
+    /** 左家是地主、出了连对 10 10 9 9 8 8,右家不出,轮到我跟。 */
+    private fun leftLedPairs() = DdzTracker().apply {
+        observe(DdzSeat.Left, { DdzSeen.Empty }, { listOf("J", "7", "4") })
+        observe(DdzSeat.Right, { DdzSeen.Cards("10 10 9 9 8 8".split(' ')) }, { null })
+        observe(DdzSeat.Me, { DdzSeen.Pass }, { null })
+    }
+
+    private fun full(name: String): RawFrame {
+        val image = ImageIO.read(javaClass.getResourceAsStream("/ddz/$name.jpg")!!)
+        return RawFrame(image.width, image.height, (DdzScreen.ROWS + DdzCards.ROWS).distinct().associateWith { image.getRGB(0, it, image.width, 1, null, 0, image.width) })
+    }
+
+    private val fullBlank = RawFrame(2412, 1080, (DdzScreen.ROWS + DdzCards.ROWS).distinct().associateWith { IntArray(2412) })
+
+    @Test fun aSingleGameLetsDouZeroPlayAndKeepsGoing() = runTest {
+        val asked = mutableListOf<String>()
+        val saved = PhoneDdzTurn.advise
+        PhoneDdzTurn.advise = { _, body -> asked += body; """{"play":[]}""" }
+        try {
+            val follow = full("hand_t1")
+            val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(follow, follow, fullBlank, full("result"))))
+            val dispatcher = toolDispatcher(game)
+            PhoneDdzTurn.markSingle(dispatcher.ctx, "http://mac:3426")
+            PhoneDdzTurn.useTracker(dispatcher.ctx, leftLedPairs())
+            val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"wait"}""").jsonObject), dispatcher.ctx)
+            assertEquals("result", result.text("phase"))
+            assertEquals("1", result.text("autoPlayed"))
+            val body = Json.parseToJsonElement(asked.single()).jsonObject
+            assertEquals("landlord_up", body["seat"]!!.jsonPrimitive.content)
+            assertEquals("SJ 2 2 2 A A A A Q J 10 9 9 8 7 3 3".split(' '), body["hand"]!!.jsonArray.map { it.jsonPrimitive.content })
+            assertEquals(2, body["history"]!!.jsonArray.size)
+            assertEquals("DouZero 说不出就按不出", DdzScreen.read(follow).buttons[0].let { it.x to it.y }, game.taps.single())
+        } finally {
+            PhoneDdzTurn.advise = saved
+        }
+    }
+
+    @Test fun withoutTheSingleMarkDouZeroIsNeverAsked() = runTest {
+        val saved = PhoneDdzTurn.advise
+        PhoneDdzTurn.advise = { _, _ -> error("must not ask") }
+        try {
+            val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(full("hand_t1"))))
+            val dispatcher = toolDispatcher(game)
+            PhoneDdzTurn.useTracker(dispatcher.ctx, leftLedPairs())
+            val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"wait"}""").jsonObject), dispatcher.ctx)
+            assertEquals("follow", result.text("phase"))
+            assertTrue(game.taps.isEmpty())
+        } finally {
+            PhoneDdzTurn.advise = saved
+        }
+    }
+
+    @Test fun whenDouZeroRefusesTheHistoryThisHandIsHintedAndTheModelTakesOver() = runTest {
+        val saved = PhoneDdzTurn.advise
+        PhoneDdzTurn.advise = { _, _ -> """{"error":"history_mismatch"}""" }
+        try {
+            val follow = full("hand_t1")
+            val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(follow, follow, follow)))
+            val dispatcher = toolDispatcher(game)
+            PhoneDdzTurn.markSingle(dispatcher.ctx, "http://mac:3426")
+            PhoneDdzTurn.useTracker(dispatcher.ctx, leftLedPairs())
+            val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"wait"}""").jsonObject), dispatcher.ctx)
+            assertEquals("douzero_history_mismatch", result.text("douzeroOff"))
+            assertEquals("先按提示", DdzScreen.read(follow).buttons[1].let { it.x to it.y }, game.taps.first())
+        } finally {
+            PhoneDdzTurn.advise = saved
+        }
     }
 
     @Test fun pickMapsRanksToDistinctCards() {
