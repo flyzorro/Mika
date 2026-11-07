@@ -36,8 +36,7 @@ internal object PhoneDdzTurn : PhoneTool {
     private const val QUICK_START_X = 2140
     private const val QUICK_START_Y = 995
     /** Mika 屏上闯关页的报名。 */
-    private const val SIGN_UP_X = 1204
-    private const val SIGN_UP_Y = 920
+    private const val STAGE_BUTTON_Y = 920
     private const val AUTO_CANCEL_MS = 600L
     /** 轮到自己时别家的牌还没落下最多再等几帧(约 1.2 秒,倒计时有 15 秒)。 */
     private const val SETTLE_POLLS = 8
@@ -168,16 +167,18 @@ internal object PhoneDdzTurn : PhoneTool {
         // 已经坐在闯关的牌桌上(报完名才问到这个工具):还在叫分、加倍就从这里接,出过牌了历史接不上
         val seated = DdzCards.singleStageTable(page)
         if (seated && DdzScreen.read(page).phase !in setOf(DdzPhase.Call, DdzPhase.Double)) return refused("game_already_started")
+        val stage = if (DdzCards.singleStage(page)) DdzCards.stageButton(page) ?: return refused("no_stage_button") else null
         val tap = when {
             seated -> null
             DdzCards.singleLobby(page) -> QUICK_START_X to QUICK_START_Y
-            DdzCards.singleStage(page) -> SIGN_UP_X to SIGN_UP_Y
+            stage != null -> stage.first to STAGE_BUTTON_Y
             else -> return refused("not_single_player_lobby")
         }
         if (tap != null && !ctx.screen.quickTap(tap.first, tap.second)) return refused("tap_failed")
         markSingle(ctx, advisor)
         turn.atTable = seated
-        turn.tracker = null
+        // 继续闯关可能回到打了一半的一手:没看到开头,这一手不交给 DouZero,下一次叫分重新记
+        turn.tracker = if (stage?.second == true) DdzTracker().apply { fail("joined_mid_game") } else null
         val next = awaitDecision(ctx, turn, DdzPhase.Other, moved = true, polls = AGAIN_POLLS)
         turn.seenAt = now()
         return ToolExecution(buildJsonObject {

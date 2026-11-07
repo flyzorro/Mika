@@ -292,7 +292,17 @@ class PhoneDdzTurnTest {
     @Test fun startAlsoSignsUpOnTheSinglePlayerStagePage() = runTest {
         val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(lobbyFrame("vd_stage"), fullBlank, full("call"))))
         assertEquals("true", run(game, """{"action":"start","advisor":"http://mac:3426"}""").text("ok"))
-        assertEquals("只点了报名", listOf(1204 to 920), game.taps)
+        assertEquals("只点了报名", 1, game.taps.size)
+        assertTrue(game.taps[0].first in 1150..1250 && game.taps[0].second == 920)
+    }
+
+    @Test fun startContinuesAStageButNeverGivesItUp() = runTest {
+        assertTrue(DdzCards.singleStage(lobbyFrame("vd_stage_continue")))
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(lobbyFrame("vd_stage_continue"), fullBlank, full("call"))))
+        assertEquals("true", run(game, """{"action":"start","advisor":"http://mac:3426"}""").text("ok"))
+        // 绿色的继续闯关在 710-1144,蓝色的放弃闯关从 1250 起
+        assertEquals(1, game.taps.size)
+        assertTrue(game.taps[0].first in 850..1000)
     }
 
     @Test fun waitingInTheLobbyReturnsAtOnce() = runTest {

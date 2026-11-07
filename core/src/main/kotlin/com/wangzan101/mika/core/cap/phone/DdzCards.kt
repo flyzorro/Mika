@@ -98,7 +98,8 @@ internal object DdzCards {
     }
 
     /** 认大厅、闯关页要读的行。 */
-    val LOBBY_ROWS: List<Int> = ((5 until 105) + (885 until 925)).toList()
+    val LOBBY_ROWS: List<Int> = ((5 until 105) + (885 until 925) + STAGE_BUTTON_ROW).toList()
+    private const val STAGE_BUTTON_ROW = 950
 
     private val lobbyRibbon by lazy { mark("/ddz/lobby.txt") }
     private val stageTitle by lazy { mark("/ddz/stage.txt") }
@@ -114,6 +115,19 @@ internal object DdzCards {
 
     /** 是不是单机模式里的闯关页(左上角写着「闯关模式」,报名首次免费、过关奖励金币)。同样只认 Mika 的屏。 */
     fun singleStage(frame: RawFrame): Boolean = matches(frame, 190, 60, 255, 45, stageTitle, STAGE_SLACK) { min(it) > 200 }
+
+    /**
+     * 闯关页上该点的按钮中线横坐标:没报名时是黄色的「报名」,闯到一半是绿色的「继续闯关」(第二个为 true)。
+     * 它右边蓝色的是「放弃闯关」,绝不点。两个都找不到为 null。
+     */
+    fun stageButton(frame: RawFrame): Pair<Int, Boolean>? {
+        fun at(hit: (Int, Int, Int) -> Boolean) = DdzScreen.runs(frame.width, gap = 30, minWidth = 300) { x ->
+            val p = frame.pixel(x, STAGE_BUTTON_ROW)
+            hit(p shr 16 and 0xff, p shr 8 and 0xff, p and 0xff)
+        }.singleOrNull()?.let { (it.first + it.last) / 2 }
+        at { r, g, b -> r > 225 && g in 131..214 && b < 120 }?.let { return it to false }
+        return at { r, g, b -> g > 150 && r < 140 && b < 120 }?.let { it to true }
+    }
 
     /** 是不是闯关的牌桌(右上角写着「闯关模式」):闯关只在单机模式里有。同样只认 Mika 的屏。 */
     fun singleStageTable(frame: RawFrame): Boolean = matches(frame, 1830, 8, 190, 52, stageTableTitle, STAGE_SLACK) { min(it) > 200 }
