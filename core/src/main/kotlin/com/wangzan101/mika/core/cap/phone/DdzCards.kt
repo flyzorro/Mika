@@ -213,8 +213,11 @@ internal object DdzCards {
         if (top < 0) return null
         // 牌面贴着区域底边时探测行不能越出读到的行;闯关的大牌中间可能是王的图案,量宽度要到牌的下沿附近
         val bottom = (top - y0 until rich.size).firstOrNull { !rich[it] }?.let { y0 + it } ?: y1
-        val probe = if (probeNearBottom) bottom - 10 else minOf(top + minRows, y1 - 1)
-        val span = DdzScreen.runs(right - x0, gap = 12, minWidth = 40) { white(x0 + it, probe) }.maxByOrNull { it.last - it.first } ?: return null
+        // 闯关的牌上会压着「顺子」「炸弹」这类特效,只量一行会量短:牌顶下面一点(点数还没开始)和下沿附近都量,取最宽的
+        val probes = if (probeNearBottom) listOf(top + 5, bottom - 10, bottom - 30) else listOf(minOf(top + minRows, y1 - 1))
+        val span = probes.mapNotNull { probe ->
+            DdzScreen.runs(right - x0, gap = 12, minWidth = 40) { white(x0 + it, probe) }.maxByOrNull { it.last - it.first }
+        }.maxByOrNull { it.last - it.first } ?: return null
         val n = ((span.last - span.first + 1 - width) / pitch).roundToInt() + 1
         if (n !in 1..20) return null
         return (0 until n).map { i ->

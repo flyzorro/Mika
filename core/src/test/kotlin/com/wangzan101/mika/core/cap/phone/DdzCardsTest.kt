@@ -87,6 +87,8 @@ class DdzCardsTest {
         // 右家新一轮先出的顺子;左家的「不出」是上一轮留下的
         val lead = frame("vd_stage_right_lead76543")
         assertEquals(DdzSeen.Cards("7 6 5 4 3".split(' ')), DdzCards.play(lead, DdzSide.Right))
+        // 七张的顺子,右下角压着「顺子」特效字
+        assertEquals(DdzSeen.Cards("Q J 10 9 8 7 6".split(' ')), DdzCards.play(frame("vd_stage_right_straight7_effect"), DdzSide.Right))
         // 叫完地主在正中翻开的三张底牌,不是谁出的牌
         val reveal = frame("vd_stage_bottom_reveal")
         assertEquals(DdzSeen.Empty, DdzCards.play(reveal, DdzSide.Left))

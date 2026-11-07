@@ -410,15 +410,22 @@ internal object PhoneDdzTurn : PhoneTool {
         val failure = reason ?: play?.exceptionOrNull()?.message
         if (failure == null && play != null) {
             val cards = play.getOrThrow()
-            val done = if (cards.isEmpty()) view.phase == DdzPhase.Follow && press(view.buttons[0], ctx).moved
-            else pick(hand!!, cards)?.let { select(it, ctx) }?.let { confirm(view, ctx) } == true
+            // 哪一步没成:没认出要的牌、抬不起来,还是按了出牌游戏不认
+            val stuck = when {
+                cards.isEmpty() -> if (view.phase == DdzPhase.Follow && press(view.buttons[0], ctx).moved) null else "pass"
+                else -> when (val want = pick(hand!!, cards)) {
+                    null -> "pick"
+                    else -> if (select(want, ctx) == null) "select" else if (!confirm(view, ctx)) "confirm" else null
+                }
+            }
+            val done = stuck == null
             if (done) {
                 tracker.mine(cards)
                 turn.expectedHand = hand!!.toMutableList().apply { cards.forEach { remove(it) } }
                 turn.decisions += now() - started
                 return Auto.Played
             }
-            tracker.fail("douzero_move_failed")
+            tracker.fail("douzero_move_failed_$stuck")
         } else tracker.fail(failure ?: "douzero_unknown")
         // 这一手保底,剩下的交还模型
         if (view.phase == DdzPhase.Follow) hint(view, ctx) else smallest(view, ctx)
