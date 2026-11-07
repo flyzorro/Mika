@@ -22,6 +22,7 @@ internal class DdzTracker {
         private set
 
     private var active: DdzSeat? = null
+    private var firstUnsure = 0
     /** 出完了、还没读到他出了什么的几家,按出牌顺序。 */
     private val waiting = ArrayDeque<Pair<DdzSeat, Int>>()
 
@@ -47,8 +48,11 @@ internal class DdzTracker {
             }
             for (side in DdzSide.entries) {
                 val seen = read(side)
-                // 地主的第一手认不准:不能等下一家,否则会把下一家当成地主
-                if (seen == DdzSeen.Unsure) return fail("unsure_first_play")
+                // 地主的第一手认不准:可能还在飞,等几帧;一直认不准就停,不能跳过去等下一家,否则会把下一家当成地主
+                if (seen == DdzSeen.Unsure) {
+                    if (++firstUnsure >= READ_TRIES) fail("unsure_first_play")
+                    return
+                }
                 if (seen !is DdzSeen.Cards) continue
                 val seat = if (side == DdzSide.Left) DdzSeat.Left else DdzSeat.Right
                 landlord = seat
@@ -100,16 +104,15 @@ internal class DdzTracker {
     private fun resolve(read: (DdzSide) -> DdzSeen) {
         while (waiting.isNotEmpty()) {
             val (seat, tries) = waiting.first()
-            when (val seen = read(if (seat == DdzSeat.Left) DdzSide.Left else DdzSide.Right)) {
-                // 只有地主的牌压着绶带;农民的牌认不准就是认不准,不能按猜的补
-                is DdzSeen.Cards -> if (seat != landlord && seen.ranks.any { it.startsWith(DdzCards.UNKNOWN) }) {
-                    return fail("unsure_${seat.name.lowercase()}")
-                } else history += seen.ranks
-                DdzSeen.Pass -> history += emptyList<String>()
-                DdzSeen.Unsure -> return fail("unsure_${seat.name.lowercase()}")
-                // 牌还在飞过来:下一帧再读,读几次都空就算漏了
-                DdzSeen.Empty -> {
-                    if (tries <= 1) return fail("unread_${seat.name.lowercase()}")
+            val seen = read(if (seat == DdzSeat.Left) DdzSide.Left else DdzSide.Right)
+            // 只有地主的牌压着绶带;农民的牌带着猜的那一张就是没认准
+            val guessed = seen is DdzSeen.Cards && seat != landlord && seen.ranks.any { it.startsWith(DdzCards.UNKNOWN) }
+            when {
+                seen is DdzSeen.Cards && !guessed -> history += seen.ranks
+                seen == DdzSeen.Pass -> history += emptyList<String>()
+                // 牌还在飞过来(空着,或者正在落下认不准):下一帧再读,读几次还不行才算漏了、认不准
+                else -> {
+                    if (tries <= 1) return fail("${if (seen == DdzSeen.Empty) "unread" else "unsure"}_${seat.name.lowercase()}")
                     waiting[0] = seat to tries - 1
                     return
                 }

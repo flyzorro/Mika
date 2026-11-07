@@ -78,6 +78,9 @@ class DdzTrackerTest {
     @Test fun anUnreadableFirstPlayIsNotPinnedOnTheNextSeat() {
         right = DdzSeen.Unsure
         see(DdzSeat.Left)
+        // 还在飞的话等几帧;一直认不准就停
+        assertNull(tracker.broken)
+        repeat(10) { see(DdzSeat.Left) }
         left = DdzSeen.Cards(listOf("5"))
         see(DdzSeat.Me)
         assertNull(tracker.landlord)
@@ -102,8 +105,23 @@ class DdzTrackerTest {
         tracker.mine(listOf("4"))
         right = DdzSeen.Unsure
         see(DdzSeat.Left)
+        // 正在落下的牌一时认不准:再读几帧
+        assertNull(tracker.broken)
+        repeat(10) { see(DdzSeat.Left) }
         assertEquals("unsure_right", tracker.broken)
         assertFalse(tracker.ready())
+    }
+
+    @Test fun aCardStillLandingIsReadOnceItSettles() {
+        left = DdzSeen.Cards(listOf("3"))
+        see(DdzSeat.Me)
+        tracker.mine(listOf("4"))
+        right = DdzSeen.Unsure
+        see(DdzSeat.Left)
+        right = DdzSeen.Cards(listOf("10"))
+        see(DdzSeat.Left)
+        assertNull(tracker.broken)
+        assertEquals(listOf(listOf("3"), listOf("4"), listOf("10")), tracker.history)
     }
 
     @Test fun aMoveNeverSeenStopsAfterAFewFrames() {
@@ -132,7 +150,7 @@ class DdzTrackerTest {
         tracker.mine(listOf("9"))
         right = DdzSeen.Pass
         left = DdzSeen.Cards(listOf("?4,K,J"))
-        see(DdzSeat.Me)
+        repeat(10) { see(DdzSeat.Me) }
         assertEquals("unsure_left", tracker.broken)
     }
 

@@ -77,6 +77,9 @@ class DdzCardsTest {
         assertEquals(DdzSeen.Empty, DdzCards.play(clock, DdzSide.Left))
         assertEquals(DdzSeen.Empty, DdzCards.play(clock, DdzSide.Right))
         assertEquals(DdzSide.Right, DdzCards.clock(clock))
+        // 右家单出一张 10(两位数,比别的点数宽);左家地主的 Q 压着绶带
+        val ten = frame("vd_stage_right10_leftQ")
+        assertEquals(DdzSeen.Cards(listOf("10")), DdzCards.play(ten, DdzSide.Right))
         // 叫完地主在正中翻开的三张底牌,不是谁出的牌
         val reveal = frame("vd_stage_bottom_reveal")
         assertEquals(DdzSeen.Empty, DdzCards.play(reveal, DdzSide.Left))
