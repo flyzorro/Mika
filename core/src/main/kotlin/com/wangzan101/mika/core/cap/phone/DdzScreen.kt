@@ -31,6 +31,9 @@ internal data class DdzView(
  * 认不出的一律 [DdzPhase.Other],调用方不会去点。
  */
 internal object DdzScreen {
+    /** 要不起:跟牌时只剩一个不出。 */
+    fun onlyPass(view: DdzView): Boolean = view.phase == DdzPhase.Follow && view.buttons.size == 1
+
     /** 牌宽不随屏幕变;间距跟着画面内容的宽度走:主屏左边留黑边,内容宽 2292,间距 96;Mika 的屏铺满,间距 101。 */
     const val CARD_WIDTH = 222
     private const val BASE_PITCH = 96.0
@@ -99,6 +102,8 @@ internal object DdzScreen {
         return when {
             row.size == 3 && blue && row[2].color == DdzColor.Green -> DdzPhase.Double
             row.size == 3 && blue -> DdzPhase.Follow
+            // 闯关里要不起时只剩一个蓝色的不出
+            row.size == 1 && blue -> DdzPhase.Follow
             row.size == 1 && !blue -> DdzPhase.Lead
             row.size == 4 && blue -> DdzPhase.Call
             else -> null

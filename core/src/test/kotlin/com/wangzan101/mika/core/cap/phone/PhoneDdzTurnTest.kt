@@ -309,6 +309,10 @@ class PhoneDdzTurnTest {
         assertFalse(DdzCards.singleStage(lobbyFrame("vd_lobby")))
         assertFalse(DdzCards.singleStage(lobbyFrame("vd_hand_follow")))
         assertFalse(DdzCards.singleLobby(lobbyFrame("vd_stage")))
+        // 救济金弹窗盖着的时候哪个都不算,start 不会点到弹窗上
+        assertFalse(DdzCards.singleLobby(lobbyFrame("vd_relief")))
+        assertFalse(DdzCards.singleStage(lobbyFrame("vd_relief")))
+        assertFalse(DdzCards.singleStageTable(lobbyFrame("vd_relief")))
     }
 
     @Test fun startRefusesAnythingButThatLobby() = runTest {

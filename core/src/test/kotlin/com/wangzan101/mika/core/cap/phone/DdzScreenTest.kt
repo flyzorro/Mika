@@ -2,6 +2,7 @@ package com.wangzan101.mika.core.cap.phone
 
 import com.wangzan101.mika.core.uistate.RawFrame
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import javax.imageio.ImageIO
 
@@ -18,6 +19,9 @@ class DdzScreenTest {
         val stage = DdzScreen.read(frame("vd_stage_call"))
         assertEquals(DdzPhase.Call, stage.phase)
         assertEquals(listOf(DdzColor.Blue, DdzColor.Gray, DdzColor.Gray, DdzColor.Yellow), stage.buttons.map { it.color })
+        val cannotBeat = DdzScreen.read(frame("vd_stage_leftpass_rightQQQ6"))
+        assertEquals(DdzPhase.Follow, cannotBeat.phase)
+        assertTrue(DdzScreen.onlyPass(cannotBeat))
         val lead = DdzScreen.read(frame("vd_stage_lead"))
         assertEquals(DdzPhase.Lead, lead.phase)
         assertEquals(20, lead.handCount)

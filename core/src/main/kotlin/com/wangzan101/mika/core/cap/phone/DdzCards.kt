@@ -40,13 +40,22 @@ internal object DdzCards {
     private const val GUESSES = 3
     /** 手牌的牌顶从这里往下找:闯关牌桌上抬起的牌顶在 582;再往上是按钮。 */
     private const val HAND_TOP = 560
+    /**
+     * 闯关牌桌(只在 Mika 的屏上)的出牌区:牌更大、更靠上,按实测像素取,不随屏宽缩放。牌顶 156、高 189、间距 67.5、宽 130;
+     * 往下 354 起是自己出的牌,所以只读到 400(凑不够 150 行牌面);150 行处也已过了花色,量得出整排的宽。闹钟在对家张数框的里侧。
+     */
+    private const val STAGE_PLAY_Y0 = 130
+    private const val STAGE_PLAY_Y1 = 400
+    private const val STAGE_SCALE = 1.27
+    private val STAGE_LEFT = 470 to 1100
+    private val STAGE_RIGHT = 1300 to 2005
     private const val CONTENT_WIDTH = 2292.0
 
     private val handGlyphs by lazy { load("/ddz/hand.txt", HAND_W * HAND_H) }
     private val tableGlyphs by lazy { load("/ddz/table.txt", TABLE_W * TABLE_H) }
 
     /** 认牌要读的行;只在要认的那一刻读,平时轮询只读 [DdzScreen.ROWS]。 */
-    val ROWS: List<Int> = ((5 until 105) + (220 until 420) + (HAND_TOP until 800)).toList()
+    val ROWS: List<Int> = ((5 until 105) + (STAGE_PLAY_Y0 until 420) + (HAND_TOP until 800)).toList()
 
     /** 手牌从左到右;有一张认不准、或者不是从大到小排的(还在发牌),返回 null。 */
     fun hand(frame: RawFrame, view: DdzView): List<String>? {
@@ -63,10 +72,16 @@ internal object DdzCards {
     /** 一家出牌区:亮着的牌、「不出」,还是空的。地主最后一张右上角压着绶带,认不准时按牌型补。 */
     fun play(frame: RawFrame, side: DdzSide): DdzSeen {
         val (bar, k) = content(frame)
-        val (x0, x1) = if (side == DdzSide.Left) bar + (280 * k).toInt() to bar + (880 * k).toInt()
-        else bar + (1360 * k).toInt() to bar + (1990 * k).toInt()
-        val cards = strip(frame, x0, x1, 220, 420, pitch = 53 * k, width = 103 * k, glyphRows = 60, glyphWidth = (44 * k).toInt(), k = k)
-        if (cards == null) return if (passed(frame, side, bar, k)) DdzSeen.Pass else DdzSeen.Empty
+        val stage = singleStageTable(frame)
+        val cards = if (stage) {
+            val (x0, x1) = if (side == DdzSide.Left) STAGE_LEFT else STAGE_RIGHT
+            strip(frame, x0, x1, STAGE_PLAY_Y0, STAGE_PLAY_Y1, pitch = 67.5, width = 130.0, glyphRows = 76, glyphWidth = 58, k = k * STAGE_SCALE, minRows = 150)
+        } else {
+            val (x0, x1) = if (side == DdzSide.Left) bar + (280 * k).toInt() to bar + (880 * k).toInt()
+            else bar + (1360 * k).toInt() to bar + (1990 * k).toInt()
+            strip(frame, x0, x1, 220, 420, pitch = 53 * k, width = 103 * k, glyphRows = 60, glyphWidth = (44 * k).toInt(), k = k)
+        }
+        if (cards == null) return if (passed(frame, side, bar, k, stage)) DdzSeen.Pass else DdzSeen.Empty
         val ranks = cards.map { it.rank }.toMutableList()
         // 地主出的最后一张右上角压着绶带,常认不准:记成 ?,后面按字形从像到不像带上几个点数(如 ?5,6,9),
         // 由 DouZero 服务按牌规补:只有一种补法就用它,有几种就取头一个说得通的。别的牌认不准就是认不准。
@@ -130,6 +145,14 @@ internal object DdzCards {
     /** 闹钟在谁桌前;在自己这里或者没有为 null。 */
     fun clock(frame: RawFrame): DdzSide? {
         val (bar, k) = content(frame)
+        if (singleStageTable(frame)) {
+            fun gold(x: Int) = count(frame, x, x + 80, 140, 230) { r, g, b -> r > 200 && g in 151..214 && b < 90 }
+            return when {
+                gold(440) >= 300 -> DdzSide.Left
+                gold(1940) >= 300 -> DdzSide.Right
+                else -> null
+            }
+        }
         fun gold(x: Int) = count(frame, x, x + (90 * k).toInt(), 220, 320) { r, g, b -> r > 200 && g in 151..214 && b < 90 }
         return when {
             gold(bar + (310 * k).toInt()) >= 300 -> DdzSide.Left
@@ -138,7 +161,11 @@ internal object DdzCards {
         }
     }
 
-    private fun passed(frame: RawFrame, side: DdzSide, bar: Int, k: Double): Boolean {
+    private fun passed(frame: RawFrame, side: DdzSide, bar: Int, k: Double, stage: Boolean): Boolean {
+        if (stage) {
+            val (x0, x1) = if (side == DdzSide.Left) STAGE_LEFT else STAGE_RIGHT
+            return count(frame, x0, x1, 150, 230) { r, g, b -> minOf(r, g, b) > 235 && maxOf(r, g, b) - minOf(r, g, b) < 25 } >= 300
+        }
         val x = bar + ((if (side == DdzSide.Left) 320 else 1830) * k).toInt()
         return count(frame, x, x + (160 * k).toInt(), 320, 410) { r, g, b -> minOf(r, g, b) > 235 && maxOf(r, g, b) - minOf(r, g, b) < 25 } >= 300
     }

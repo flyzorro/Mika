@@ -213,6 +213,7 @@ internal object PhoneDdzTurn : PhoneTool {
     }
 
     private suspend fun play(a: Args, view: DdzView, ctx: ToolContext, turn: Turn, thinkMs: Long): Move {
+        if (DdzScreen.onlyPass(view)) return press(view.buttons[0], ctx).let { Move(it.moved, it.error, "cannot_beat") }
         val hand = strings(a, "hand")
         val want = pick(hand, strings(a, "play"))
         val error = when {
@@ -236,6 +237,7 @@ internal object PhoneDdzTurn : PhoneTool {
     }
 
     private suspend fun hint(view: DdzView, ctx: ToolContext): Move {
+        if (DdzScreen.onlyPass(view)) return press(view.buttons[0], ctx)
         if (!ctx.screen.quickTap(view.buttons[1].x, view.buttons[1].y)) return Move(false, "tap_failed")
         delay(SETTLE_MS)
         val after = read(ctx) ?: return Move(false, "no_frame")
@@ -255,6 +257,8 @@ internal object PhoneDdzTurn : PhoneTool {
      * 用选牌前的 [view] 里的位置:按钮不动,而选完这一帧可能已经超时、没有按钮了。
      */
     private suspend fun confirm(view: DdzView, ctx: ToolContext): Boolean {
+        // 只剩不出时最后一个按钮就是不出,不能当出牌按
+        if (DdzScreen.onlyPass(view)) return false
         repeat(2) {
             if (!ctx.screen.quickTap(view.buttons.last().x, view.buttons.last().y)) return false
             delay(VERDICT_MS)

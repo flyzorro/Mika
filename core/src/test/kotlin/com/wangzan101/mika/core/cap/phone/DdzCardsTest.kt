@@ -63,6 +63,18 @@ class DdzCardsTest {
         assertEquals(DdzSeen.Cards(listOf("Q")), DdzCards.play(frame, DdzSide.Right))
     }
 
+    @Test fun readsTheBiggerHigherPlaysOnAStageTable() {
+        val frame = frame("vd_stage_leftpass_rightQQQ6")
+        assertEquals(DdzSeen.Pass, DdzCards.play(frame, DdzSide.Left))
+        assertEquals(DdzSeen.Cards("Q Q Q 6".split(' ')), DdzCards.play(frame, DdzSide.Right))
+        assertEquals(null, DdzCards.clock(frame))
+        // 自己刚出的顺子在中间,不算任何一家的;右家的闹钟在他张数框的里侧
+        val clock = frame("vd_stage_right_clock")
+        assertEquals(DdzSeen.Empty, DdzCards.play(clock, DdzSide.Left))
+        assertEquals(DdzSeen.Empty, DdzCards.play(clock, DdzSide.Right))
+        assertEquals(DdzSide.Right, DdzCards.clock(clock))
+    }
+
     @Test fun tellsAPassFromAnEmptyArea() {
         val frame = frame("table_leftpass")
         assertEquals(DdzSeen.Pass, DdzCards.play(frame, DdzSide.Left))
