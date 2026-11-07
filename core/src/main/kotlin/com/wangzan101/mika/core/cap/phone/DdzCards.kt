@@ -47,7 +47,8 @@ internal object DdzCards {
     private const val STAGE_PLAY_Y0 = 130
     private const val STAGE_PLAY_Y1 = 400
     private const val STAGE_SCALE = 1.27
-    private val STAGE_LEFT = 470 to 1100
+    /** 左家的牌紧贴着他的张数框(368-432)右边,从 450 起。 */
+    private val STAGE_LEFT = 440 to 1100
     private val STAGE_RIGHT = 1300 to 2005
     private const val CONTENT_WIDTH = 2292.0
 
@@ -75,7 +76,7 @@ internal object DdzCards {
         val stage = singleStageTable(frame)
         val cards = if (stage) {
             val (x0, x1) = if (side == DdzSide.Left) STAGE_LEFT else STAGE_RIGHT
-            strip(frame, x0, x1, STAGE_PLAY_Y0, STAGE_PLAY_Y1, pitch = 67.5, width = 130.0, glyphRows = 76, glyphWidth = 58, k = k * STAGE_SCALE, minRows = 150)
+            strip(frame, x0, x1, STAGE_PLAY_Y0, STAGE_PLAY_Y1, pitch = 67.5, width = 130.0, glyphRows = 76, glyphWidth = 58, k = k * STAGE_SCALE, minRows = 150, probeNearBottom = true)
         } else {
             val (x0, x1) = if (side == DdzSide.Left) bar + (280 * k).toInt() to bar + (880 * k).toInt()
             else bar + (1360 * k).toInt() to bar + (1990 * k).toInt()
@@ -190,7 +191,7 @@ internal object DdzCards {
      */
     private fun strip(
         frame: RawFrame, x0: Int, x1: Int, y0: Int, y1: Int, pitch: Double, width: Double, glyphRows: Int, glyphWidth: Int,
-        k: Double, minRows: Int = 100, sure: Double = SURE, margin: Double = MARGIN,
+        k: Double, minRows: Int = 100, sure: Double = SURE, margin: Double = MARGIN, probeNearBottom: Boolean = false,
     ): List<Read>? {
         val right = minOf(x1, frame.width)
         fun white(x: Int, y: Int) = frame.pixel(x, y).let { p -> min(p) > 190 && spread(p) < 45 }
@@ -202,8 +203,9 @@ internal object DdzCards {
             if (run >= minRows) { top = y0 + i - minRows + 1; break }
         }
         if (top < 0) return null
-        // 牌面贴着区域底边时探测行不能越出读到的行
-        val probe = minOf(top + minRows, y1 - 1)
+        // 牌面贴着区域底边时探测行不能越出读到的行;闯关的大牌中间可能是王的图案,量宽度要到牌的下沿附近
+        val bottom = (top - y0 until rich.size).firstOrNull { !rich[it] }?.let { y0 + it } ?: y1
+        val probe = if (probeNearBottom) bottom - 10 else minOf(top + minRows, y1 - 1)
         val span = DdzScreen.runs(right - x0, gap = 12, minWidth = 40) { white(x0 + it, probe) }.maxByOrNull { it.last - it.first } ?: return null
         val n = ((span.last - span.first + 1 - width) / pitch).roundToInt() + 1
         if (n !in 1..20) return null
@@ -213,7 +215,7 @@ internal object DdzCards {
             val wide = (if (i == n - 1) minOf(glyphWidth.toDouble(), pitch) - 3 else minOf(pitch - 8, 48 * k)).toInt()
             val ink = Array(glyphRows) { r -> BooleanArray(wide) { c -> textInk(frame.pixel(cx + c, top + 4 + r)) } }
             val box = rankBox(ink) ?: return@map Read(null, emptyList())
-            val red = share(frame, cx, top + 4, ink) { r, g, _ -> r > 140 && g < 100 } > 0.5
+            val red = share(frame, cx, top + 4, ink) { r, g, _ -> r - g > 50 } > 0.5
             val ranked = ranked(tableGlyphs, boxSig(box, TABLE_W, TABLE_H))
             Read(sure(ranked, sure, margin)?.let { joker(it, red) }, ranked.take(GUESSES).map { joker(it.first, red) })
         }
@@ -322,8 +324,8 @@ internal object DdzCards {
         val r = p shr 16 and 0xff
         val g = p shr 8 and 0xff
         val b = p and 0xff
-        // 点数的红比地主绶带暗;绶带那种亮红不算字
-        return maxOf(r, g, b) < 120 || (r in 141..205 && g < 100 && b < 100)
+        // 点数的红比地主绶带暗;绶带那种亮红不算字。闯关大牌上王的红字更暗,到 120
+        return maxOf(r, g, b) < 120 || (r in 120..205 && g < 100 && b < 100)
     }
 
     private fun card(p: Int) = min(p) > 140 && spread(p) < 40

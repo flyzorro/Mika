@@ -76,6 +76,12 @@ class DdzCardsTest {
         assertEquals(DdzSeen.Empty, DdzCards.play(clock, DdzSide.Left))
         assertEquals(DdzSeen.Empty, DdzCards.play(clock, DdzSide.Right))
         assertEquals(DdzSide.Right, DdzCards.clock(clock))
+        // 左家的牌贴着他的张数框
+        val joker = frame("vd_stage_leftjoker_rightpass")
+        assertEquals(DdzSeen.Pass, DdzCards.play(joker, DdzSide.Right))
+        // 红字的王是大王,闯关的大牌上红得发暗
+        assertEquals(DdzSeen.Cards(listOf("BJ")), DdzCards.play(joker, DdzSide.Left))
+        assertEquals(DdzSeen.Cards(listOf("5")), DdzCards.play(frame("vd_stage_left5_ribbon"), DdzSide.Left))
     }
 
     @Test fun tellsAPassFromAnEmptyArea() {
