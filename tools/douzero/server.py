@@ -78,27 +78,41 @@ def legal(move, before):
 
 
 def resolve(hand, history):
-    """把历史里的 ? 按牌规补上。history 里除 ? 外已是点数。"""
+    """把历史里的 ? 按牌规补上。history 里除 ? 外已是点数。
+
+    一个 ? 有几种补法时,按手机猜的顺序挨个试,要后面每一手都还合规才算(单张 ? 猜成 J,下家却出了 J,就不对)。
+    """
     known = [c for m in history for c in m if not isinstance(c, str)]
     pool = Counter(minus(minus(DECK, hand), known))
-    out = []
-    for move in history:
+    # 手机按桌上从左到右报(顺子是 8 7 6 5 4 3),DouZero 的合规出牌是从小到大排的
+    moves = [m if any(isinstance(c, str) for c in m) else sorted(m) for m in history]
+
+    def search(i, out):
+        if i == len(moves):
+            return out
+        move = moves[i]
         unknown = [c for c in move if isinstance(c, str)]
         if not unknown:
-            # 手机按桌上从左到右报(顺子是 8 7 6 5 4 3),DouZero 的合规出牌是从小到大排的
-            out.append(sorted(move))
-            continue
+            return search(i + 1, out + [move]) if legal(move, out) else None
         if len(unknown) > 1:
             raise Mismatch("ambiguous_card")
         guesses = [RANKS.get(g.upper()) for g in unknown[0][1:].split(",") if g]
         rest = [c for c in move if not isinstance(c, str)]
         fits = [r for r in sorted(set(DECK)) if pool[r] > 0 and legal(rest + [r], out)]
-        pick = fits[0] if len(fits) == 1 else next((g for g in guesses if g in fits), None)
-        if pick is None:
-            raise Mismatch("ambiguous_card")
-        pool[pick] -= 1
-        out.append(sorted(rest + [pick]))
-    return out
+        # 只有一种补法就是它;几种都说得通就只试手机猜的几个
+        tries = fits if len(fits) == 1 else [g for g in guesses if g in fits]
+        for r in tries:
+            pool[r] -= 1
+            found = search(i + 1, out + [sorted(rest + [r])])
+            pool[r] += 1
+            if found is not None:
+                return found
+        return None
+
+    found = search(0, [])
+    if found is None:
+        raise Mismatch("ambiguous_card" if any(isinstance(c, str) for m in moves for c in m) else "history_mismatch")
+    return found
 
 
 def deal(seat, hand, bottom, history):

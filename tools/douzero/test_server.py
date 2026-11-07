@@ -4,7 +4,7 @@ import unittest
 
 from douzero.env.game import GameEnv
 
-from server import DECK, NAMES, SEATS, Advisor, WEIGHTS
+from server import DECK, NAMES, SEATS, Advisor, WEIGHTS, cards, resolve
 
 ADVISOR = Advisor(WEIGHTS)
 
@@ -152,6 +152,17 @@ class OrderTest(unittest.TestCase):
             self.assertEqual(want, got)
             return
         self.fail("no game with a long move")
+
+
+class LookaheadTest(unittest.TestCase):
+    def test_a_guess_must_fit_the_moves_after_it(self):
+        # 实机上的一手:地主单出一张压绶带的牌,手机猜 J、K、5;下家跟了 J,所以只能是 5
+        history = [["K", "Q", "J", "10", "9", "8", "7", "?5,6,8"], [], [], ["?J,K,5"], [], ["J"], ["Q"]]
+        hand = ["2", "2", "K", "K", "J", "J", "10", "10", "8", "7", "6", "5", "4", "4", "4", "3", "3"]
+        out = resolve(cards(hand), [[str(c) if str(c).startswith("?") else cards([c])[0] for c in m] for m in history])
+        self.assertEqual([6, 7, 8, 9, 10, 11, 12, 13], out[0])
+        self.assertEqual([5], out[3])
+        self.assertTrue(ADVISOR.act("landlord_down", hand, [], history))
 
 
 class GuessTest(unittest.TestCase):
