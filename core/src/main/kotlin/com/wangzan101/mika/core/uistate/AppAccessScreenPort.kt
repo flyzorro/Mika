@@ -95,12 +95,15 @@ class AppAccessScreenPort(
     override suspend fun screenshotPng() = checked { inner.screenshotPng() }
     override suspend fun readVisibleText() = checked { inner.readVisibleText() }
     override suspend fun frameGrid() = checked { inner.frameGrid() }
+    override suspend fun rawFrame(rows: List<Int>) = checked { inner.rawFrame(rows) }
+    override suspend fun quickShot() = checked { inner.quickShot() }
     override suspend fun isProtected() = checked { inner.isProtected() }
     override suspend fun checkScreen() = checked { inner.checkScreen() }
 
     // ---------- 在当前屏上的动作 ----------
     override suspend fun tapRef(ref: String, snapshotId: String) = checked { inner.tapRef(ref, snapshotId) }
     override suspend fun tapXY(x: Int, y: Int) = checked { inner.tapXY(x, y) }
+    override suspend fun quickTap(x: Int, y: Int) = checked { inner.quickTap(x, y) }
     override suspend fun doubleTapRef(ref: String, snapshotId: String) = checked { inner.doubleTapRef(ref, snapshotId) }
     override suspend fun doubleTapXY(x: Int, y: Int) = checked { inner.doubleTapXY(x, y) }
     override suspend fun typeText(ref: String?, snapshotId: String?, text: String) = checked { inner.typeText(ref, snapshotId, text) }

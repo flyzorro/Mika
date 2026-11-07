@@ -17,6 +17,11 @@ const val DOUBLE_TAP_GAP_MS = 120L
 /** 滑动手势的默认时长。 */
 const val DEFAULT_SWIPE_MS = 400L
 
+/** 一帧未编码的画面里要到的那几行([rows]:行号到这一行的像素)。 */
+class RawFrame(val width: Int, val height: Int, private val rows: Map<Int, IntArray>) {
+    fun pixel(x: Int, y: Int): Int = rows.getValue(y)[x]
+}
+
 /** 与 tap 的换算互逆:n = round(p*999/(size-1)),夹在 0–999。 */
 fun normalize(p: Int, size: Int): Int {
     if (size <= 1) return 0
@@ -316,4 +321,13 @@ interface ScreenPort {
 
     /** 此刻画面缩成的亮度格子(判动作效果用,见 [FrameGrid.sample]);没有画面、端口不支持时为 null。要便宜:不编码图片。 */
     suspend fun frameGrid(): FrameGrid? = null
+
+    /** 最新一帧里 [rows] 这几行的原始像素(超出画面的行不给);取不到时 null。只取几行:这是高频轮询用的,整帧每次要 10 MB。 */
+    suspend fun rawFrame(rows: List<Int>): RawFrame? = null
+
+    /** 这一刻的画面,编码比 [screenshotPng] 快得多;给分秒必争的快速路径。 */
+    suspend fun quickShot(): ByteArray? = screenshotPng()
+
+    /** 只点一下,不等界面、不核实效果;只给调用方自己看画面判断结果的快速路径用。发不出去返回 false。 */
+    suspend fun quickTap(x: Int, y: Int): Boolean = false
 }

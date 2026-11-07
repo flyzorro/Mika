@@ -1,0 +1,198 @@
+package com.wangzan101.mika.core.cap.phone
+
+import com.wangzan101.mika.core.assembly.toolDispatcher
+import com.wangzan101.mika.core.run.SteerSignal
+import com.wangzan101.mika.core.tool.Args
+import com.wangzan101.mika.core.tool.FakeScreen
+import com.wangzan101.mika.core.tool.ToolExecution
+import com.wangzan101.mika.core.uistate.RawFrame
+import com.wangzan101.mika.core.uistate.ScreenPort
+import com.wangzan101.mika.core.uistate.ScreenSnapshot
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Test
+import javax.imageio.ImageIO
+
+class PhoneDdzTurnTest {
+    private fun frame(name: String): RawFrame {
+        val image = ImageIO.read(javaClass.getResourceAsStream("/ddz/$name.jpg")!!)
+        return RawFrame(image.width, image.height, DdzScreen.ROWS.associateWith { image.getRGB(0, it, image.width, 1, null, 0, image.width) })
+    }
+
+    private val blank = RawFrame(2412, 1080, DdzScreen.ROWS.associateWith { IntArray(2412) })
+
+    private class Game(val app: String, val frames: ArrayDeque<RawFrame>, val base: FakeScreen = FakeScreen()) : ScreenPort by base {
+        val taps = mutableListOf<Pair<Int, Int>>()
+        var last: RawFrame? = null
+        override suspend fun peek() = ScreenSnapshot("p1", app, emptyList(), 2412, 1080)
+        override suspend fun rawFrame(rows: List<Int>): RawFrame? { last = frames.removeFirstOrNull() ?: last; return last }
+        override suspend fun quickTap(x: Int, y: Int): Boolean { taps += x to y; return true }
+    }
+
+    private suspend fun run(game: Game, json: String): ToolExecution {
+        val dispatcher = toolDispatcher(game)
+        return PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement(json).jsonObject), dispatcher.ctx)
+    }
+
+    private fun ToolExecution.text(key: String) = content[key]?.jsonPrimitive?.content
+
+    @Test fun refusesEveryOtherApp() = runTest {
+        val game = Game("com.tencent.mm", ArrayDeque(listOf(frame("call"))))
+        val result = run(game, """{"action":"call","level":3}""")
+        assertEquals("wrong_app", result.text("error"))
+        assertTrue(game.taps.isEmpty())
+    }
+
+    @Test fun unrecognisedScreenIsNeverTapped() = runTest {
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(blank)))
+        val result = run(game, """{"action":"hint"}""")
+        assertEquals("wrong_phase", result.text("error"))
+        assertTrue(game.taps.isEmpty())
+    }
+
+    @Test fun bidsThenSitsOutDoublingUntilTheNextDecision() = runTest {
+        val double = frame("double")
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(frame("call"), blank, double, double, frame("lead"))))
+        val result = run(game, """{"action":"call","level":0}""")
+        assertEquals("lead", result.text("phase"))
+        assertEquals("加倍阶段一下都不点", 1, game.taps.size)
+    }
+
+    @Test fun cancelsAutoPlayFirstWhenTheModelWasTooSlow() = runTest {
+        val auto = frame("auto")
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(auto, frame("follow_lifted"), blank, frame("lead"))))
+        val result = run(game, """{"action":"pass"}""")
+        assertEquals("lead", result.text("phase"))
+        assertEquals(DdzScreen.read(auto).buttons[0].let { it.x to it.y }, game.taps.first())
+    }
+
+    @Test fun samePhaseOnlyCountsAfterLeavingIt() = runTest {
+        val follow = frame("follow_lifted")
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(follow, follow, follow, blank, frame("lead"))))
+        val result = run(game, """{"action":"pass"}""")
+        assertEquals("lead", result.text("phase"))
+    }
+
+    @Test fun handMismatchAsksTheModelOnceWithoutTapping() = runTest {
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(frame("lead"))))
+        val result = run(game, """{"action":"play","hand":["3","3"],"play":["3"]}""")
+        assertEquals("hand_mismatch", result.text("error"))
+        assertTrue(game.taps.isEmpty())
+    }
+
+    @Test fun playTogglesOnlyTheCardsThatDiffer() = runTest {
+        val lifted = frame("lead_lifted") // 第 14 张抬着
+        val hand = List(15) { "3" }.toMutableList().also { it[10] = "4" }
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(lifted, lifted, blank, blank, frame("lead"))))
+        val json = """{"action":"play","hand":${hand.joinToString(",", "[", "]") { "\"$it\"" }},"play":["4"]}"""
+        run(game, json)
+        val view = DdzScreen.read(lifted)
+        assertTrue(game.taps.contains(view.cardX(10) to DdzScreen.CARD_Y))
+        assertTrue(game.taps.contains(view.cardX(14) to DdzScreen.CARD_Y))
+    }
+
+    @Test fun againWaitsForTheResultScreenToLeave() = runTest {
+        val result = frame("result")
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(result, result, result, blank, frame("call"))))
+        assertEquals("call", run(game, """{"action":"again"}""").text("phase"))
+        assertEquals(1, game.taps.size)
+    }
+
+    @Test fun waitBlocksUntilTheNextDecisionWithoutTapping() = runTest {
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(blank, blank, blank, frame("lead"))))
+        assertEquals("lead", run(game, """{"action":"wait"}""").text("phase"))
+        assertTrue(game.taps.isEmpty())
+    }
+
+    @Test fun waitReturnsAtOnceWhenItIsAlreadyYourTurn() = runTest {
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(frame("lead"))))
+        assertEquals("lead", run(game, """{"action":"wait"}""").text("phase"))
+    }
+
+    @Test fun userMessageEndsTheWaitButKeepsTheMove() = runTest {
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(frame("follow_lifted"), blank, blank)))
+        val result = withContext(SteerSignal(MutableStateFlow(true))) { run(game, """{"action":"pass"}""") }
+        assertEquals("other", result.text("phase"))
+        assertEquals(1, game.taps.size)
+    }
+
+    @Test fun cancelsAutoPlayAndCountsTheSameTurnAsNew() = runTest {
+        val follow = frame("follow_lifted")
+        val auto = frame("auto")
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(follow, follow, auto, follow)))
+        assertEquals("follow", run(game, """{"action":"pass"}""").text("phase"))
+        assertTrue(game.taps.contains(DdzScreen.read(auto).buttons[0].let { it.x to it.y }))
+    }
+
+    @Test fun leavesAutoPlayAloneOnceAnotherAppIsInFront() = runTest {
+        val auto = frame("auto")
+        val game = object : ScreenPort by Game(PhoneDdzTurn.PACKAGE, ArrayDeque()) {
+            val taps = mutableListOf<Pair<Int, Int>>()
+            var peeks = 0
+            override suspend fun peek() = ScreenSnapshot("p", if (peeks++ == 0) PhoneDdzTurn.PACKAGE else "com.other", emptyList(), 2412, 1080)
+            var reads = 0
+            override suspend fun rawFrame(rows: List<Int>) = if (reads++ == 0) blank else auto
+            override suspend fun quickTap(x: Int, y: Int): Boolean { taps += x to y; return true }
+        }
+        val dispatcher = toolDispatcher(game)
+        PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"wait"}""").jsonObject), dispatcher.ctx)
+        assertTrue(game.taps.isEmpty())
+    }
+
+    @Test fun turnEndingWhileSelectingDoesNotCrash() = runTest {
+        val lead = frame("lead")
+        val hand = List(15) { "3" }.joinToString(",", "[", "]") { "\"$it\"" }
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(lead, lead, blank, blank, blank, frame("call"))))
+        val result = run(game, """{"action":"play","hand":$hand,"play":["3"]}""")
+        assertEquals("select_failed", result.text("error"))
+        assertEquals("只点了牌还在时的那一下", 1, game.taps.size)
+    }
+
+    @Test fun holdsTheScreenGateLikeOtherTaps() {
+        assertFalse(PhoneDdzTurn.composite)
+    }
+
+    @Test fun pressesPlayAgainWhenTheFirstPressWasIgnored() = runTest {
+        val lead = frame("lead")
+        val hand = (List(14) { "4" } + "3").joinToString(",", "[", "]") { "\"$it\"" }
+        val lifted = frame("lead_lifted") // 最后一张已抬起,不用再选
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(lifted, lifted, lifted, blank, lead)))
+        val result = run(game, """{"action":"play","hand":$hand,"play":["3"]}""")
+        assertEquals("lead", result.text("phase"))
+        assertEquals("两次出牌", 2, game.taps.count { it.second != DdzScreen.CARD_Y })
+    }
+
+    @Test fun againNeverTapsTheReliefPopup() = runTest {
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(frame("vd_relief"))))
+        assertEquals("wrong_phase", run(game, """{"action":"again"}""").text("error"))
+        assertTrue(game.taps.isEmpty())
+    }
+
+    @Test fun againHandsBackToTheModelSoonWhenAPopupAppears() = runTest {
+        val relief = frame("vd_relief")
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(frame("vd_result_bust"), relief)))
+        val started = testScheduler.currentTime
+        assertEquals("other", run(game, """{"action":"again"}""").text("phase"))
+        assertTrue(testScheduler.currentTime - started <= 10_000)
+        assertEquals(1, game.taps.size)
+    }
+
+    @Test fun pickMapsRanksToDistinctCards() {
+        assertEquals(setOf(1, 2), PhoneDdzTurn.pick(listOf("A", "3", "3"), listOf("3", "3")))
+        assertNull(PhoneDdzTurn.pick(listOf("A", "3"), listOf("3", "3")))
+    }
+
+    @Test fun inTheToolListFrozenAtTaskStartWhenTheModelCanSee() {
+        fun names(vision: Boolean) = toolDispatcher(FakeScreen(), visionEnabled = vision).offeredNow(all = true).map { it.name }
+        assertTrue("phone_ddz_turn" in names(vision = true))
+        assertFalse("phone_ddz_turn" in names(vision = false))
+    }
+}
