@@ -19,6 +19,7 @@ class DdzCardsTest {
         assertEquals("SJ 2 2 2 A A A A Q J 10 9 9 8 7 3 3".split(' '), hand("hand_t1"))
         // 闯关牌桌:手牌更高
         assertEquals("BJ SJ 2 2 A A Q Q Q Q J J 10 9 9 5 4".split(' '), hand("vd_stage_call"))
+        assertEquals("SJ 2 2 A A Q Q Q Q 9 9 8 5 5 4 4 3".split(' '), hand("vd_stage_farmer17"))
         // 闯关的地主,最后一张压着绶带
         val view = frame("vd_stage_landlord19").let { DdzScreen.read(it) }
         assertEquals("${view.phase} ${view.handCount} ${view.lifted}", "2 2 A A A K Q Q J J J J 8 6 4 4 4 4 3".split(' '), hand("vd_stage_landlord19"))

@@ -36,8 +36,8 @@ internal object PhoneDdzTurn : PhoneTool {
     /** Mika 屏上闯关页的报名。 */
     private const val STAGE_BUTTON_Y = 920
     private const val AUTO_CANCEL_MS = 600L
-    /** 轮到自己时别家的牌还没落下最多再等几帧(约 1.2 秒,倒计时有 15 秒)。 */
-    private const val SETTLE_POLLS = 8
+    /** 轮到自己时别家的牌还没落下、或动画盖着手牌,最多再等几帧(约 3 秒,倒计时有 15 秒)。 */
+    private const val SETTLE_POLLS = 16
     private const val NO_HAND_POLLS = 60
     private const val NEW_HAND_GAP = 8
     private const val TAP_GAP_MS = 60L
@@ -392,10 +392,11 @@ internal object PhoneDdzTurn : PhoneTool {
         val tracker = turn.tracker ?: return Auto.Off
         val advisor = turn.advisor ?: return Auto.Off
         if (!turn.single || tracker.broken != null) return Auto.Off
-        if (!tracker.ready() && tracker.broken == null && turn.settling++ < SETTLE_POLLS) return Auto.Settling
+        val hand = DdzCards.hand(frame, view)
+        // 别家的牌还在飞、或者动画(顺子、炸弹的特效)正盖着手牌:再等几帧
+        if ((!tracker.ready() || hand == null) && tracker.broken == null && turn.settling++ < SETTLE_POLLS) return Auto.Settling
         turn.settling = 0
         val started = now()
-        val hand = DdzCards.hand(frame, view)
         val reason = when {
             tracker.broken != null -> tracker.broken
             !tracker.ready() -> "history_not_ready"
