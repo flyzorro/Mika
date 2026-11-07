@@ -134,6 +134,26 @@ class RibbonCardTest(unittest.TestCase):
         self.assertIn("ambiguous_card", str(caught.exception))
 
 
+class OrderTest(unittest.TestCase):
+    def test_a_move_listed_high_to_low_still_replays(self):
+        for seed in range(300):
+            env = new_game(seed)
+            while not env.game_over and not any(len(m) >= 5 for m in env.card_play_action_seq):
+                env.step()
+            if env.game_over:
+                continue
+            env.step()
+            info = env.game_infoset
+            history = [names(m) for m in info.card_play_action_seq]
+            seat, hand, bottom = env.acting_player_position, names(info.player_hand_cards), names(info.three_landlord_cards)
+            want = sorted(ADVISOR.act(seat, hand, bottom, history))
+            # 桌上的顺子从左到右是从大到小
+            got = sorted(ADVISOR.act(seat, hand, bottom, [list(reversed(m)) for m in history]))
+            self.assertEqual(want, got)
+            return
+        self.fail("no game with a long move")
+
+
 class GuessTest(unittest.TestCase):
     def test_the_first_guess_that_fits_is_used(self):
         for seed in range(200):

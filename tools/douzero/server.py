@@ -85,7 +85,8 @@ def resolve(hand, history):
     for move in history:
         unknown = [c for c in move if isinstance(c, str)]
         if not unknown:
-            out.append(move)
+            # 手机按桌上从左到右报(顺子是 8 7 6 5 4 3),DouZero 的合规出牌是从小到大排的
+            out.append(sorted(move))
             continue
         if len(unknown) > 1:
             raise Mismatch("ambiguous_card")
