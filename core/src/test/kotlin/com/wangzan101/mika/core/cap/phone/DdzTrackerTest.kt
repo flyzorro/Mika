@@ -35,7 +35,7 @@ class DdzTrackerTest {
         right = DdzSeen.Cards(listOf("3"))
         see(DdzSeat.Left)
         left = DdzSeen.Pass
-        see(DdzSeat.Me)
+        repeat(3) { see(DdzSeat.Me) }
         assertEquals(DdzSeat.Right, tracker.landlord)
         assertEquals(listOf(listOf("3"), emptyList()), tracker.history)
         assertTrue(tracker.ready())
@@ -156,10 +156,22 @@ class DdzTrackerTest {
         right = DdzSeen.Cards("A K Q J 10".split(' '))
         left = DdzSeen.Pass
         see(DdzSeat.Right)
-        see(DdzSeat.Me)
+        repeat(3) { see(DdzSeat.Me) }
         assertEquals(listOf("A", "K", "Q", "J", "10"), tracker.history[1])
         assertEquals(emptyList<String>(), tracker.history[2])
         assertTrue(tracker.ready())
+    }
+
+    @Test fun aPassSeenForOneFrameIsNotYetAPass() {
+        tracker.observe(DdzSeat.Me, { DdzSeen.Empty }, { bottom }, leadingWith20 = true, leading = true)
+        tracker.mine(listOf("6"))
+        see(DdzSeat.Right)
+        // 右家出的牌刚飞出来,缩在头像边上,那一帧像「不出」
+        right = DdzSeen.Pass
+        see(DdzSeat.Left)
+        right = DdzSeen.Cards("7 6 5 4 3".split(' '))
+        see(DdzSeat.Left)
+        assertEquals(listOf("7", "6", "5", "4", "3"), tracker.history[1])
     }
 
     @Test fun aGuessedCardIsOnlyTrustedFromTheLandlord() {
@@ -178,7 +190,8 @@ class DdzTrackerTest {
         tracker.observe(DdzSeat.Me, { DdzSeen.Empty }, { bottom }, leadingWith20 = true, leading = true)
         tracker.mine(listOf("5", "6", "7", "8", "9"))
         see(DdzSeat.Right)
-        tracker.observe(DdzSeat.Me, { DdzSeen.Empty }, { bottom }, leading = true)
+        // 两家的「不出」各要连着看到几帧
+        repeat(5) { tracker.observe(DdzSeat.Me, { DdzSeen.Empty }, { bottom }, leading = true) }
         assertNull(tracker.broken)
         assertTrue(tracker.ready())
         assertEquals(listOf(listOf("5", "6", "7", "8", "9"), emptyList(), emptyList()), tracker.history)

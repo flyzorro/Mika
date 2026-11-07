@@ -25,6 +25,10 @@ internal class DdzTracker {
     private var firstUnsure = 0
     /** 自己出完以后见过不是自己的回合了没有:刚按下出牌,按钮还会在画面上留几帧,那不是又轮到自己。 */
     private var leftMe = true
+    /** 第几帧;同一帧里 resolve 会调两次,「不出」要按帧数。 */
+    private var frameNo = 0L
+    private var passFrames = 0
+    private var passFrameNo = -1L
     /** 出完了、还没读到他出了什么的几家,按出牌顺序。 */
     private val waiting = ArrayDeque<Pair<DdzSeat, Int>>()
 
@@ -34,6 +38,7 @@ internal class DdzTracker {
      */
     fun observe(turn: DdzSeat?, read: (DdzSide) -> DdzSeen, bottom: () -> List<String>?, leadingWith20: Boolean = false, leading: Boolean = false) {
         if (broken != null) return
+        frameNo++
         // 底牌只是给 DouZero 的参考,认不出(比如里面有张王,竖着写的字太小)也照样记;叫分、加倍时出牌区只有字,不会当成牌
         if (this.bottom == null) this.bottom = bottom()
         // 轮到自己先出、手里 20 张,一定是地主、还没人出过牌:之前认成别家出的牌(比如翻底牌的动画)作废
@@ -112,9 +117,18 @@ internal class DdzTracker {
             val seen = read(if (seat == DdzSeat.Left) DdzSide.Left else DdzSide.Right)
             // 只有地主的牌压着绶带;农民的牌带着猜的那一张就是没认准
             val guessed = seen is DdzSeen.Cards && seat != landlord && seen.ranks.any { it.startsWith(DdzCards.UNKNOWN) }
+            if (seen != DdzSeen.Pass) passFrames = 0
             when {
                 seen is DdzSeen.Cards && !guessed -> history += seen.ranks
-                seen == DdzSeen.Pass -> history += emptyList<String>()
+                // 「不出」要连着几帧都在:飞过来的牌缩在头像边上那一下,也会落在「不出」那一条里
+                seen == DdzSeen.Pass -> {
+                    if (passFrameNo != frameNo) { passFrameNo = frameNo; passFrames++ }
+                    if (passFrames < PASS_FRAMES) return
+                    passFrames = 0
+                    // 下一家从这一帧起数
+                    passFrameNo = -1
+                    history += emptyList<String>()
+                }
                 // 牌还在飞过来(空着,或者正在落下认不准):下一帧再读,读几次还不行才算漏了、认不准
                 else -> {
                     if (tries <= 1) return fail("${if (seen == DdzSeen.Empty) "unread" else "unsure"}_${seat.name.lowercase()}")
@@ -128,5 +142,6 @@ internal class DdzTracker {
 
     private companion object {
         const val READ_TRIES = 8
+        const val PASS_FRAMES = 3
     }
 }
