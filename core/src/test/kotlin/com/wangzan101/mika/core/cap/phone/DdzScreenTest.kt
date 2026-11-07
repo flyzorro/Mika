@@ -19,6 +19,8 @@ class DdzScreenTest {
         val stage = DdzScreen.read(frame("vd_stage_call"))
         assertEquals(DdzPhase.Call, stage.phase)
         assertEquals(listOf(DdzColor.Blue, DdzColor.Gray, DdzColor.Gray, DdzColor.Yellow), stage.buttons.map { it.color })
+        // 同样的叫分,470 那行只剩三分一段黄色:不是出牌
+        assertEquals(DdzPhase.Call, DdzScreen.read(frame("vd_stage_call_ad")).phase)
         val cannotBeat = DdzScreen.read(frame("vd_stage_leftpass_rightQQQ6"))
         assertEquals(DdzPhase.Follow, cannotBeat.phase)
         assertTrue(DdzScreen.onlyPass(cannotBeat))

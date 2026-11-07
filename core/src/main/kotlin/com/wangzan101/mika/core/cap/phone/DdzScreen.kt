@@ -87,14 +87,16 @@ internal object DdzScreen {
         if (auto.size == 1) return view(DdzPhase.AutoPlay, auto.map { it.copy(y = AUTO_TAP_Y) })
         // 没有手牌就不是牌桌:大厅里也有颜色相近的色块
         if (handCount == 0) return view(DdzPhase.Other, emptyList())
-        val row = buttons(frame, BUTTON_ROW)
-        phase(row)?.takeIf { it != DdzPhase.Call }?.let { return view(it, row) }
-        val call = buttons(frame, CALL_ROW)
-        if (phase(call) == DdzPhase.Call) return view(DdzPhase.Call, call)
+        // 先看闯关牌桌的两行(字的上下方,两行一样才算):经典牌桌的按钮矮,够不着这两行;
+        // 闯关的按钮被字切断后,470 那行可能只剩一段黄色,会被当成只有出牌
         val top = buttons(frame, STAGE_TOP_ROW)
         val bottom = buttons(frame, STAGE_BOTTOM_ROW)
         val stage = phase(top)
         if (stage != null && stage == phase(bottom)) return view(stage, top)
+        val row = buttons(frame, BUTTON_ROW)
+        phase(row)?.takeIf { it != DdzPhase.Call }?.let { return view(it, row) }
+        val call = buttons(frame, CALL_ROW)
+        if (phase(call) == DdzPhase.Call) return view(DdzPhase.Call, call)
         return view(DdzPhase.Other, emptyList())
     }
 
