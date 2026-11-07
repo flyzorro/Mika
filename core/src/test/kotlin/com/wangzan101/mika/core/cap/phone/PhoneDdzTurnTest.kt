@@ -295,6 +295,13 @@ class PhoneDdzTurnTest {
         assertEquals("只点了报名", listOf(1204 to 920), game.taps)
     }
 
+    @Test fun waitingInTheLobbyReturnsAtOnce() = runTest {
+        // 大厅一直在:等十来秒没有手牌就回来,不会等满一分多钟;后面那一帧牌桌不会被读到
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(List(62) { full("vd_lobby") } + full("lead")))
+        assertEquals("other", run(game, """{"action":"wait"}""").text("phase"))
+        assertTrue(game.taps.isEmpty())
+    }
+
     @Test fun startTakesOverAtAStageTableThatIsStillBidding() = runTest {
         val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(lobbyFrame("vd_stage_call"), full("vd_stage_call"))))
         val result = run(game, """{"action":"start","advisor":"http://mac:3426"}""")

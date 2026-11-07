@@ -41,6 +41,7 @@ internal object PhoneDdzTurn : PhoneTool {
     private const val AUTO_CANCEL_MS = 600L
     /** 轮到自己时别家的牌还没落下最多再等几帧(约 1.2 秒,倒计时有 15 秒)。 */
     private const val SETTLE_POLLS = 8
+    private const val NO_HAND_POLLS = 60
     private const val TAP_GAP_MS = 60L
     private const val SETTLE_MS = 250L
     private const val VERDICT_MS = 800L
@@ -301,11 +302,15 @@ internal object PhoneDdzTurn : PhoneTool {
         var left = !moved
         var last = DdzView(DdzPhase.Other, emptyList(), 0, 0.0, 0, emptySet())
         var budget = polls
+        // 一直看不到手牌就不是在牌桌上(大厅、选关页、弹窗),干等等不来:发牌用不了这么久
+        var empty = 0
         while (budget-- > 0) {
             val frame = ctx.screen.rawFrame(if (turn.single) FULL_ROWS else DdzScreen.ROWS)
             val view = frame?.let(DdzScreen::read)
             if (view != null) {
                 last = view
+                empty = if (view.handCount == 0 && view.phase == DdzPhase.Other) empty + 1 else 0
+                if (empty > NO_HAND_POLLS) return view
                 if (view.phase != DdzPhase.Other) turn.atTable = true
                 // 进过牌桌又回了大厅:下一局可能进的是真人场,单机标记作废,要再 start 一次
                 if (turn.single && turn.atTable && view.phase == DdzPhase.Other && DdzCards.singleLobby(frame)) { turn.single = false; return view }
