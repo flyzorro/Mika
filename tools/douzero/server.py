@@ -157,11 +157,22 @@ class Agent:
     def act(self, infoset):
         if len(infoset.legal_actions) == 1:
             return infoset.legal_actions[0]
+        values = self.values(infoset)
+        move = infoset.legal_actions[int(torch.argmax(values))]
+        # 地主只剩一张、桌上是他的牌、我是他前面最后一个能管的农民:不管就是让他出完。DouZero 残局偶尔会选不出,
+        # 能管就挑管得上的里面分最高的
+        if not move and infoset.player_position == "landlord_up" and infoset.last_pid == "landlord" \
+                and infoset.num_cards_left_dict["landlord"] == 1:
+            beats = [i for i, a in enumerate(infoset.legal_actions) if a]
+            if beats:
+                move = infoset.legal_actions[max(beats, key=lambda i: float(values[i]))]
+        return move
+
+    def values(self, infoset):
         obs = get_obs(infoset)
         with torch.no_grad():
-            values = self.model.forward(torch.from_numpy(obs["z_batch"]).float(),
-                                        torch.from_numpy(obs["x_batch"]).float(), return_value=True)["values"]
-        return infoset.legal_actions[int(torch.argmax(values))]
+            return self.model.forward(torch.from_numpy(obs["z_batch"]).float(),
+                                      torch.from_numpy(obs["x_batch"]).float(), return_value=True)["values"].flatten()
 
 
 class Advisor:

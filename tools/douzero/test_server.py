@@ -134,6 +134,16 @@ class RibbonCardTest(unittest.TestCase):
         self.assertIn("ambiguous_card", str(caught.exception))
 
 
+class LastCardTest(unittest.TestCase):
+    def test_the_last_farmer_never_lets_a_one_card_landlord_lead(self):
+        # 实机上的一手:地主只剩一张、单出了 A,下家不要;我手里的小王是场上最大的牌,DouZero 却选了不出
+        history = [["6", "6", "6", "4"], ["2", "2", "2", "10"], [], [], ["J", "10", "9", "8", "7"], [], ["3", "3", "3", "3"], [], [],
+                   ["9", "9", "9", "7"], [], ["4", "J", "J", "J"], [], [], ["5", "5"], ["8", "8"], ["Q", "Q"], [], ["K", "K"], [], [],
+                   ["Q"], ["A"], [], ["2"], ["BJ"], [], [], ["5"], ["6"], ["A"], []]
+        hand = ["SJ", "A", "K", "K", "Q", "10", "10", "8", "7", "7"]
+        self.assertEqual(["SJ"], [NAMES[c] for c in ADVISOR.act("landlord_up", hand, ["A", "4", "7"], history)])
+
+
 class OrderTest(unittest.TestCase):
     def test_a_move_listed_high_to_low_still_replays(self):
         for seed in range(300):
