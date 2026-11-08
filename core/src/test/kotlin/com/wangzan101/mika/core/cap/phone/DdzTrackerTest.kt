@@ -13,6 +13,8 @@ class DdzTrackerTest {
     private val tracker = DdzTracker()
 
     private fun see(turn: DdzSeat?) = tracker.observe(turn, { if (it == DdzSide.Left) left else right }, { bottom })
+    private var counts = mapOf<DdzSide, Int?>()
+    private fun seeCounted(turn: DdzSeat?) = tracker.observe(turn, { if (it == DdzSide.Left) left else right }, { bottom }, counts = { counts })
 
     @Test fun anUnreadableBottomDoesNotHoldTheGameBack() {
         repeat(3) { tracker.observe(DdzSeat.Me, { if (it == DdzSide.Right) DdzSeen.Cards(listOf("5")) else DdzSeen.Empty }, { null }) }
@@ -201,6 +203,46 @@ class DdzTrackerTest {
         assertEquals(listOf(listOf("9"), listOf("10")), tracker.history.takeLast(2))
         assertEquals(8, tracker.history.size)
         assertTrue(tracker.ready())
+    }
+
+    @Test fun aPlayClearedBeforeTheClockMovesIsCaughtByTheCount() {
+        // 左家地主先出 3(20 张剩 19)
+        counts = mapOf(DdzSide.Left to 19, DdzSide.Right to 17)
+        left = DdzSeen.Cards(listOf("3"))
+        repeat(3) { seeCounted(DdzSeat.Me) }
+        tracker.mine(listOf("4"))
+        // 右家不要、地主马上出对 A:闹钟一直没看到,两家的牌都摆着
+        right = DdzSeen.Pass
+        left = DdzSeen.Cards(listOf("A", "A"))
+        counts = mapOf(DdzSide.Left to 17, DdzSide.Right to 17)
+        repeat(6) { seeCounted(null) }
+        assertEquals(listOf(listOf("3"), listOf("4"), emptyList(), listOf("A", "A")), tracker.history)
+        assertTrue(tracker.ready())
+    }
+
+    @Test fun aPassWhoseTextWasClearedIsReadFromTheCount() {
+        counts = mapOf(DdzSide.Left to 19, DdzSide.Right to 17)
+        left = DdzSeen.Cards(listOf("3"))
+        repeat(3) { seeCounted(DdzSeat.Me) }
+        tracker.mine(listOf("2"))
+        // 右家不要,地主也不要(张数都没少),清了桌,又轮到我:两家的「不出」都没留下
+        right = DdzSeen.Empty
+        left = DdzSeen.Empty
+        seeCounted(DdzSeat.Right)
+        repeat(12) { seeCounted(DdzSeat.Left) }
+        assertNull(tracker.broken)
+        assertEquals(listOf(listOf("3"), listOf("2"), emptyList()), tracker.history)
+    }
+
+    @Test fun cardsStillStackedAreNotTakenWhileTheCountSaysMore() {
+        // 地主出 7773:叠成一摞时只看得到 3,张数已经少了四张
+        counts = mapOf(DdzSide.Left to 16, DdzSide.Right to 17)
+        left = DdzSeen.Cards(listOf("3"))
+        repeat(5) { seeCounted(DdzSeat.Me) }
+        assertTrue(tracker.history.isEmpty())
+        left = DdzSeen.Cards("7 7 7 3".split(' '))
+        repeat(3) { seeCounted(DdzSeat.Me) }
+        assertEquals(listOf(listOf("7", "7", "7", "3")), tracker.history)
     }
 
     @Test fun aGuessedCardIsOnlyTrustedFromTheLandlord() {

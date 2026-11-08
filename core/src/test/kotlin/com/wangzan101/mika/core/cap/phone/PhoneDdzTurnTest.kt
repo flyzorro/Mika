@@ -438,6 +438,23 @@ class PhoneDdzTurnTest {
         }
     }
 
+    @Test fun anAdAfterAWinIsNotTakenForAHalfPlayedHand() = runTest {
+        val saved = PhoneDdzTurn.advise
+        val asked = mutableListOf<String>()
+        PhoneDdzTurn.advise = { _, body -> asked += body; """{"play":[]}""" }
+        try {
+            // 赢了点继续,先弹了广告,关掉后发的新一手(地主 20 张)DouZero 照样接
+            val win = full("vd_stage_win_leave_continue")
+            val ad = full("vd_stage_ad_dialog")
+            val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(full("vd_stage_right_clock"), win) + List(5) { ad } + listOf(full("vd_stage_lead"), fullBlank)))
+            val result = run(game, """{"action":"start","advisor":"http://mac:3426","hands":3}""")
+            assertFalse(result.toString(), result.toString().contains("joined_mid_game"))
+            assertTrue(asked.isNotEmpty())
+        } finally {
+            PhoneDdzTurn.advise = saved
+        }
+    }
+
     @Test fun anAdOverTheStageTableIsNeverTapped() = runTest {
         val ad = full("vd_stage_ad_dialog")
         val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(ad, ad, ad, fullBlank)))

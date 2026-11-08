@@ -88,6 +88,8 @@ internal object PhoneDdzTurn : PhoneTool {
         var handsLeft = 1
         var won = 0
         var lost = 0
+        /** 这一轮见过闯关的牌桌:之后不是牌桌的画面不认。 */
+        var stage = false
         /** 这一轮叫分已经按过了:按完按钮还会留几帧。 */
         var bid = false
         var advisor: String? = null
@@ -366,8 +368,13 @@ internal object PhoneDdzTurn : PhoneTool {
             val view = frame?.let(DdzScreen::read)
             if (view != null) {
                 last = view
-                empty = if (view.handCount == 0 && view.phase == DdzPhase.Other) empty + 1 else 0
-                if (empty > NO_HAND_POLLS) return view
+                // 见过闯关牌桌以后,没有「闯关模式」字样的画面(广告、弹窗)一律不认:广告的按钮和白块会被认成轮到我出、手里一张。
+                // 和没手牌一样计数,一直这样就交还模型去关;但不算发新牌的空档
+                val table = turn.single && DdzCards.singleStageTable(frame)
+                if (table) turn.stage = true
+                val offTable = turn.single && turn.stage && !table
+                empty = if (offTable || (view.handCount == 0 && view.phase == DdzPhase.Other)) empty + 1 else 0
+                if (empty > NO_HAND_POLLS) return if (offTable) view.copy(phase = DdzPhase.Other) else view
                 if (view.phase != DdzPhase.Other) turn.atTable = true
                 // 进过牌桌又回了大厅:下一局可能进的是真人场,单机标记作废,要再 start 一次
                 if (turn.single && turn.atTable && view.phase == DdzPhase.Other && DdzCards.singleLobby(frame)) { turn.single = false; return view }
@@ -389,6 +396,7 @@ internal object PhoneDdzTurn : PhoneTool {
                     left = true
                     continue
                 }
+                if (offTable) { waitOrSteer { delay(POLL_MS) } ?: return last; continue }
                 if (view.phase != DdzPhase.Call) turn.bid = false
                 dealt(turn, view)
                 if (turn.single) track(turn, frame, view)
@@ -459,7 +467,9 @@ internal object PhoneDdzTurn : PhoneTool {
             DdzSide.Right -> DdzSeat.Right
             null -> null
         }
-        tracker.observe(seat, { DdzCards.play(frame, it) }, { DdzCards.bottom(frame) }, view.phase == DdzPhase.Lead && view.handCount == 20, view.phase == DdzPhase.Lead)
+        tracker.observe(seat, { DdzCards.play(frame, it) }, { DdzCards.bottom(frame) }, view.phase == DdzPhase.Lead && view.handCount == 20, view.phase == DdzPhase.Lead) {
+            if (DdzCards.singleStageTable(frame)) DdzCards.counts(frame) else emptyMap()
+        }
     }
 
     private enum class Auto { Played, Settling, Off }

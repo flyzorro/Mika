@@ -102,6 +102,15 @@ class DdzCardsTest {
         assertEquals(DdzSeen.Cards(listOf("5")), DdzCards.play(frame("vd_stage_left5_ribbon"), DdzSide.Left))
     }
 
+    @Test fun readsHowManyCardsTheOthersHaveLeft() {
+        // 地主的框在帽子下面低一截;一位数、两位数都有
+        assertEquals(mapOf(DdzSide.Left to 16, DdzSide.Right to 19), DdzCards.counts(frame("vd_stage_right3_ribbon_left6")))
+        assertEquals(mapOf(DdzSide.Left to 9, DdzSide.Right to 17), DdzCards.counts(frame("vd_stage_left2_ribbon")))
+        assertEquals(mapOf(DdzSide.Left to 10, DdzSide.Right to 17), DdzCards.counts(frame("vd_stage_left_wrap10")))
+        assertEquals(mapOf(DdzSide.Left to 7, DdzSide.Right to 2), DdzCards.counts(frame("vd_stage_3cards_joker_lifted")))
+        assertEquals(mapOf(DdzSide.Left to 17, DdzSide.Right to 17), DdzCards.counts(frame("vd_stage_bottom_Q410")))
+    }
+
     @Test fun readsAPlayThatWrapsOntoASecondRow() {
         // 地主出了十张(101010 999 66 33):第一排九张,最后一张带绶带的 3 摆在第二排
         val wrap = DdzCards.play(frame("vd_stage_left_wrap10"), DdzSide.Left)

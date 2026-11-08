@@ -35,15 +35,28 @@ internal class DdzTracker {
     private var lastTurn: DdzSeat? = null
     /** 出完了、还没读到他出了什么的几家,按出牌顺序。 */
     private val waiting = ArrayDeque<Pair<DdzSeat, Int>>()
+    /** 左右两家剩几张:上一帧的读数,和连着两帧一样的读数(一帧认错不算)。 */
+    private val countSeen = mutableMapOf<DdzSeat, Int?>()
+    private val count = mutableMapOf<DdzSeat, Int?>()
 
     /**
      * 每一帧喂进来:[turn] 此刻轮到谁(没人或看不出为 null),[read] 读某家出牌区,[bottom] 读底牌,
      * [leadingWith20] 此刻轮到自己先出、手里 20 张,[leading] 此刻轮到自己先出。
      */
-    fun observe(turn: DdzSeat?, read: (DdzSide) -> DdzSeen, bottom: () -> List<String>?, leadingWith20: Boolean = false, leading: Boolean = false) {
+    fun observe(
+        turn: DdzSeat?, read: (DdzSide) -> DdzSeen, bottom: () -> List<String>?, leadingWith20: Boolean = false, leading: Boolean = false,
+        counts: () -> Map<DdzSide, Int?> = { emptyMap() },
+    ) {
         if (broken != null) return
         frameNo++
         if (turn != lastTurn) { note("t=${turn?.name ?: "-"}"); lastTurn = turn }
+        val read2 = counts()
+        for (side in DdzSide.entries) {
+            val seat = seatOf(side)
+            val now = read2[side]
+            count[seat] = now.takeIf { it != null && it == countSeen[seat] }
+            countSeen[seat] = now
+        }
         // 底牌只是给 DouZero 的参考,认不出(比如里面有张王,竖着写的字太小)也照样记;叫分、加倍时出牌区只有字,不会当成牌
         if (this.bottom == null) this.bottom = bottom()
         // 轮到自己先出、手里 20 张,一定是地主、还没人出过牌:之前认成别家出的牌(比如翻底牌的动画)作废
@@ -66,8 +79,11 @@ internal class DdzTracker {
                     return
                 }
                 if (seen !is DdzSeen.Cards) continue
+                val seat = seatOf(side)
+                // 地主出第一手前是 20 张:剩的张数对不上出的张数(还叠成一摞,或者这家是 17 张的农民)就不算
+                val left = count[seat]
+                if (left != null && seen.ranks.size != FIRST - left) continue
                 if (!steady(side to seen)) return
-                val seat = if (side == DdzSide.Left) DdzSeat.Left else DdzSeat.Right
                 landlord = seat
                 record(seat, seen.ranks)
                 // 他出完了,闹钟已经到了下一家
@@ -81,16 +97,51 @@ internal class DdzTracker {
         if (turn != DdzSeat.Me) leftMe = true
         if (turn == DdzSeat.Me && !leftMe) return
         resolve(seen)
+        // 张数少了的那家出过牌了:闹钟还没离开他(出得太快、清桌太快)也当他这一手出完,马上读
+        for (seat in listOf(DdzSeat.Left, DdzSeat.Right)) {
+            if (active != DdzSeat.Me && waiting.none { it.first == seat } && (unplayed(seat) ?: 0) > 0 && reaches(seat)) {
+                note("n=${seat.name}${count[seat]}")
+                advance(seat.next)
+                resolve(seen)
+            }
+        }
         if (turn == null || turn == active) return
+        advance(turn)
+        resolve(seen)
+    }
+
+    /** 闹钟从 [active] 走到了 [turn]:中间的几家都出完了;跳过的是自己,就是游戏替我不出了(管不了王炸时不轮到我)。 */
+    private fun advance(turn: DdzSeat) {
         val from = active ?: return
         active = turn
-        // from 出完了,中间被跳过的也出完了;跳过的是自己,就是游戏替我不出了(管不了王炸时不轮到我)
         var seat: DdzSeat = from
         while (seat != turn) {
             if (seat != DdzSeat.Me || seat != from) waiting.addLast(seat to READ_TRIES)
             seat = seat.next
         }
-        resolve(seen)
+    }
+
+    /** 从 [active] 往后数、不经过自己就到得了 [seat]。 */
+    private fun reaches(seat: DdzSeat): Boolean {
+        var at = active ?: return false
+        while (at != seat) {
+            at = at.next
+            if (at == DdzSeat.Me) return false
+        }
+        return true
+    }
+
+    /** [seat] 出了、还没记下的张数:按记下的历史该剩几张,减去读到的剩几张。读不到、对不上为 null。 */
+    private fun unplayed(seat: DdzSeat): Int? {
+        val now = count[seat] ?: return null
+        val lord = landlord ?: return null
+        var at = lord
+        var played = 0
+        for (move in history) {
+            if (at == seat) played += move.size
+            at = at.next
+        }
+        return ((if (seat == lord) FIRST else FARMER) - played - now).takeIf { it >= 0 }
     }
 
     /** 自己这一手出了什么([] 是不出);工具按下去之后马上记。 */
@@ -134,14 +185,21 @@ internal class DdzTracker {
             val seen = read(if (seat == DdzSeat.Left) DdzSide.Left else DdzSide.Right)
             // 只有地主的牌压着绶带;农民的牌带着猜的那一张就是没认准
             val guessed = seen is DdzSeen.Cards && seat != landlord && seen.ranks.any { it.startsWith(DdzCards.UNKNOWN) }
+            // 剩的张数说这家出了几张:读到的张数对不上(还叠着、还没落下)、或者明明出了牌却像「不出」,都再等等
+            val played = unplayed(seat)
             when {
-                seen is DdzSeen.Cards && !guessed -> {
+                seen is DdzSeen.Cards && !guessed && (played == null || played == seen.ranks.size) -> {
                     if (!steady(seat to seen)) return
                     record(seat, seen.ranks)
                 }
                 // 「不出」也一样:飞过来的牌缩在头像边上那一下,也会落在「不出」那一条里
-                seen == DdzSeen.Pass -> {
+                seen == DdzSeen.Pass && (played == null || played == 0) -> {
                     if (!steady(seat to seen)) return
+                    record(seat, emptyList())
+                }
+                // 张数没少、出牌区好一阵都空着:是「不出」,字被清桌(炸弹、新一轮)抹掉了
+                seen == DdzSeen.Empty && played == 0 && tries <= READ_TRIES - PASS_BY_COUNT -> {
+                    if (!steady(seat to "count_pass")) return
                     record(seat, emptyList())
                 }
                 // 牌还在飞过来(空着,或者正在落下认不准):下一帧再读,读几次还不行才算漏了、认不准
@@ -167,7 +225,13 @@ internal class DdzTracker {
         return true
     }
 
+    private fun seatOf(side: DdzSide) = if (side == DdzSide.Left) DdzSeat.Left else DdzSeat.Right
+
     private companion object {
+        const val FIRST = 20
+        const val FARMER = 17
+        /** 张数没少、出牌区空了这么多帧才按张数算不出。 */
+        const val PASS_BY_COUNT = 4
         const val READ_TRIES = 8
         const val STEADY_FRAMES = 3
         const val TRACE = 24

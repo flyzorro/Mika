@@ -56,6 +56,9 @@ internal object DdzCards {
 
     private val handGlyphs by lazy { load("/ddz/hand.txt", HAND_W * HAND_H) }
     private val tableGlyphs by lazy { load("/ddz/table.txt", TABLE_W * TABLE_H) }
+    private val countGlyphs by lazy { load("/ddz/count.txt", COUNT_W * COUNT_H) }
+    private const val COUNT_W = 12
+    private const val COUNT_H = 18
 
     /** 认牌要读的行;只在要认的那一刻读,平时轮询只读 [DdzScreen.ROWS]。 */
     val ROWS: List<Int> = ((5 until 105) + (STAGE_PLAY_Y0 until 420) + (HAND_TOP until 800) + STAGE_CONTINUE_SCAN_Y).toList()
@@ -191,6 +194,59 @@ internal object DdzCards {
         val b = p and 0xff
         return r > 200 && g > 170 && b > 110 && r - b < 140
     }
+
+    /**
+     * 闯关牌桌上左右两家手里还剩几张:头像边上牌背小框里的金色数字。框被挡住、字形不像就是 null。
+     * 地主的框在帽子下面,比农民的低一截,所以先按牌背的浅蓝找框。
+     */
+    fun counts(frame: RawFrame): Map<DdzSide, Int?> =
+        mapOf(DdzSide.Left to count(frame, COUNT_LEFT), DdzSide.Right to count(frame, COUNT_RIGHT))
+
+    private fun count(frame: RawFrame, x0: Int): Int? {
+        val x1 = x0 + COUNT_BAND
+        fun face(p: Int): Boolean {
+            val r = p shr 16 and 0xff
+            val g = p shr 8 and 0xff
+            val b = p and 0xff
+            return r in 75..145 && g in 105..180 && b in 160..225 && b - r in 55..115
+        }
+        fun gold(p: Int) = (p shr 16 and 0xff) > 200 && (p shr 8 and 0xff) > 110 && (p and 0xff) < 130
+        // 数字所在那几行牌背只剩两边一点,门槛放低;两位数宽,中间会断开十几行,断开不超过 20 行算同一个框
+        val rows = (COUNT_Y0 until COUNT_Y1).filter { y -> (x0 until x1).count { face(frame.pixel(it, y)) } >= 10 }
+        var best: IntRange? = null
+        var start = -1
+        var last = -1
+        for (y in rows + Int.MAX_VALUE) {
+            if (start >= 0 && y - last > 20) {
+                if (last - start >= 60 && (best == null || last - start > best.last - best.first)) best = start..last
+                start = -1
+            }
+            if (start < 0) start = y
+            last = y
+        }
+        val box = best ?: return null
+        val cols = DdzScreen.runs(x1 - x0, gap = 2, minWidth = 4) { c -> box.any { y -> gold(frame.pixel(x0 + c, y)) } }
+        if (cols.size !in 1..2) return null
+        var n = 0
+        for (col in cols) {
+            val inked = box.filter { y -> col.any { c -> gold(frame.pixel(x0 + c, y)) } }
+            val top = inked.first()
+            val bottom = inked.last()
+            if (bottom - top !in 25..45) return null
+            val ink = Array(bottom - top + 1) { r -> BooleanArray(col.last - col.first + 1) { c -> gold(frame.pixel(x0 + col.first + c, top + r)) } }
+            val digit = nearest(countGlyphs, boxSig(ink, COUNT_W, COUNT_H), COUNT_SURE, COUNT_MARGIN)?.toIntOrNull() ?: return null
+            n = n * 10 + digit
+        }
+        return n.takeIf { it in 0..20 }
+    }
+
+    private const val COUNT_LEFT = 360
+    private const val COUNT_RIGHT = 2013
+    private const val COUNT_BAND = 80
+    private const val COUNT_Y0 = 130
+    private const val COUNT_Y1 = 330
+    private const val COUNT_SURE = 0.15
+    private const val COUNT_MARGIN = 0.04
 
     /** 闹钟在谁桌前;在自己这里或者没有为 null。 */
     fun clock(frame: RawFrame): DdzSide? {
