@@ -118,6 +118,13 @@ internal object PhoneDdzTurn : PhoneTool {
     /** 问 DouZero;测试里换掉。返回响应正文,连不上为 null。 */
     internal var advise: suspend (url: String, body: String) -> String? = { url, body -> DdzAdvisor.post(url, body) }
 
+    /** 问 DouZero 服务这手牌叫几分(它自己跟自己打几十局看当地主的赢面);测试里换掉。连不上为 null。 */
+    internal var adviseBid: suspend (url: String, hand: List<String>) -> Int? = { url, hand ->
+        DdzAdvisor.post(url, buildJsonObject { put("hand", JsonArray(hand.map(::JsonPrimitive))) }.toString(), "bid")
+            ?.let { runCatching { (kotlinx.serialization.json.Json.parseToJsonElement(it) as? JsonObject)?.get("level") as? JsonPrimitive }.getOrNull() }
+            ?.contentOrNull?.toIntOrNull()?.takeIf { it in 0..3 }
+    }
+
     override val verb = Verb.PhoneGame
     override val risk = Risk.Write
     override val def = ToolDef("phone_ddz_turn", Prompts.tool("phone_ddz_turn"), mapOf(
@@ -415,7 +422,9 @@ internal object PhoneDdzTurn : PhoneTool {
                             // 叫分按钮出来时牌可能还在发(手里才十几张)、认不全:等下一帧,不交还模型
                             val hand = DdzCards.hand(frame, view)?.takeIf { it.size == 17 }
                             if (hand != null) {
-                                val button = view.buttons[bidLevel(hand)].takeIf { it.color != DdzColor.Gray } ?: view.buttons[0]
+                                // 先问 DouZero 当地主的赢面;服务连不上就按牌力的老规则
+                                val level = turn.advisor?.let { adviseBid(it, hand) } ?: bidLevel(hand)
+                                val button = view.buttons[level].takeIf { it.color != DdzColor.Gray } ?: view.buttons[0]
                                 if (press(button, ctx).moved) turn.bid = true
                             }
                             left = true

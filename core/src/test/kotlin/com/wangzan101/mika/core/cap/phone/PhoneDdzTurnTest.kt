@@ -25,6 +25,9 @@ import org.junit.Test
 import javax.imageio.ImageIO
 
 class PhoneDdzTurnTest {
+    /** 叫分默认不连网:服务连不上,按牌力的老规则叫。 */
+    @org.junit.Before fun noBidService() { PhoneDdzTurn.adviseBid = { _, _ -> null } }
+
     private fun frame(name: String): RawFrame {
         val image = ImageIO.read(javaClass.getResourceAsStream("/ddz/$name.jpg")!!)
         return RawFrame(image.width, image.height, DdzScreen.ROWS.associateWith { image.getRGB(0, it, image.width, 1, null, 0, image.width) })
@@ -323,6 +326,17 @@ class PhoneDdzTurnTest {
         assertTrue(game.taps[0].first > 1700)
         assertTrue(DdzCards.singleStageTable(lobbyFrame("vd_stage_call")))
         assertFalse(DdzCards.singleStageTable(lobbyFrame("vd_hand_follow")))
+    }
+
+    @Test fun theBidFollowsWhatDouZeroSaysTheHandIsWorth() = runTest {
+        // 牌力规则会叫三分的一手,DouZero 自己打了几十局说当地主赢不了:不叫(最左边的蓝色按钮)
+        val asked = mutableListOf<List<String>>()
+        PhoneDdzTurn.adviseBid = { _, hand -> asked += hand; 0 }
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(lobbyFrame("vd_stage_call"), full("vd_stage_call"))))
+        run(game, """{"action":"start","advisor":"http://mac:3426"}""")
+        assertEquals(17, asked.single().size)
+        assertEquals(1, game.taps.size)
+        assertTrue(game.taps[0].first < 1000)
     }
 
     @Test fun continuingIntoAHalfPlayedHandLeavesItToTheModel() = runTest {

@@ -10,11 +10,11 @@ internal object DdzAdvisor {
     private const val TIMEOUT_MS = 2_000
 
     /** 连不上再试一次:手机解析 .local 主机名、Wi-Fi 省电偶尔会让头一次超时,一手有 15 秒。 */
-    suspend fun post(url: String, body: String): String? = once(url, body) ?: once(url, body)
+    suspend fun post(url: String, body: String, path: String = "act"): String? = once(url, body, path) ?: once(url, body, path)
 
-    private suspend fun once(url: String, body: String): String? = withContext(Dispatchers.IO) {
+    private suspend fun once(url: String, body: String, path: String): String? = withContext(Dispatchers.IO) {
         runCatching {
-            val conn = URI("${url.trimEnd('/')}/act").toURL().openConnection() as HttpURLConnection
+            val conn = URI("${url.trimEnd('/')}/$path").toURL().openConnection() as HttpURLConnection
             conn.connectTimeout = TIMEOUT_MS
             conn.readTimeout = TIMEOUT_MS
             conn.requestMethod = "POST"
