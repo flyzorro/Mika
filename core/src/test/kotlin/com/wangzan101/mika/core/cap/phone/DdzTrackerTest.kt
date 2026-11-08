@@ -256,6 +256,23 @@ class DdzTrackerTest {
         assertEquals(listOf("A", "K", "Q", "J", "10", "9", "8", "7"), tracker.history.first())
     }
 
+    @Test fun aRocketThatSkipsMeRightAfterItsCountDroppedIsMyPass() {
+        // 右家地主出 4445,左家农民王炸:张数一少就当轮到我了;我管不了,闹钟直接到了地主
+        counts = mapOf(DdzSide.Left to 17, DdzSide.Right to 16)
+        right = DdzSeen.Cards("4 4 4 5".split(' '))
+        repeat(2) { seeCounted(null) }
+        left = DdzSeen.Pass
+        repeat(3) { seeCounted(DdzSeat.Me) }
+        tracker.mine(emptyList())
+        right = DdzSeen.Pass
+        left = DdzSeen.Cards(listOf("BJ", "SJ"))
+        counts = mapOf(DdzSide.Left to 15, DdzSide.Right to 16)
+        repeat(3) { seeCounted(null) }
+        repeat(3) { seeCounted(DdzSeat.Right) }
+        assertEquals(listOf(listOf("BJ", "SJ"), emptyList()), tracker.history.takeLast(2))
+        assertEquals(6, tracker.history.size)
+    }
+
     @Test fun aGuessedCardIsOnlyTrustedFromTheLandlord() {
         // 我是地主,左家是农民:他那张认不准的不能按猜的补
         tracker.observe(DdzSeat.Me, { DdzSeen.Empty }, { bottom }, leadingWith20 = true, leading = true)

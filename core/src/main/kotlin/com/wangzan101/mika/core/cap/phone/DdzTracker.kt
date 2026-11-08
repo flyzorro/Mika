@@ -112,13 +112,16 @@ internal class DdzTracker {
         resolve(seen)
     }
 
-    /** 闹钟从 [active] 走到了 [turn]:中间的几家都出完了;跳过的是自己,就是游戏替我不出了(管不了王炸时不轮到我)。 */
+    /**
+     * 闹钟从 [active] 走到了 [turn]:中间的几家都出完了。走过自己(包括从自己这里走开)而工具没出过牌([mine] 会把
+     * [active] 挪到下家),就是游戏替我不出了:管不了王炸时根本不轮到我。
+     */
     private fun advance(turn: DdzSeat) {
         val from = active ?: return
         active = turn
         var seat: DdzSeat = from
         while (seat != turn) {
-            if (seat != DdzSeat.Me || seat != from) waiting.addLast(seat to READ_TRIES)
+            waiting.addLast(seat to READ_TRIES)
             seat = seat.next
         }
     }
