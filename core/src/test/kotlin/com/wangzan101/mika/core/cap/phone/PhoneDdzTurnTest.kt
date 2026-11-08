@@ -328,6 +328,19 @@ class PhoneDdzTurnTest {
         assertFalse(DdzCards.singleStageTable(lobbyFrame("vd_hand_follow")))
     }
 
+    @Test fun onTheStageTheToolDeclinesToDoubleAndNeverTapsTheVideoButton() = runTest {
+        val double = full("vd_stage_double")
+        val view = DdzScreen.read(double)
+        assertEquals(DdzPhase.Double, view.phase)
+        assertEquals(DdzColor.Blue, view.buttons.first().color)
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(double, double, double, fullBlank)))
+        val dispatcher = toolDispatcher(game)
+        PhoneDdzTurn.markSingle(dispatcher.ctx, "http://mac:3426")
+        PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"wait"}""").jsonObject), dispatcher.ctx)
+        // 只点一次,点的是左边蓝色的不加倍
+        assertEquals(listOf(view.buttons.first().let { it.x to it.y }), game.taps)
+    }
+
     @Test fun theBidFollowsWhatDouZeroSaysTheHandIsWorth() = runTest {
         // 牌力规则会叫三分的一手,DouZero 自己打了几十局说当地主赢不了:不叫(最左边的蓝色按钮)
         val asked = mutableListOf<List<String>>()

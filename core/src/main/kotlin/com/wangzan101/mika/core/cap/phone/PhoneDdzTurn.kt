@@ -94,6 +94,8 @@ internal object PhoneDdzTurn : PhoneTool {
         var stage = false
         /** 这一轮叫分已经按过了:按完按钮还会留几帧。 */
         var bid = false
+        /** 这一轮已经点了不加倍。 */
+        var declined = false
         var advisor: String? = null
         var tracker: DdzTracker? = null
         val decisions = mutableListOf<Long>()
@@ -412,6 +414,7 @@ internal object PhoneDdzTurn : PhoneTool {
                 }
                 if (offTable) { waitOrSteer { delay(POLL_MS) } ?: return last; continue }
                 if (view.phase != DdzPhase.Call) turn.bid = false
+                if (view.phase != DdzPhase.Double) turn.declined = false
                 dealt(turn, view)
                 if (turn.single) track(turn, frame, view)
                 when (view.phase) {
@@ -435,8 +438,13 @@ internal object PhoneDdzTurn : PhoneTool {
                         // 等的时候前台可能换了,点之前再认一次;点了等它退出托管,别连着点
                         if (ctx.screen.peek().packageName == PACKAGE && ctx.screen.quickTap(view.buttons[0].x, view.buttons[0].y)) delay(AUTO_CANCEL_MS)
                     }
-                    // 加倍只有约 5 秒,模型来不及,让它走完就是不加倍
-                    DdzPhase.Other, DdzPhase.Double -> left = true
+                    // 加倍只有约 5 秒,模型来不及:单机局里自己点最左边蓝色的不加倍(加倍要看视频,绝不点);不是单机就让它走完
+                    DdzPhase.Double -> {
+                        left = true
+                        val no = view.buttons.first()
+                        if (turn.single && !turn.declined && no.color == DdzColor.Blue && press(no, ctx).moved) turn.declined = true
+                    }
+                    DdzPhase.Other -> left = true
                     DdzPhase.Result -> {
                         turn.tracker = null
                         if (left || view.phase != from) return view

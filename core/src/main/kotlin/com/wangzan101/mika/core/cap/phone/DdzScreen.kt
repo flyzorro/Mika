@@ -109,6 +109,8 @@ internal object DdzScreen {
         val blue = row.firstOrNull()?.color == DdzColor.Blue
         return when {
             row.size == 3 && blue && row[2].color == DdzColor.Green -> DdzPhase.Double
+            // 闯关的加倍只有两个:蓝色不加倍、黄色加倍(带看视频的图标,绝不点)
+            row.size == 2 && blue && row[1].color == DdzColor.Yellow -> DdzPhase.Double
             row.size == 3 && blue -> DdzPhase.Follow
             // 闯关里要不起时只剩一个蓝色的不出
             row.size == 1 && blue -> DdzPhase.Follow
