@@ -102,6 +102,15 @@ class DdzCardsTest {
         assertEquals(DdzSeen.Cards(listOf("5")), DdzCards.play(frame("vd_stage_left5_ribbon"), DdzSide.Left))
     }
 
+    @Test fun readsRibbonedSinglesOnTheStage() {
+        val right3 = frame("vd_stage_right3_ribbon_left6")
+        assertEquals(DdzSeen.Cards(listOf("6")), DdzCards.play(right3, DdzSide.Left))
+        val three = DdzCards.play(right3, DdzSide.Right)
+        assertTrue("$three", three == DdzSeen.Cards(listOf("3")) || (three is DdzSeen.Cards && three.ranks.single().startsWith("?") && "3" in three.ranks.single()))
+        val two = DdzCards.play(frame("vd_stage_left2_ribbon"), DdzSide.Left)
+        assertTrue("$two", two == DdzSeen.Cards(listOf("2")) || (two is DdzSeen.Cards && two.ranks.single().startsWith("?") && "2" in two.ranks.single()))
+    }
+
     @Test fun tellsAPassFromAnEmptyArea() {
         val frame = frame("table_leftpass")
         assertEquals(DdzSeen.Pass, DdzCards.play(frame, DdzSide.Left))

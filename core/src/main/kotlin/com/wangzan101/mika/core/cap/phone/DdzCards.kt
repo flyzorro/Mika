@@ -243,8 +243,15 @@ internal object DdzCards {
             // 最后一张整张露着:窄了 10 的 0 会切掉,宽了地主的绶带会进来;给了 [wideLast] 就两种都量,取更像的
             val widths = if (i == n - 1) listOfNotNull(glyphWidth, wideLast).map { (minOf(it.toDouble(), pitch) - 3).toInt() }.distinct()
             else listOf(minOf(pitch - 8, 48 * k).toInt())
+            // 闯关地主的最后一张:绶带的黑边从点数右上斜着往下(第 r 行在 43+0.85r 列),会和点数连成一块;
+            // 看得到绶带的红就把那条边和它右边都擦掉,那里本来就被绶带盖着
+            val ribbon = wideLast != null && i == n - 1 && (0 until 6).sumOf { r -> (52 until 62).count { c ->
+                frame.pixel(cx + c, top + 4 + r).let { p -> (p shr 16 and 0xff) > 170 && (p shr 8 and 0xff) < 110 && (p and 0xff) < 110 }
+            } } >= 45
             widths.mapNotNull { wide ->
-                val ink = Array(glyphRows) { r -> BooleanArray(wide) { c -> textInk(frame.pixel(cx + c, top + 4 + r)) } }
+                val ink = Array(glyphRows) { r -> BooleanArray(wide) { c ->
+                    (!ribbon || c < RIBBON_COL + RIBBON_SLOPE * r) && textInk(frame.pixel(cx + c, top + 4 + r))
+                } }
                 val box = rankBox(ink) ?: return@mapNotNull null
                 val red = share(frame, cx, top + 4, ink) { r, g, _ -> r - g > 50 } > 0.5
                 ranked(tableGlyphs, boxSig(box, TABLE_W, TABLE_H)).map { joker(it.first, red) to it.second }
@@ -253,6 +260,9 @@ internal object DdzCards {
                 ?: Read(null, emptyList())
         }
     }
+
+    private const val RIBBON_COL = 40
+    private const val RIBBON_SLOPE = 0.85
 
     private fun handGlyph(frame: RawFrame, x: Int, width: Int, from: Int): Pair<Array<BooleanArray>, Boolean>? {
         // 从牌面上往上走,走出牌面(桌布、炸弹的火苗)为止:上方自己刚出的牌和手牌之间隔着一道桌布
