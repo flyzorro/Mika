@@ -34,4 +34,7 @@ SHA-256 前 16 位应为：`landlord` 6f2971813495e9c5，`landlord_down` c173dbe
 ```
 
 `POST /act` 的参数见 `server.py` 开头。识别到的出牌历史在 DouZero 的牌局里重放，对不上就返回
-`history_mismatch` 一类的错误，调用方退回游戏的「提示」。
+`history_mismatch` 一类的错误，调用方把这一手交还模型。
+
+三家手里合起来剩 20 张以内时，`endgame.py` 把别家牌的各种分法摆开、按明牌算到底，有赢面更大的一手就换掉 DouZero 的选择
+（1.5 秒算不完就照用 DouZero）。算不了时还有两条硬规则：地主只剩一张、我是最后能管的农民就要管；队友只剩三张以内不压队友。

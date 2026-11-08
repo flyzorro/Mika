@@ -28,6 +28,10 @@ from douzero.dmc.models import model_dict
 from douzero.env.env import get_obs
 from douzero.env.game import GameEnv
 
+# 用 -I 起服务时脚本所在目录不在 sys.path 里:残局搜索和服务放在一起
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import endgame  # noqa: E402
+
 SEATS = ["landlord", "landlord_down", "landlord_up"]
 RANKS = {"3": 3, "4": 4, "5": 5, "6": 6, "7": 7, "8": 8, "9": 9, "10": 10, "J": 11, "Q": 12, "K": 13,
          "A": 14, "2": 17, "SJ": 20, "BJ": 30}
@@ -159,6 +163,15 @@ class Agent:
             return infoset.legal_actions[0]
         values = self.values(infoset)
         move = infoset.legal_actions[int(torch.argmax(values))]
+        # 剩的牌少时按明牌把各种分法算到底:有赢面更大的一手就换成它(赢面一样大的里挑 DouZero 打分最高的)
+        solved = endgame.best(infoset)
+        if solved is not None:
+            wins, _ = solved
+            score = {tuple(sorted(a)): float(values[i]) for i, a in enumerate(infoset.legal_actions)}
+            top = max(wins.get(m, 0) for m in score)
+            if wins.get(tuple(sorted(move)), 0) < top:
+                move = list(max((m for m in score if wins.get(m, 0) == top), key=score.get))
+            return move
         # 地主只剩一张、桌上是他的牌、我是他前面最后一个能管的农民:不管就是让他出完。DouZero 残局偶尔会选不出,
         # 能管就挑管得上的里面分最高的
         if not move and infoset.player_position == "landlord_up" and infoset.last_pid == "landlord" \

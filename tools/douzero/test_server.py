@@ -152,6 +152,37 @@ class TeammateTest(unittest.TestCase):
         self.assertEqual([], ADVISOR.act("landlord_down", hand, [], history))
 
 
+class EndgameTest(unittest.TestCase):
+    def test_the_search_finds_the_forced_win_douzero_missed(self):
+        # 地主只剩一张(最大到 J)、我小王是场上最大:小王接过来,再出对子、A、Q、8 一路走完
+        import time
+        history = [["6", "6", "6", "4"], ["2", "2", "2", "10"], [], [], ["J", "10", "9", "8", "7"], [], ["3", "3", "3", "3"], [], [],
+                   ["9", "9", "9", "7"], [], ["4", "J", "J", "J"], [], [], ["5", "5"], ["8", "8"], ["Q", "Q"], [], ["K", "K"], [], [],
+                   ["Q"], ["A"], [], ["2"], ["BJ"], [], [], ["5"], ["6"], ["A"], []]
+        hand = ["SJ", "A", "K", "K", "Q", "10", "10", "8", "7", "7"]
+        started = time.monotonic()
+        play = ADVISOR.act("landlord_up", hand, ["A", "4", "7"], history)
+        self.assertEqual(["SJ"], [NAMES[c] for c in play])
+        self.assertLess(time.monotonic() - started, 2.0)
+
+    def test_moves_follow_the_game_rules(self):
+        import endgame
+        hand = tuple(cards(["3", "3", "5", "BJ", "SJ"]))
+        self.assertIn((), endgame.moves(hand, cards(["4"])))
+        self.assertIn(tuple(cards(["5"])), endgame.moves(hand, cards(["4"])))
+        self.assertNotIn(tuple(cards(["3"])), endgame.moves(hand, cards(["4"])))
+        self.assertIn(tuple(sorted(cards(["SJ", "BJ"]))), endgame.moves(hand, cards(["4"])))
+        self.assertNotIn((), endgame.moves(hand, []))
+
+    def test_a_landlord_with_a_pair_left_who_leads_wins(self):
+        import endgame, time
+        solver = endgame.Solver(time.monotonic() + 1)
+        hands = {"landlord": tuple(cards(["4", "4"])), "landlord_down": tuple(cards(["A"])), "landlord_up": tuple(cards(["2", "3"]))}
+        self.assertTrue(solver.landlord_wins(hands, "landlord", (), "landlord"))
+        # 轮到农民先出:下家出 A 走完
+        self.assertFalse(solver.landlord_wins(hands, "landlord_down", (), "landlord_down"))
+
+
 class OrderTest(unittest.TestCase):
     def test_a_move_listed_high_to_low_still_replays(self):
         for seed in range(300):
