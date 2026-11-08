@@ -7,7 +7,7 @@ This repository uses a single-context domain documentation layout.
 Read these files when they exist:
 
 - `GLOSSARY.md` at the repository root.
-- `docs/adr/` for architecture decision records relevant to the area being changed.
+- architecture decision records relevant to the area being changed, when the repository provides them.
 
 If these files do not exist, proceed without creating them automatically.
 
