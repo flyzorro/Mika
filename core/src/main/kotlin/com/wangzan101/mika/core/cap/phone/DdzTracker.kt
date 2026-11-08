@@ -33,6 +33,7 @@ internal class DdzTracker {
     /** 最近几件事(闹钟换到谁、给谁记了什么),记不下去时随原因交出去,查是哪一步错的。 */
     val trace = ArrayDeque<String>()
     private var lastTurn: DdzSeat? = null
+    private var meFrames = 0
     /** 出完了、还没读到他出了什么的几家,按出牌顺序。 */
     private val waiting = ArrayDeque<Pair<DdzSeat, Int>>()
     /** 左右两家剩几张:上一帧的读数,和连着两帧一样的读数(一帧认错不算)。 */
@@ -46,11 +47,14 @@ internal class DdzTracker {
      * [leadingWith20] 此刻轮到自己先出、手里 20 张,[leading] 此刻轮到自己先出。
      */
     fun observe(
-        turn: DdzSeat?, read: (DdzSide) -> DdzSeen, bottom: () -> List<String>?, leadingWith20: Boolean = false, leading: Boolean = false,
+        rawTurn: DdzSeat?, read: (DdzSide) -> DdzSeen, bottom: () -> List<String>?, leadingWith20: Boolean = false, leading: Boolean = false,
         counts: () -> Map<DdzSide, Int?> = { emptyMap() },
     ) {
         if (broken != null) return
         frameNo++
+        // 轮到我要连着两帧:炸弹的特效会让一帧像是我的按钮,当成轮到我又走开,就会给我记一手不出
+        meFrames = if (rawTurn == DdzSeat.Me) meFrames + 1 else 0
+        val turn = if (rawTurn == DdzSeat.Me && meFrames < ME_FRAMES) null else rawTurn
         if (turn != lastTurn) { note("t=${turn?.name ?: "-"}"); lastTurn = turn }
         val read2 = counts()
         for (side in DdzSide.entries) {
@@ -245,6 +249,8 @@ internal class DdzTracker {
         /** 一手牌读几帧还认不准才放弃:飞机、炸弹的特效会盖住牌三四秒。 */
         const val READ_TRIES = 16
         const val STEADY_FRAMES = 3
+        /** 轮到我的画面要连着这么多帧才算。 */
+        const val ME_FRAMES = 2
         /** 张数对得上的一手要连着几帧读得一样。 */
         const val COUNTED_FRAMES = 2
         const val TRACE = 24

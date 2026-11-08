@@ -17,7 +17,7 @@ class DdzTrackerTest {
     private fun seeCounted(turn: DdzSeat?) = tracker.observe(turn, { if (it == DdzSide.Left) left else right }, { bottom }, counts = { counts })
 
     @Test fun anUnreadableBottomDoesNotHoldTheGameBack() {
-        repeat(3) { tracker.observe(DdzSeat.Me, { if (it == DdzSide.Right) DdzSeen.Cards(listOf("5")) else DdzSeen.Empty }, { null }) }
+        repeat(4) { tracker.observe(DdzSeat.Me, { if (it == DdzSide.Right) DdzSeen.Cards(listOf("5")) else DdzSeen.Empty }, { null }) }
         assertEquals(DdzSeat.Right, tracker.landlord)
         assertNull(tracker.bottom)
     }
@@ -37,7 +37,7 @@ class DdzTrackerTest {
         right = DdzSeen.Cards(listOf("3"))
         repeat(3) { see(DdzSeat.Left) }
         left = DdzSeen.Pass
-        repeat(3) { see(DdzSeat.Me) }
+        repeat(4) { see(DdzSeat.Me) }
         assertEquals(DdzSeat.Right, tracker.landlord)
         assertEquals(listOf(listOf("3"), emptyList()), tracker.history)
         assertTrue(tracker.ready())
@@ -55,7 +55,7 @@ class DdzTrackerTest {
         right = DdzSeen.Cards(listOf("4", "4"))
         left = DdzSeen.Cards(listOf("6", "6"))
         repeat(3) { see(DdzSeat.Left) }  // 右家出完
-        repeat(3) { see(DdzSeat.Me) }    // 左家出完
+        repeat(4) { see(DdzSeat.Me) }    // 左家出完
         assertEquals(listOf(listOf("3", "3"), listOf("4", "4"), listOf("6", "6")), tracker.history)
         assertEquals("landlord", tracker.seat())
     }
@@ -66,13 +66,13 @@ class DdzTrackerTest {
         right = DdzSeen.Cards(listOf("6"))
         left = DdzSeen.Cards(listOf("7"))
         see(null) // 我的按钮没了,两家的闹钟都没赶上
-        repeat(5) { see(DdzSeat.Me) } // 闹钟从我这里转了一圈又回来:右、左都出完了
+        repeat(6) { see(DdzSeat.Me) } // 闹钟从我这里转了一圈又回来:右、左都出完了
         assertEquals(listOf(listOf("4"), listOf("6"), listOf("7")), tracker.history)
     }
 
     @Test fun theLeftLandlordMakesMeItsNextSeat() {
         left = DdzSeen.Cards(listOf("3"))
-        repeat(3) { see(DdzSeat.Me) }
+        repeat(4) { see(DdzSeat.Me) }
         assertEquals(DdzSeat.Left, tracker.landlord)
         assertEquals("landlord_down", tracker.seat())
         assertTrue(tracker.ready())
@@ -85,14 +85,14 @@ class DdzTrackerTest {
         assertNull(tracker.broken)
         repeat(20) { see(DdzSeat.Left) }
         left = DdzSeen.Cards(listOf("5"))
-        see(DdzSeat.Me)
+        repeat(2) { see(DdzSeat.Me) }
         assertNull(tracker.landlord)
         assertEquals("unsure_first_play", tracker.broken)
     }
 
     @Test fun cardsStillFlyingAreReadOnALaterFrame() {
         left = DdzSeen.Cards(listOf("3"))
-        repeat(3) { see(DdzSeat.Me) }          // 左家是地主,出完轮到我
+        repeat(4) { see(DdzSeat.Me) }          // 左家是地主,出完轮到我
         tracker.mine(listOf("4"))
         left = DdzSeen.Empty
         see(DdzSeat.Left)        // 右家出完,牌还没落下
@@ -104,7 +104,7 @@ class DdzTrackerTest {
 
     @Test fun anUnreadableMoveStopsTheGameForDouZero() {
         left = DdzSeen.Cards(listOf("3"))
-        repeat(3) { see(DdzSeat.Me) }
+        repeat(4) { see(DdzSeat.Me) }
         tracker.mine(listOf("4"))
         right = DdzSeen.Unsure
         see(DdzSeat.Left)
@@ -117,7 +117,7 @@ class DdzTrackerTest {
 
     @Test fun aCardStillLandingIsReadOnceItSettles() {
         left = DdzSeen.Cards(listOf("3"))
-        repeat(3) { see(DdzSeat.Me) }
+        repeat(4) { see(DdzSeat.Me) }
         tracker.mine(listOf("4"))
         right = DdzSeen.Unsure
         see(DdzSeat.Left)
@@ -129,7 +129,7 @@ class DdzTrackerTest {
 
     @Test fun aMoveNeverSeenStopsAfterAFewFrames() {
         left = DdzSeen.Cards(listOf("3"))
-        repeat(3) { see(DdzSeat.Me) }
+        repeat(4) { see(DdzSeat.Me) }
         tracker.mine(listOf("4"))
         left = DdzSeen.Empty
         see(DdzSeat.Left)
@@ -151,14 +151,14 @@ class DdzTrackerTest {
         tracker.observe(DdzSeat.Me, { DdzSeen.Empty }, { bottom }, leadingWith20 = true, leading = true)
         tracker.mine(listOf("9", "10", "J", "Q", "K"))
         // 出牌按钮还留在画面上、两家的牌还没出:不能当成两家都不要、又轮到我
-        repeat(3) { tracker.observe(DdzSeat.Me, { DdzSeen.Empty }, { bottom }, leading = true) }
+        repeat(4) { tracker.observe(DdzSeat.Me, { DdzSeen.Empty }, { bottom }, leading = true) }
         assertEquals(1, tracker.history.size)
         assertFalse(tracker.ready())
         // 右家出了更大的顺子,左家不要,这才轮到我
         right = DdzSeen.Cards("A K Q J 10".split(' '))
         left = DdzSeen.Pass
         see(DdzSeat.Right)
-        repeat(5) { see(DdzSeat.Me) }
+        repeat(6) { see(DdzSeat.Me) }
         assertEquals(listOf("A", "K", "Q", "J", "10"), tracker.history[1])
         assertEquals(emptyList<String>(), tracker.history[2])
         assertTrue(tracker.ready())
@@ -181,7 +181,7 @@ class DdzTrackerTest {
         left = DdzSeen.Cards(listOf("3"))
         see(DdzSeat.Left)
         left = DdzSeen.Cards("7 7 7 3".split(' '))
-        repeat(3) { see(DdzSeat.Me) }
+        repeat(4) { see(DdzSeat.Me) }
         assertEquals(listOf(listOf("7", "7", "7", "3")), tracker.history)
     }
 
@@ -190,7 +190,7 @@ class DdzTrackerTest {
         right = DdzSeen.Cards(listOf("3"))
         repeat(3) { see(DdzSeat.Left) }
         left = DdzSeen.Pass
-        repeat(3) { see(DdzSeat.Me) }
+        repeat(4) { see(DdzSeat.Me) }
         tracker.mine("8 9 10 J Q".split(' '))
         right = DdzSeen.Cards(listOf("SJ", "BJ"))
         repeat(3) { see(DdzSeat.Left) }
@@ -199,7 +199,7 @@ class DdzTrackerTest {
         right = DdzSeen.Cards(listOf("9"))
         left = DdzSeen.Cards(listOf("10"))
         repeat(3) { see(DdzSeat.Left) }
-        repeat(3) { see(DdzSeat.Me) }
+        repeat(4) { see(DdzSeat.Me) }
         assertEquals(listOf(listOf("9"), listOf("10")), tracker.history.takeLast(2))
         assertEquals(8, tracker.history.size)
         assertTrue(tracker.ready())
@@ -209,7 +209,7 @@ class DdzTrackerTest {
         // 左家地主先出 3(20 张剩 19)
         counts = mapOf(DdzSide.Left to 19, DdzSide.Right to 17)
         left = DdzSeen.Cards(listOf("3"))
-        repeat(3) { seeCounted(DdzSeat.Me) }
+        repeat(4) { seeCounted(DdzSeat.Me) }
         tracker.mine(listOf("4"))
         // 右家不要、地主马上出对 A:闹钟一直没看到,两家的牌都摆着
         right = DdzSeen.Pass
@@ -223,7 +223,7 @@ class DdzTrackerTest {
     @Test fun aPassWhoseTextWasClearedIsReadFromTheCount() {
         counts = mapOf(DdzSide.Left to 19, DdzSide.Right to 17)
         left = DdzSeen.Cards(listOf("3"))
-        repeat(3) { seeCounted(DdzSeat.Me) }
+        repeat(4) { seeCounted(DdzSeat.Me) }
         tracker.mine(listOf("2"))
         // 右家不要,地主也不要(张数都没少),清了桌,又轮到我:两家的「不出」都没留下
         right = DdzSeen.Empty
@@ -238,10 +238,10 @@ class DdzTrackerTest {
         // 地主出 7773:叠成一摞时只看得到 3,张数已经少了四张
         counts = mapOf(DdzSide.Left to 16, DdzSide.Right to 17)
         left = DdzSeen.Cards(listOf("3"))
-        repeat(5) { seeCounted(DdzSeat.Me) }
+        repeat(6) { seeCounted(DdzSeat.Me) }
         assertTrue(tracker.history.isEmpty())
         left = DdzSeen.Cards("7 7 7 3".split(' '))
-        repeat(3) { seeCounted(DdzSeat.Me) }
+        repeat(4) { seeCounted(DdzSeat.Me) }
         assertEquals(listOf(listOf("7", "7", "7", "3")), tracker.history)
     }
 
@@ -250,8 +250,8 @@ class DdzTrackerTest {
         counts = mapOf(DdzSide.Left to 17, DdzSide.Right to 12)
         right = DdzSeen.Cards("A K Q J 10 9 8 7".split(' '))
         left = DdzSeen.Pass
-        seeCounted(DdzSeat.Me)
-        seeCounted(DdzSeat.Me)
+        repeat(2) { seeCounted(DdzSeat.Me) }
+        repeat(2) { seeCounted(DdzSeat.Me) }
         assertEquals(DdzSeat.Right, tracker.landlord)
         assertEquals(listOf("A", "K", "Q", "J", "10", "9", "8", "7"), tracker.history.first())
     }
@@ -262,7 +262,7 @@ class DdzTrackerTest {
         right = DdzSeen.Cards("4 4 4 5".split(' '))
         repeat(2) { seeCounted(null) }
         left = DdzSeen.Pass
-        repeat(3) { seeCounted(DdzSeat.Me) }
+        repeat(4) { seeCounted(DdzSeat.Me) }
         tracker.mine(emptyList())
         right = DdzSeen.Pass
         left = DdzSeen.Cards(listOf("BJ", "SJ"))
@@ -279,7 +279,7 @@ class DdzTrackerTest {
         right = DdzSeen.Cards(listOf("3"))
         repeat(2) { seeCounted(null) }
         left = DdzSeen.Pass
-        repeat(3) { seeCounted(DdzSeat.Me) }
+        repeat(4) { seeCounted(DdzSeat.Me) }
         tracker.mine(listOf("2"))
         right = DdzSeen.Cards(listOf("SJ"))
         counts = mapOf(DdzSide.Left to 17, DdzSide.Right to 18)
@@ -292,6 +292,18 @@ class DdzTrackerTest {
         assertEquals(listOf(listOf("SJ"), listOf("BJ"), emptyList(), emptyList()), tracker.history.takeLast(4))
     }
 
+    @Test fun oneFrameThatLooksLikeMyTurnDoesNotMoveTheTurn() {
+        // 我是地主出顺子,右家炸弹;炸弹的特效有一帧像我的按钮,接着轮到左家:不能给我记一手不出
+        repeat(2) { tracker.observe(DdzSeat.Me, { DdzSeen.Empty }, { bottom }, leadingWith20 = true, leading = true) }
+        tracker.mine("3 4 5 6 7 8 9".split(' '))
+        right = DdzSeen.Cards("10 10 10 10".split(' '))
+        repeat(3) { see(DdzSeat.Left) }
+        see(DdzSeat.Me)
+        repeat(3) { see(DdzSeat.Left) }
+        assertNull(tracker.broken)
+        assertEquals(2, tracker.history.size)
+    }
+
     @Test fun aGuessedCardIsOnlyTrustedFromTheLandlord() {
         // 我是地主,左家是农民:他那张认不准的不能按猜的补
         tracker.observe(DdzSeat.Me, { DdzSeen.Empty }, { bottom }, leadingWith20 = true, leading = true)
@@ -299,7 +311,7 @@ class DdzTrackerTest {
         right = DdzSeen.Pass
         left = DdzSeen.Cards(listOf("?4,K,J"))
         see(null)
-        repeat(20) { see(DdzSeat.Me) }
+        repeat(21) { see(DdzSeat.Me) }
         assertEquals("unsure_left", tracker.broken)
     }
 
@@ -309,7 +321,7 @@ class DdzTrackerTest {
         tracker.mine(listOf("5", "6", "7", "8", "9"))
         see(DdzSeat.Right)
         // 两家的「不出」各要连着看到几帧
-        repeat(5) { tracker.observe(DdzSeat.Me, { DdzSeen.Empty }, { bottom }, leading = true) }
+        repeat(6) { tracker.observe(DdzSeat.Me, { DdzSeen.Empty }, { bottom }, leading = true) }
         assertNull(tracker.broken)
         assertTrue(tracker.ready())
         assertEquals(listOf(listOf("5", "6", "7", "8", "9"), emptyList(), emptyList()), tracker.history)
