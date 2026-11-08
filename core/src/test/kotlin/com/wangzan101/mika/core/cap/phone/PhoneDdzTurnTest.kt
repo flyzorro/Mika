@@ -266,11 +266,21 @@ class PhoneDdzTurnTest {
         return RawFrame(image.width, image.height, (DdzScreen.ROWS + DdzCards.ROWS + DdzCards.LOBBY_ROWS).distinct().associateWith { image.getRGB(0, it, image.width, 1, null, 0, image.width) })
     }
 
-    @Test fun theLobbySendsTheModelToTheFreeStageMode() = runTest {
-        // 快速开始进的经典场要金币,不够就弹救济金
+    @Test fun theSinglePlayerLobbyStartsAClassicGame() = runTest {
+        // 单机大厅右下角的快速开始:经典场
         val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(lobbyFrame("vd_lobby"), fullBlank, full("call"))))
-        assertEquals("use_stage_mode", run(game, """{"action":"start","advisor":"http://mac:3426"}""").text("error"))
-        assertTrue(game.taps.isEmpty())
+        assertEquals("true", run(game, """{"action":"start","advisor":"http://mac:3426"}""").text("ok"))
+        assertEquals(2140 to 995, game.taps.first())
+    }
+
+    @Test fun aFinishedClassicHandIsPlayedAgainButTheReliefPopupGoesToTheModel() = runTest {
+        // 打完一手的结算点再来一局;接着弹的救济金(双倍领取要看视频)不点,交给模型
+        val bust = lobbyFrame("vd_result_bust")
+        val relief = lobbyFrame("vd_relief")
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(lobbyFrame("vd_lobby"), bust) + List(5) { relief }))
+        val result = run(game, """{"action":"start","advisor":"http://mac:3426","hands":3}""")
+        assertEquals("1", result.text("handsPlayed"))
+        assertEquals(listOf(2140 to 995, DdzScreen.read(bust).buttons[0].let { it.x to it.y }), game.taps)
     }
 
     @Test fun theLobbyLingeringRightAfterStartDoesNotCancelSinglePlayer() = runTest {
