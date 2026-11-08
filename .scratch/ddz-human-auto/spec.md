@@ -1,6 +1,6 @@
 # 支持经典斗地主真人局全自动模式
 
-Status: ready-for-agent
+Status: resolved
 
 ## Problem Statement
 
