@@ -27,6 +27,9 @@ internal object DdzSessionReason {
     const val HISTORY_MISMATCH = "history_mismatch"
     const val HAND_DRIFT = "hand_drift"
     const val SERVICE_UNAVAILABLE = "service_unavailable"
+    const val APP_SWITCH = "app_switch"
+    const val LOBBY_RETURN = "lobby_return"
+    const val UNKNOWN_POPUP = "unknown_popup"
 }
 
 /** A deliberately small seam for policy decisions that happen before a model play call. */

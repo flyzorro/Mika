@@ -1,6 +1,6 @@
 # Integrate human mode into the phone turn engine
 
-Status: pending
+Status: resolved
 Blocked by: 01, 02
 
 ## Goal
