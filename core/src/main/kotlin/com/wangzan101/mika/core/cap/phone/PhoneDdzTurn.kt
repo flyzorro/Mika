@@ -101,6 +101,8 @@ internal object PhoneDdzTurn : PhoneTool {
         var bid = false
         /** 这一轮已经点了不加倍。 */
         var declined = false
+        /** Human mode has acted on the currently visible decision; prevents repeated taps while it settles. */
+        var humanActionSeen = false
         var advisor: String? = null
         var tracker: DdzTracker? = null
         val decisions = mutableListOf<Long>()
@@ -182,9 +184,16 @@ internal object PhoneDdzTurn : PhoneTool {
         if (ctx.screen.peek().packageName != PACKAGE) {
             turn.single = false
             if (turn.mode == DdzMode.Human) {
-                turn.mode = null
                 turn.state = DdzSessionState.Paused
-                turn.reason = DdzSessionReason.UNKNOWN_SCENE
+                turn.reason = DdzSessionReason.APP_SWITCH
+                return ToolExecution(buildJsonObject {
+                    put("ok", false)
+                    put("error", "paused")
+                    put("recoverable", true)
+                    put("mode", DdzMode.Human.wire)
+                    put("state", DdzSessionState.Paused.wire)
+                    put("reason", DdzSessionReason.APP_SWITCH)
+                })
             }
             return refused("wrong_app")
         }
@@ -209,7 +218,11 @@ internal object PhoneDdzTurn : PhoneTool {
         val tapMs = now() - tapStart
         val waitStart = now()
         val next = when {
-            move.moved || action == "wait" -> awaitDecision(ctx, turn, view.phase, move.moved, if (action == "again") AGAIN_POLLS else MAX_POLLS)
+            move.moved || action == "wait" -> awaitDecision(
+                ctx, turn, view.phase,
+                moved = move.moved || (action == "wait" && turn.mode == DdzMode.Human),
+                polls = if (action == "again") AGAIN_POLLS else MAX_POLLS,
+            )
             else -> read(ctx) ?: view
         }
         val waitMs = now() - waitStart
@@ -277,6 +290,10 @@ internal object PhoneDdzTurn : PhoneTool {
 
     private suspend fun startHuman(ctx: ToolContext, turn: Turn, advisor: String): ToolExecution {
         val page = ctx.screen.rawFrame(FULL_ROWS) ?: return refused("no_frame")
+        // Human mode may only attach to the current classic table. Stage tables and the
+        // single-player lobby share the same button colors, so the explicit markers are a
+        // required eligibility gate before any human-mode state is installed.
+        if (DdzCards.singleStageTable(page) || DdzCards.singleLobby(page) || DdzCards.singleStage(page)) return refused("not_human_game")
         val view = DdzScreen.read(page)
         if (view.phase == DdzPhase.Other) return refused("not_human_game")
         turn.single = false
@@ -507,8 +524,8 @@ internal object PhoneDdzTurn : PhoneTool {
     private fun pauseReason(error: String) = when (error) {
         "hand_mismatch", "hand_drift" -> DdzSessionReason.HAND_DRIFT
         "douzero_history_mismatch", "history_not_ready" -> DdzSessionReason.HISTORY_MISMATCH
-        "douzero_unreachable" -> DdzSessionReason.SERVICE_UNAVAILABLE
-        "rejected", "select_failed", "confirm_failed" -> DdzSessionReason.REJECTED_ACTION
+        "douzero_unreachable", "douzero_bad_reply" -> DdzSessionReason.SERVICE_UNAVAILABLE
+        "rejected", "select_failed", "confirm_failed", "douzero_move_failed_pick" -> DdzSessionReason.REJECTED_ACTION
         else -> DdzSessionReason.UNKNOWN_SCENE
     }
 
@@ -583,11 +600,11 @@ internal object PhoneDdzTurn : PhoneTool {
      * 按出牌,看画面确认牌出去了。抬牌动画里按下去游戏可能不认,没出去就再按一次;还不走才算不合规。
      * 用选牌前的 [view] 里的位置:按钮不动,而选完这一帧可能已经超时、没有按钮了。
      */
-    private suspend fun confirm(view: DdzView, ctx: ToolContext): Boolean {
+    private suspend fun confirm(view: DdzView, ctx: ToolContext, turn: Turn? = null): Boolean {
         // 只剩不出时最后一个按钮就是不出,不能当出牌按
         if (DdzScreen.onlyPass(view)) return false
         repeat(2) {
-            if (!ctx.screen.quickTap(view.buttons.last().x, view.buttons.last().y)) return false
+            if (!tap(ctx, turn, view.buttons.last().x, view.buttons.last().y)) return false
             delay(VERDICT_MS)
             val after = read(ctx)
             if (after == null || after.phase != view.phase || after.handCount != view.handCount) return true
@@ -596,13 +613,13 @@ internal object PhoneDdzTurn : PhoneTool {
     }
 
     /** 把抬起的牌改成 [want];点完看画面,没到位再补一次。 */
-    private suspend fun select(want: Set<Int>, ctx: ToolContext): DdzView? {
+    private suspend fun select(want: Set<Int>, ctx: ToolContext, turn: Turn? = null): DdzView? {
         repeat(2) {
             val view = read(ctx)?.takeIf { it.phase == DdzPhase.Follow || it.phase == DdzPhase.Lead } ?: return null
             val toggle = (want - view.lifted) + (view.lifted - want)
             if (toggle.isEmpty()) return view
             for (index in toggle) {
-                if (!ctx.screen.quickTap(view.cardX(index), DdzScreen.CARD_Y)) return null
+                if (!tap(ctx, turn, view.cardX(index), DdzScreen.CARD_Y)) return null
                 delay(TAP_GAP_MS)
             }
             // 抬牌有动画:还没抬到位就再点一下,会把它点回去。多看几帧,真没抬起来才重点
@@ -614,8 +631,19 @@ internal object PhoneDdzTurn : PhoneTool {
         return read(ctx)?.takeIf { it.lifted == want }
     }
 
-    private suspend fun press(button: DdzButton, ctx: ToolContext) =
-        if (ctx.screen.quickTap(button.x, button.y)) Move(true) else Move(false, "tap_failed")
+    private suspend fun press(button: DdzButton, ctx: ToolContext, turn: Turn? = null) =
+        if (tap(ctx, turn, button.x, button.y)) Move(true) else Move(false, "tap_failed")
+
+    /** Every automatic human tap rechecks the stop latch and foreground app immediately before input. */
+    private suspend fun tap(ctx: ToolContext, turn: Turn?, x: Int, y: Int): Boolean {
+        if (turn?.stopped == true) return false
+        if (turn != null && ctx.screen.peek().packageName != PACKAGE) {
+            turn.state = DdzSessionState.Paused
+            turn.reason = DdzSessionReason.APP_SWITCH
+            return false
+        }
+        return ctx.screen.quickTap(x, y)
+    }
 
     /** 模型想的时候超时进了托管:先取消,再按取消后的画面做。 */
     private suspend fun takeBackControl(view: DdzView, ctx: ToolContext): DdzView {
@@ -632,13 +660,28 @@ internal object PhoneDdzTurn : PhoneTool {
         var left = !moved
         var last = DdzView(DdzPhase.Other, emptyList(), 0, 0.0, 0, emptySet())
         var budget = polls
+        var humanPhase: DdzPhase? = null
+        turn.humanActionSeen = false
         // 一直看不到手牌就不是在牌桌上(大厅、选关页、弹窗),干等等不来:发牌用不了这么久
         var empty = 0
         while (budget-- > 0) {
-            val frame = ctx.screen.rawFrame(if (turn.single) FULL_ROWS else DdzScreen.ROWS)
+            if (turn.stopped) return last
+            if (turn.mode == DdzMode.Human && turn.state == DdzSessionState.Paused) return last
+            val frame = ctx.screen.rawFrame(if (turn.single || turn.mode == DdzMode.Human) FULL_ROWS else DdzScreen.ROWS)
             val view = frame?.let(DdzScreen::read)
             if (view != null) {
                 last = view
+                if (turn.mode == DdzMode.Human) {
+                    if (view.phase == DdzPhase.Other) {
+                        turn.state = DdzSessionState.Paused
+                        turn.reason = if (DdzCards.singleLobby(frame)) DdzSessionReason.LOBBY_RETURN else DdzSessionReason.UNKNOWN_SCENE
+                        return view
+                    }
+                    if (humanPhase != view.phase) {
+                        humanPhase = view.phase
+                        turn.humanActionSeen = false
+                    }
+                }
                 // 见过闯关牌桌以后,没有「闯关模式」字样的画面(广告、弹窗)一律不认:广告的按钮和白块会被认成轮到我出、手里一张。
                 // 和没手牌一样计数,一直这样就交还模型去关;但不算发新牌的空档
                 val table = turn.single && DdzCards.singleStageTable(frame)
@@ -678,6 +721,21 @@ internal object PhoneDdzTurn : PhoneTool {
                 when (view.phase) {
                     // 单机局叫分按牌力定,不等模型(叫分只有十来秒);灰的分数点不了,按不叫算
                     DdzPhase.Call -> when {
+                        turn.mode == DdzMode.Human && !turn.humanActionSeen -> {
+                            val hand = DdzCards.hand(frame, view)?.takeIf { it.size == 17 }
+                            val level = hand?.let(HumanDdzPolicy::callLevel)
+                            val button = level?.let { view.buttons.getOrNull(it) }
+                            when {
+                                hand == null || button == null -> humanPause(turn, DdzSessionReason.UNKNOWN_SCENE)
+                                button.color == DdzColor.Gray -> humanPause(turn, DdzSessionReason.REJECTED_ACTION)
+                                press(button, ctx, turn).moved -> {
+                                    turn.bid = true
+                                    turn.humanActionSeen = true
+                                }
+                                else -> humanPause(turn, DdzSessionReason.REJECTED_ACTION)
+                            }
+                            left = true
+                        }
                         !turn.single -> if (left || view.phase != from) return view
                         !turn.bid -> {
                             // 叫分按钮出来时牌可能还在发(手里才十几张)、认不全:等下一帧,不交还模型
@@ -699,8 +757,28 @@ internal object PhoneDdzTurn : PhoneTool {
                     // 加倍只有约 5 秒,模型来不及:单机局里自己点最左边蓝色的不加倍(加倍要看视频,绝不点);不是单机就让它走完
                     DdzPhase.Double -> {
                         left = true
-                        val no = view.buttons.first()
-                        if (turn.single && !turn.declined && no.color == DdzColor.Blue && press(no, ctx).moved) turn.declined = true
+                        if (turn.mode == DdzMode.Human && !turn.humanActionSeen) {
+                            val hand = DdzCards.hand(frame, view)
+                            // Bottom cards are often still face-down during doubling. Unknown bottom
+                            // cards conservatively mean "do not double"; they must not block the safe pass.
+                            val bottom = DdzCards.bottom(frame).orEmpty()
+                            val double = hand != null && HumanDdzPolicy.shouldDouble(hand, bottom)
+                            val button = if (double) {
+                                view.buttons.lastOrNull { it.color == DdzColor.Green || it.color == DdzColor.Yellow }
+                            } else view.buttons.firstOrNull()
+                            when {
+                                hand == null || button == null -> humanPause(turn, DdzSessionReason.UNKNOWN_SCENE)
+                                button.color == DdzColor.Gray -> humanPause(turn, DdzSessionReason.REJECTED_ACTION)
+                                press(button, ctx, turn).moved -> {
+                                    turn.declined = !double
+                                    turn.humanActionSeen = true
+                                }
+                                else -> humanPause(turn, DdzSessionReason.REJECTED_ACTION)
+                            }
+                        } else {
+                            val no = view.buttons.first()
+                            if (turn.single && !turn.declined && no.color == DdzColor.Blue && press(no, ctx).moved) turn.declined = true
+                        }
                     }
                     DdzPhase.Other -> left = true
                     DdzPhase.Result -> {
@@ -718,22 +796,15 @@ internal object PhoneDdzTurn : PhoneTool {
                             left = true
                             continue
                         }
+                        if (turn.mode == DdzMode.Human) return view
                         if (left || view.phase != from) { if (turn.single && !turn.stage) turn.played++; return view }
                     }
-                    else -> if (left || view.phase != from) {
+                    else -> if (left || view.phase != from || (turn.mode == DdzMode.Human && !turn.humanActionSeen)) {
                         if (turn.mode == DdzMode.Human) {
-                            when {
-                                turn.tracker?.ready() == true -> {
-                                    turn.humanSettling = 0
-                                    return view
-                                }
-                                turn.humanSettling++ < HUMAN_SETTLE_POLLS -> Unit
-                                else -> {
-                                    turn.tracker?.fail("history_not_ready")
-                                    turn.state = DdzSessionState.Paused
-                                    turn.reason = DdzSessionReason.HISTORY_MISMATCH
-                                    return view
-                                }
+                            when (byHuman(ctx, turn, frame, view)) {
+                                Auto.Played -> { left = false; turn.humanActionSeen = true; budget = polls }
+                                Auto.Settling -> Unit
+                                Auto.Off -> return view
                             }
                         } else {
                             when (byDouZero(ctx, turn, frame, view)) {
@@ -787,6 +858,69 @@ internal object PhoneDdzTurn : PhoneTool {
     }
 
     private enum class Auto { Played, Settling, Off }
+
+    /** Human mode keeps the same advisor protocol as single-player while refusing to act on an
+     * unconfirmed table, hand, or visible history. */
+    private suspend fun byHuman(
+        ctx: ToolContext, turn: Turn, frame: com.wangzan101.mika.core.uistate.RawFrame, view: DdzView,
+    ): Auto {
+        val tracker = turn.tracker ?: return humanPause(turn, DdzSessionReason.HISTORY_MISMATCH).let { Auto.Off }
+        val advisor = turn.advisor ?: return humanPause(turn, DdzSessionReason.SERVICE_UNAVAILABLE).let { Auto.Off }
+        if (tracker.broken != null) return humanPause(turn, pauseReason(tracker.broken!!)).let { Auto.Off }
+        val hand = DdzCards.hand(frame, view)
+        if (!tracker.ready() || hand == null) {
+            if (turn.humanSettling++ < HUMAN_SETTLE_POLLS) return Auto.Settling
+            tracker.fail("history_not_ready")
+            return humanPause(turn, DdzSessionReason.HISTORY_MISMATCH).let { Auto.Off }
+        }
+        turn.humanSettling = 0
+        if (turn.expectedHand?.sorted() != null && turn.expectedHand!!.sorted() != hand.sorted()) {
+            tracker.fail("hand_drift")
+            return humanPause(turn, DdzSessionReason.HAND_DRIFT).let { Auto.Off }
+        }
+        val play = askDouZero(advisor, tracker, hand)
+        val cards = play.getOrElse {
+            tracker.fail(it.message ?: "douzero_unreachable")
+            return humanPause(turn, pauseReason(it.message ?: "douzero_unreachable")).let { Auto.Off }
+        }
+        if (cards.any { it !in SNAPSHOT_RANKS }) {
+            tracker.fail("douzero_bad_reply")
+            return humanPause(turn, DdzSessionReason.SERVICE_UNAVAILABLE).let { Auto.Off }
+        }
+        // An empty answer means pass only when following. A lead must still make a legal visible
+        // move, so use the smallest confirmed card as the conservative fallback.
+        val chosen = if (cards.isEmpty() && view.phase == DdzPhase.Lead) listOf(hand.last()) else cards
+        if (chosen.isEmpty()) {
+            if (view.phase != DdzPhase.Follow) return humanPause(turn, DdzSessionReason.REJECTED_ACTION).let { Auto.Off }
+            val button = view.buttons.firstOrNull() ?: return humanPause(turn, DdzSessionReason.REJECTED_ACTION).let { Auto.Off }
+            if (!press(button, ctx, turn).moved) return humanPause(turn, DdzSessionReason.REJECTED_ACTION).let { Auto.Off }
+            tracker.mine(emptyList())
+            turn.expectedHand = hand
+            return Auto.Played
+        }
+        val want = pick(hand, chosen) ?: run {
+            tracker.fail("douzero_move_failed_pick")
+            return humanPause(turn, DdzSessionReason.REJECTED_ACTION).let { Auto.Off }
+        }
+        val selected = select(want, ctx, turn)
+            ?: return humanPause(turn, DdzSessionReason.REJECTED_ACTION).let { Auto.Off }
+        if (selected.phase != view.phase || selected.handCount != hand.size) {
+            tracker.fail("hand_drift")
+            return humanPause(turn, DdzSessionReason.HAND_DRIFT).let { Auto.Off }
+        }
+        if (!confirm(selected, ctx, turn)) {
+            tracker.fail("confirm_failed")
+            return humanPause(turn, DdzSessionReason.REJECTED_ACTION).let { Auto.Off }
+        }
+        tracker.mine(chosen)
+        turn.expectedHand = hand.toMutableList().apply { chosen.forEach { remove(it) } }
+        return Auto.Played
+    }
+
+    private fun humanPause(turn: Turn, reason: String) {
+        turn.state = DdzSessionState.Paused
+        turn.reason = reason
+    }
 
     /**
      * 轮到自己出牌:历史对得上就问 DouZero 出这一手([Auto.Played],接着等);别家的牌还在飞、没读到,

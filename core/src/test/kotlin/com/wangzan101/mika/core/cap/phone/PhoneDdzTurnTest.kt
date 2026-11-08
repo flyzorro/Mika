@@ -9,6 +9,8 @@ import com.wangzan101.mika.core.tool.ToolExecution
 import com.wangzan101.mika.core.uistate.RawFrame
 import com.wangzan101.mika.core.uistate.ScreenPort
 import com.wangzan101.mika.core.uistate.ScreenSnapshot
+import kotlinx.coroutines.async
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withContext
@@ -36,12 +38,12 @@ class PhoneDdzTurnTest {
 
     private val blank = RawFrame(2412, 1080, DdzScreen.ROWS.associateWith { IntArray(2412) })
 
-    private class Game(val app: String, val frames: ArrayDeque<RawFrame>, val base: FakeScreen = FakeScreen()) : ScreenPort by base {
+    private open class Game(val app: String, val frames: ArrayDeque<RawFrame>, val base: FakeScreen = FakeScreen()) : ScreenPort by base {
         val taps = mutableListOf<Pair<Int, Int>>()
         var last: RawFrame? = null
-        override suspend fun peek() = ScreenSnapshot("p1", app, emptyList(), 2412, 1080)
+        open override suspend fun peek() = ScreenSnapshot("p1", app, emptyList(), 2412, 1080)
         override suspend fun rawFrame(rows: List<Int>): RawFrame? { last = frames.removeFirstOrNull() ?: last; return last }
-        override suspend fun quickTap(x: Int, y: Int): Boolean { taps += x to y; return true }
+        open override suspend fun quickTap(x: Int, y: Int): Boolean { taps += x to y; return true }
     }
 
     private suspend fun run(game: Game, json: String): ToolExecution {
@@ -790,5 +792,90 @@ class PhoneDdzTurnTest {
         assertEquals("invalid_snapshot", result.text("error"))
         assertEquals("history_phase", result.text("reason"))
         assertTrue(game.taps.isEmpty())
+    }
+
+    @Test fun humanStartRefusesTheSinglePlayerStageTable() = runTest {
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(full("vd_stage_call"))))
+        val result = run(game, """{"action":"start","mode":"human","advisor":"http://mac:3426"}""")
+        assertEquals("not_human_game", result.text("error"))
+        assertTrue(game.taps.isEmpty())
+    }
+
+    @Test fun humanWaitAutomaticallyCallsAndDeclinesDoubling() = runTest {
+        val call = full("call")
+        val double = full("double")
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(call, call, call, double, double, full("lead"))))
+        val dispatcher = toolDispatcher(game)
+        PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
+        val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"wait"}""").jsonObject), dispatcher.ctx)
+        assertEquals("lead", result.text("phase"))
+        assertEquals(2, game.taps.size)
+        assertEquals(DdzScreen.read(call).buttons[3].let { it.x to it.y }, game.taps[0])
+        assertEquals(DdzScreen.read(double).buttons[0].let { it.x to it.y }, game.taps[1])
+    }
+
+    @Test fun humanWaitUsesTheAdvisorToPassAtFollow() = runTest {
+        val follow = full("hand_t1")
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(follow, follow, follow, fullBlank)))
+        val dispatcher = toolDispatcher(game)
+        val tracker = leftLedPairs()
+        val saved = PhoneDdzTurn.advise
+        PhoneDdzTurn.advise = { _, _ -> """{"play":[]}""" }
+        try {
+            PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
+            PhoneDdzTurn.useTracker(dispatcher.ctx, tracker)
+            val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"wait"}""").jsonObject), dispatcher.ctx)
+            assertEquals("paused", result.text("state"))
+            assertEquals("unknown_scene", result.text("reason"))
+            assertEquals(1, game.taps.size)
+            assertEquals(DdzScreen.read(follow).buttons[0].let { it.x to it.y }, game.taps.single())
+        } finally {
+            PhoneDdzTurn.advise = saved
+        }
+    }
+
+    @Test fun humanUnknownScenePausesBeforeAnyAutomaticTap() = runTest {
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(full("call"), fullBlank)))
+        val dispatcher = toolDispatcher(game)
+        PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
+        val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"wait"}""").jsonObject), dispatcher.ctx)
+        assertEquals("paused", result.text("state"))
+        assertEquals("unknown_scene", result.text("reason"))
+        assertTrue(game.taps.isEmpty())
+    }
+
+    @Test fun humanAppSwitchPausesWithAStableReason() = runTest {
+        val game = object : Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(full("call")))) {
+            var peeks = 0
+            override suspend fun peek() = ScreenSnapshot("p1", if (peeks++ == 0) PhoneDdzTurn.PACKAGE else "com.other", emptyList(), 2412, 1080)
+        }
+        val dispatcher = toolDispatcher(game)
+        PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
+        val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"wait"}""").jsonObject), dispatcher.ctx)
+        assertEquals("paused", result.text("state"))
+        assertEquals("app_switch", result.text("reason"))
+        assertTrue(game.taps.isEmpty())
+    }
+
+    @Test fun stopDuringHumanPollingPreventsAQueuedTap() = runTest {
+        val entered = CompletableDeferred<Unit>()
+        val release = CompletableDeferred<Unit>()
+        val game = object : Game(PhoneDdzTurn.PACKAGE, ArrayDeque(List(3) { full("call") })) {
+            override suspend fun quickTap(x: Int, y: Int): Boolean {
+                taps += x to y
+                entered.complete(Unit)
+                release.await()
+                return true
+            }
+        }
+        val dispatcher = toolDispatcher(game)
+        PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
+        val waiting = backgroundScope.async { PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"wait"}""").jsonObject), dispatcher.ctx) }
+        entered.await()
+        val stopped = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"stop"}""").jsonObject), dispatcher.ctx)
+        release.complete(Unit)
+        waiting.await()
+        assertEquals("stopped", stopped.text("state"))
+        assertEquals(1, game.taps.size)
     }
 }
