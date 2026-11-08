@@ -103,6 +103,8 @@ internal object PhoneDdzTurn : PhoneTool {
         var declined = false
         /** Human mode has acted on the currently visible decision; prevents repeated taps while it settles. */
         var humanActionSeen = false
+        /** The latest human frame passed the positive classic-table gate and may be tapped once. */
+        var humanEligible = false
         var advisor: String? = null
         var tracker: DdzTracker? = null
         val decisions = mutableListOf<Long>()
@@ -158,18 +160,41 @@ internal object PhoneDdzTurn : PhoneTool {
         "history" to buildJsonObject {
             put("type", "array")
             put("description", "resume: visible plays in order; an empty array is a pass.")
-            put("items", buildJsonObject { put("type", "array"); put("items", buildJsonObject { put("type", "string") }) })
+            put("items", buildJsonObject { put("type", "array"); put("items", buildJsonObject { put("type", "string"); put("enum", JsonArray(DdzCards.RANKS.map(::JsonPrimitive))) }) })
         },
-        "phase" to buildJsonObject { put("type", "string"); put("description", "resume: call, double, lead, or follow.") },
-        "seat" to buildJsonObject { put("type", "string"); put("description", "resume: landlord, landlord_up, or landlord_down.") },
-        "snapshot" to buildJsonObject { put("type", "object"); put("description", "resume: alternatively provide hand, bottom, history, phase, and seat inside this object.") },
+        "phase" to buildJsonObject { put("type", "string"); put("description", "resume: call, double, lead, or follow."); put("enum", JsonArray(listOf("call", "double", "lead", "follow").map(::JsonPrimitive))) },
+        "seat" to buildJsonObject { put("type", "string"); put("description", "resume: landlord, landlord_up, or landlord_down."); put("enum", JsonArray(listOf("landlord", "landlord_up", "landlord_down").map(::JsonPrimitive))) },
+        "snapshot" to snapshotSchema(),
         "level" to buildJsonObject { put("type", "integer"); put("description", "call: 0-3.") },
         "hands" to buildJsonObject { put("type", "integer"); put("description", "start: how many 闯关 hands to play in a row before returning, 1-10 (default 1).") },
     ), listOf("action"))
 
     private fun ranks(text: String) = buildJsonObject {
         put("type", "array"); put("description", text)
-        put("items", buildJsonObject { put("type", "string") })
+        put("items", buildJsonObject { put("type", "string"); put("enum", JsonArray(DdzCards.RANKS.map(::JsonPrimitive))) })
+    }
+
+    private fun snapshotSchema() = buildJsonObject {
+        put("type", "object")
+        put("description", "resume: complete current visible state; recovery validates every field before installing it.")
+        put("additionalProperties", false)
+        put("required", JsonArray(listOf("hand", "bottom", "history", "phase", "seat").map(::JsonPrimitive)))
+        put("properties", buildJsonObject {
+            put("hand", snapshotRanks("complete current hand", 1, 20))
+            put("bottom", snapshotRanks("the three visible bottom cards", 3, 3))
+            put("history", buildJsonObject {
+                put("type", "array")
+                put("description", "visible plays in order; an empty entry is a pass")
+                put("items", buildJsonObject { put("type", "array"); put("items", buildJsonObject { put("type", "string"); put("enum", JsonArray(DdzCards.RANKS.map(::JsonPrimitive))) }) })
+            })
+            put("phase", buildJsonObject { put("type", "string"); put("enum", JsonArray(listOf("call", "double", "lead", "follow").map(::JsonPrimitive))) })
+            put("seat", buildJsonObject { put("type", "string"); put("enum", JsonArray(listOf("landlord", "landlord_up", "landlord_down").map(::JsonPrimitive))) })
+        })
+    }
+
+    private fun snapshotRanks(description: String, min: Int, max: Int) = buildJsonObject {
+        put("type", "array"); put("description", description); put("minItems", min); put("maxItems", max)
+        put("items", buildJsonObject { put("type", "string"); put("enum", JsonArray(DdzCards.RANKS.map(::JsonPrimitive))) })
     }
 
     /** 工具列表在任务开始时就定了,那时游戏还没打开,所以这里只看主模型能不能看图;是不是这款游戏在执行时查。 */
@@ -205,17 +230,34 @@ internal object PhoneDdzTurn : PhoneTool {
         if (turn.state == DdzSessionState.Paused) return paused(turn)
         val frame = ctx.screen.rawFrame(if (turn.advisor != null) FULL_ROWS else DdzScreen.ROWS) ?: return refused("no_frame")
         // 闯关牌桌只在单机模式里有:模型关了弹窗(广告)回到这桌上,还是单机,不用再 start;打了一半的这手照旧交给模型
-        if (!turn.single && turn.advisor != null && DdzCards.singleStageTable(frame)) {
+        if (turn.mode != DdzMode.Human && !turn.single && turn.advisor != null && DdzCards.singleStageTable(frame)) {
             markSingle(ctx, turn.advisor!!)
             turn.tracker = null
             turn.expectedHand = null
             turn.joining = true
         }
-        val view = takeBackControl(DdzScreen.read(frame), ctx).also { dealt(turn, it) }
+        val initialView = DdzScreen.read(frame)
+        if (turn.mode == DdzMode.Human && !DdzCards.classicHumanTable(frame)) {
+            turn.state = DdzSessionState.Paused
+            turn.reason = when {
+                DdzCards.singleLobby(frame) -> DdzSessionReason.LOBBY_RETURN
+                DdzCards.unknownPopup(frame) -> DdzSessionReason.UNKNOWN_POPUP
+                else -> DdzSessionReason.UNKNOWN_SCENE
+            }
+            turn.humanEligible = false
+            return paused(turn)
+        }
+        if (turn.mode == DdzMode.Human) turn.humanEligible = true
+        val view = takeBackControl(initialView, ctx, turn).also { dealt(turn, it) }
+        if (turn.mode == DdzMode.Human && turn.snapshot != null && !snapshotMatches(turn.snapshot!!, frame, view, turn)) {
+            humanPause(turn, DdzSessionReason.SNAPSHOT_MISMATCH)
+            return paused(turn)
+        }
         val thinkMs = turn.seenAt?.let { now() - it } ?: 0
         val tapStart = now()
         val move = move(action, a, view, ctx, turn, thinkMs)
         val tapMs = now() - tapStart
+        if (turn.mode == DdzMode.Human && move.moved) turn.snapshot = null
         val waitStart = now()
         val next = when {
             move.moved || action == "wait" -> awaitDecision(
@@ -223,19 +265,19 @@ internal object PhoneDdzTurn : PhoneTool {
                 moved = move.moved || (action == "wait" && turn.mode == DdzMode.Human),
                 polls = if (action == "again") AGAIN_POLLS else MAX_POLLS,
             )
-            else -> read(ctx) ?: view
+            else -> read(ctx, turn) ?: view
         }
         val waitMs = now() - waitStart
         if (move.moved) turn.rejected = 0
-        if (turn.mode == DdzMode.Human && move.error != null) {
+        if (!turn.stopped && turn.state != DdzSessionState.Paused && turn.mode == DdzMode.Human && move.error != null) {
             turn.state = DdzSessionState.Paused
             turn.reason = pauseReason(move.error)
-        } else if (turn.mode == DdzMode.Human && next.phase == DdzPhase.Other) {
+        } else if (!turn.stopped && turn.mode == DdzMode.Human && next.phase == DdzPhase.Other) {
             turn.state = DdzSessionState.Paused
             // awaitDecision classifies known handoff scenes such as lobby return;
             // retain that structured reason instead of degrading it to unknown_scene.
             if (turn.reason == null) turn.reason = DdzSessionReason.UNKNOWN_SCENE
-        } else if (turn.state != DdzSessionState.Paused) {
+        } else if (!turn.stopped && turn.state != DdzSessionState.Paused) {
             turn.phase = next.phase
             turn.state = stateFor(next.phase)
             turn.reason = null
@@ -283,6 +325,7 @@ internal object PhoneDdzTurn : PhoneTool {
     private suspend fun start(a: Args, ctx: ToolContext, turn: Turn): ToolExecution {
         val advisor = a.str("advisor") ?: throw ArgError("advisor", "required")
         val mode = a.str("mode")?.trim()?.lowercase() ?: DdzMode.Single.wire
+        turn.stopped = false
         return when (mode) {
             DdzMode.Human.wire -> startHuman(ctx, turn, advisor)
             DdzMode.Single.wire -> startSingle(a, ctx, turn, advisor)
@@ -295,9 +338,8 @@ internal object PhoneDdzTurn : PhoneTool {
         // Human mode may only attach to the current classic table. Stage tables and the
         // single-player lobby share the same button colors, so the explicit markers are a
         // required eligibility gate before any human-mode state is installed.
-        if (DdzCards.singleStageTable(page) || DdzCards.singleLobby(page) || DdzCards.singleStage(page)) return refused("not_human_game")
+        if (!DdzCards.classicHumanTable(page)) return refused("not_human_game")
         val view = DdzScreen.read(page)
-        if (view.phase == DdzPhase.Other) return refused("not_human_game")
         turn.single = false
         turn.mode = DdzMode.Human
         turn.phase = view.phase
@@ -334,7 +376,8 @@ internal object PhoneDdzTurn : PhoneTool {
             stage != null -> stage.first to STAGE_BUTTON_Y
             else -> return refused("not_single_player_lobby")
         }
-        if (tap != null && !ctx.screen.quickTap(tap.first, tap.second)) return refused("tap_failed")
+        if (tap != null && !tap(ctx, turn, tap.first, tap.second)) return if (turn.stopped) stopped(turn) else refused("tap_failed")
+        if (turn.stopped) return stopped(turn)
         // 结算点了继续,画面还要一会儿才退:退之前还看得到的结算是这一手的,不再算
         turn.leaving = result != null
         markSingle(ctx, advisor)
@@ -482,7 +525,7 @@ internal object PhoneDdzTurn : PhoneTool {
                 val text = (item as? JsonPrimitive)?.contentOrNull?.trim()?.uppercase()
                     ?: throw ArgError(name, "items must be strings")
                 if (text.startsWith("?")) throw ArgError(name, "ambiguous_card")
-                if (text !in SNAPSHOT_RANKS) throw ArgError(name, "contains an invalid rank")
+                if (text !in DdzCards.RANKS) throw ArgError(name, "contains an invalid rank")
                 text
             }
         }
@@ -495,7 +538,7 @@ internal object PhoneDdzTurn : PhoneTool {
                 val rank = (card as? JsonPrimitive)?.contentOrNull?.trim()?.uppercase()
                     ?: throw ArgError("history", "entries must contain strings")
                 if (rank.startsWith("?")) throw ArgError("history", "ambiguous_card")
-                if (rank !in SNAPSHOT_RANKS) throw ArgError("history", "contains an invalid rank")
+                if (rank !in DdzCards.RANKS) throw ArgError("history", "contains an invalid rank")
                 rank
             }
         }
@@ -535,22 +578,22 @@ internal object PhoneDdzTurn : PhoneTool {
         val phase = view.phase
         return when (action) {
             "wait" -> Move(false)
-            "again" -> if (phase == DdzPhase.Result) press(view.buttons[0], ctx) else wrongPhase(phase)
+            "again" -> if (phase == DdzPhase.Result) press(view.buttons[0], ctx, turn) else wrongPhase(phase)
             "call" -> if (phase != DdzPhase.Call) wrongPhase(phase) else {
                 val level = a.int("level", 0, 3) ?: 0
                 // 灰的是比别人叫得低、点不了的分:按不叫算
                 val button = view.buttons[level].takeIf { it.color != DdzColor.Gray } ?: view.buttons[0]
                 // 按完叫分按钮还留几帧,单机局里接着等时别再按一次
-                press(button, ctx).also { if (it.moved) turn.bid = true }
+                press(button, ctx, turn).also { if (it.moved) turn.bid = true }
             }
             "pass" -> when (phase) {
-                DdzPhase.Follow -> press(view.buttons[0], ctx)
-                DdzPhase.Lead -> smallest(view, ctx)
+                DdzPhase.Follow -> press(view.buttons[0], ctx, turn)
+                DdzPhase.Lead -> smallest(view, ctx, turn)
                 else -> wrongPhase(phase)
             }
             "hint" -> when (phase) {
-                DdzPhase.Follow -> hint(view, ctx)
-                DdzPhase.Lead -> smallest(view, ctx)
+                DdzPhase.Follow -> hint(view, ctx, turn)
+                DdzPhase.Lead -> smallest(view, ctx, turn)
                 else -> wrongPhase(phase)
             }
             "play" -> if (phase != DdzPhase.Follow && phase != DdzPhase.Lead) wrongPhase(phase) else play(a, view, ctx, turn, thinkMs)
@@ -559,7 +602,7 @@ internal object PhoneDdzTurn : PhoneTool {
     }
 
     private suspend fun play(a: Args, view: DdzView, ctx: ToolContext, turn: Turn, thinkMs: Long): Move {
-        if (DdzScreen.onlyPass(view)) return press(view.buttons[0], ctx).let { Move(it.moved, it.error, "cannot_beat") }
+        if (DdzScreen.onlyPass(view)) return press(view.buttons[0], ctx, turn).let { Move(it.moved, it.error, "cannot_beat") }
         val hand = strings(a, "hand")
         val want = pick(hand, strings(a, "play"))
         val error = when {
@@ -567,9 +610,9 @@ internal object PhoneDdzTurn : PhoneTool {
             want == null || want.isEmpty() -> "card_not_in_hand"
             else -> null
         }
-        val selected = if (error == null) select(want!!, ctx) else null
+        val selected = if (error == null) select(want!!, ctx, turn) else null
         if (selected != null) {
-            if (confirm(view, ctx)) return Move(true)
+            if (confirm(view, ctx, turn)) return Move(true)
         }
         // 模型读错、出的牌不合规:还来得及就让它改一次,来不及或改过了就保底
         val reason = error ?: if (selected == null) "select_failed" else "rejected"
@@ -577,25 +620,25 @@ internal object PhoneDdzTurn : PhoneTool {
             turn.rejected++
             return Move(false, reason)
         }
-        val now = read(ctx) ?: view
-        val fallback = if (now.phase == DdzPhase.Follow) press(now.buttons[0], ctx) else smallest(now, ctx)
+        val now = read(ctx, turn) ?: view
+        val fallback = if (now.phase == DdzPhase.Follow) press(now.buttons[0], ctx, turn) else smallest(now, ctx, turn)
         return Move(fallback.moved, fallback.error, "fallback_after_$reason")
     }
 
-    private suspend fun hint(view: DdzView, ctx: ToolContext): Move {
-        if (DdzScreen.onlyPass(view)) return press(view.buttons[0], ctx)
-        if (!ctx.screen.quickTap(view.buttons[1].x, view.buttons[1].y)) return Move(false, "tap_failed")
+    private suspend fun hint(view: DdzView, ctx: ToolContext, turn: Turn): Move {
+        if (DdzScreen.onlyPass(view)) return press(view.buttons[0], ctx, turn)
+        if (!tap(ctx, turn, view.buttons[1].x, view.buttons[1].y)) return Move(false, "tap_failed")
         delay(SETTLE_MS)
-        val after = read(ctx) ?: return Move(false, "no_frame")
+        val after = read(ctx, turn) ?: return Move(false, "no_frame")
         // 按钮没了就是这一手已经过去;提示抬不起牌就是要不起
         if (after.phase != DdzPhase.Follow) return Move(true)
-        if (after.lifted.isEmpty()) return press(view.buttons[0], ctx)
-        return if (confirm(view, ctx)) Move(true) else press(view.buttons[0], ctx)
+        if (after.lifted.isEmpty()) return press(view.buttons[0], ctx, turn)
+        return if (confirm(view, ctx, turn)) Move(true) else press(view.buttons[0], ctx, turn)
     }
 
-    private suspend fun smallest(view: DdzView, ctx: ToolContext): Move {
-        select(setOf(view.handCount - 1), ctx) ?: return Move(false, "select_failed")
-        return if (confirm(view, ctx)) Move(true) else Move(false, "rejected")
+    private suspend fun smallest(view: DdzView, ctx: ToolContext, turn: Turn): Move {
+        select(setOf(view.handCount - 1), ctx, turn) ?: return Move(false, "select_failed")
+        return if (confirm(view, ctx, turn)) Move(true) else Move(false, "rejected")
     }
 
     /**
@@ -608,7 +651,7 @@ internal object PhoneDdzTurn : PhoneTool {
         repeat(2) {
             if (!tap(ctx, turn, view.buttons.last().x, view.buttons.last().y)) return false
             delay(VERDICT_MS)
-            val after = read(ctx)
+            val after = read(ctx, turn)
             if (after == null || after.phase != view.phase || after.handCount != view.handCount) return true
         }
         return false
@@ -617,20 +660,21 @@ internal object PhoneDdzTurn : PhoneTool {
     /** 把抬起的牌改成 [want];点完看画面,没到位再补一次。 */
     private suspend fun select(want: Set<Int>, ctx: ToolContext, turn: Turn? = null): DdzView? {
         repeat(2) {
-            val view = read(ctx)?.takeIf { it.phase == DdzPhase.Follow || it.phase == DdzPhase.Lead } ?: return null
+            val view = read(ctx, turn)?.takeIf { it.phase == DdzPhase.Follow || it.phase == DdzPhase.Lead } ?: return null
             val toggle = (want - view.lifted) + (view.lifted - want)
             if (toggle.isEmpty()) return view
             for (index in toggle) {
                 if (!tap(ctx, turn, view.cardX(index), DdzScreen.CARD_Y)) return null
                 delay(TAP_GAP_MS)
+                if (turn?.mode == DdzMode.Human && read(ctx, turn) == null) return null
             }
             // 抬牌有动画:还没抬到位就再点一下,会把它点回去。多看几帧,真没抬起来才重点
             repeat(LIFT_POLLS) {
                 delay(SETTLE_MS)
-                read(ctx)?.takeIf { it.lifted == want }?.let { return it }
+                read(ctx, turn)?.takeIf { it.lifted == want }?.let { return it }
             }
         }
-        return read(ctx)?.takeIf { it.lifted == want }
+        return read(ctx, turn)?.takeIf { it.lifted == want }
     }
 
     private suspend fun press(button: DdzButton, ctx: ToolContext, turn: Turn? = null) =
@@ -644,14 +688,16 @@ internal object PhoneDdzTurn : PhoneTool {
             turn.reason = DdzSessionReason.APP_SWITCH
             return false
         }
+        if (turn?.mode == DdzMode.Human && !turn.humanEligible) return false
+        if (turn?.mode == DdzMode.Human) turn.humanEligible = false
         return ctx.screen.quickTap(x, y)
     }
 
     /** 模型想的时候超时进了托管:先取消,再按取消后的画面做。 */
-    private suspend fun takeBackControl(view: DdzView, ctx: ToolContext): DdzView {
-        if (view.phase != DdzPhase.AutoPlay || !ctx.screen.quickTap(view.buttons[0].x, view.buttons[0].y)) return view
+    private suspend fun takeBackControl(view: DdzView, ctx: ToolContext, turn: Turn): DdzView {
+        if (view.phase != DdzPhase.AutoPlay || !tap(ctx, turn, view.buttons[0].x, view.buttons[0].y)) return view
         delay(SETTLE_MS)
-        return read(ctx) ?: view
+        return read(ctx, turn) ?: view
     }
 
     /**
@@ -674,9 +720,20 @@ internal object PhoneDdzTurn : PhoneTool {
             if (view != null) {
                 last = view
                 if (turn.mode == DdzMode.Human) {
+                    if (!DdzCards.classicHumanTable(frame)) {
+                        turn.humanEligible = false
+                        turn.state = DdzSessionState.Paused
+                        turn.reason = when {
+                            DdzCards.singleLobby(frame) -> DdzSessionReason.LOBBY_RETURN
+                            DdzCards.unknownPopup(frame) -> DdzSessionReason.UNKNOWN_POPUP
+                            else -> DdzSessionReason.UNKNOWN_SCENE
+                        }
+                        return view
+                    }
+                    turn.humanEligible = true
                     if (view.phase == DdzPhase.Other) {
                         turn.state = DdzSessionState.Paused
-                        turn.reason = if (DdzCards.singleLobby(frame)) DdzSessionReason.LOBBY_RETURN else DdzSessionReason.UNKNOWN_SCENE
+                        turn.reason = DdzSessionReason.UNKNOWN_SCENE
                         return view
                     }
                     if (humanPhase != view.phase) {
@@ -708,7 +765,7 @@ internal object PhoneDdzTurn : PhoneTool {
                     if (next == null || ctx.screen.peek().packageName != PACKAGE) { waitOrSteer { delay(POLL_MS) } ?: return last; continue }
                     if (won) turn.won++ else turn.lost++
                     turn.handsLeft--
-                    ctx.screen.quickTap(next.first, next.second)
+                    if (!tap(ctx, turn, next.first, next.second)) return last
                     delay(CONTINUE_MS)
                     empty = 0
                     budget = polls
@@ -746,7 +803,7 @@ internal object PhoneDdzTurn : PhoneTool {
                                 // 先问 DouZero 当地主的赢面;服务连不上就按牌力的老规则
                                 val level = turn.advisor?.let { adviseBid(it, hand) } ?: bidLevel(hand)
                                 val button = view.buttons[level].takeIf { it.color != DdzColor.Gray } ?: view.buttons[0]
-                                if (press(button, ctx).moved) turn.bid = true
+                                if (press(button, ctx, turn).moved) turn.bid = true
                             }
                             left = true
                         }
@@ -754,7 +811,7 @@ internal object PhoneDdzTurn : PhoneTool {
                     DdzPhase.AutoPlay -> {
                         left = true
                         // 等的时候前台可能换了,点之前再认一次;点了等它退出托管,别连着点
-                        if (ctx.screen.peek().packageName == PACKAGE && ctx.screen.quickTap(view.buttons[0].x, view.buttons[0].y)) delay(AUTO_CANCEL_MS)
+                        if (tap(ctx, turn, view.buttons[0].x, view.buttons[0].y)) delay(AUTO_CANCEL_MS)
                     }
                     // 加倍只有约 5 秒,模型来不及:单机局里自己点最左边蓝色的不加倍(加倍要看视频,绝不点);不是单机就让它走完
                     DdzPhase.Double -> {
@@ -779,7 +836,7 @@ internal object PhoneDdzTurn : PhoneTool {
                             }
                         } else {
                             val no = view.buttons.first()
-                            if (turn.single && !turn.declined && no.color == DdzColor.Blue && press(no, ctx).moved) turn.declined = true
+                            if (turn.single && !turn.declined && no.color == DdzColor.Blue && press(no, ctx, turn).moved) turn.declined = true
                         }
                     }
                     DdzPhase.Other -> left = true
@@ -791,7 +848,7 @@ internal object PhoneDdzTurn : PhoneTool {
                             if (ctx.screen.peek().packageName != PACKAGE) return view
                             turn.played++
                             turn.handsLeft--
-                            press(view.buttons[0], ctx)
+                            if (!tap(ctx, turn, view.buttons[0].x, view.buttons[0].y)) return view
                             delay(CONTINUE_MS)
                             empty = 0
                             budget = polls
@@ -885,15 +942,15 @@ internal object PhoneDdzTurn : PhoneTool {
             tracker.fail(it.message ?: "douzero_unreachable")
             return humanPause(turn, pauseReason(it.message ?: "douzero_unreachable")).let { Auto.Off }
         }
-        if (cards.any { it !in SNAPSHOT_RANKS }) {
+        if (cards.any { it !in DdzCards.RANKS }) {
             tracker.fail("douzero_bad_reply")
             return humanPause(turn, DdzSessionReason.SERVICE_UNAVAILABLE).let { Auto.Off }
         }
-        // An empty answer means pass only when following. A lead must still make a legal visible
-        // move, so use the smallest confirmed card as the conservative fallback.
-        val chosen = if (cards.isEmpty() && view.phase == DdzPhase.Lead) listOf(hand.last()) else cards
+        // An empty answer means pass only when following. A lead requires an explicit advisor move;
+        // guessing a card here can silently play the wrong hand.
+        val chosen = cards
         if (chosen.isEmpty()) {
-            if (view.phase != DdzPhase.Follow) return humanPause(turn, DdzSessionReason.REJECTED_ACTION).let { Auto.Off }
+            if (view.phase != DdzPhase.Follow) return humanPause(turn, DdzSessionReason.INVALID_ADVISOR_PLAY).let { Auto.Off }
             val button = view.buttons.firstOrNull() ?: return humanPause(turn, DdzSessionReason.REJECTED_ACTION).let { Auto.Off }
             if (!press(button, ctx, turn).moved) return humanPause(turn, DdzSessionReason.REJECTED_ACTION).let { Auto.Off }
             tracker.mine(emptyList())
@@ -924,6 +981,18 @@ internal object PhoneDdzTurn : PhoneTool {
         turn.reason = reason
     }
 
+    /** Check the recovered state against the next visible screen before any automatic input. */
+    private fun snapshotMatches(snapshot: DdzSnapshot, frame: com.wangzan101.mika.core.uistate.RawFrame, view: DdzView, turn: Turn): Boolean {
+        if (view.phase != phaseOf(snapshot.phase)) return false
+        val hand = DdzCards.hand(frame, view) ?: return false
+        if (hand.sorted() != snapshot.hand.sorted() || hand.size != snapshot.hand.size) return false
+        if (DdzCards.bottom(frame) != snapshot.bottom) return false
+        val tracker = turn.tracker ?: return false
+        if (tracker.seat() != snapshot.seat || tracker.history.map { it.toList() } != snapshot.history) return false
+        if (!tracker.visibleHistoryMatches { side -> DdzCards.play(frame, side) }) return false
+        return true
+    }
+
     /**
      * 轮到自己出牌:历史对得上就问 DouZero 出这一手([Auto.Played],接着等);别家的牌还在飞、没读到,
      * 再等几帧([Auto.Settling]);对不上(读漏、认不准、DouZero 不认这段历史)这一手用提示保底、
@@ -952,10 +1021,10 @@ internal object PhoneDdzTurn : PhoneTool {
             val cards = play.getOrThrow()
             // 哪一步没成:没认出要的牌、抬不起来,还是按了出牌游戏不认
             val stuck = when {
-                cards.isEmpty() -> if (view.phase == DdzPhase.Follow && press(view.buttons[0], ctx).moved) null else "pass"
+                cards.isEmpty() -> if (view.phase == DdzPhase.Follow && press(view.buttons[0], ctx, turn).moved) null else "pass"
                 else -> when (val want = pick(hand!!, cards)) {
                     null -> "pick"
-                    else -> if (select(want, ctx) == null) "select" else if (!confirm(view, ctx)) "confirm" else null
+                    else -> if (select(want, ctx, turn) == null) "select" else if (!confirm(view, ctx, turn)) "confirm" else null
                 }
             }
             val done = stuck == null
@@ -986,11 +1055,26 @@ internal object PhoneDdzTurn : PhoneTool {
         return Result.success(play)
     }
 
-    private suspend fun read(ctx: ToolContext): DdzView? = ctx.screen.rawFrame(DdzScreen.ROWS)?.let(DdzScreen::read)
+    private suspend fun read(ctx: ToolContext, turn: Turn? = null): DdzView? {
+        val frame = ctx.screen.rawFrame(if (turn?.mode == DdzMode.Human) FULL_ROWS else DdzScreen.ROWS) ?: return null
+        if (turn?.mode == DdzMode.Human) {
+            if (!DdzCards.classicHumanTable(frame)) {
+                turn.humanEligible = false
+                turn.reason = when {
+                    DdzCards.singleLobby(frame) -> DdzSessionReason.LOBBY_RETURN
+                    DdzCards.unknownPopup(frame) -> DdzSessionReason.UNKNOWN_POPUP
+                    else -> DdzSessionReason.UNKNOWN_SCENE
+                }
+                turn.state = DdzSessionState.Paused
+                return null
+            }
+            turn.humanEligible = true
+        }
+        return DdzScreen.read(frame)
+    }
 
     /** 单机局里每一帧都要认牌,一次把这些行读全。 */
     private val FULL_ROWS = (DdzScreen.ROWS + DdzCards.ROWS + DdzCards.LOBBY_ROWS).distinct()
-    private val SNAPSHOT_RANKS = setOf("3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K", "A", "2", "SJ", "BJ")
     private val SNAPSHOT_PHASES = setOf("call", "double", "lead", "follow")
     private val SNAPSHOT_SEATS = setOf("landlord", "landlord_up", "landlord_down")
 

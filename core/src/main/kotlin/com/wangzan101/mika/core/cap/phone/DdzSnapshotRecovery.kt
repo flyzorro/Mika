@@ -49,61 +49,72 @@ internal object DdzSnapshotRecovery {
         }
         if (counts.any { (rank, count) -> count > copies(rank) }) return invalid("duplicate_card")
 
-        val replay = replay(history) ?: return invalid("history_mismatch")
-        val ownIndex = ownIndex(snapshot.seat)
-        val ownPlayed = history.withIndex()
-            .filter { (index, _) -> index % 3 == ownIndex }
-            .sumOf { (_, move) -> move.size }
-        if (hand.size > initial - ownPlayed) return invalid("hand_count")
-        if (history.isNotEmpty() && ownPlayed > initial) return invalid("hand_count")
-
         val landlord = when (snapshot.seat) {
             "landlord" -> DdzSeat.Me
             "landlord_up" -> DdzSeat.Right
             else -> DdzSeat.Left
         }
-        val tracker = DdzTracker(DdzSettlingPolicy.HUMAN).also { it.restore(landlord, bottom, history) }
-        // A follow state must have an outstanding opponent play. Lead can be the
-        // first move, so an empty history is valid only for a landlord snapshot.
-        if (snapshot.phase == "follow" && replay.active == null) return invalid("history_phase")
-        if (snapshot.phase == "lead" && replay.active != null) return invalid("history_phase")
-        if (snapshot.phase == "lead" && history.isEmpty() && snapshot.seat != "landlord") return invalid("history_phase")
+        val replay = replay(landlord, history) ?: return invalid("history_mismatch")
+        val ownSeat = landlordToOwnSeat(landlord, snapshot.seat)
+        val ownPlayed = replay.actors.zip(history).filter { it.first == ownSeat }.sumOf { it.second.size }
+        if (hand.size != initial - ownPlayed) return invalid("hand_count")
+
+        // The phase and supplied seat must describe the actor reconstructed from the full
+        // history. A runnable recovery must never install a state for a different player.
+        when (snapshot.phase) {
+            "call", "double" -> if (history.isNotEmpty() || snapshot.seat != "landlord") return invalid("history_phase")
+            "lead" -> {
+                if (replay.active != null) return invalid("history_phase")
+                if (replay.actor != ownSeat) return invalid("actor")
+            }
+            "follow" -> {
+                if (replay.active == null) return invalid("history_phase")
+                if (replay.actor != ownSeat) return invalid("actor")
+            }
+        }
+        val tracker = DdzTracker(DdzSettlingPolicy.HUMAN).also { it.restore(landlord, bottom, history, replay.actor) }
         return DdzRecoveryResult.Valid(DdzRecoveredSnapshot(snapshot, tracker))
     }
 
     private fun copies(rank: String) = if (rank == "SJ" || rank == "BJ") 1 else 4
 
-    private fun ownIndex(seat: String) = when (seat) {
-        "landlord" -> 0
-        // History starts with the landlord and proceeds landlord -> right -> left.
-        // In this ordering the player's turn is index 2 when the landlord is right,
-        // and index 1 when the landlord is left.
-        "landlord_up" -> 2
-        else -> 1
+    private fun landlordToOwnSeat(landlord: DdzSeat, seat: String) = when (seat) {
+        "landlord" -> landlord
+        "landlord_up" -> landlord.next.next
+        else -> landlord.next
     }
 
-    private data class Replay(val active: Move?)
+    private data class Replay(val active: Move?, val actor: DdzSeat, val actors: List<DdzSeat>)
 
-    private fun replay(history: List<List<String>>): Replay? {
+    private fun replay(landlord: DdzSeat, history: List<List<String>>): Replay? {
         if (history.firstOrNull()?.isEmpty() == true) return null
         var active: Move? = null
+        var leader: DdzSeat? = null
+        var actor = landlord
         var passes = 0
+        val actors = mutableListOf<DdzSeat>()
         for (cards in history) {
             val move = classify(cards) ?: return null
+            actors += actor
             if (move.kind == Kind.Pass) {
                 if (active == null) return null
                 passes++
+                actor = actor.next
                 if (passes == 2) {
                     active = null
+                    actor = leader ?: return null
+                    leader = null
                     passes = 0
                 }
                 continue
             }
             if (active != null && !beats(active, move)) return null
             active = move
+            leader = actor
+            actor = actor.next
             passes = 0
         }
-        return Replay(active)
+        return Replay(active, actor, actors)
     }
 
     private enum class Kind { Pass, Single, Pair, Triple, Straight, PairSequence, Plane, PlaneSingles, PlanePairs, FourSingles, FourPairs, Bomb, Rocket }
