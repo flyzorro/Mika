@@ -455,6 +455,14 @@ class PhoneDdzTurnTest {
         }
     }
 
+    @Test fun startOnTheWinScreenDoesNotCountThatWinAgain() = runTest {
+        // 点了继续以后胜利画面还留了一帧:不能当成又赢了一手
+        val win = full("vd_stage_win_leave_continue")
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(win, win, fullBlank)))
+        val result = run(game, """{"action":"start","advisor":"http://mac:3426","hands":1}""")
+        assertNull(result.text("handsWon"))
+    }
+
     @Test fun anAdOverTheStageTableIsNeverTapped() = runTest {
         val ad = full("vd_stage_ad_dialog")
         val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(ad, ad, ad, fullBlank)))

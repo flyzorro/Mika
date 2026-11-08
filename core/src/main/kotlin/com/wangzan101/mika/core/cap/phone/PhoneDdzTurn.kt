@@ -88,6 +88,8 @@ internal object PhoneDdzTurn : PhoneTool {
         var handsLeft = 1
         var won = 0
         var lost = 0
+        /** start 刚在结算上点了继续,结算还没退。 */
+        var leaving = false
         /** 这一轮见过闯关的牌桌:之后不是牌桌的画面不认。 */
         var stage = false
         /** 这一轮叫分已经按过了:按完按钮还会留几帧。 */
@@ -218,6 +220,8 @@ internal object PhoneDdzTurn : PhoneTool {
             else -> return refused("not_single_player_lobby")
         }
         if (tap != null && !ctx.screen.quickTap(tap.first, tap.second)) return refused("tap_failed")
+        // 结算点了继续,画面还要一会儿才退:退之前还看得到的结算是这一手的,不再算
+        turn.leaving = result != null
         markSingle(ctx, advisor)
         // 上一手剩下的牌不算数:不清掉,新发的一手会被当成手牌对不上
         turn.expectedHand = null
@@ -380,7 +384,10 @@ internal object PhoneDdzTurn : PhoneTool {
                 if (turn.single && turn.atTable && view.phase == DdzPhase.Other && DdzCards.singleLobby(frame)) { turn.single = false; return view }
                 // 闯关打完一手(赢或输):还要接着打就自己点黄色的继续(不点蓝色的离开、不点看视频的),马上发下一手;否则交回模型
                 val won = turn.single && DdzCards.stageWin(frame)
-                if (won || (turn.single && DdzCards.stageLoss(frame))) {
+                val settled = won || (turn.single && DdzCards.stageLoss(frame))
+                if (settled && turn.leaving) { waitOrSteer { delay(POLL_MS) } ?: return last; continue }
+                turn.leaving = false
+                if (settled) {
                     turn.tracker = null
                     turn.expectedHand = null
                     if (turn.handsLeft <= 1) { if (won) turn.won++ else turn.lost++; return view.copy(phase = DdzPhase.Result) }
