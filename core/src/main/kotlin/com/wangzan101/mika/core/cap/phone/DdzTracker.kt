@@ -38,6 +38,8 @@ internal class DdzTracker {
     /** 左右两家剩几张:上一帧的读数,和连着两帧一样的读数(一帧认错不算)。 */
     private val countSeen = mutableMapOf<DdzSeat, Int?>()
     private val count = mutableMapOf<DdzSeat, Int?>()
+    /** 每家最近出的一手:管不了时游戏替他不出,桌上还摆着这一手。 */
+    private val lastPlay = mutableMapOf<DdzSeat, List<String>>()
 
     /**
      * 每一帧喂进来:[turn] 此刻轮到谁(没人或看不出为 null),[read] 读某家出牌区,[bottom] 读底牌,
@@ -175,6 +177,7 @@ internal class DdzTracker {
 
     private fun record(seat: DdzSeat, cards: List<String>) {
         history += cards
+        if (cards.isNotEmpty()) lastPlay[seat] = cards
         note("${seat.name}=${cards.joinToString("")}")
     }
 
@@ -202,8 +205,10 @@ internal class DdzTracker {
                     if (!steady(seat to seen)) return
                     record(seat, emptyList())
                 }
-                // 张数没少、出牌区好一阵都空着:是「不出」,字被清桌(炸弹、新一轮)抹掉了
-                seen == DdzSeen.Empty && played == 0 && tries <= READ_TRIES - PASS_BY_COUNT -> {
+                // 张数没少、出牌区好一阵都空着或者还摆着他上一手:是「不出」。字被清桌(炸弹、新一轮)抹掉了,
+                // 或者管不了王时游戏替他不出,桌上留着他上一手
+                played == 0 && tries <= READ_TRIES - PASS_BY_COUNT &&
+                    (seen == DdzSeen.Empty || seen == DdzSeen.Unsure || (seen is DdzSeen.Cards && seen.ranks == lastPlay[seat])) -> {
                     if (!steady(seat to "count_pass")) return
                     record(seat, emptyList())
                 }

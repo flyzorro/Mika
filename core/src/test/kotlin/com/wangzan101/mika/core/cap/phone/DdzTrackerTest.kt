@@ -273,6 +273,25 @@ class DdzTrackerTest {
         assertEquals(6, tracker.history.size)
     }
 
+    @Test fun aPassTheGameMadeForSomeoneLeavesTheirLastPlayOnTheTable() {
+        // 右家地主出 3(剩 19);左家不要;我出 2;右家小王;左家大王;我管不了;右家也管不了,桌上还摆着他的小王
+        counts = mapOf(DdzSide.Left to 17, DdzSide.Right to 19)
+        right = DdzSeen.Cards(listOf("3"))
+        repeat(2) { seeCounted(null) }
+        left = DdzSeen.Pass
+        repeat(3) { seeCounted(DdzSeat.Me) }
+        tracker.mine(listOf("2"))
+        right = DdzSeen.Cards(listOf("SJ"))
+        counts = mapOf(DdzSide.Left to 17, DdzSide.Right to 18)
+        repeat(3) { seeCounted(DdzSeat.Left) }
+        left = DdzSeen.Cards(listOf("BJ"))
+        counts = mapOf(DdzSide.Left to 16, DdzSide.Right to 18)
+        repeat(3) { seeCounted(null) }
+        repeat(20) { seeCounted(DdzSeat.Left) }
+        assertNull(tracker.broken)
+        assertEquals(listOf(listOf("SJ"), listOf("BJ"), emptyList(), emptyList()), tracker.history.takeLast(4))
+    }
+
     @Test fun aGuessedCardIsOnlyTrustedFromTheLandlord() {
         // 我是地主,左家是农民:他那张认不准的不能按猜的补
         tracker.observe(DdzSeat.Me, { DdzSeen.Empty }, { bottom }, leadingWith20 = true, leading = true)
