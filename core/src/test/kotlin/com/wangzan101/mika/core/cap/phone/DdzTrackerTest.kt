@@ -83,7 +83,7 @@ class DdzTrackerTest {
         see(DdzSeat.Left)
         // 还在飞的话等几帧;一直认不准就停
         assertNull(tracker.broken)
-        repeat(10) { see(DdzSeat.Left) }
+        repeat(20) { see(DdzSeat.Left) }
         left = DdzSeen.Cards(listOf("5"))
         see(DdzSeat.Me)
         assertNull(tracker.landlord)
@@ -110,7 +110,7 @@ class DdzTrackerTest {
         see(DdzSeat.Left)
         // 正在落下的牌一时认不准:再读几帧
         assertNull(tracker.broken)
-        repeat(10) { see(DdzSeat.Left) }
+        repeat(20) { see(DdzSeat.Left) }
         assertEquals("unsure_right", tracker.broken)
         assertFalse(tracker.ready())
     }
@@ -133,7 +133,7 @@ class DdzTrackerTest {
         tracker.mine(listOf("4"))
         left = DdzSeen.Empty
         see(DdzSeat.Left)
-        repeat(10) { see(DdzSeat.Left) }
+        repeat(20) { see(DdzSeat.Left) }
         assertEquals("unread_right", tracker.broken)
     }
 
@@ -245,6 +245,17 @@ class DdzTrackerTest {
         assertEquals(listOf(listOf("7", "7", "7", "3")), tracker.history)
     }
 
+    @Test fun aFirstPlayConfirmedByTheCountIsTakenAtOnce() {
+        // 接手时地主(右家)的顺子只在桌上留了两帧:张数 20 → 12,正好八张,不用等
+        counts = mapOf(DdzSide.Left to 17, DdzSide.Right to 12)
+        right = DdzSeen.Cards("A K Q J 10 9 8 7".split(' '))
+        left = DdzSeen.Pass
+        seeCounted(DdzSeat.Me)
+        seeCounted(DdzSeat.Me)
+        assertEquals(DdzSeat.Right, tracker.landlord)
+        assertEquals(listOf("A", "K", "Q", "J", "10", "9", "8", "7"), tracker.history.first())
+    }
+
     @Test fun aGuessedCardIsOnlyTrustedFromTheLandlord() {
         // 我是地主,左家是农民:他那张认不准的不能按猜的补
         tracker.observe(DdzSeat.Me, { DdzSeen.Empty }, { bottom }, leadingWith20 = true, leading = true)
@@ -252,7 +263,7 @@ class DdzTrackerTest {
         right = DdzSeen.Pass
         left = DdzSeen.Cards(listOf("?4,K,J"))
         see(null)
-        repeat(10) { see(DdzSeat.Me) }
+        repeat(20) { see(DdzSeat.Me) }
         assertEquals("unsure_left", tracker.broken)
     }
 

@@ -83,7 +83,8 @@ internal class DdzTracker {
                 // 地主出第一手前是 20 张:剩的张数对不上出的张数(还叠成一摞,或者这家是 17 张的农民)就不算
                 val left = count[seat]
                 if (left != null && seen.ranks.size != FIRST - left) continue
-                if (!steady(side to seen)) return
+                // 张数对得上就不是叠着的一摞,不用再等几帧(别人出得快,等不起:接手时这手牌一两帧后就被收走了)
+                if (left == null && !steady(side to seen)) return
                 landlord = seat
                 record(seat, seen.ranks)
                 // 他出完了,闹钟已经到了下一家
@@ -189,7 +190,7 @@ internal class DdzTracker {
             val played = unplayed(seat)
             when {
                 seen is DdzSeen.Cards && !guessed && (played == null || played == seen.ranks.size) -> {
-                    if (!steady(seat to seen)) return
+                    if (played == null && !steady(seat to seen)) return
                     record(seat, seen.ranks)
                 }
                 // 「不出」也一样:飞过来的牌缩在头像边上那一下,也会落在「不出」那一条里
@@ -232,7 +233,8 @@ internal class DdzTracker {
         const val FARMER = 17
         /** 张数没少、出牌区空了这么多帧才按张数算不出。 */
         const val PASS_BY_COUNT = 4
-        const val READ_TRIES = 8
+        /** 一手牌读几帧还认不准才放弃:飞机、炸弹的特效会盖住牌三四秒。 */
+        const val READ_TRIES = 16
         const val STEADY_FRAMES = 3
         const val TRACE = 24
     }
