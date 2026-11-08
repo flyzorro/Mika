@@ -50,16 +50,7 @@ internal object PhoneDdzTurn : PhoneTool {
      * 叫几分:大王 3、小王 2、每个 2 算 1、每个炸弹 2、每两个 A 算 1;7 分以上叫三分,5 分以上叫二分,不然不叫。
      * 闯关里输了扣分、低于 3 分淘汰,牌一般就不当地主。
      */
-    internal fun bidLevel(hand: List<String>): Int {
-        val count = hand.groupingBy { it }.eachCount()
-        val score = (if ("BJ" in count) 3 else 0) + (if ("SJ" in count) 2 else 0) + (count["2"] ?: 0) +
-            2 * count.count { (rank, n) -> n == 4 && rank != "BJ" && rank != "SJ" } + (count["A"] ?: 0) / 2
-        return when {
-            score >= 7 -> 3
-            score >= 5 -> 2
-            else -> 0
-        }
-    }
+    internal fun bidLevel(hand: List<String>): Int = ConservativeDdzPolicy.callLevel(hand)
     private const val TAP_GAP_MS = 60L
     private const val SETTLE_MS = 250L
     private const val VERDICT_MS = 800L
@@ -74,6 +65,11 @@ internal object PhoneDdzTurn : PhoneTool {
         var seenAt: Long? = null
         var rejected = 0
         var single = false
+        var mode: DdzMode? = null
+        var state = DdzSessionState.Idle
+        var reason: String? = null
+        var stopped = false
+        var snapshot: DdzSnapshot? = null
         /** start 之后进过牌桌没有:刚点完快速开始那几帧还是大厅,不能当成回了大厅。 */
         var atTable = false
         /** 上次交还模型时动作清单记到第几个;再来时多了,就是模型用别的工具动过屏幕。 */
@@ -109,6 +105,11 @@ internal object PhoneDdzTurn : PhoneTool {
     internal fun markSingle(ctx: ToolContext, advisor: String) {
         val turn = ctx[STATE] ?: Turn().also { ctx[STATE] = it }
         turn.single = true
+        turn.mode = DdzMode.Single
+        turn.state = DdzSessionState.Playing
+        turn.reason = null
+        turn.stopped = false
+        turn.snapshot = null
         turn.atTable = true
         turn.advisor = advisor
         turn.actionsSeen = ctx.evidence.actions
@@ -136,11 +137,25 @@ internal object PhoneDdzTurn : PhoneTool {
     override val def = ToolDef("phone_ddz_turn", Prompts.tool("phone_ddz_turn"), mapOf(
         "action" to buildJsonObject {
             put("type", "string")
-            put("enum", JsonArray(listOf("start", "play", "pass", "hint", "call", "again", "wait").map(::JsonPrimitive)))
+            put("enum", JsonArray(listOf("start", "play", "pass", "hint", "call", "again", "wait", "stop", "resume").map(::JsonPrimitive)))
         },
-        "advisor" to buildJsonObject { put("type", "string"); put("description", "start: DouZero service URL, e.g. http://host:3426.") },
-        "hand" to ranks("Your whole hand, left to right."),
+        "mode" to buildJsonObject {
+            put("type", "string")
+            put("enum", JsonArray(listOf("single", "human").map(::JsonPrimitive)))
+            put("description", "start: explicit session mode; omitted keeps the existing single-player default.")
+        },
+        "advisor" to buildJsonObject { put("type", "string"); put("description", "start: DouZero service URL, required for both modes.") },
+        "hand" to ranks("play: your whole hand; resume: the complete current hand."),
         "play" to ranks("The cards to play."),
+        "bottom" to ranks("resume: the three visible bottom cards."),
+        "history" to buildJsonObject {
+            put("type", "array")
+            put("description", "resume: visible plays in order; an empty array is a pass.")
+            put("items", buildJsonObject { put("type", "array"); put("items", buildJsonObject { put("type", "string") }) })
+        },
+        "phase" to buildJsonObject { put("type", "string"); put("description", "resume: call, double, lead, or follow.") },
+        "seat" to buildJsonObject { put("type", "string"); put("description", "resume: landlord, landlord_up, or landlord_down.") },
+        "snapshot" to buildJsonObject { put("type", "object"); put("description", "resume: alternatively provide hand, bottom, history, phase, and seat inside this object.") },
         "level" to buildJsonObject { put("type", "integer"); put("description", "call: 0-3.") },
         "hands" to buildJsonObject { put("type", "integer"); put("description", "start: how many 闯关 hands to play in a row before returning, 1-10 (default 1).") },
     ), listOf("action"))
@@ -155,14 +170,25 @@ internal object PhoneDdzTurn : PhoneTool {
 
     override suspend fun execute(a: Args, ctx: ToolContext): ToolExecution {
         val turn = ctx[STATE] ?: Turn().also { ctx[STATE] = it }
+        val action = a.str("action") ?: throw ArgError("action", "required")
+        // stop is deliberately usable even after the app was switched: it must prevent a delayed
+        // polling continuation from tapping when the user takes control.
+        if (action == "stop") return stop(ctx, turn)
         if (ctx.screen.peek().packageName != PACKAGE) {
             turn.single = false
+            if (turn.mode == DdzMode.Human) {
+                turn.mode = null
+                turn.state = DdzSessionState.Paused
+                turn.reason = DdzSessionReason.UNKNOWN_SCENE
+            }
             return refused("wrong_app")
         }
-        val action = a.str("action") ?: throw ArgError("action", "required")
+        if (turn.stopped && action != "start") return stopped(turn)
         // 模型在两次调用之间自己点过屏幕(关弹窗,也可能回大厅进了真人场):这里看不到它去过哪,单机标记作废,要再 start
         if (turn.single && ctx.evidence.actions != turn.actionsSeen) turn.single = false
         if (action == "start") return start(a, ctx, turn).also { turn.actionsSeen = ctx.evidence.actions }
+        if (action == "resume") return resume(a, ctx, turn)
+        if (turn.state == DdzSessionState.Paused) return paused(turn)
         val frame = ctx.screen.rawFrame(if (turn.advisor != null) FULL_ROWS else DdzScreen.ROWS) ?: return refused("no_frame")
         // 闯关牌桌只在单机模式里有:模型关了弹窗(广告)回到这桌上,还是单机,不用再 start;打了一半的这手照旧交给模型
         if (!turn.single && turn.advisor != null && DdzCards.singleStageTable(frame)) {
@@ -183,6 +209,16 @@ internal object PhoneDdzTurn : PhoneTool {
         }
         val waitMs = now() - waitStart
         if (move.moved) turn.rejected = 0
+        if (turn.mode == DdzMode.Human && move.error != null) {
+            turn.state = DdzSessionState.Paused
+            turn.reason = pauseReason(move.error)
+        } else if (turn.mode == DdzMode.Human && next.phase == DdzPhase.Other) {
+            turn.state = DdzSessionState.Paused
+            turn.reason = DdzSessionReason.UNKNOWN_SCENE
+        } else if (turn.state != DdzSessionState.Paused) {
+            turn.state = stateFor(next.phase)
+            turn.reason = null
+        }
         val shotStart = now()
         val needsLook = next.phase !in setOf(DdzPhase.Result, DdzPhase.AutoPlay) && ctx.config.visionEnabled
         val shot = if (needsLook) ctx.screen.quickShot() else null
@@ -191,6 +227,9 @@ internal object PhoneDdzTurn : PhoneTool {
         turn.actionsSeen = ctx.evidence.actions
         return ToolExecution(buildJsonObject {
             put("ok", move.error == null)
+            turn.mode?.let { put("mode", it.wire) }
+            put("state", turn.state.wire)
+            turn.reason?.let { put("reason", it) }
             move.error?.let { put("error", it); put("recoverable", true) }
             move.note?.let { put("note", it) }
             put("phase", next.phase.name.lowercase())
@@ -219,6 +258,39 @@ internal object PhoneDdzTurn : PhoneTool {
      */
     private suspend fun start(a: Args, ctx: ToolContext, turn: Turn): ToolExecution {
         val advisor = a.str("advisor") ?: throw ArgError("advisor", "required")
+        val mode = a.str("mode")?.trim()?.lowercase() ?: DdzMode.Single.wire
+        return when (mode) {
+            DdzMode.Human.wire -> startHuman(ctx, turn, advisor)
+            DdzMode.Single.wire -> startSingle(a, ctx, turn, advisor)
+            else -> throw ArgError("mode", "must be single or human")
+        }
+    }
+
+    private suspend fun startHuman(ctx: ToolContext, turn: Turn, advisor: String): ToolExecution {
+        val page = ctx.screen.rawFrame(FULL_ROWS) ?: return refused("no_frame")
+        val view = DdzScreen.read(page)
+        if (view.phase == DdzPhase.Other) return refused("not_human_game")
+        turn.single = false
+        turn.mode = DdzMode.Human
+        turn.state = stateFor(view.phase)
+        turn.reason = null
+        turn.stopped = false
+        turn.advisor = advisor
+        turn.atTable = true
+        turn.actionsSeen = ctx.evidence.actions
+        turn.tracker = null
+        turn.expectedHand = null
+        turn.snapshot = null
+        return ToolExecution(buildJsonObject {
+            put("ok", true)
+            put("mode", DdzMode.Human.wire)
+            put("state", turn.state.wire)
+            put("phase", view.phase.name.lowercase())
+            put("handCount", view.handCount)
+        }, image = if (ctx.config.visionEnabled) ctx.screen.quickShot() else null, changed = false)
+    }
+
+    private suspend fun startSingle(a: Args, ctx: ToolContext, turn: Turn, advisor: String): ToolExecution {
         val page = ctx.screen.rawFrame(FULL_ROWS) ?: return refused("no_frame")
         // 已经坐在闯关的牌桌上(模型自己点了下一关、继续闯关):从这里接,下面按头一帧的手牌张数看是不是打了一半
         val seated = DdzCards.singleStageTable(page)
@@ -250,9 +322,13 @@ internal object PhoneDdzTurn : PhoneTool {
         turn.joining = seated || stage?.second == true
         // 叫分、别家出牌都可能要等一阵:和 wait 一样等;不在牌桌上的话十来秒没手牌就回来
         val next = awaitDecision(ctx, turn, DdzPhase.Other, moved = true, polls = MAX_POLLS)
+        turn.state = stateFor(next.phase)
         turn.seenAt = now()
         return ToolExecution(buildJsonObject {
             put("ok", true)
+            turn.mode?.let { put("mode", it.wire) }
+            put("state", turn.state.wire)
+            turn.reason?.let { put("reason", it) }
             put("phase", next.phase.name.lowercase())
             put("handCount", next.handCount)
             if (turn.won > 0) put("handsWon", turn.won)
@@ -260,6 +336,127 @@ internal object PhoneDdzTurn : PhoneTool {
             if (turn.played > 0) put("handsPlayed", turn.played)
             turn.tracker?.let { t -> t.broken?.let { put("douzeroOff", it); put("douzeroTrace", t.trace.joinToString(" ")) } }
         }, image = if (ctx.config.visionEnabled) ctx.screen.quickShot() else null, changed = true)
+    }
+
+    private fun stop(ctx: ToolContext, turn: Turn): ToolExecution {
+        turn.single = false
+        turn.stopped = true
+        turn.state = DdzSessionState.Stopped
+        turn.reason = DdzSessionReason.USER_STOP
+        turn.atTable = false
+        turn.tracker = null
+        turn.expectedHand = null
+        turn.snapshot = null
+        turn.advisor = null
+        turn.decisions.clear()
+        turn.actionsSeen = ctx.evidence.actions
+        return ToolExecution(buildJsonObject {
+            put("ok", true)
+            turn.mode?.let { put("mode", it.wire) }
+            put("state", turn.state.wire)
+            put("reason", turn.reason!!)
+            put("phase", DdzPhase.Other.name.lowercase())
+        })
+    }
+
+    private fun stopped(turn: Turn) = ToolExecution(buildJsonObject {
+        put("ok", false)
+        put("error", "stopped")
+        put("recoverable", true)
+        turn.mode?.let { put("mode", it.wire) }
+        put("state", DdzSessionState.Stopped.wire)
+        put("reason", turn.reason ?: DdzSessionReason.USER_STOP)
+    })
+
+    private fun paused(turn: Turn) = ToolExecution(buildJsonObject {
+        put("ok", false)
+        put("error", "paused")
+        put("recoverable", true)
+        turn.mode?.let { put("mode", it.wire) }
+        put("state", DdzSessionState.Paused.wire)
+        turn.reason?.let { put("reason", it) }
+    })
+
+    private fun resume(a: Args, ctx: ToolContext, turn: Turn): ToolExecution {
+        if (turn.mode != DdzMode.Human) return refused("resume_requires_human")
+        val snapshot = parseSnapshot(a)
+        turn.snapshot = snapshot
+        turn.stopped = false
+        turn.state = stateFor(snapshot.phase)
+        turn.reason = null
+        turn.atTable = true
+        turn.actionsSeen = ctx.evidence.actions
+        return ToolExecution(buildJsonObject {
+            put("ok", true)
+            put("mode", DdzMode.Human.wire)
+            put("state", turn.state.wire)
+            put("phase", snapshot.phase)
+            put("seat", snapshot.seat)
+            put("handCount", snapshot.hand.size)
+            put("historyCount", snapshot.history.size)
+        })
+    }
+
+    private fun parseSnapshot(a: Args): DdzSnapshot {
+        val source = when (val value = a.o["snapshot"]) {
+            null -> a.o
+            is JsonObject -> value
+            else -> throw ArgError("snapshot", "must be an object")
+        }
+        fun required(name: String): kotlinx.serialization.json.JsonElement =
+            source[name] ?: throw ArgError(name, "required for resume")
+        fun strings(name: String, min: Int, max: Int): List<String> {
+            val value = required(name) as? JsonArray ?: throw ArgError(name, "must be an array")
+            if (value.size !in min..max) throw ArgError(name, "must have $min-$max items")
+            return value.map { item ->
+                val text = (item as? JsonPrimitive)?.contentOrNull?.trim()?.uppercase()
+                    ?: throw ArgError(name, "items must be strings")
+                if (text !in SNAPSHOT_RANKS) throw ArgError(name, "contains an invalid rank")
+                text
+            }
+        }
+        val hand = strings("hand", 1, 20)
+        val bottom = strings("bottom", 3, 3)
+        val historyValue = required("history") as? JsonArray ?: throw ArgError("history", "must be an array")
+        val history = historyValue.mapIndexed { index, item ->
+            val cards = item as? JsonArray ?: throw ArgError("history", "entry $index must be an array")
+            cards.map { card ->
+                val rank = (card as? JsonPrimitive)?.contentOrNull?.trim()?.uppercase()
+                    ?: throw ArgError("history", "entries must contain strings")
+                if (rank !in SNAPSHOT_RANKS) throw ArgError("history", "contains an invalid rank")
+                rank
+            }
+        }
+        val phase = (required("phase") as? JsonPrimitive)?.contentOrNull?.trim()?.lowercase()
+            ?: throw ArgError("phase", "must be a string")
+        if (phase !in SNAPSHOT_PHASES) throw ArgError("phase", "must be call, double, lead, or follow")
+        val seat = (required("seat") as? JsonPrimitive)?.contentOrNull?.trim()?.lowercase()
+            ?: throw ArgError("seat", "must be a string")
+        if (seat !in SNAPSHOT_SEATS) throw ArgError("seat", "must identify the player's seat")
+        return DdzSnapshot(hand, bottom, history, phase, seat)
+    }
+
+    private fun stateFor(phase: DdzPhase) = when (phase) {
+        DdzPhase.Call -> DdzSessionState.Calling
+        DdzPhase.Double -> DdzSessionState.Doubling
+        DdzPhase.Follow, DdzPhase.Lead -> DdzSessionState.Playing
+        DdzPhase.Result -> DdzSessionState.Result
+        DdzPhase.Other, DdzPhase.AutoPlay -> DdzSessionState.Lobby
+    }
+
+    private fun stateFor(phase: String) = when (phase) {
+        "call" -> DdzSessionState.Calling
+        "double" -> DdzSessionState.Doubling
+        "lead", "follow" -> DdzSessionState.Playing
+        else -> DdzSessionState.Paused
+    }
+
+    private fun pauseReason(error: String) = when (error) {
+        "hand_mismatch", "hand_drift" -> DdzSessionReason.HAND_DRIFT
+        "douzero_history_mismatch", "history_not_ready" -> DdzSessionReason.HISTORY_MISMATCH
+        "douzero_unreachable" -> DdzSessionReason.SERVICE_UNAVAILABLE
+        "rejected", "select_failed", "confirm_failed" -> DdzSessionReason.REJECTED_ACTION
+        else -> DdzSessionReason.UNKNOWN_SCENE
     }
 
     private suspend fun move(action: String, a: Args, view: DdzView, ctx: ToolContext, turn: Turn, thinkMs: Long): Move {
@@ -588,6 +785,9 @@ internal object PhoneDdzTurn : PhoneTool {
 
     /** 单机局里每一帧都要认牌,一次把这些行读全。 */
     private val FULL_ROWS = (DdzScreen.ROWS + DdzCards.ROWS + DdzCards.LOBBY_ROWS).distinct()
+    private val SNAPSHOT_RANKS = setOf("3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K", "A", "2", "SJ", "BJ")
+    private val SNAPSHOT_PHASES = setOf("call", "double", "lead", "follow")
+    private val SNAPSHOT_SEATS = setOf("landlord", "landlord_up", "landlord_down")
 
     private fun wrongPhase(phase: DdzPhase) = Move(false, "wrong_phase", phase.name.lowercase())
 

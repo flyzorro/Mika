@@ -1,6 +1,6 @@
 # Human mode contract and session states
 
-Status: ready-for-agent
+Status: resolved
 Blocked by: none
 
 ## Goal
