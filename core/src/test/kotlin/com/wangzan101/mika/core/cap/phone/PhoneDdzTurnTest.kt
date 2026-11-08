@@ -240,7 +240,7 @@ class PhoneDdzTurnTest {
         }
     }
 
-    @Test fun whenDouZeroRefusesTheHistoryThisHandIsHintedAndTheModelTakesOver() = runTest {
+    @Test fun whenDouZeroRefusesTheHistoryTheModelTakesOverThisVeryTurn() = runTest {
         val saved = PhoneDdzTurn.advise
         PhoneDdzTurn.advise = { _, _ -> """{"error":"history_mismatch"}""" }
         try {
@@ -251,7 +251,8 @@ class PhoneDdzTurnTest {
             PhoneDdzTurn.useTracker(dispatcher.ctx, leftLedPairs())
             val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"wait"}""").jsonObject), dispatcher.ctx)
             assertEquals("douzero_history_mismatch", result.text("douzeroOff"))
-            assertEquals("先按提示", DdzScreen.read(follow).buttons[1].let { it.x to it.y }, game.taps.first())
+            assertEquals("follow", result.text("phase"))
+            assertTrue("不替模型按提示", game.taps.isEmpty())
         } finally {
             PhoneDdzTurn.advise = saved
         }

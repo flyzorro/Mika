@@ -528,7 +528,7 @@ phone_dialog #ffdf9f3048b0
 phone_gesture #b4c09a3789c3
 phone_set_wheel #90671f37593d
 phone_run #3c97e8a25ed9
-phone_ddz_turn #87cb26739679
+phone_ddz_turn #d35f7da2f95f
 phone_system_command #b4b7cb438231
 phone_list_apps #701826b59e30
 phone_launch_app #858a22609fed

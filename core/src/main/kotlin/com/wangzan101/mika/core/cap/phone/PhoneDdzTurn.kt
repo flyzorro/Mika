@@ -186,7 +186,7 @@ internal object PhoneDdzTurn : PhoneTool {
                 put("autoMs", JsonArray(turn.decisions.map(::JsonPrimitive)))
                 turn.decisions.clear()
             }
-            turn.tracker?.broken?.let { put("douzeroOff", it) }
+            turn.tracker?.let { t -> t.broken?.let { put("douzeroOff", it); put("douzeroTrace", t.trace.joinToString(" ")) } }
             put("timing", buildJsonObject {
                 put("thinkMs", thinkMs); put("tapMs", tapMs); put("waitMs", waitMs); put("shotMs", shotMs)
             })
@@ -235,7 +235,7 @@ internal object PhoneDdzTurn : PhoneTool {
             put("handCount", next.handCount)
             if (turn.won > 0) put("handsWon", turn.won)
             if (turn.lost > 0) put("handsLost", turn.lost)
-            turn.tracker?.broken?.let { put("douzeroOff", it) }
+            turn.tracker?.let { t -> t.broken?.let { put("douzeroOff", it); put("douzeroTrace", t.trace.joinToString(" ")) } }
         }, image = if (ctx.config.visionEnabled) ctx.screen.quickShot() else null, changed = true)
     }
 
@@ -507,8 +507,7 @@ internal object PhoneDdzTurn : PhoneTool {
             }
             tracker.fail("douzero_move_failed_$stuck")
         } else tracker.fail(failure ?: "douzero_unknown")
-        // 这一手保底,剩下的交还模型
-        if (view.phase == DdzPhase.Follow) hint(view, ctx) else smallest(view, ctx)
+        // 这一手起交还模型自己出:提示只会挑压得过的,分不清压的是不是队友
         return Auto.Off
     }
 
