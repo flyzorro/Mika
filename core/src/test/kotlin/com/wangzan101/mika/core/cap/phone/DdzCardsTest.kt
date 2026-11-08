@@ -102,6 +102,15 @@ class DdzCardsTest {
         assertEquals(DdzSeen.Cards(listOf("5")), DdzCards.play(frame("vd_stage_left5_ribbon"), DdzSide.Left))
     }
 
+    @Test fun readsAPlayThatWrapsOntoASecondRow() {
+        // 地主出了十张(101010 999 66 33):第一排九张,最后一张带绶带的 3 摆在第二排
+        val wrap = DdzCards.play(frame("vd_stage_left_wrap10"), DdzSide.Left)
+        assertTrue("$wrap", wrap is DdzSeen.Cards && wrap.ranks.size == 10)
+        val ranks = (wrap as DdzSeen.Cards).ranks
+        assertEquals("10 10 10 9 9 9 6 6 3".split(' '), ranks.take(9))
+        assertTrue("$wrap", ranks.last() == "3" || (ranks.last().startsWith("?") && "3" in ranks.last()))
+    }
+
     @Test fun readsRibbonedSinglesOnTheStage() {
         val right3 = frame("vd_stage_right3_ribbon_left6")
         assertEquals(DdzSeen.Cards(listOf("6")), DdzCards.play(right3, DdzSide.Left))

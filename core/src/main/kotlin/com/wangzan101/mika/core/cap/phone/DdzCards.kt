@@ -81,7 +81,7 @@ internal object DdzCards {
             // 左家的牌从 450 往右排,右家的排到 2000 为止;正中翻开的三张底牌两边都不挨着
             val edge = if (side == DdzSide.Left) STAGE_LEFT_EDGE else STAGE_RIGHT_EDGE
             val anchored = (STAGE_PLAY_Y0 until STAGE_PLAY_Y1).count { y -> frame.pixel(edge, y).let { p -> min(p) > 190 && spread(p) < 45 } } >= 100
-            if (!anchored) null else strip(frame, x0, x1, STAGE_PLAY_Y0, STAGE_PLAY_Y1, pitch = 67.5, width = 130.0, glyphRows = 76, glyphWidth = 58, k = k * STAGE_SCALE, wideLast = 72, minRows = 150, probeNearBottom = true)
+            if (!anchored) null else strip(frame, x0, x1, STAGE_PLAY_Y0, STAGE_PLAY_Y1, pitch = 67.5, width = 130.0, glyphRows = 76, glyphWidth = 58, k = k * STAGE_SCALE, wideLast = 72, minRows = 150, probeNearBottom = true, wrapDy = WRAP_DY)
         } else {
             val (x0, x1) = if (side == DdzSide.Left) bar + (280 * k).toInt() to bar + (880 * k).toInt()
             else bar + (1360 * k).toInt() to bar + (1990 * k).toInt()
@@ -216,7 +216,7 @@ internal object DdzCards {
     private fun strip(
         frame: RawFrame, x0: Int, x1: Int, y0: Int, y1: Int, pitch: Double, width: Double, glyphRows: Int, glyphWidth: Int,
         k: Double, minRows: Int = 100, sure: Double = SURE, margin: Double = MARGIN, probeNearBottom: Boolean = false,
-        wideLast: Int? = null,
+        wideLast: Int? = null, wrapDy: Int? = null,
     ): List<Read>? {
         val right = minOf(x1, frame.width)
         fun white(x: Int, y: Int) = frame.pixel(x, y).let { p -> min(p) > 190 && spread(p) < 45 }
@@ -237,8 +237,25 @@ internal object DdzCards {
         }.maxByOrNull { it.last - it.first } ?: return null
         val n = ((span.last - span.first + 1 - width) / pitch).roundToInt() + 1
         if (n !in 1..20) return null
+        val first = row(frame, x0 + span.first, top, n, pitch, glyphRows, glyphWidth, k, sure, margin, wideLast)
+        // 闯关里一手出得多(十张的飞机带对子),一排摆满九张后接着从同一个左边摆第二排,比第一排低 [WRAP_DY]、压在它下面。
+        // 第一排牌面下沿以下还有白色牌面就是有第二排;宽度只在第一排下面量
+        if (wrapDy == null) return first
+        val below = top + WRAP_BELOW
+        if (below >= y1 || (x0 until right).count { white(it, below) } < 100) return first
+        val span2 = DdzScreen.runs(right - x0, gap = 12, minWidth = 40) { white(x0 + it, below) }.maxByOrNull { it.last - it.first } ?: return first
+        val n2 = ((span2.last - span2.first + 1 - width) / pitch).roundToInt() + 1
+        if (n2 !in 1..20) return first
+        return first + row(frame, x0 + span2.first, top + wrapDy, n2, pitch, glyphRows, glyphWidth, k, sure, margin, wideLast)
+    }
+
+    /** 一排 [n] 张牌,最左一张从 [left] 起、牌顶在 [top]:每张的点数。 */
+    private fun row(
+        frame: RawFrame, left: Int, top: Int, n: Int, pitch: Double, glyphRows: Int, glyphWidth: Int, k: Double,
+        sure: Double, margin: Double, wideLast: Int?,
+    ): List<Read> {
         return (0 until n).map { i ->
-            val cx = x0 + span.first + (i * pitch).toInt() + 3
+            val cx = left + (i * pitch).toInt() + 3
             // 只有最后一张右上角可能压着绶带;前面的牌点数(10 有两位)可以看全,但别碰到下一张牌左边的阴影
             // 最后一张整张露着:窄了 10 的 0 会切掉,宽了地主的绶带会进来;给了 [wideLast] 就两种都量,取更像的
             val widths = if (i == n - 1) listOfNotNull(glyphWidth, wideLast).map { (minOf(it.toDouble(), pitch) - 3).toInt() }.distinct()
@@ -261,6 +278,9 @@ internal object DdzCards {
         }
     }
 
+    private const val WRAP_DY = 90
+    /** 第一排牌顶往下这么多已经出了第一排的牌面(闯关的牌高约 188),还是白的就是第二排。 */
+    private const val WRAP_BELOW = 215
     private const val RIBBON_COL = 40
     private const val RIBBON_SLOPE = 0.85
 
