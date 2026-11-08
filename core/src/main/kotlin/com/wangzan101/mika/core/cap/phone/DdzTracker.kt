@@ -83,8 +83,9 @@ internal class DdzTracker {
                 // 地主出第一手前是 20 张:剩的张数对不上出的张数(还叠成一摞,或者这家是 17 张的农民)就不算
                 val left = count[seat]
                 if (left != null && seen.ranks.size != FIRST - left) continue
-                // 张数对得上就不是叠着的一摞,不用再等几帧(别人出得快,等不起:接手时这手牌一两帧后就被收走了)
-                if (left == null && !steady(side to seen)) return
+                // 张数对得上就不是叠着的一摞,两帧一样就够(别人出得快,等不起:接手时这手牌两三帧后就被收走了);
+                // 一帧不够:牌还在落下的那一帧,带绶带的 3 会认成 J
+                if (!steady(side to seen, if (left == null) STEADY_FRAMES else COUNTED_FRAMES)) return
                 landlord = seat
                 record(seat, seen.ranks)
                 // 他出完了,闹钟已经到了下一家
@@ -190,7 +191,7 @@ internal class DdzTracker {
             val played = unplayed(seat)
             when {
                 seen is DdzSeen.Cards && !guessed && (played == null || played == seen.ranks.size) -> {
-                    if (played == null && !steady(seat to seen)) return
+                    if (!steady(seat to seen, if (played == null) STEADY_FRAMES else COUNTED_FRAMES)) return
                     record(seat, seen.ranks)
                 }
                 // 「不出」也一样:飞过来的牌缩在头像边上那一下,也会落在「不出」那一条里
@@ -218,10 +219,10 @@ internal class DdzTracker {
      * 同一家同一个读数连着 [STEADY_FRAMES] 帧才算数:几张牌飞过来时先叠成一摞,只看得到最上面那张(7773 读成 3)。
      * 算数后从头数,下一家从这一帧起数。
      */
-    private fun steady(key: Any): Boolean {
+    private fun steady(key: Any, frames: Int = STEADY_FRAMES): Boolean {
         if (key != steadyKey) { steadyKey = key; steadyFrames = 0; steadyFrameNo = -1 }
         if (steadyFrameNo != frameNo) { steadyFrameNo = frameNo; steadyFrames++ }
-        if (steadyFrames < STEADY_FRAMES) return false
+        if (steadyFrames < frames) return false
         steadyKey = null
         return true
     }
@@ -236,6 +237,8 @@ internal class DdzTracker {
         /** 一手牌读几帧还认不准才放弃:飞机、炸弹的特效会盖住牌三四秒。 */
         const val READ_TRIES = 16
         const val STEADY_FRAMES = 3
+        /** 张数对得上的一手要连着几帧读得一样。 */
+        const val COUNTED_FRAMES = 2
         const val TRACE = 24
     }
 }

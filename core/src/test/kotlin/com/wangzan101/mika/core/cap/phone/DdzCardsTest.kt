@@ -125,6 +125,10 @@ class DdzCardsTest {
         assertEquals(DdzSeen.Cards(listOf("6")), DdzCards.play(right3, DdzSide.Left))
         val three = DdzCards.play(right3, DdzSide.Right)
         assertTrue("$three", three == DdzSeen.Cards(listOf("3")) || (three is DdzSeen.Cards && three.ranks.single().startsWith("?") && "3" in three.ranks.single()))
+        // 地主出 44433,最后一张带绶带的红 3 被认成了 J
+        val trio = DdzCards.play(frame("vd_stage_left44433_ribbon"), DdzSide.Left)
+        assertTrue("$trio", trio is DdzSeen.Cards && trio.ranks.take(4) == listOf("4", "4", "4", "3") &&
+            (trio.ranks.last() == "3" || (trio.ranks.last().startsWith("?") && "3" in trio.ranks.last())))
         val two = DdzCards.play(frame("vd_stage_left2_ribbon"), DdzSide.Left)
         assertTrue("$two", two == DdzSeen.Cards(listOf("2")) || (two is DdzSeen.Cards && two.ranks.single().startsWith("?") && "2" in two.ranks.single()))
     }
