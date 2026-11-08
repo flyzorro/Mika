@@ -2,6 +2,7 @@ package com.wangzan101.mika.core.cap.phone
 
 import com.wangzan101.mika.core.assembly.toolDispatcher
 import com.wangzan101.mika.core.run.SteerSignal
+import com.wangzan101.mika.core.tool.ArgError
 import com.wangzan101.mika.core.tool.Args
 import com.wangzan101.mika.core.tool.FakeScreen
 import com.wangzan101.mika.core.tool.ToolExecution
@@ -637,6 +638,68 @@ class PhoneDdzTurnTest {
     @Test fun pickMapsRanksToDistinctCards() {
         assertEquals(setOf(1, 2), PhoneDdzTurn.pick(listOf("A", "3", "3"), listOf("3", "3")))
         assertNull(PhoneDdzTurn.pick(listOf("A", "3"), listOf("3", "3")))
+    }
+
+    @Test fun humanStartReportsAnExplicitModeAndDoesNotTapTheTable() = runTest {
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(full("call"))))
+        val result = run(game, """{"action":"start","mode":"human","advisor":"http://mac:3426"}""")
+        assertEquals("human", result.text("mode"))
+        assertEquals("calling", result.text("state"))
+        assertEquals("call", result.text("phase"))
+        assertTrue(game.taps.isEmpty())
+    }
+
+    @Test fun humanStartRequiresItsAdvisor() = runTest {
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(full("call"))))
+        var thrown = false
+        try {
+            run(game, """{"action":"start","mode":"human"}""")
+        } catch (_: ArgError) {
+            thrown = true
+        }
+        assertTrue(thrown)
+        assertTrue(game.taps.isEmpty())
+    }
+
+    @Test fun stopIsIdempotentAndBlocksLaterAutomaticWork() = runTest {
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(full("call"))))
+        val dispatcher = toolDispatcher(game)
+        val stop = Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"stop"}""").jsonObject)
+        val first = PhoneDdzTurn.execute(stop, dispatcher.ctx)
+        val second = PhoneDdzTurn.execute(stop, dispatcher.ctx)
+        assertEquals("stopped", first.text("state"))
+        assertEquals("user_stop", first.text("reason"))
+        assertEquals("stopped", second.text("state"))
+        assertEquals("user_stop", second.text("reason"))
+        val wait = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"wait"}""").jsonObject), dispatcher.ctx)
+        assertEquals("stopped", wait.text("state"))
+        assertEquals("stopped", wait.text("error"))
+        assertTrue(game.taps.isEmpty())
+    }
+
+    @Test fun resumeAcceptsACompleteHumanSnapshotWithoutClicking() = runTest {
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(full("call"))))
+        val dispatcher = toolDispatcher(game)
+        PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
+        val resume = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""
+            {"action":"resume","hand":["2","A","K"],"bottom":["3","4","5"],"history":[["6","6"]],"phase":"follow","seat":"landlord_up"}
+        """.trimIndent()).jsonObject), dispatcher.ctx)
+        assertEquals("human", resume.text("mode"))
+        assertEquals("playing", resume.text("state"))
+        assertEquals("follow", resume.text("phase"))
+        assertTrue(game.taps.isEmpty())
+    }
+
+    @Test fun conservativePolicyIsDeterministicForCallingAndDoubling() {
+        val strong = "BJ SJ 2 2 A A Q Q Q Q J J 10 9 9 5 4".split(' ')
+        val weak = "2 K K Q J 10 9 8 7 6 5 5 4 4 3 3 3".split(' ')
+        assertEquals(3, HumanDdzPolicy.callLevel(strong))
+        assertEquals(0, HumanDdzPolicy.callLevel(weak))
+        assertFalse(HumanDdzPolicy.shouldDouble(weak, listOf("3", "4", "5")))
+        assertEquals(
+            HumanDdzPolicy.shouldDouble(strong, listOf("3", "4", "5")),
+            HumanDdzPolicy.shouldDouble(strong, listOf("3", "4", "5")),
+        )
     }
 
     @Test fun inTheToolListFrozenAtTaskStartWhenTheModelCanSee() {
