@@ -27,8 +27,9 @@ internal class DdzTracker {
     private var leftMe = true
     /** 第几帧;同一帧里 resolve 会调两次,「不出」要按帧数。 */
     private var frameNo = 0L
-    private var passFrames = 0
-    private var passFrameNo = -1L
+    private var steadyKey: Any? = null
+    private var steadyFrames = 0
+    private var steadyFrameNo = -1L
     /** 出完了、还没读到他出了什么的几家,按出牌顺序。 */
     private val waiting = ArrayDeque<Pair<DdzSeat, Int>>()
 
@@ -61,6 +62,7 @@ internal class DdzTracker {
                     return
                 }
                 if (seen !is DdzSeen.Cards) continue
+                if (!steady(side to seen)) return
                 val seat = if (side == DdzSide.Left) DdzSeat.Left else DdzSeat.Right
                 landlord = seat
                 history += seen.ranks
@@ -117,16 +119,14 @@ internal class DdzTracker {
             val seen = read(if (seat == DdzSeat.Left) DdzSide.Left else DdzSide.Right)
             // 只有地主的牌压着绶带;农民的牌带着猜的那一张就是没认准
             val guessed = seen is DdzSeen.Cards && seat != landlord && seen.ranks.any { it.startsWith(DdzCards.UNKNOWN) }
-            if (seen != DdzSeen.Pass) passFrames = 0
             when {
-                seen is DdzSeen.Cards && !guessed -> history += seen.ranks
-                // 「不出」要连着几帧都在:飞过来的牌缩在头像边上那一下,也会落在「不出」那一条里
+                seen is DdzSeen.Cards && !guessed -> {
+                    if (!steady(seat to seen)) return
+                    history += seen.ranks
+                }
+                // 「不出」也一样:飞过来的牌缩在头像边上那一下,也会落在「不出」那一条里
                 seen == DdzSeen.Pass -> {
-                    if (passFrameNo != frameNo) { passFrameNo = frameNo; passFrames++ }
-                    if (passFrames < PASS_FRAMES) return
-                    passFrames = 0
-                    // 下一家从这一帧起数
-                    passFrameNo = -1
+                    if (!steady(seat to seen)) return
                     history += emptyList<String>()
                 }
                 // 牌还在飞过来(空着,或者正在落下认不准):下一帧再读,读几次还不行才算漏了、认不准
@@ -140,8 +140,20 @@ internal class DdzTracker {
         }
     }
 
+    /**
+     * 同一家同一个读数连着 [STEADY_FRAMES] 帧才算数:几张牌飞过来时先叠成一摞,只看得到最上面那张(7773 读成 3)。
+     * 算数后从头数,下一家从这一帧起数。
+     */
+    private fun steady(key: Any): Boolean {
+        if (key != steadyKey) { steadyKey = key; steadyFrames = 0; steadyFrameNo = -1 }
+        if (steadyFrameNo != frameNo) { steadyFrameNo = frameNo; steadyFrames++ }
+        if (steadyFrames < STEADY_FRAMES) return false
+        steadyKey = null
+        return true
+    }
+
     private companion object {
         const val READ_TRIES = 8
-        const val PASS_FRAMES = 3
+        const val STEADY_FRAMES = 3
     }
 }

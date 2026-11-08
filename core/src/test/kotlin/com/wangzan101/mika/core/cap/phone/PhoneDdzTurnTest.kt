@@ -191,7 +191,8 @@ class PhoneDdzTurnTest {
     /** 左家是地主、出了连对 10 10 9 9 8 8,我是他的下家,轮到我跟。 */
     private fun leftLedPairs() = DdzTracker().apply {
         val pairs = DdzSeen.Cards("10 10 9 9 8 8".split(' '))
-        observe(DdzSeat.Me, { if (it == DdzSide.Left) pairs else DdzSeen.Empty }, { listOf("J", "7", "4") })
+        // 一手牌要连着几帧读得一样才算
+        repeat(3) { observe(DdzSeat.Me, { if (it == DdzSide.Left) pairs else DdzSeen.Empty }, { listOf("J", "7", "4") }) }
     }
 
     private fun full(name: String): RawFrame {
