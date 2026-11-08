@@ -707,4 +707,88 @@ class PhoneDdzTurnTest {
         assertTrue("phone_ddz_turn" in names(vision = true))
         assertFalse("phone_ddz_turn" in names(vision = false))
     }
+
+    @Test fun invalidRecoveryReturnsAStableFailureWithoutReplacingARunnableSession() = runTest {
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(full("call"))))
+        val dispatcher = toolDispatcher(game)
+        PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
+        val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""
+            {"action":"resume","hand":["3","3"],"bottom":["3","4","5"],"history":[],"phase":"call","seat":"landlord"}
+        """.trimIndent()).jsonObject), dispatcher.ctx)
+        assertEquals("invalid_snapshot", result.text("error"))
+        assertEquals("hand_count", result.text("reason"))
+        assertEquals("calling", result.text("state"))
+        assertEquals("call", result.text("phase"))
+        assertTrue(game.taps.isEmpty())
+    }
+
+    @Test fun validRecoveryReportsTheReplayedHistoryWithoutClicking() = runTest {
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(full("call"))))
+        val dispatcher = toolDispatcher(game)
+        PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
+        val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""
+            {"action":"resume",
+             "hand":["3","4","5","9","10","J","Q","K","A","2","SJ","BJ","3","4","5","9","10","J"],
+             "bottom":["6","7","8"],
+             "history":[["3"],[],[],["4"]],
+             "phase":"follow","seat":"landlord"}
+        """.trimIndent()).jsonObject), dispatcher.ctx)
+        assertEquals("true", result.text("ok"))
+        assertEquals("playing", result.text("state"))
+        assertEquals("follow", result.text("phase"))
+        assertEquals("4", result.text("historyCount"))
+        assertTrue(game.taps.isEmpty())
+    }
+
+    @Test fun ambiguousRecoveryCardsAreReportedWithoutGuessing() = runTest {
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(full("call"))))
+        val dispatcher = toolDispatcher(game)
+        PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
+        val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""
+            {"action":"resume","hand":["3","?4"],"bottom":["6","7","8"],"history":[],"phase":"call","seat":"landlord"}
+        """.trimIndent()).jsonObject), dispatcher.ctx)
+        assertEquals("invalid_snapshot", result.text("error"))
+        assertEquals("ambiguous_card", result.text("reason"))
+        assertTrue(game.taps.isEmpty())
+    }
+
+    @Test fun illegalHistoryIsRejectedBeforeTheSessionIsChanged() = runTest {
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(full("call"))))
+        val dispatcher = toolDispatcher(game)
+        PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
+        val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""
+            {"action":"resume","hand":["3","4","5","6","7","8","9","10","J","Q","K","A","2","SJ","BJ","3","4"],
+             "bottom":["5","6","7"],"history":[[],["3"]],"phase":"follow","seat":"landlord_up"}
+        """.trimIndent()).jsonObject), dispatcher.ctx)
+        assertEquals("invalid_snapshot", result.text("error"))
+        assertEquals("history_mismatch", result.text("reason"))
+        assertEquals("calling", result.text("state"))
+        assertTrue(game.taps.isEmpty())
+    }
+
+    @Test fun invalidSeatIsReportedAsStructuredRecoveryFailure() = runTest {
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(full("call"))))
+        val dispatcher = toolDispatcher(game)
+        PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
+        val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""
+            {"action":"resume","hand":["3","4","5","6","7","8","9","10","J","Q","K","A","2","SJ","BJ","3","4"],
+             "bottom":["5","6","7"],"history":[],"phase":"call","seat":"dealer"}
+        """.trimIndent()).jsonObject), dispatcher.ctx)
+        assertEquals("invalid_snapshot", result.text("error"))
+        assertEquals("seat", result.text("reason"))
+        assertTrue(game.taps.isEmpty())
+    }
+
+    @Test fun incompleteFollowHistoryIsRejectedWithoutGuessingTheCurrentTrick() = runTest {
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(full("call"))))
+        val dispatcher = toolDispatcher(game)
+        PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
+        val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""
+            {"action":"resume","hand":["3","4","5","6","7","8","9","10","J","Q","K","A","2","SJ","BJ","3","4"],
+             "bottom":["5","6","7"],"history":[["3"],[],[]],"phase":"follow","seat":"landlord_up"}
+        """.trimIndent()).jsonObject), dispatcher.ctx)
+        assertEquals("invalid_snapshot", result.text("error"))
+        assertEquals("history_phase", result.text("reason"))
+        assertTrue(game.taps.isEmpty())
+    }
 }
