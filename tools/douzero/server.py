@@ -97,7 +97,24 @@ def resolve(hand, history):
         move = moves[i]
         unknown = [c for c in move if isinstance(c, str)]
         if not unknown:
-            return search(i + 1, out + [move]) if legal(move, out) else None
+            if legal(move, out):
+                return search(i + 1, out + [move])
+            # 地主出的最后一张压着绶带,最常认错(牌还在落下的那一帧,3 会认成 J):不合规就把它当成认不出,按牌规补
+            if i % 3 != 0 or not history[i]:
+                return None
+            wrong = history[i][-1]
+            rest = list(history[i][:-1])
+            pool[wrong] += 1
+            fits = [r for r in sorted(set(DECK)) if r != wrong and pool[r] > 0 and legal(rest + [r], out)]
+            for r in fits:
+                pool[r] -= 1
+                found = search(i + 1, out + [sorted(rest + [r])])
+                pool[r] += 1
+                if found is not None:
+                    pool[wrong] -= 1
+                    return found
+            pool[wrong] -= 1
+            return None
         if len(unknown) > 1:
             raise Mismatch("ambiguous_card")
         guesses = [RANKS.get(g.upper()) for g in unknown[0][1:].split(",") if g]
@@ -163,27 +180,30 @@ class Agent:
             return infoset.legal_actions[0]
         values = self.values(infoset)
         move = infoset.legal_actions[int(torch.argmax(values))]
-        # 剩的牌少时按明牌把各种分法算到底:有赢面更大的一手就换成它(赢面一样大的里挑 DouZero 打分最高的)
+        # 剩的牌少时按明牌把各种分法算到底:有赢面更大的一手就换成它(赢面一样大的里挑 DouZero 打分最高的)。
+        # 下面两条硬规则只在搜索也认为不吃亏时才换
         solved = endgame.best(infoset)
+        allowed = None
         if solved is not None:
             wins, _ = solved
             score = {tuple(sorted(a)): float(values[i]) for i, a in enumerate(infoset.legal_actions)}
             top = max(wins.get(m, 0) for m in score)
             if wins.get(tuple(sorted(move)), 0) < top:
-                move = list(max((m for m in score if wins.get(m, 0) == top), key=score.get))
-            return move
+                return list(max((m for m in score if wins.get(m, 0) == top), key=score.get))
+            allowed = {m for m in score if wins.get(m, 0) == top}
+        ok = lambda m: allowed is None or tuple(sorted(m)) in allowed
         # 地主只剩一张、桌上是他的牌、我是他前面最后一个能管的农民:不管就是让他出完。DouZero 残局偶尔会选不出,
         # 能管就挑管得上的里面分最高的
         if not move and infoset.player_position == "landlord_up" and infoset.last_pid == "landlord" \
                 and infoset.num_cards_left_dict["landlord"] == 1:
-            beats = [i for i, a in enumerate(infoset.legal_actions) if a]
+            beats = [i for i, a in enumerate(infoset.legal_actions) if a and ok(a)]
             if beats:
                 move = infoset.legal_actions[max(beats, key=lambda i: float(values[i]))]
         # 桌上是队友的牌、队友只剩三张以内:不去压他(自己这手出完就赢的除外),让他接着出完。DouZero 残局偶尔会拿王压队友的 2,
         # 自己接过来再出单张,让只剩一张的地主走了
         mate = {"landlord_down": "landlord_up", "landlord_up": "landlord_down"}.get(infoset.player_position)
         if move and mate and infoset.last_pid == mate and infoset.num_cards_left_dict[mate] <= 3 \
-                and len(move) < len(infoset.player_hand_cards) and [] in infoset.legal_actions:
+                and len(move) < len(infoset.player_hand_cards) and [] in infoset.legal_actions and ok([]):
             move = []
         return move
 

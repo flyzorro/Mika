@@ -183,6 +183,16 @@ class EndgameTest(unittest.TestCase):
         self.assertFalse(solver.landlord_wins(hands, "landlord_down", (), "landlord_down"))
 
 
+class RibbonMisreadTest(unittest.TestCase):
+    def test_an_illegal_landlord_play_gets_its_ribboned_card_refilled(self):
+        # 实机上的一手:地主出 44433,最后一张带绶带的 3 在落下时认成了 J;只有补成 3 才合规
+        hand = ["2", "2", "K", "K", "K", "Q", "Q", "J", "10", "10", "10", "10", "9", "7", "5", "5", "3"]
+        history = [["4", "4", "4", "3", "J"]]
+        out = resolve(cards(hand), [cards(m) for m in history])
+        self.assertEqual(sorted(cards(["4", "4", "4", "3", "3"])), out[0])
+        self.assertTrue(ADVISOR.act("landlord_down", hand, ["4", "5", "A"], history) is not None)
+
+
 class OrderTest(unittest.TestCase):
     def test_a_move_listed_high_to_low_still_replays(self):
         for seed in range(300):
