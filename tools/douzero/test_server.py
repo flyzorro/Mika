@@ -164,6 +164,14 @@ class LookaheadTest(unittest.TestCase):
         self.assertEqual([5], out[3])
         self.assertTrue(ADVISOR.act("landlord_down", hand, [], history))
 
+    def test_guesses_that_all_fail_fall_back_to_any_legal_rank(self):
+        # 实机上的一手:我出 A、上家不出,地主压了一张带绶带的 2,手机猜 J、5、3,都压不住 A
+        history = [["10", "9", "8", "7", "6", "?J,5,7"], [], [], ["?J,K,5"], ["Q"], [], ["K"], ["A"], [], ["?J,5,3"]]
+        hand = ["BJ", "2", "A", "K", "10", "9", "9", "8", "8", "7", "7", "6", "4", "3", "3"]
+        out = resolve(cards(hand), [[str(c) if str(c).startswith("?") else cards([c])[0] for c in m] for m in history])
+        self.assertEqual(cards(["2"]), out[9])
+        self.assertTrue(ADVISOR.act("landlord_down", hand, [], history) is not None)
+
 
 class GuessTest(unittest.TestCase):
     def test_the_first_guess_that_fits_is_used(self):

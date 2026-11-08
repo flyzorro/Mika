@@ -12,7 +12,7 @@ POST /act  {"seat": "landlord" | "landlord_down" | "landlord_up",
 
 ? 是地主出的最后一张:右上角压着绶带,手机上常认不准。按牌规补:15 种点数挨个代进去,
 凑得成合规牌型、压得过上家、牌还有剩的只有一种就补上;有几种都说得通时(单张、三带一的那一张),
-手机可以在 ? 后面按字形从像到不像带上几个点数(如 "?5,6,9"),取其中头一个说得通的,一个都不在就报 ambiguous_card。
+手机可以在 ? 后面按字形从像到不像带上几个点数(如 "?5,6,9"),先试这几个,都说不通再试其余合规的点数,一个都不行才报 ambiguous_card。
 猜错了,后面的出牌在重放里会不合规,照样对得出来。
 -> {"play": ["5", "5"]} 或 {"error": "..."}
 """
@@ -99,8 +99,12 @@ def resolve(hand, history):
         guesses = [RANKS.get(g.upper()) for g in unknown[0][1:].split(",") if g]
         rest = [c for c in move if not isinstance(c, str)]
         fits = [r for r in sorted(set(DECK)) if pool[r] > 0 and legal(rest + [r], out)]
-        # 只有一种补法就是它;几种都说得通就只试手机猜的几个
-        tries = fits if len(fits) == 1 else [g for g in guesses if g in fits]
+        # 只有一种补法就是它;手机猜了几个就先试这几个,都不合规(丝带盖住了字,猜偏了)再按点数从小到大试其余说得通的
+        if len(fits) == 1 or not guesses:
+            tries = fits if len(fits) == 1 else []
+        else:
+            tries = [g for g in guesses if g in fits]
+            tries += [r for r in fits if r not in tries]
         for r in tries:
             pool[r] -= 1
             found = search(i + 1, out + [sorted(rest + [r])])
