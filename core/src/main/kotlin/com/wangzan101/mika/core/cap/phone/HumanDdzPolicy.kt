@@ -30,6 +30,9 @@ internal object DdzSessionReason {
     const val APP_SWITCH = "app_switch"
     const val LOBBY_RETURN = "lobby_return"
     const val UNKNOWN_POPUP = "unknown_popup"
+    const val INVALID_ADVISOR_PLAY = "invalid_advisor_play"
+    const val SNAPSHOT_MISMATCH = "snapshot_mismatch"
+    const val INVALID_ACTOR = "actor"
 }
 
 /** A deliberately small seam for policy decisions that happen before a model play call. */
@@ -46,11 +49,7 @@ internal interface DdzDecisionPolicy {
  */
 internal object ConservativeDdzPolicy : DdzDecisionPolicy {
     override fun callLevel(hand: List<String>): Int {
-        val count = hand.groupingBy { it }.eachCount()
-        val score = (if ("BJ" in count) 3 else 0) + (if ("SJ" in count) 2 else 0) +
-            (count["2"] ?: 0) +
-            2 * count.count { (rank, n) -> n == 4 && rank != "BJ" && rank != "SJ" } +
-            (count["A"] ?: 0) / 2
+        val score = callScore(hand)
         return when {
             score >= 7 -> 3
             score >= 5 -> 2

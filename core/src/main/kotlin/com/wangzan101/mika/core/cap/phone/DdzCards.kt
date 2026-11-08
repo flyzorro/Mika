@@ -173,6 +173,55 @@ internal object DdzCards {
     /** 是不是闯关的牌桌(右上角写着「闯关模式」):闯关只在单机模式里有。同样只认 Mika 的屏。 */
     fun singleStageTable(frame: RawFrame): Boolean = matches(frame, 1830, 8, 190, 52, stageTableTitle, STAGE_SLACK) { min(it) > 200 }
 
+    /**
+     * Positive marker for the current classic table. The center watermark is present on the
+     * classic table and absent from the stage table, lobbies, and overlays. Phase recognition
+     * alone is deliberately insufficient because colored buttons can occur on unrelated screens.
+     */
+    fun classicHumanTable(frame: RawFrame): Boolean {
+        if (frame.width != 2412 || frame.height != 1080) return false
+        val view = DdzScreen.read(frame)
+        if (view.phase == DdzPhase.Other || singleStageTable(frame) || singleLobby(frame) || singleStage(frame)) return false
+        var marked = 0
+        var pixels = 0
+        for (y in CLASSIC_MARK_Y until CLASSIC_MARK_Y + CLASSIC_MARK_H) for (x in CLASSIC_MARK_X until CLASSIC_MARK_X + CLASSIC_MARK_W) {
+            val p = frame.pixel(x, y)
+            val r = p shr 16 and 0xff
+            val g = p shr 8 and 0xff
+            val b = p and 0xff
+            if (r < 75 && g < 120 && b < 180) marked++
+            pixels++
+        }
+        return marked.toDouble() / pixels >= CLASSIC_MARK_DENSITY || view.phase == DdzPhase.Result
+    }
+
+    /** A dimmed centered overlay, such as the relief popup, blocks the table. */
+    fun unknownPopup(frame: RawFrame): Boolean {
+        if (frame.width != 2412 || frame.height != 1080) return false
+        var dark = 0
+        var bright = 0
+        var pixels = 0
+        for (y in POPUP_SCAN_Y until POPUP_SCAN_Y + POPUP_SCAN_H) for (x in POPUP_SCAN_X until POPUP_SCAN_X + POPUP_SCAN_W) {
+            val p = frame.pixel(x, y)
+            if (min(p) < 35) dark++
+            if (min(p) > 190) bright++
+            pixels++
+        }
+        return dark.toDouble() / pixels >= POPUP_DARK_DENSITY && bright.toDouble() / pixels >= POPUP_BRIGHT_DENSITY
+    }
+
+    private const val CLASSIC_MARK_X = 1050
+    private const val CLASSIC_MARK_Y = 350
+    private const val CLASSIC_MARK_W = 350
+    private const val CLASSIC_MARK_H = 70
+    private const val CLASSIC_MARK_DENSITY = 0.14
+    private const val POPUP_SCAN_X = 700
+    private const val POPUP_SCAN_Y = 150
+    private const val POPUP_SCAN_W = 1050
+    private const val POPUP_SCAN_H = 250
+    private const val POPUP_DARK_DENSITY = 0.15
+    private const val POPUP_BRIGHT_DENSITY = 0.03
+
     /** 这块地方的字和记下的样子差不多:同一位置、同一大小,差的格子不超过 [slack]。 */
     private inline fun matches(
         frame: RawFrame, x: Int, y: Int, w: Int, h: Int, mark: BooleanArray, slack: Double, bar: Boolean = true, ink: (Int) -> Boolean,

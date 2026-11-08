@@ -173,7 +173,7 @@ internal class DdzTracker(private val settling: DdzSettlingPolicy = DdzSettlingP
     fun ready(): Boolean = broken == null && landlord != null && waiting.isEmpty() && active == DdzSeat.Me
 
     /** Install a complete, already validated visible history without observing a new frame. */
-    internal fun restore(landlord: DdzSeat, bottom: List<String>, moves: List<List<String>>) {
+    internal fun restore(landlord: DdzSeat, bottom: List<String>, moves: List<List<String>>, current: DdzSeat = landlord) {
         this.landlord = landlord
         this.bottom = bottom.toList()
         history.clear()
@@ -181,13 +181,28 @@ internal class DdzTracker(private val settling: DdzSettlingPolicy = DdzSettlingP
         history += moves.map { it.toList() }
         active = landlord
         lastPlay.clear()
+        var actor = landlord
+        var leader: DdzSeat? = null
+        var passes = 0
         moves.forEach { move ->
-            confirmedSeats += active!!
-            if (move.isNotEmpty()) lastPlay[active!!] = move.toList()
-            active = active!!.next
+            confirmedSeats += actor
+            if (move.isEmpty()) {
+                passes++
+                actor = actor.next
+                if (passes == 2) {
+                    actor = leader ?: actor
+                    leader = null
+                    passes = 0
+                    lastPlay.clear()
+                }
+            } else {
+                lastPlay[actor] = move.toList()
+                leader = actor
+                actor = actor.next
+                passes = 0
+            }
         }
-        active = landlord
-        repeat(moves.size) { active = active?.next }
+        active = current
         waiting.clear()
         broken = null
         leftMe = true
@@ -195,6 +210,15 @@ internal class DdzTracker(private val settling: DdzSettlingPolicy = DdzSettlingP
         steadyKey = null
         steadyFrames = 0
         steadyFrameNo = -1L
+    }
+
+    /** Compare the currently visible opponent play areas with the recovered current trick. */
+    internal fun visibleHistoryMatches(read: (DdzSide) -> DdzSeen): Boolean {
+        fun matches(seat: DdzSeat, seen: DdzSeen): Boolean {
+            val expected = lastPlay[seat] ?: return seen !is DdzSeen.Cards
+            return seen is DdzSeen.Cards && seen.ranks == expected
+        }
+        return matches(DdzSeat.Left, read(DdzSide.Left)) && matches(DdzSeat.Right, read(DdzSide.Right))
     }
 
     /** 自己在 DouZero 里的位置。 */

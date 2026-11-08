@@ -684,7 +684,7 @@ class PhoneDdzTurnTest {
         val dispatcher = toolDispatcher(game)
         PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
         val resume = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""
-            {"action":"resume","hand":["2","A","K"],"bottom":["3","4","5"],"history":[["6","6"]],"phase":"follow","seat":"landlord_up"}
+            {"action":"resume","hand":["7","8","9","10","J","Q","K","A","2","SJ","BJ","7","8","9","10","J","Q"],"bottom":["3","4","5"],"history":[["6","6"],[]],"phase":"follow","seat":"landlord_up"}
         """.trimIndent()).jsonObject), dispatcher.ctx)
         assertEquals("human", resume.text("mode"))
         assertEquals("playing", resume.text("state"))
@@ -730,10 +730,10 @@ class PhoneDdzTurnTest {
         PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
         val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""
             {"action":"resume",
-             "hand":["3","4","5","9","10","J","Q","K","A","2","SJ","BJ","3","4","5","9","10","J"],
-             "bottom":["6","7","8"],
+             "hand":["8","9","10","J","Q","K","A","2","SJ","BJ","8","9","10","Q","K","A","2"],
+             "bottom":["5","6","7"],
              "history":[["3"],[],[],["4"]],
-             "phase":"follow","seat":"landlord"}
+             "phase":"follow","seat":"landlord_down"}
         """.trimIndent()).jsonObject), dispatcher.ctx)
         assertEquals("true", result.text("ok"))
         assertEquals("playing", result.text("state"))
@@ -874,8 +874,9 @@ class PhoneDdzTurnTest {
         entered.await()
         val stopped = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"stop"}""").jsonObject), dispatcher.ctx)
         release.complete(Unit)
-        waiting.await()
+        val finished = waiting.await()
         assertEquals("stopped", stopped.text("state"))
+        assertEquals("stopped", finished.text("state"))
         assertEquals(1, game.taps.size)
     }
 
@@ -974,7 +975,7 @@ class PhoneDdzTurnTest {
         PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
         val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"wait"}""").jsonObject), dispatcher.ctx)
         assertEquals("paused", result.text("state"))
-        assertEquals("unknown_scene", result.text("reason"))
+        assertEquals("unknown_popup", result.text("reason"))
         assertTrue(game.taps.isEmpty())
     }
 
@@ -986,5 +987,87 @@ class PhoneDdzTurnTest {
         assertEquals("paused", result.text("state"))
         assertEquals("lobby_return", result.text("reason"))
         assertTrue(game.taps.isEmpty())
+    }
+
+    @Test fun humanLeadDoesNotGuessWhenTheAdvisorReturnsAnEmptyPlay() = runTest {
+        val saved = PhoneDdzTurn.advise
+        PhoneDdzTurn.advise = { _, _ -> """{"play":[]}""" }
+        try {
+            val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(List(12) { full("lead") }))
+            val dispatcher = toolDispatcher(game)
+            PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
+            PhoneDdzTurn.useTracker(dispatcher.ctx, DdzTracker(DdzSettlingPolicy.HUMAN).apply {
+                observe(DdzSeat.Me, { DdzSeen.Empty }, { listOf("3", "4", "5") }, leadingWith20 = true, leading = true)
+            })
+            val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"wait"}""").jsonObject), dispatcher.ctx)
+            assertEquals("paused", result.text("state"))
+            assertEquals("invalid_advisor_play", result.text("reason"))
+            assertTrue(game.taps.isEmpty())
+        } finally {
+            PhoneDdzTurn.advise = saved
+        }
+    }
+
+    @Test fun resumeRequiresTheVisibleStateToMatchBeforeItActs() = runTest {
+        val call = full("call")
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(call, call)))
+        val dispatcher = toolDispatcher(game)
+        PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
+        val hand = listOf("3", "3", "3", "3", "4", "4", "4", "4", "5", "5", "5", "5", "6", "6", "6", "6", "7", "7", "7", "7")
+        val resumed = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""
+            {"action":"resume","hand":${hand.joinToString(",", "[", "]") { "\"$it\"" }},"bottom":["8","9","10"],"history":[],"phase":"call","seat":"landlord"}
+        """.trimIndent()).jsonObject), dispatcher.ctx)
+        assertEquals("true", resumed.text("ok"))
+        val next = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"wait"}""").jsonObject), dispatcher.ctx)
+        assertEquals("paused", next.text("state"))
+        assertEquals("snapshot_mismatch", next.text("reason"))
+        assertTrue(game.taps.isEmpty())
+    }
+
+    @Test fun snapshotRecoveryRequiresTheExactRemainingHandCount() {
+        val snapshot = DdzSnapshot(
+            hand = listOf("3"), bottom = listOf("4", "5", "6"), history = listOf(listOf("7")),
+            phase = "follow", seat = "landlord_up",
+        )
+        val result = DdzSnapshotRecovery.recover(snapshot)
+        assertTrue(result is DdzRecoveryResult.Invalid)
+        assertEquals("hand_count", (result as DdzRecoveryResult.Invalid).failure.reason)
+    }
+
+    @Test fun snapshotRecoveryRejectsASeatThatIsNotTheCurrentActor() {
+        val snapshot = DdzSnapshot(
+            hand = listOf("4", "5", "6", "7", "8", "9", "10", "J", "Q", "K", "A", "2", "SJ", "BJ", "3", "4", "5", "6", "7"),
+            bottom = listOf("8", "9", "10"), history = listOf(listOf("3")),
+            phase = "follow", seat = "landlord",
+        )
+        val result = DdzSnapshotRecovery.recover(snapshot)
+        assertTrue(result is DdzRecoveryResult.Invalid)
+        assertEquals("actor", (result as DdzRecoveryResult.Invalid).failure.reason)
+    }
+
+    @Test fun classicHumanEligibilityRequiresThePositiveClassicTableMarker() {
+        assertTrue(DdzCards.classicHumanTable(full("call")))
+        assertFalse(DdzCards.classicHumanTable(blank))
+    }
+
+    @Test fun humanPopupHasADistinctPauseReason() = runTest {
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(full("call"), full("vd_relief"))))
+        val dispatcher = toolDispatcher(game)
+        PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
+        val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"wait"}""").jsonObject), dispatcher.ctx)
+        assertEquals("paused", result.text("state"))
+        assertEquals("unknown_popup", result.text("reason"))
+        assertTrue(game.taps.isEmpty())
+    }
+
+    @Test fun humanToolPromptDocumentsWaitAndNestedResumeSchema() {
+        assertTrue(PhoneDdzTurn.def.description.contains("wait"))
+        assertTrue(PhoneDdzTurn.def.description.contains("call"))
+        assertTrue(PhoneDdzTurn.def.description.contains("pause"))
+        val schema = Json.parseToJsonElement(PhoneDdzTurn.def.spec().parametersJsonSchema).jsonObject
+        val snapshot = schema["properties"]!!.jsonObject["snapshot"]!!.jsonObject
+        assertEquals(setOf("hand", "bottom", "history", "phase", "seat"), snapshot["required"]!!.jsonArray.map { it.jsonPrimitive.content }.toSet())
+        assertEquals(setOf("call", "double", "lead", "follow"), snapshot["properties"]!!.jsonObject["phase"]!!.jsonObject["enum"]!!.jsonArray.map { it.jsonPrimitive.content }.toSet())
+        assertEquals(setOf("landlord", "landlord_up", "landlord_down"), snapshot["properties"]!!.jsonObject["seat"]!!.jsonObject["enum"]!!.jsonArray.map { it.jsonPrimitive.content }.toSet())
     }
 }
