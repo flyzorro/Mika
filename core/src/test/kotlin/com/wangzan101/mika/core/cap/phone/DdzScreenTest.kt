@@ -118,4 +118,13 @@ class DdzScreenTest {
         assertEquals(true, first in 491..640)
         assertEquals(true, last in 1800..2049)
     }
+
+    @Test fun aLiftedCardInAThreeCardStageHand() {
+        // 大王、K、K:只抬了大王;原来认成两张 K 抬着,选牌点来点去最后放弃
+        val joker = DdzScreen.read(frame("vd_stage_3cards_joker_lifted"))
+        assertEquals(3, joker.handCount)
+        assertEquals(setOf(0), joker.lifted)
+        assertEquals(DdzScreen.HAND_ROW - 32, joker.handRow)
+        assertEquals(setOf(1, 2), DdzScreen.read(frame("vd_stage_3cards_K_lifted")).lifted)
+    }
 }

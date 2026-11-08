@@ -60,6 +60,7 @@ internal object DdzScreen {
     /** 闯关的牌桌上手牌再高 32 像素:没抬的牌在这一行已经是牌面(经典牌桌上只有抬起的牌到这里)。 */
     private const val STAGE_HAND_PROBE = 628
     private const val STAGE_HAND_DY = -32
+    private const val STAGE_LIFT_ROW = 608
     /** 按钮中线在扫描行下方。 */
     private const val BUTTON_TAP_DY = 30
     private const val MIN_BUTTON = 250
@@ -67,7 +68,7 @@ internal object DdzScreen {
     private const val MIN_RESULT_BUTTON = 350
     /** 认界面只看这几行。 */
     val ROWS = listOf(BUTTON_ROW, CALL_ROW, STAGE_TOP_ROW, STAGE_BOTTOM_ROW, AUTO_ROW, RESULT_ROW, HAND_ROW, LIFT_ROW_FULL_WIDTH,
-        STAGE_HAND_PROBE, HAND_ROW + STAGE_HAND_DY, LIFT_ROW_FULL_WIDTH + STAGE_HAND_DY)
+        STAGE_HAND_PROBE, HAND_ROW + STAGE_HAND_DY, STAGE_LIFT_ROW)
 
     fun read(frame: RawFrame): DdzView {
         if (frame.height != FRAME_HEIGHT) return DdzView(DdzPhase.Other, emptyList(), 0, 0.0, 0, emptySet())
@@ -75,10 +76,13 @@ internal object DdzScreen {
         val dy = if (pitch > BASE_PITCH && stageHand(frame)) STAGE_HAND_DY else 0
         val liftRow = (if (pitch > BASE_PITCH) LIFT_ROW_FULL_WIDTH else LIFT_ROW) + dy
         val (handLeft, handCount, step) = hand(frame, pitch, HAND_ROW + dy)
-        // 抬起的牌点数字上移到这一行;抬起的牌还会盖住右边一张,所以不能只看这一条是不是牌面
+        // 抬起的牌点数字上移到这一行;抬起的牌还会盖住右边一张,所以不能只看这一条是不是牌面。
+        // 闯关的牌没抬时牌顶在 612、点数字从 611-629 起(看点数),原来那一行会碰到没抬的 K 这类字的顶:改看 608 这一行有没有字,
+        // 没抬的牌在这里还是桌布(不算字),抬起 30 像素的牌这里正是点数(王的红字从牌顶下 23 像素起)
         val lifted = (0 until handCount).filterTo(LinkedHashSet()) { i ->
             val x = handLeft + (i * step).roundToInt() + 8
-            (x until x + 70).count { !isCard(frame.pixel(it, liftRow)) } >= 6
+            if (dy != 0) (x until x + 70).count { ink(frame.pixel(it, STAGE_LIFT_ROW)) } >= 6
+            else (x until x + 70).count { !isCard(frame.pixel(it, liftRow)) } >= 6
         }
         fun view(phase: DdzPhase, buttons: List<DdzButton>) = DdzView(phase, buttons, handLeft, step, handCount, lifted, HAND_ROW + dy)
         val result = buttons(frame, RESULT_ROW).filter { it.color == DdzColor.Yellow && it.right - it.left >= MIN_RESULT_BUTTON }
@@ -114,10 +118,21 @@ internal object DdzScreen {
         }
     }
 
-    /** 手牌那一段在 [STAGE_HAND_PROBE] 行大半是牌面:闯关的牌桌。抬起的牌不会有大半。 */
+    /**
+     * 手牌那一段在 [STAGE_HAND_PROBE] 行大半是牌面或牌上的字:闯关的牌桌。抬起的牌不会有大半。
+     * 字也要算:只剩三四张时点数字占了这一行的一大块(大王、K、K 只有五成五是牌面)。
+     */
     private fun stageHand(frame: RawFrame): Boolean {
         val span = handSpan(frame, HAND_ROW) ?: return false
-        return span.count { isCard(frame.pixel(it, STAGE_HAND_PROBE)) } > 0.6 * (span.last - span.first + 1)
+        return span.count { frame.pixel(it, STAGE_HAND_PROBE).let { p -> isCard(p) || ink(p) } } > 0.6 * (span.last - span.first + 1)
+    }
+
+    /** 牌上的字:黑字或红字;桌布的蓝不算。 */
+    private fun ink(argb: Int): Boolean {
+        val r = argb shr 16 and 0xff
+        val g = argb shr 8 and 0xff
+        val b = argb and 0xff
+        return (maxOf(r, g, b) < 110 && maxOf(r, g, b) - minOf(r, g, b) < 40) || (r > 150 && g < 110 && b < 110)
     }
 
     private fun handSpan(frame: RawFrame, row: Int): IntRange? =
