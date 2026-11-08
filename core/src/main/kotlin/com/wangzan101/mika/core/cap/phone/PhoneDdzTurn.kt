@@ -30,6 +30,8 @@ internal object PhoneDdzTurn : PhoneTool {
     private const val POLL_MS = 150L
     /** 两个对手各 15 秒,再留些发牌和动画的时间。 */
     private const val MAX_POLLS = 300
+    /** Human play recognition gets a longer bounded settling window than single-player animation. */
+    private const val HUMAN_SETTLE_POLLS = 48
     /** 再来一局几秒就发牌;过了这么久还没有多半是弹窗,交给模型看。 */
     private const val AGAIN_POLLS = 60
     /** Mika 屏上大厅右下角的快速开始(单机经典场,每局押金币)。 */
@@ -67,6 +69,7 @@ internal object PhoneDdzTurn : PhoneTool {
         var single = false
         var mode: DdzMode? = null
         var state = DdzSessionState.Idle
+        var phase = DdzPhase.Other
         var reason: String? = null
         var stopped = false
         var snapshot: DdzSnapshot? = null
@@ -76,6 +79,8 @@ internal object PhoneDdzTurn : PhoneTool {
         var actionsSeen = -1L
         /** 轮到自己时别家的牌还没落下,又等了几帧。 */
         var settling = 0
+        /** Human opponents may take longer to finish a visible play. */
+        var humanSettling = 0
         /** DouZero 出完这一手后手里该剩的牌;下一手认到的不一样,就是有张牌认错、点到了别的牌。 */
         var expectedHand: List<String>? = null
         /** 刚点了继续闯关,还没看到这一手的手牌。 */
@@ -216,6 +221,7 @@ internal object PhoneDdzTurn : PhoneTool {
             turn.state = DdzSessionState.Paused
             turn.reason = DdzSessionReason.UNKNOWN_SCENE
         } else if (turn.state != DdzSessionState.Paused) {
+            turn.phase = next.phase
             turn.state = stateFor(next.phase)
             turn.reason = null
         }
@@ -243,7 +249,10 @@ internal object PhoneDdzTurn : PhoneTool {
                 put("autoMs", JsonArray(turn.decisions.map(::JsonPrimitive)))
                 turn.decisions.clear()
             }
-            turn.tracker?.let { t -> t.broken?.let { put("douzeroOff", it); put("douzeroTrace", t.trace.joinToString(" ")) } }
+            turn.tracker?.let { t ->
+                t.broken?.let { put("douzeroOff", it); put("douzeroTrace", t.trace.joinToString(" ")) }
+                if (turn.mode == DdzMode.Human) put("historyCount", t.history.size)
+            }
             put("timing", buildJsonObject {
                 put("thinkMs", thinkMs); put("tapMs", tapMs); put("waitMs", waitMs); put("shotMs", shotMs)
             })
@@ -272,6 +281,7 @@ internal object PhoneDdzTurn : PhoneTool {
         if (view.phase == DdzPhase.Other) return refused("not_human_game")
         turn.single = false
         turn.mode = DdzMode.Human
+        turn.phase = view.phase
         turn.state = stateFor(view.phase)
         turn.reason = null
         turn.stopped = false
@@ -322,6 +332,7 @@ internal object PhoneDdzTurn : PhoneTool {
         turn.joining = seated || stage?.second == true
         // 叫分、别家出牌都可能要等一阵:和 wait 一样等;不在牌桌上的话十来秒没手牌就回来
         val next = awaitDecision(ctx, turn, DdzPhase.Other, moved = true, polls = MAX_POLLS)
+        turn.phase = next.phase
         turn.state = stateFor(next.phase)
         turn.seenAt = now()
         return ToolExecution(buildJsonObject {
@@ -341,6 +352,7 @@ internal object PhoneDdzTurn : PhoneTool {
     private fun stop(ctx: ToolContext, turn: Turn): ToolExecution {
         turn.single = false
         turn.stopped = true
+        turn.phase = DdzPhase.Other
         turn.state = DdzSessionState.Stopped
         turn.reason = DdzSessionReason.USER_STOP
         turn.atTable = false
@@ -379,22 +391,61 @@ internal object PhoneDdzTurn : PhoneTool {
 
     private fun resume(a: Args, ctx: ToolContext, turn: Turn): ToolExecution {
         if (turn.mode != DdzMode.Human) return refused("resume_requires_human")
-        val snapshot = parseSnapshot(a)
-        turn.snapshot = snapshot
-        turn.stopped = false
-        turn.state = stateFor(snapshot.phase)
-        turn.reason = null
-        turn.atTable = true
-        turn.actionsSeen = ctx.evidence.actions
-        return ToolExecution(buildJsonObject {
-            put("ok", true)
-            put("mode", DdzMode.Human.wire)
-            put("state", turn.state.wire)
-            put("phase", snapshot.phase)
-            put("seat", snapshot.seat)
-            put("handCount", snapshot.hand.size)
-            put("historyCount", snapshot.history.size)
-        })
+        val snapshot = try {
+            parseSnapshot(a)
+        } catch (error: ArgError) {
+            return invalidRecovery(turn, recoveryReason(error))
+        }
+        return when (val recovered = DdzSnapshotRecovery.recover(snapshot)) {
+            is DdzRecoveryResult.Invalid -> invalidRecovery(turn, recovered.failure.reason)
+            is DdzRecoveryResult.Valid -> {
+                // Install only after every field and every historical move has validated.
+                turn.snapshot = recovered.value.snapshot
+                turn.tracker = recovered.value.tracker
+                turn.humanSettling = 0
+                turn.stopped = false
+                turn.phase = phaseOf(snapshot.phase)
+                turn.state = stateFor(snapshot.phase)
+                turn.reason = null
+                turn.atTable = true
+                turn.actionsSeen = ctx.evidence.actions
+                ToolExecution(buildJsonObject {
+                    put("ok", true)
+                    put("mode", DdzMode.Human.wire)
+                    put("state", turn.state.wire)
+                    put("phase", snapshot.phase)
+                    put("seat", snapshot.seat)
+                    put("handCount", snapshot.hand.size)
+                    put("historyCount", snapshot.history.size)
+                })
+            }
+        }
+    }
+
+    private fun invalidRecovery(turn: Turn, reason: String) = ToolExecution(buildJsonObject {
+        put("ok", false)
+        put("error", DdzSessionReason.INVALID_SNAPSHOT)
+        put("recoverable", true)
+        turn.mode?.let { put("mode", it.wire) }
+        put("state", turn.state.wire)
+        put("reason", reason)
+        turn.phase.takeIf { it != DdzPhase.Other }?.let { put("phase", it.name.lowercase()) }
+    })
+
+    private fun recoveryReason(error: ArgError): String = when {
+        error.message?.contains("ambiguous_card") == true -> "ambiguous_card"
+        error.message?.contains("invalid_seat") == true -> "seat"
+        error.message?.contains("invalid_phase") == true -> "phase"
+        error.field == "hand" && error.message?.contains("must have") == true -> "hand_count"
+        error.field == "bottom" && error.message?.contains("must have") == true -> "bottom_count"
+        else -> "invalid_snapshot"
+    }
+
+    private fun phaseOf(phase: String) = when (phase) {
+        "call" -> DdzPhase.Call
+        "double" -> DdzPhase.Double
+        "lead" -> DdzPhase.Lead
+        else -> DdzPhase.Follow
     }
 
     private fun parseSnapshot(a: Args): DdzSnapshot {
@@ -411,6 +462,7 @@ internal object PhoneDdzTurn : PhoneTool {
             return value.map { item ->
                 val text = (item as? JsonPrimitive)?.contentOrNull?.trim()?.uppercase()
                     ?: throw ArgError(name, "items must be strings")
+                if (text.startsWith("?")) throw ArgError(name, "ambiguous_card")
                 if (text !in SNAPSHOT_RANKS) throw ArgError(name, "contains an invalid rank")
                 text
             }
@@ -423,16 +475,17 @@ internal object PhoneDdzTurn : PhoneTool {
             cards.map { card ->
                 val rank = (card as? JsonPrimitive)?.contentOrNull?.trim()?.uppercase()
                     ?: throw ArgError("history", "entries must contain strings")
+                if (rank.startsWith("?")) throw ArgError("history", "ambiguous_card")
                 if (rank !in SNAPSHOT_RANKS) throw ArgError("history", "contains an invalid rank")
                 rank
             }
         }
         val phase = (required("phase") as? JsonPrimitive)?.contentOrNull?.trim()?.lowercase()
             ?: throw ArgError("phase", "must be a string")
-        if (phase !in SNAPSHOT_PHASES) throw ArgError("phase", "must be call, double, lead, or follow")
+        if (phase !in SNAPSHOT_PHASES) throw ArgError("phase", "invalid_phase")
         val seat = (required("seat") as? JsonPrimitive)?.contentOrNull?.trim()?.lowercase()
             ?: throw ArgError("seat", "must be a string")
-        if (seat !in SNAPSHOT_SEATS) throw ArgError("seat", "must identify the player's seat")
+        if (seat !in SNAPSHOT_SEATS) throw ArgError("seat", "invalid_seat")
         return DdzSnapshot(hand, bottom, history, phase, seat)
     }
 
@@ -621,7 +674,7 @@ internal object PhoneDdzTurn : PhoneTool {
                 if (view.phase != DdzPhase.Call) turn.bid = false
                 if (view.phase != DdzPhase.Double) turn.declined = false
                 dealt(turn, view)
-                if (turn.single) track(turn, frame, view)
+                if (turn.single || turn.mode == DdzMode.Human) track(turn, frame, view)
                 when (view.phase) {
                     // 单机局叫分按牌力定,不等模型(叫分只有十来秒);灰的分数点不了,按不叫算
                     DdzPhase.Call -> when {
@@ -668,10 +721,26 @@ internal object PhoneDdzTurn : PhoneTool {
                         if (left || view.phase != from) { if (turn.single && !turn.stage) turn.played++; return view }
                     }
                     else -> if (left || view.phase != from) {
-                        when (byDouZero(ctx, turn, frame, view)) {
-                            Auto.Played -> { left = false; budget = polls }
-                            Auto.Settling -> Unit
-                            Auto.Off -> return view
+                        if (turn.mode == DdzMode.Human) {
+                            when {
+                                turn.tracker?.ready() == true -> {
+                                    turn.humanSettling = 0
+                                    return view
+                                }
+                                turn.humanSettling++ < HUMAN_SETTLE_POLLS -> Unit
+                                else -> {
+                                    turn.tracker?.fail("history_not_ready")
+                                    turn.state = DdzSessionState.Paused
+                                    turn.reason = DdzSessionReason.HISTORY_MISMATCH
+                                    return view
+                                }
+                            }
+                        } else {
+                            when (byDouZero(ctx, turn, frame, view)) {
+                                Auto.Played -> { left = false; budget = polls }
+                                Auto.Settling -> Unit
+                                Auto.Off -> return view
+                            }
                         }
                     }
                 }
@@ -705,7 +774,7 @@ internal object PhoneDdzTurn : PhoneTool {
             turn.joining = false
             if (view.handCount != 17 && view.handCount != 20) turn.tracker = DdzTracker().apply { fail("joined_mid_game") }
         }
-        val tracker = turn.tracker ?: DdzTracker().also { turn.tracker = it }
+        val tracker = turn.tracker ?: DdzTracker(if (turn.mode == DdzMode.Human) DdzSettlingPolicy.HUMAN else DdzSettlingPolicy.SINGLE).also { turn.tracker = it }
         val mine = view.phase == DdzPhase.Follow || view.phase == DdzPhase.Lead
         val seat = if (mine) DdzSeat.Me else when (DdzCards.clock(frame)) {
             DdzSide.Left -> DdzSeat.Left

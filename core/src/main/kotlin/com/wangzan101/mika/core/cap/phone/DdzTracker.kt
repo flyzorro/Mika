@@ -11,12 +11,14 @@ internal enum class DdzSeat { Me, Right, Left;
  * 地主的第一手一定是出牌:底牌翻开后头一回在谁的出牌区看到牌,谁就是地主,这手就是第一手;
  * 轮到自己先出、手里 20 张,地主就是自己。在那之前的闹钟是加倍时的,不算。读不出、对不上就记下原因,这一局不再给 DouZero 算。
  */
-internal class DdzTracker {
+internal class DdzTracker(private val settling: DdzSettlingPolicy = DdzSettlingPolicy.SINGLE) {
     var landlord: DdzSeat? = null
         private set
     var bottom: List<String>? = null
         private set
     val history = mutableListOf<List<String>>()
+    /** Only moves that survived visibility and settling checks are exposed here. */
+    val confirmedSeats = mutableListOf<DdzSeat>()
     /** 这一局记不下去的原因;为 null 时历史可用。 */
     var broken: String? = null
         private set
@@ -54,7 +56,7 @@ internal class DdzTracker {
         frameNo++
         // 轮到我要连着两帧:炸弹的特效会让一帧像是我的按钮,当成轮到我又走开,就会给我记一手不出
         meFrames = if (rawTurn == DdzSeat.Me) meFrames + 1 else 0
-        val turn = if (rawTurn == DdzSeat.Me && meFrames < ME_FRAMES) null else rawTurn
+        val turn = if (rawTurn == DdzSeat.Me && meFrames < settling.meFrames) null else rawTurn
         if (turn != lastTurn) { note("t=${turn?.name ?: "-"}"); lastTurn = turn }
         val read2 = counts()
         for (side in DdzSide.entries) {
@@ -69,6 +71,7 @@ internal class DdzTracker {
         if (leadingWith20 && landlord != DdzSeat.Me) {
             landlord = null
             history.clear()
+            confirmedSeats.clear()
             waiting.clear()
         }
         if (landlord == null) {
@@ -81,7 +84,7 @@ internal class DdzTracker {
                 val seen = read(side)
                 // 地主的第一手认不准:可能还在飞,等几帧;一直认不准就停,不能跳过去等下一家,否则会把下一家当成地主
                 if (seen == DdzSeen.Unsure) {
-                    if (++firstUnsure >= READ_TRIES) fail("unsure_first_play")
+                    if (++firstUnsure >= settling.maxUnconfirmedFrames) fail("unsure_first_play")
                     return
                 }
                 if (seen !is DdzSeen.Cards) continue
@@ -91,7 +94,7 @@ internal class DdzTracker {
                 if (left != null && seen.ranks.size != FIRST - left) continue
                 // 张数对得上就不是叠着的一摞,两帧一样就够(别人出得快,等不起:接手时这手牌两三帧后就被收走了);
                 // 一帧不够:牌还在落下的那一帧,带绶带的 3 会认成 J
-                if (!steady(side to seen, if (left == null) STEADY_FRAMES else COUNTED_FRAMES)) return
+                if (!steady(side to seen, if (left == null) settling.steadyFrames else settling.countedFrames)) return
                 landlord = seat
                 record(seat, seen.ranks)
                 // 他出完了,闹钟已经到了下一家
@@ -127,7 +130,7 @@ internal class DdzTracker {
         active = turn
         var seat: DdzSeat = from
         while (seat != turn) {
-            waiting.addLast(seat to READ_TRIES)
+            waiting.addLast(seat to settling.maxUnconfirmedFrames)
             seat = seat.next
         }
     }
@@ -169,6 +172,31 @@ internal class DdzTracker {
     /** 轮到自己时能不能交给 DouZero:别家的都读到了、历史没断。 */
     fun ready(): Boolean = broken == null && landlord != null && waiting.isEmpty() && active == DdzSeat.Me
 
+    /** Install a complete, already validated visible history without observing a new frame. */
+    internal fun restore(landlord: DdzSeat, bottom: List<String>, moves: List<List<String>>) {
+        this.landlord = landlord
+        this.bottom = bottom.toList()
+        history.clear()
+        confirmedSeats.clear()
+        history += moves.map { it.toList() }
+        active = landlord
+        lastPlay.clear()
+        moves.forEach { move ->
+            confirmedSeats += active!!
+            if (move.isNotEmpty()) lastPlay[active!!] = move.toList()
+            active = active!!.next
+        }
+        active = landlord
+        repeat(moves.size) { active = active?.next }
+        waiting.clear()
+        broken = null
+        leftMe = true
+        firstUnsure = 0
+        steadyKey = null
+        steadyFrames = 0
+        steadyFrameNo = -1L
+    }
+
     /** 自己在 DouZero 里的位置。 */
     fun seat(): String = when (landlord) {
         DdzSeat.Me -> "landlord"
@@ -180,8 +208,9 @@ internal class DdzTracker {
     fun fail(reason: String) { if (broken == null) { broken = reason; note("fail $reason") } }
 
     private fun record(seat: DdzSeat, cards: List<String>) {
-        history += cards
-        if (cards.isNotEmpty()) lastPlay[seat] = cards
+        history += cards.toList()
+        confirmedSeats += seat
+        if (cards.isNotEmpty()) lastPlay[seat] = cards.toList()
         note("${seat.name}=${cards.joinToString("")}")
     }
 
@@ -201,7 +230,7 @@ internal class DdzTracker {
             val played = unplayed(seat)
             when {
                 seen is DdzSeen.Cards && !guessed && (played == null || played == seen.ranks.size) -> {
-                    if (!steady(seat to seen, if (played == null) STEADY_FRAMES else COUNTED_FRAMES)) return
+                    if (!steady(seat to seen, if (played == null) settling.steadyFrames else settling.countedFrames)) return
                     record(seat, seen.ranks)
                 }
                 // 「不出」也一样:飞过来的牌缩在头像边上那一下,也会落在「不出」那一条里
@@ -211,7 +240,7 @@ internal class DdzTracker {
                 }
                 // 张数没少、出牌区好一阵都空着或者还摆着他上一手:是「不出」。字被清桌(炸弹、新一轮)抹掉了,
                 // 或者管不了王时游戏替他不出,桌上留着他上一手
-                played == 0 && tries <= READ_TRIES - PASS_BY_COUNT &&
+                played == 0 && tries <= settling.maxUnconfirmedFrames - PASS_BY_COUNT &&
                     (seen == DdzSeen.Empty || seen == DdzSeen.Unsure || (seen is DdzSeen.Cards && seen.ranks == lastPlay[seat])) -> {
                     if (!steady(seat to "count_pass")) return
                     record(seat, emptyList())
@@ -228,10 +257,10 @@ internal class DdzTracker {
     }
 
     /**
-     * 同一家同一个读数连着 [STEADY_FRAMES] 帧才算数:几张牌飞过来时先叠成一摞,只看得到最上面那张(7773 读成 3)。
+     * 同一家同一个读数连着 [settling.steadyFrames] 帧才算数:几张牌飞过来时先叠成一摞,只看得到最上面那张(7773 读成 3)。
      * 算数后从头数,下一家从这一帧起数。
      */
-    private fun steady(key: Any, frames: Int = STEADY_FRAMES): Boolean {
+    private fun steady(key: Any, frames: Int = settling.steadyFrames): Boolean {
         if (key != steadyKey) { steadyKey = key; steadyFrames = 0; steadyFrameNo = -1 }
         if (steadyFrameNo != frameNo) { steadyFrameNo = frameNo; steadyFrames++ }
         if (steadyFrames < frames) return false
@@ -246,13 +275,6 @@ internal class DdzTracker {
         const val FARMER = 17
         /** 张数没少、出牌区空了这么多帧才按张数算不出。 */
         const val PASS_BY_COUNT = 4
-        /** 一手牌读几帧还认不准才放弃:飞机、炸弹的特效会盖住牌三四秒。 */
-        const val READ_TRIES = 16
-        const val STEADY_FRAMES = 3
-        /** 轮到我的画面要连着这么多帧才算。 */
-        const val ME_FRAMES = 2
-        /** 张数对得上的一手要连着几帧读得一样。 */
-        const val COUNTED_FRAMES = 2
         const val TRACE = 24
     }
 }

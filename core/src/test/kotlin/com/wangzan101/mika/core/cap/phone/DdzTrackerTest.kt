@@ -40,6 +40,7 @@ class DdzTrackerTest {
         repeat(4) { see(DdzSeat.Me) }
         assertEquals(DdzSeat.Right, tracker.landlord)
         assertEquals(listOf(listOf("3"), emptyList()), tracker.history)
+        assertEquals(listOf(DdzSeat.Right, DdzSeat.Left), tracker.confirmedSeats)
         assertTrue(tracker.ready())
         assertEquals("landlord_up", tracker.seat())
         tracker.mine(listOf("5"))
@@ -325,5 +326,21 @@ class DdzTrackerTest {
         assertNull(tracker.broken)
         assertTrue(tracker.ready())
         assertEquals(listOf(listOf("5", "6", "7", "8", "9"), emptyList(), emptyList()), tracker.history)
+    }
+
+    @Test fun humanTrackerKeepsAnUnsettledOpponentPlayLongerThanSinglePlayer() {
+        val human = DdzTracker(DdzSettlingPolicy.HUMAN)
+        val right: DdzSeen = DdzSeen.Unsure
+        human.observe(DdzSeat.Me, { DdzSeen.Empty }, { bottom }, leadingWith20 = true)
+        human.mine(listOf("4"))
+        human.observe(DdzSeat.Left, { if (it == DdzSide.Right) right else DdzSeen.Empty }, { null })
+        repeat(DdzSettlingPolicy.SINGLE.maxUnconfirmedFrames) {
+            human.observe(DdzSeat.Left, { if (it == DdzSide.Right) right else DdzSeen.Empty }, { null })
+        }
+        assertNull(human.broken)
+        repeat(DdzSettlingPolicy.HUMAN.maxUnconfirmedFrames) {
+            human.observe(DdzSeat.Left, { if (it == DdzSide.Right) right else DdzSeen.Empty }, { null })
+        }
+        assertEquals("unsure_right", human.broken)
     }
 }
