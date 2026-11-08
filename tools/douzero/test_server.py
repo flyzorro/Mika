@@ -193,6 +193,14 @@ class RibbonMisreadTest(unittest.TestCase):
         self.assertTrue(ADVISOR.act("landlord_down", hand, ["4", "5", "A"], history) is not None)
 
 
+class BidTest(unittest.TestCase):
+    def test_a_strong_hand_is_worth_more_as_landlord_than_a_weak_one(self):
+        strong = ["BJ", "SJ", "2", "2", "2", "A", "A", "K", "K", "Q", "Q", "J", "10", "9", "8", "7", "6"]
+        weak = ["3", "3", "4", "5", "6", "6", "7", "8", "9", "9", "10", "J", "J", "Q", "4", "5", "8"]
+        self.assertGreater(ADVISOR.bid(strong, games=20), 0.7)
+        self.assertLess(ADVISOR.bid(weak, games=20), 0.3)
+
+
 class OrderTest(unittest.TestCase):
     def test_a_move_listed_high_to_low_still_replays(self):
         for seed in range(300):

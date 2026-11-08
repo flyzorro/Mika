@@ -15,9 +15,12 @@ POST /act  {"seat": "landlord" | "landlord_down" | "landlord_up",
 手机可以在 ? 后面按字形从像到不像带上几个点数(如 "?5,6,9"),先试这几个,都说不通再试其余合规的点数,一个都不行才报 ambiguous_card。
 猜错了,后面的出牌在重放里会不合规,照样对得出来。
 -> {"play": ["5", "5"]} 或 {"error": "..."}
+
+POST /bid  {"hand": [17 张]}  -> {"level": 3 | 0, "win": 0.62}   # 当地主的赢面,够了就叫三分
 """
 import json
 import os
+import random
 import sys
 import time
 from collections import Counter
@@ -37,6 +40,9 @@ RANKS = {"3": 3, "4": 4, "5": 5, "6": 6, "7": 7, "8": 8, "9": 9, "10": 10, "J": 
          "A": 14, "2": 17, "SJ": 20, "BJ": 30}
 NAMES = {v: k for k, v in RANKS.items()}
 DECK = [r for r in RANKS.values() if r < 20 for _ in range(4)] + [20, 30]
+# 叫分:当地主自己跟自己打这么多局,赢面到这个数就叫三分,不到就不叫。闯关里农民靠不住电脑队友,地主赢了分数还翻倍
+BID_GAMES = 60
+BID_WIN = 0.5
 WEIGHTS = os.environ.get("DOUZERO_WEIGHTS", os.path.join(os.path.dirname(__file__), "baselines", "douzero_ADP"))
 
 
@@ -214,9 +220,41 @@ class Agent:
                                       torch.from_numpy(obs["x_batch"]).float(), return_value=True)["values"].flatten()
 
 
+class Plain:
+    """只按 DouZero 打分出牌,不做残局搜索:叫分时自己跟自己打几十局,要快。"""
+
+    def __init__(self, agent):
+        self.agent = agent
+
+    def act(self, infoset):
+        if len(infoset.legal_actions) == 1:
+            return infoset.legal_actions[0]
+        return infoset.legal_actions[int(torch.argmax(self.agent.values(infoset)))]
+
+
 class Advisor:
     def __init__(self, weights):
         self.agents = {s: Agent(s, os.path.join(weights, f"{s}.ckpt")) for s in SEATS}
+        self.plain = {s: Plain(self.agents[s]) for s in SEATS}
+
+    def bid(self, hand, games=BID_GAMES):
+        """拿这 17 张当地主能赢几成:看不见的牌随机发成底牌和两家,DouZero 自己跟自己打 [games] 局。"""
+        hand = cards(hand)
+        if len(hand) != 17:
+            raise Mismatch("hand_count_mismatch")
+        rest = minus(DECK, hand)
+        rng = random.Random(hash(tuple(hand)))
+        wins = 0
+        for _ in range(games):
+            rng.shuffle(rest)
+            bottom = rest[:3]
+            env = GameEnv(self.plain)
+            env.card_play_init({"landlord": sorted(hand + bottom), "landlord_down": sorted(rest[3:20]),
+                                "landlord_up": sorted(rest[20:37]), "three_landlord_cards": sorted(bottom)})
+            while not env.game_over:
+                env.step()
+            wins += bool(env.num_wins["landlord"])
+        return wins / games
 
     def act(self, seat, hand, bottom, history):
         hand, bottom = cards(hand), cards(bottom)
@@ -239,13 +277,17 @@ class Advisor:
 def handler(advisor):
     class Handler(BaseHTTPRequestHandler):
         def do_POST(self):
-            if self.path != "/act":
+            if self.path not in ("/act", "/bid"):
                 return self.reply(404, {"error": "not_found"})
             started = time.perf_counter()
             try:
                 body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))))
+                ms = lambda: round((time.perf_counter() - started) * 1000)
+                if self.path == "/bid":
+                    win = advisor.bid(body["hand"])
+                    return self.reply(200, {"level": 3 if win >= BID_WIN else 0, "win": round(win, 2), "ms": ms()}, body)
                 move = advisor.act(body["seat"], body["hand"], body.get("bottom", []), body.get("history", []))
-                self.reply(200, {"play": [NAMES[c] for c in move], "ms": round((time.perf_counter() - started) * 1000)}, body)
+                self.reply(200, {"play": [NAMES[c] for c in move], "ms": ms()}, body)
             except Mismatch as e:
                 self.reply(200, {"error": str(e)}, body)
             except (KeyError, ValueError, TypeError) as e:
