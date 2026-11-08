@@ -83,7 +83,11 @@ internal object DdzCards {
             val (x0, x1) = if (side == DdzSide.Left) STAGE_LEFT else STAGE_RIGHT
             // 左家的牌从 450 往右排,右家的排到 2000 为止;正中翻开的三张底牌两边都不挨着
             val edge = if (side == DdzSide.Left) STAGE_LEFT_EDGE else STAGE_RIGHT_EDGE
-            val anchored = (STAGE_PLAY_Y0 until STAGE_PLAY_Y1).count { y -> frame.pixel(edge, y).let { p -> min(p) > 190 && spread(p) < 45 } } >= 100
+            // 王的竖排红字正好压在边上那一列:往里多看两列,有一列够白就算
+            val inward = if (side == DdzSide.Left) 1 else -1
+            val anchored = listOf(edge - 8 * inward, edge, edge + 10 * inward, edge + 20 * inward).any { x ->
+                (STAGE_PLAY_Y0 until STAGE_PLAY_Y1).count { y -> frame.pixel(x, y).let { p -> min(p) > 190 && spread(p) < 45 } } >= 100
+            }
             if (!anchored) null else strip(frame, x0, x1, STAGE_PLAY_Y0, STAGE_PLAY_Y1, pitch = 67.5, width = 130.0, glyphRows = 76, glyphWidth = 58, k = k * STAGE_SCALE, wideLast = 72, minRows = 150, probeNearBottom = true, wrapDy = WRAP_DY)
         } else {
             val (x0, x1) = if (side == DdzSide.Left) bar + (280 * k).toInt() to bar + (880 * k).toInt()
