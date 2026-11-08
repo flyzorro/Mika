@@ -413,6 +413,37 @@ class PhoneDdzTurnTest {
         assertFalse("只打一手就不点继续", once.taps.any { (_, y) -> y == 765 })
     }
 
+    @Test fun aLostStageHandIsContinuedTooButNeverLeft() = runTest {
+        val loss = full("vd_stage_loss")
+        assertTrue(DdzCards.stageLoss(loss))
+        assertFalse(DdzCards.stageWin(loss))
+        assertFalse(DdzCards.stageLoss(full("vd_stage_win_leave_continue")))
+        assertFalse(DdzCards.stageLoss(full("vd_stage_call")))
+        // 输了的结算:左边蓝色离开、右边黄色继续,点继续(不点离开,也不点看视频免扣分)
+        val table = full("vd_stage_right_clock")
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(table, table, loss, fullBlank)))
+        val result = run(game, """{"action":"start","advisor":"http://mac:3426","hands":3}""")
+        assertEquals("1", result.text("handsLost"))
+        assertEquals(listOf(DdzCards.stageContinue(loss)!!), game.taps)
+        assertTrue(game.taps.single().first in 1292..1659)
+    }
+
+    @Test fun startOnAResultScreenPressesContinue() = runTest {
+        for (name in listOf("vd_stage_loss", "vd_stage_win_leave_continue")) {
+            val screen = full(name)
+            val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(screen, fullBlank)))
+            assertEquals("true", run(game, """{"action":"start","advisor":"http://mac:3426","hands":3}""").text("ok"))
+            assertEquals(name, DdzCards.stageContinue(screen)!!, game.taps.first())
+        }
+    }
+
+    @Test fun anAdOverTheStageTableIsNeverTapped() = runTest {
+        val ad = full("vd_stage_ad_dialog")
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(ad, ad, ad, fullBlank)))
+        run(game, """{"action":"start","advisor":"http://mac:3426","hands":3}""")
+        assertTrue("${game.taps}", game.taps.isEmpty())
+    }
+
     @Test fun bidsFollowTheHandsStrength() {
         assertEquals(3, PhoneDdzTurn.bidLevel("BJ SJ 2 2 A A Q Q Q Q J J 10 9 9 5 4".split(' ')))
         assertEquals(2, PhoneDdzTurn.bidLevel("BJ 2 2 K K Q J 10 9 8 7 6 5 5 4 3 3".split(' ')))

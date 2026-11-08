@@ -87,6 +87,7 @@ internal object PhoneDdzTurn : PhoneTool {
         /** 这次还要连着打几手(闯关赢了自己点继续);赢了几手。 */
         var handsLeft = 1
         var won = 0
+        var lost = 0
         /** 这一轮叫分已经按过了:按完按钮还会留几帧。 */
         var bid = false
         var advisor: String? = null
@@ -178,6 +179,7 @@ internal object PhoneDdzTurn : PhoneTool {
             put("phase", next.phase.name.lowercase())
             put("handCount", next.handCount)
             if (turn.won > 0) put("handsWon", turn.won)
+            if (turn.lost > 0) put("handsLost", turn.lost)
             if (turn.decisions.isNotEmpty()) {
                 // DouZero 这次替模型打了几手、每手从轮到自己到牌出去花了多久
                 put("autoPlayed", turn.decisions.size)
@@ -199,11 +201,14 @@ internal object PhoneDdzTurn : PhoneTool {
      */
     private suspend fun start(a: Args, ctx: ToolContext, turn: Turn): ToolExecution {
         val advisor = a.str("advisor") ?: throw ArgError("advisor", "required")
-        val page = ctx.screen.rawFrame(DdzCards.LOBBY_ROWS + DdzScreen.ROWS) ?: return refused("no_frame")
+        val page = ctx.screen.rawFrame(FULL_ROWS) ?: return refused("no_frame")
         // 已经坐在闯关的牌桌上(模型自己点了下一关、继续闯关):从这里接,下面按头一帧的手牌张数看是不是打了一半
         val seated = DdzCards.singleStageTable(page)
         val stage = if (DdzCards.singleStage(page)) DdzCards.stageButton(page) ?: return refused("no_stage_button") else null
+        // 闯关一手打完的结算(赢了或输了):点黄色的继续,发下一手
+        val result = if (DdzCards.stageWin(page) || DdzCards.stageLoss(page)) DdzCards.stageContinue(page) else null
         val tap = when {
+            result != null -> result
             seated -> null
             // 大厅的快速开始进的是要金币的经典场,金币不够就弹救济金:让模型去免费的闯关
             DdzCards.singleLobby(page) -> return refused("use_stage_mode")
@@ -216,6 +221,7 @@ internal object PhoneDdzTurn : PhoneTool {
         turn.expectedHand = null
         turn.handsLeft = a.int("hands", 1, 10) ?: 1
         turn.won = 0
+        turn.lost = 0
         turn.atTable = seated
         turn.tracker = null
         // 继续闯关、或者已经坐在桌上,可能是打了一半的一手:头一帧看手牌张数再定
@@ -228,6 +234,7 @@ internal object PhoneDdzTurn : PhoneTool {
             put("phase", next.phase.name.lowercase())
             put("handCount", next.handCount)
             if (turn.won > 0) put("handsWon", turn.won)
+            if (turn.lost > 0) put("handsLost", turn.lost)
             turn.tracker?.broken?.let { put("douzeroOff", it) }
         }, image = if (ctx.config.visionEnabled) ctx.screen.quickShot() else null, changed = true)
     }
@@ -364,15 +371,16 @@ internal object PhoneDdzTurn : PhoneTool {
                 if (view.phase != DdzPhase.Other) turn.atTable = true
                 // 进过牌桌又回了大厅:下一局可能进的是真人场,单机标记作废,要再 start 一次
                 if (turn.single && turn.atTable && view.phase == DdzPhase.Other && DdzCards.singleLobby(frame)) { turn.single = false; return view }
-                // 闯关赢了一手:还要接着打就自己点黄色的继续(不点蓝色的离开),马上发下一手;否则交回模型
-                if (turn.single && DdzCards.stageWin(frame)) {
+                // 闯关打完一手(赢或输):还要接着打就自己点黄色的继续(不点蓝色的离开、不点看视频的),马上发下一手;否则交回模型
+                val won = turn.single && DdzCards.stageWin(frame)
+                if (won || (turn.single && DdzCards.stageLoss(frame))) {
                     turn.tracker = null
                     turn.expectedHand = null
-                    if (turn.handsLeft <= 1) { turn.won++; return view.copy(phase = DdzPhase.Result) }
+                    if (turn.handsLeft <= 1) { if (won) turn.won++ else turn.lost++; return view.copy(phase = DdzPhase.Result) }
                     // 「胜利」先出来,「继续」按钮晚一点才画上:没有就再等一帧
                     val next = DdzCards.stageContinue(frame)
                     if (next == null || ctx.screen.peek().packageName != PACKAGE) { waitOrSteer { delay(POLL_MS) } ?: return last; continue }
-                    turn.won++
+                    if (won) turn.won++ else turn.lost++
                     turn.handsLeft--
                     ctx.screen.quickTap(next.first, next.second)
                     delay(CONTINUE_MS)

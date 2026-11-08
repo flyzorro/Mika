@@ -112,6 +112,7 @@ internal object DdzCards {
     private val stageTitle by lazy { mark("/ddz/stage.txt") }
     private val stageTableTitle by lazy { mark("/ddz/stage_table.txt") }
     private val stageWinBanner by lazy { mark("/ddz/stage_win.txt") }
+    private val stageLossBanner by lazy { mark("/ddz/stage_loss.txt") }
     private const val MARK_W = 96
     private const val MARK_H = 20
 
@@ -119,7 +120,7 @@ internal object DdzCards {
      * 是不是大厅、右下角快速开始上面标着「单机模式」。只认 Mika 的屏(铺满、没有黑边):主屏左边有黑边,
      * 上面还压着 Mika 自己的悬浮胶囊,认不准。真人模式的标签字不一样,对不上。
      */
-    fun singleLobby(frame: RawFrame): Boolean = matches(frame, 2125, 885, 195, 40, lobbyRibbon, MARK_SLACK, ::cream)
+    fun singleLobby(frame: RawFrame): Boolean = matches(frame, 2125, 885, 195, 40, lobbyRibbon, MARK_SLACK, ink = ::cream)
 
     /** 是不是单机模式里的闯关页(左上角写着「闯关模式」,报名首次免费、过关奖励金币)。同样只认 Mika 的屏。 */
     fun singleStage(frame: RawFrame): Boolean = matches(frame, 190, 60, 255, 45, stageTitle, STAGE_SLACK) { min(it) > 200 }
@@ -145,6 +146,16 @@ internal object DdzCards {
         (p shr 16 and 0xff) > 200 && (p shr 8 and 0xff) > 150 && (p and 0xff) < 140
     }
 
+    /**
+     * 闯关打完一手输了的结算(正中白色的「失败」)。左上有看视频免扣分的按钮,不点;只认左边蓝色「离开」、右边黄色「继续」
+     * 这一种摆法([stageContinue] 才点继续),别的样子(比如分数不够、整关失败)交给模型。结算的遮罩把左右两边压得近乎全黑,
+     * 不按黑边排除主屏,靠这两个按钮的摆法认。
+     */
+    fun stageLoss(frame: RawFrame): Boolean = matches(frame, 1030, 130, 360, 130, stageLossBanner, STAGE_SLACK, bar = false) { min(it) > 215 } &&
+        DdzScreen.runs(frame.width, gap = 30, minWidth = 300) { x ->
+            frame.pixel(x, STAGE_CONTINUE_SCAN_Y).let { p -> (p and 0xff) > 200 && (p shr 16 and 0xff) < 120 }
+        }.any { blue -> stageContinue(frame)?.let { blue.last < it.first } == true }
+
     /** 结算上黄色「继续」的中线;找不到为 null。在字下面那一行量(字会把黄色切开),点按钮正中。 */
     fun stageContinue(frame: RawFrame): Pair<Int, Int>? = DdzScreen.runs(frame.width, gap = 30, minWidth = 300) { x ->
         frame.pixel(x, STAGE_CONTINUE_SCAN_Y).let { p -> (p shr 16 and 0xff) > 225 && (p shr 8 and 0xff) in 131..214 && (p and 0xff) < 120 }
@@ -156,8 +167,10 @@ internal object DdzCards {
     fun singleStageTable(frame: RawFrame): Boolean = matches(frame, 1830, 8, 190, 52, stageTableTitle, STAGE_SLACK) { min(it) > 200 }
 
     /** 这块地方的字和记下的样子差不多:同一位置、同一大小,差的格子不超过 [slack]。 */
-    private inline fun matches(frame: RawFrame, x: Int, y: Int, w: Int, h: Int, mark: BooleanArray, slack: Double, ink: (Int) -> Boolean): Boolean {
-        if (frame.height != 1080 || frame.width != 2412 || DdzScreen.blackBar(frame) != 0) return false
+    private inline fun matches(
+        frame: RawFrame, x: Int, y: Int, w: Int, h: Int, mark: BooleanArray, slack: Double, bar: Boolean = true, ink: (Int) -> Boolean,
+    ): Boolean {
+        if (frame.height != 1080 || frame.width != 2412 || (bar && DdzScreen.blackBar(frame) != 0)) return false
         val sig = boxSig(Array(h) { r -> BooleanArray(w) { c -> ink(frame.pixel(x + c, y + r)) } }, MARK_W, MARK_H)
         return sig.indices.count { sig[it] != mark[it] } <= slack * sig.size
     }
