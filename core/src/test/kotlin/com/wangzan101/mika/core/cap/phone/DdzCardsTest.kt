@@ -124,6 +124,7 @@ class DdzCardsTest {
         // 闯关牌桌:三张分开摆在顶上正中
         assertEquals(listOf("3", "8", "7"), DdzCards.bottom(frame("vd_stage_landlord19")))
         assertEquals(listOf("K", "4", "9"), DdzCards.bottom(frame("vd_stage_lead")))
+        assertEquals(listOf("Q", "4", "10"), DdzCards.bottom(frame("vd_stage_bottom_Q410")))
         assertEquals(listOf("9", "4", "5"), DdzCards.bottom(frame("vd_stage_leftpass_rightQQQ6")))
     }
 
