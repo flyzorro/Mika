@@ -232,7 +232,9 @@ internal object PhoneDdzTurn : PhoneTool {
             turn.reason = pauseReason(move.error)
         } else if (turn.mode == DdzMode.Human && next.phase == DdzPhase.Other) {
             turn.state = DdzSessionState.Paused
-            turn.reason = DdzSessionReason.UNKNOWN_SCENE
+            // awaitDecision classifies known handoff scenes such as lobby return;
+            // retain that structured reason instead of degrading it to unknown_scene.
+            if (turn.reason == null) turn.reason = DdzSessionReason.UNKNOWN_SCENE
         } else if (turn.state != DdzSessionState.Paused) {
             turn.phase = next.phase
             turn.state = stateFor(next.phase)
