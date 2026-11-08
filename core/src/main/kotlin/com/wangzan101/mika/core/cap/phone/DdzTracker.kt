@@ -80,10 +80,10 @@ internal class DdzTracker {
         if (turn == null || turn == active) return
         val from = active ?: return
         active = turn
-        // from 出完了,中间被跳过的也出完了
+        // from 出完了,中间被跳过的也出完了;跳过的是自己,就是游戏替我不出了(管不了王炸时不轮到我)
         var seat: DdzSeat = from
         while (seat != turn) {
-            if (seat != DdzSeat.Me) waiting.addLast(seat to READ_TRIES)
+            if (seat != DdzSeat.Me || seat != from) waiting.addLast(seat to READ_TRIES)
             seat = seat.next
         }
         resolve(seen)
@@ -116,6 +116,7 @@ internal class DdzTracker {
     private fun resolve(read: (DdzSide) -> DdzSeen) {
         while (waiting.isNotEmpty()) {
             val (seat, tries) = waiting.first()
+            if (seat == DdzSeat.Me) { history += emptyList<String>(); waiting.removeFirst(); continue }
             val seen = read(if (seat == DdzSeat.Left) DdzSide.Left else DdzSide.Right)
             // 只有地主的牌压着绶带;农民的牌带着猜的那一张就是没认准
             val guessed = seen is DdzSeen.Cards && seat != landlord && seen.ranks.any { it.startsWith(DdzCards.UNKNOWN) }

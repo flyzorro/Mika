@@ -183,6 +183,26 @@ class DdzTrackerTest {
         assertEquals(listOf(listOf("7", "7", "7", "3")), tracker.history)
     }
 
+    @Test fun aTurnTheGameSkipsForMeIsMyPass() {
+        // 右家是地主,出了 3;左家不要;我出顺子,地主王炸,左家不要,我管不了,游戏不轮到我,地主接着出 9
+        right = DdzSeen.Cards(listOf("3"))
+        repeat(3) { see(DdzSeat.Left) }
+        left = DdzSeen.Pass
+        repeat(3) { see(DdzSeat.Me) }
+        tracker.mine("8 9 10 J Q".split(' '))
+        right = DdzSeen.Cards(listOf("SJ", "BJ"))
+        repeat(3) { see(DdzSeat.Left) }
+        repeat(3) { see(DdzSeat.Right) }
+        assertEquals(listOf(listOf("SJ", "BJ"), emptyList(), emptyList()), tracker.history.takeLast(3))
+        right = DdzSeen.Cards(listOf("9"))
+        left = DdzSeen.Cards(listOf("10"))
+        repeat(3) { see(DdzSeat.Left) }
+        repeat(3) { see(DdzSeat.Me) }
+        assertEquals(listOf(listOf("9"), listOf("10")), tracker.history.takeLast(2))
+        assertEquals(8, tracker.history.size)
+        assertTrue(tracker.ready())
+    }
+
     @Test fun aGuessedCardIsOnlyTrustedFromTheLandlord() {
         // 我是地主,左家是农民:他那张认不准的不能按猜的补
         tracker.observe(DdzSeat.Me, { DdzSeen.Empty }, { bottom }, leadingWith20 = true, leading = true)
