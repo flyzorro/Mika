@@ -412,9 +412,12 @@ internal object PhoneDdzTurn : PhoneTool {
                     DdzPhase.Call -> when {
                         !turn.single -> if (left || view.phase != from) return view
                         !turn.bid -> {
-                            val hand = DdzCards.hand(frame, view) ?: return view
-                            val button = view.buttons[bidLevel(hand)].takeIf { it.color != DdzColor.Gray } ?: view.buttons[0]
-                            if (press(button, ctx).moved) turn.bid = true
+                            // 叫分按钮出来时牌可能还在发(手里才十几张)、认不全:等下一帧,不交还模型
+                            val hand = DdzCards.hand(frame, view)?.takeIf { it.size == 17 }
+                            if (hand != null) {
+                                val button = view.buttons[bidLevel(hand)].takeIf { it.color != DdzColor.Gray } ?: view.buttons[0]
+                                if (press(button, ctx).moved) turn.bid = true
+                            }
                             left = true
                         }
                     }
