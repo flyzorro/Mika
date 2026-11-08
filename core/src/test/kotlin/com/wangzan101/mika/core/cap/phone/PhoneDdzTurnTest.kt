@@ -518,6 +518,27 @@ class PhoneDdzTurnTest {
         }
     }
 
+    @Test fun backAtTheStageTableAfterClosingAPopupDouZeroPlaysAgain() = runTest {
+        val saved = PhoneDdzTurn.advise
+        val asked = mutableListOf<String>()
+        PhoneDdzTurn.advise = { _, body -> asked += body; """{"play":[]}""" }
+        try {
+            val call = full("vd_stage_call")
+            val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(call)))
+            val dispatcher = toolDispatcher(game)
+            PhoneDdzTurn.markSingle(dispatcher.ctx, "http://mac:3426")
+            // 赢了以后弹了广告,模型点掉了它
+            dispatcher.ctx.evidence.logAction("第 3 步", "phone_tap", "关闭广告", null, ToolExecution(buildJsonObject { put("ok", true) }), wide = false)
+            // 回到闯关牌桌叫分:模型叫完,新的一手 DouZero 接着打;叫分按钮还留着的几帧不再按
+            game.frames.addAll(listOf(call, call, full("vd_stage_lead"), fullBlank))
+            PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"call","level":3}""").jsonObject), dispatcher.ctx)
+            assertEquals(1, game.taps.count { it.first > 1700 })
+            assertTrue(asked.isNotEmpty())
+        } finally {
+            PhoneDdzTurn.advise = saved
+        }
+    }
+
     @Test fun pickMapsRanksToDistinctCards() {
         assertEquals(setOf(1, 2), PhoneDdzTurn.pick(listOf("A", "3", "3"), listOf("3", "3")))
         assertNull(PhoneDdzTurn.pick(listOf("A", "3"), listOf("3", "3")))

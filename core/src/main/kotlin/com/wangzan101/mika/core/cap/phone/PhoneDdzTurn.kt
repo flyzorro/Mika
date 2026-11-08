@@ -145,7 +145,15 @@ internal object PhoneDdzTurn : PhoneTool {
         // 模型在两次调用之间自己点过屏幕(关弹窗,也可能回大厅进了真人场):这里看不到它去过哪,单机标记作废,要再 start
         if (turn.single && ctx.evidence.actions != turn.actionsSeen) turn.single = false
         if (action == "start") return start(a, ctx, turn).also { turn.actionsSeen = ctx.evidence.actions }
-        val view = takeBackControl(read(ctx) ?: return refused("no_frame"), ctx).also { dealt(turn, it) }
+        val frame = ctx.screen.rawFrame(if (turn.advisor != null) FULL_ROWS else DdzScreen.ROWS) ?: return refused("no_frame")
+        // 闯关牌桌只在单机模式里有:模型关了弹窗(广告)回到这桌上,还是单机,不用再 start;打了一半的这手照旧交给模型
+        if (!turn.single && turn.advisor != null && DdzCards.singleStageTable(frame)) {
+            markSingle(ctx, turn.advisor!!)
+            turn.tracker = null
+            turn.expectedHand = null
+            turn.joining = true
+        }
+        val view = takeBackControl(DdzScreen.read(frame), ctx).also { dealt(turn, it) }
         val thinkMs = turn.seenAt?.let { now() - it } ?: 0
         val tapStart = now()
         val move = move(action, a, view, ctx, turn, thinkMs)
@@ -233,7 +241,8 @@ internal object PhoneDdzTurn : PhoneTool {
                 val level = a.int("level", 0, 3) ?: 0
                 // 灰的是比别人叫得低、点不了的分:按不叫算
                 val button = view.buttons[level].takeIf { it.color != DdzColor.Gray } ?: view.buttons[0]
-                press(button, ctx)
+                // 按完叫分按钮还留几帧,单机局里接着等时别再按一次
+                press(button, ctx).also { if (it.moved) turn.bid = true }
             }
             "pass" -> when (phase) {
                 DdzPhase.Follow -> press(view.buttons[0], ctx)
