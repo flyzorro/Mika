@@ -166,6 +166,12 @@ class Agent:
             beats = [i for i, a in enumerate(infoset.legal_actions) if a]
             if beats:
                 move = infoset.legal_actions[max(beats, key=lambda i: float(values[i]))]
+        # 桌上是队友的牌、队友只剩三张以内:不去压他(自己这手出完就赢的除外),让他接着出完。DouZero 残局偶尔会拿王压队友的 2,
+        # 自己接过来再出单张,让只剩一张的地主走了
+        mate = {"landlord_down": "landlord_up", "landlord_up": "landlord_down"}.get(infoset.player_position)
+        if move and mate and infoset.last_pid == mate and infoset.num_cards_left_dict[mate] <= 3 \
+                and len(move) < len(infoset.player_hand_cards) and [] in infoset.legal_actions:
+            move = []
         return move
 
     def values(self, infoset):

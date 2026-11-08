@@ -144,6 +144,14 @@ class LastCardTest(unittest.TestCase):
         self.assertEqual(["SJ"], [NAMES[c] for c in ADVISOR.act("landlord_up", hand, ["A", "4", "7"], history)])
 
 
+class TeammateTest(unittest.TestCase):
+    def test_a_teammate_about_to_finish_is_not_beaten(self):
+        # 实机上的一手:队友只剩三张、出了 2,地主只剩一张不要;DouZero 拿小王压了队友,再出单 9 让地主走了
+        history = [["7", "6", "5", "4", "3"], [], [], ["J", "J", "J", "10", "10", "10", "Q", "9"], [], ["A", "A", "A", "K", "K", "K", "7", "3"], [], [], ["4", "4"], ["8", "8", "8", "8"], [], [], ["Q"], ["2"], [], [], ["2"], [], [], ["7", "7"], ["9", "9"], [], [], ["5"], ["K"], [], ["2"], []]
+        hand = ["BJ", "SJ", "2", "Q", "J", "9", "6", "6", "6", "5", "4", "3", "3"]
+        self.assertEqual([], ADVISOR.act("landlord_down", hand, [], history))
+
+
 class OrderTest(unittest.TestCase):
     def test_a_move_listed_high_to_low_still_replays(self):
         for seed in range(300):
