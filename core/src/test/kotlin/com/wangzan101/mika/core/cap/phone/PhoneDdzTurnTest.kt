@@ -819,6 +819,47 @@ class PhoneDdzTurnTest {
         assertTrue(game.taps.isEmpty())
     }
 
+    @Test fun malformedSnapshotsAreRejectedWithoutChangingTheSession() = runTest {
+        val farmer = """"hand":["3","4","5","6","7","8","9","10","J","Q","K","A","2","SJ","BJ","3","4"]"""
+        val cases = mapOf(
+            "missing history" to ("""{"action":"resume",$farmer,"bottom":["5","6","7"],"phase":"call","seat":"landlord"}""" to "invalid_snapshot"),
+            "missing seat" to ("""{"action":"resume",$farmer,"bottom":["5","6","7"],"history":[],"phase":"call"}""" to "invalid_snapshot"),
+            "unknown phase" to ("""{"action":"resume",$farmer,"bottom":["5","6","7"],"history":[],"phase":"bid","seat":"landlord"}""" to "phase"),
+            "two bottom cards" to ("""{"action":"resume",$farmer,"bottom":["5","6"],"history":[],"phase":"call","seat":"landlord"}""" to "bottom_count"),
+            "five threes" to ("""{"action":"resume","hand":["3","3","3","3","3","4","5","6","7","8","9","10","J","Q","K","A","2","SJ","BJ","4"],
+                "bottom":["5","6","7"],"history":[],"phase":"call","seat":"landlord"}""" to "duplicate_card"),
+        )
+        for ((name, case) in cases) {
+            val (body, reason) = case
+            val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(full("call"))))
+            val dispatcher = toolDispatcher(game)
+            PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
+            val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement(body).jsonObject), dispatcher.ctx)
+            assertEquals(name, "invalid_snapshot", result.text("error"))
+            assertEquals(name, reason, result.text("reason"))
+            assertEquals(name, "calling", result.text("state"))
+            assertTrue(name, game.taps.isEmpty())
+        }
+    }
+
+    @Test fun resumeWithTheRightHandButTheWrongTurnPausesBeforeItActs() = runTest {
+        // Hand and bottom match lead.jpg exactly; the snapshot claims a follow (with a table play the
+        // screen does not show) while the screen is a lead. The phase and visible-play checks both reject it.
+        val lead = full("lead")
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(lead, lead)))
+        val dispatcher = toolDispatcher(game)
+        PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
+        val resumed = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""
+            {"action":"resume","hand":["BJ","SJ","2","2","2","K","Q","10","9","4","4","4","3","3","3"],
+             "bottom":["K","Q","8"],"history":[["5","6","7","8","9"],["6","7","8","9","10"],[]],"phase":"follow","seat":"landlord"}
+        """.trimIndent()).jsonObject), dispatcher.ctx)
+        assertEquals("true", resumed.text("ok"))
+        val next = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"wait"}""").jsonObject), dispatcher.ctx)
+        assertEquals("paused", next.text("state"))
+        assertEquals("snapshot_mismatch", next.text("reason"))
+        assertTrue(game.taps.isEmpty())
+    }
+
     @Test fun humanStartRefusesTheSinglePlayerStageTable() = runTest {
         val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(full("vd_stage_call"))))
         val result = run(game, """{"action":"start","mode":"human","advisor":"http://mac:3426"}""")
