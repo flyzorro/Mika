@@ -814,6 +814,24 @@ class PhoneDdzTurnTest {
         assertEquals(DdzScreen.read(double).buttons[0].let { it.x to it.y }, game.taps[1])
     }
 
+    @Test fun humanAutoStartKeepsTheWholeDecisionLoopInsideTheToolAndUsesDouZeroBid() = runTest {
+        val call = full("call")
+        val double = full("double")
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(call, call, call, double, double, full("lead"))))
+        val dispatcher = toolDispatcher(game)
+        val savedBid = PhoneDdzTurn.adviseBid
+        var bidCalls = 0
+        PhoneDdzTurn.adviseBid = { _, _ -> bidCalls++; 3 }
+        try {
+            val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","auto":true,"advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
+            assertEquals("lead", result.text("phase"))
+            assertEquals(1, bidCalls)
+            assertEquals(2, game.taps.size)
+        } finally {
+            PhoneDdzTurn.adviseBid = savedBid
+        }
+    }
+
     @Test fun humanWaitUsesTheAdvisorToPassAtFollow() = runTest {
         val follow = full("hand_t1")
         val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(follow, follow, follow, fullBlank)))
