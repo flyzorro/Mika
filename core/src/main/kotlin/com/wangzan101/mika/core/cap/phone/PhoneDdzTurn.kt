@@ -800,11 +800,7 @@ internal object PhoneDdzTurn : PhoneTool {
                     }
                     humanSceneMisses = 0
                     turn.humanEligible = true
-                    // 牌桌上的 Other 是别家在叫分、出牌(一家最多 15 秒):接着等,总时长由 polls 管
-                    if (view.phase == DdzPhase.Other) {
-                        waitOrSteer { delay(POLL_MS) } ?: return last
-                        continue
-                    }
+                    // 牌桌上的 Other 是别家在叫分、出牌(一家最多 15 秒):不停,照常往下记历史、接着等,总时长由 polls 管
                     if (humanPhase != view.phase) {
                         humanPhase = view.phase
                         turn.humanActionSeen = false
