@@ -1102,6 +1102,28 @@ class PhoneDdzTurnTest {
         }
     }
 
+    @Test fun humanSelectionContinuesPastOneUnrecognisedFrame() = runTest {
+        // Live 2026-11-09: one unrecognised frame mid-play paused the session (unknown_scene)
+        // and the game's autoplay took the hand.
+        val saved = PhoneDdzTurn.advise
+        PhoneDdzTurn.advise = { _, _ -> """{"play":["3"]}""" }
+        try {
+            val lead = full("lead")
+            val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(lead, lead, lead, lead, fullBlank) + List(8) { lead }))
+            val dispatcher = toolDispatcher(game)
+            PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
+            PhoneDdzTurn.useTracker(dispatcher.ctx, DdzTracker(DdzSettlingPolicy.HUMAN).apply {
+                observe(DdzSeat.Me, { DdzSeen.Empty }, { listOf("3", "4", "5") }, leadingWith20 = true, leading = true)
+            })
+            val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"wait"}""").jsonObject), dispatcher.ctx)
+            // The blank frame comes right after the first card tap; selection must keep going.
+            assertTrue("selection stopped at the transient frame: ${game.taps}", game.taps.size > 1)
+            assertTrue(result.text("reason") != "unknown_scene")
+        } finally {
+            PhoneDdzTurn.advise = saved
+        }
+    }
+
     @Test fun humanFollowUsesTheAdvisorToPlayVisibleCards() = runTest {
         val asked = mutableListOf<String>()
         val saved = PhoneDdzTurn.advise

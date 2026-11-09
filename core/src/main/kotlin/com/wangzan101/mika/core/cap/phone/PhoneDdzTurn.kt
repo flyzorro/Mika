@@ -730,7 +730,7 @@ internal object PhoneDdzTurn : PhoneTool {
             for (index in toggle) {
                 if (!tap(ctx, turn, view.cardX(index), DdzScreen.CARD_Y)) return null
                 delay(TAP_GAP_MS)
-                if (turn?.mode == DdzMode.Human && read(ctx, turn) == null) return null
+                if (turn?.mode == DdzMode.Human && readTable(ctx, turn) == null) return null
             }
             // 抬牌有动画:还没抬到位就再点一下,会把它点回去。多看几帧,真没抬起来才重点
             repeat(LIFT_POLLS) {
@@ -1173,13 +1173,23 @@ internal object PhoneDdzTurn : PhoneTool {
         if (turn?.mode == DdzMode.Human) {
             if (!DdzCards.classicHumanTable(frame)) {
                 turn.humanEligible = false
-                turn.reason = humanHandoff(frame) ?: DdzSessionReason.UNKNOWN_SCENE
-                turn.state = DdzSessionState.Paused
+                // 大厅、弹窗是确定离开了牌桌,停下;认不出的单帧(出牌动画等)只报 null,停不停交给等待循环按帧数定
+                humanHandoff(frame)?.let { turn.reason = it; turn.state = DdzSessionState.Paused }
                 return null
             }
             turn.humanEligible = true
         }
         return DdzScreen.read(frame)
+    }
+
+    /** Human mode: wait out a few unrecognised frames (animations) before giving up on the table; null if it never comes back or the session paused. */
+    private suspend fun readTable(ctx: ToolContext, turn: Turn): DdzView? {
+        repeat(HUMAN_SCENE_RETRY_POLLS) {
+            read(ctx, turn)?.let { return it }
+            if (turn.state == DdzSessionState.Paused || turn.stopped) return null
+            delay(POLL_MS)
+        }
+        return null
     }
 
     /** 单机局里每一帧都要认牌,一次把这些行读全。 */
