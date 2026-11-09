@@ -888,6 +888,19 @@ class PhoneDdzTurnTest {
         assertTrue(game.taps.isEmpty())
     }
 
+    @Test fun humanLoopWaitsWhenNoClockIsReadable() = runTest {
+        // Live 2026-11-09 run 6: everyone decides doubling at once with no clock on any seat; the
+        // tool paused unknown_scene 1.8 s in. vd_17 also has a clock the reader misses.
+        val waiting = full("vd_17")
+        assertTrue("our hand is on the human table while others decide", DdzCards.classicHumanTable(waiting))
+        val call = full("call")
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(call, call) + List(20) { waiting } + listOf(lobbyFrame("vd_lobby"))))
+        val dispatcher = toolDispatcher(game)
+        PhoneDdzTurn.adviseBid = { _, _ -> 0 }
+        val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","auto":true,"advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
+        assertEquals(result.toString(), "lobby_return", result.text("reason"))
+    }
+
     @Test fun humanLoopWaitsThroughOtherPlayersTurns() = runTest {
         // Live 2026-11-09 run 3: after our bid the tool paused unknown_scene 1.8 s into the next
         // player's turn (no buttons for us), and the game's autoplay took the hand.
