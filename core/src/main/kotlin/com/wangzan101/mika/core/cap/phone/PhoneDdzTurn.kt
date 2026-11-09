@@ -34,6 +34,8 @@ internal object PhoneDdzTurn : PhoneTool {
     private const val HUMAN_SETTLE_POLLS = 48
     /** 真人牌桌切换/发牌时可能短暂读不到正面标记;重试一小段,别立刻交还模型。 */
     private const val HUMAN_SCENE_RETRY_POLLS = 12
+    /** start(auto) 刚点完快速开始/继续:匹配、发牌要十几秒,最多等约 20 秒牌桌出来。 */
+    private const val START_TABLE_POLLS = 134
     /** 再来一局几秒就发牌;过了这么久还没有多半是弹窗,交给模型看。 */
     private const val AGAIN_POLLS = 60
     /** Mika 屏上大厅右下角的快速开始(单机经典场,每局押金币)。 */
@@ -333,11 +335,15 @@ internal object PhoneDdzTurn : PhoneTool {
     }
 
     private suspend fun startHuman(a: Args, ctx: ToolContext, turn: Turn, advisor: String): ToolExecution {
-        val page = ctx.screen.rawFrame(FULL_ROWS) ?: return refused("no_frame")
+        var page = ctx.screen.rawFrame(FULL_ROWS) ?: return refused("no_frame")
         // Human mode may only attach to the current classic table. Stage tables and the
         // single-player lobby share the same button colors, so the explicit markers are a
         // required eligibility gate before any human-mode state is installed.
-        if (!DdzCards.classicHumanTable(page)) return refused("not_human_game")
+        if (!DdzCards.classicHumanTable(page)) {
+            if (!a.bool("auto", false)) return refused("not_human_game")
+            // 模型点完快速开始就调 start:在这里等牌桌出来(不点任何东西),免得模型自己等、错过叫分
+            page = awaitHumanTable(ctx, turn) ?: return refused("not_human_game")
+        }
         val view = DdzScreen.read(page)
         // 同一局里重复 start 才保留历史:上一局已结算、或历史已作废(含中途接手)都按新接手处理
         val recoveringSameGame = turn.mode == DdzMode.Human && turn.atTable && turn.advisor == advisor &&
@@ -1065,6 +1071,17 @@ internal object PhoneDdzTurn : PhoneTool {
         println("DDZTRACE pause $reason ${turn.tracker?.debugState()}") // TEMP diagnostics; remove after.
         turn.state = DdzSessionState.Paused
         turn.reason = reason
+    }
+
+    /** Poll (without tapping) until the classic human table is on screen; null on timeout, stop, or steer. */
+    private suspend fun awaitHumanTable(ctx: ToolContext, turn: Turn): com.wangzan101.mika.core.uistate.RawFrame? {
+        repeat(START_TABLE_POLLS) {
+            waitOrSteer { delay(POLL_MS) } ?: return null
+            if (turn.stopped) return null
+            val frame = ctx.screen.rawFrame(FULL_ROWS) ?: return@repeat
+            if (DdzCards.classicHumanTable(frame)) return frame
+        }
+        return null
     }
 
     /** Known non-table scenes that end automatic human play; null when the scene is just unrecognised. */

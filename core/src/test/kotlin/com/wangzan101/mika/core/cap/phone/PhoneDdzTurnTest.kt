@@ -867,6 +867,27 @@ class PhoneDdzTurnTest {
         assertTrue(game.taps.isEmpty())
     }
 
+    @Test fun humanAutoStartWaitsForTheTableAfterQuickStart() = runTest {
+        // Live 2026-11-09 run 6: the model waited 25 s after 快速开始 before calling start
+        // (start used to refuse the matching screen) and missed bidding.
+        val matching = lobbyFrame("vd_lobby")
+        val call = full("call")
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(List(5) { matching } + listOf(call, call, lobbyFrame("vd_lobby"))))
+        val dispatcher = toolDispatcher(game)
+        PhoneDdzTurn.adviseBid = { _, _ -> 0 }
+        val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","auto":true,"advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
+        assertNull(result.toString(), result.text("error"))
+        assertEquals("bid at the deal after waiting for the table", 1, game.taps.size)
+    }
+
+    @Test fun humanAutoStartGivesUpWhenNoTableAppears() = runTest {
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(lobbyFrame("vd_lobby"))))
+        val dispatcher = toolDispatcher(game)
+        val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","auto":true,"advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
+        assertEquals("not_human_game", result.text("error"))
+        assertTrue(game.taps.isEmpty())
+    }
+
     @Test fun humanLoopWaitsThroughOtherPlayersTurns() = runTest {
         // Live 2026-11-09 run 3: after our bid the tool paused unknown_scene 1.8 s into the next
         // player's turn (no buttons for us), and the game's autoplay took the hand.
