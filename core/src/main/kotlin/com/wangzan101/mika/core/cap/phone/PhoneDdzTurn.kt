@@ -153,6 +153,7 @@ internal object PhoneDdzTurn : PhoneTool {
             put("enum", JsonArray(listOf("single", "human").map(::JsonPrimitive)))
             put("description", "start: explicit session mode; omitted keeps the existing single-player default.")
         },
+        "auto" to buildJsonObject { put("type", "boolean"); put("description", "start human mode: keep call, double, and DouZero play inside this tool until a pause or result.") },
         "advisor" to buildJsonObject { put("type", "string"); put("description", "start: DouZero service URL, required for both modes.") },
         "hand" to ranks("play: your whole hand; resume: the complete current hand."),
         "play" to ranks("The cards to play."),
@@ -327,13 +328,13 @@ internal object PhoneDdzTurn : PhoneTool {
         val mode = a.str("mode")?.trim()?.lowercase() ?: DdzMode.Single.wire
         turn.stopped = false
         return when (mode) {
-            DdzMode.Human.wire -> startHuman(ctx, turn, advisor)
+            DdzMode.Human.wire -> startHuman(a, ctx, turn, advisor)
             DdzMode.Single.wire -> startSingle(a, ctx, turn, advisor)
             else -> throw ArgError("mode", "must be single or human")
         }
     }
 
-    private suspend fun startHuman(ctx: ToolContext, turn: Turn, advisor: String): ToolExecution {
+    private suspend fun startHuman(a: Args, ctx: ToolContext, turn: Turn, advisor: String): ToolExecution {
         val page = ctx.screen.rawFrame(FULL_ROWS) ?: return refused("no_frame")
         // Human mode may only attach to the current classic table. Stage tables and the
         // single-player lobby share the same button colors, so the explicit markers are a
@@ -352,13 +353,39 @@ internal object PhoneDdzTurn : PhoneTool {
         turn.tracker = null
         turn.expectedHand = null
         turn.snapshot = null
+        if (!a.bool("auto", false)) {
+            return ToolExecution(buildJsonObject {
+                put("ok", true)
+                put("mode", DdzMode.Human.wire)
+                put("state", turn.state.wire)
+                put("phase", view.phase.name.lowercase())
+                put("handCount", view.handCount)
+            }, image = if (ctx.config.visionEnabled) ctx.screen.quickShot() else null, changed = false)
+        }
+        // Human tables have the same hard turn clock as single-player tables. Keep the
+        // automatic loop inside the tool so the model cannot spend a turn between call,
+        // double, and DouZero play decisions.
+        val next = awaitDecision(ctx, turn, DdzPhase.Other, moved = true, polls = MAX_POLLS)
+        turn.phase = next.phase
+        turn.state = stateFor(next.phase)
+        turn.seenAt = now()
         return ToolExecution(buildJsonObject {
             put("ok", true)
             put("mode", DdzMode.Human.wire)
             put("state", turn.state.wire)
-            put("phase", view.phase.name.lowercase())
-            put("handCount", view.handCount)
-        }, image = if (ctx.config.visionEnabled) ctx.screen.quickShot() else null, changed = false)
+            turn.reason?.let { put("reason", it) }
+            put("phase", next.phase.name.lowercase())
+            put("handCount", next.handCount)
+            if (turn.decisions.isNotEmpty()) {
+                put("autoPlayed", turn.decisions.size)
+                put("autoMs", JsonArray(turn.decisions.map(::JsonPrimitive)))
+                turn.decisions.clear()
+            }
+            turn.tracker?.let { tracker ->
+                tracker.broken?.let { put("douzeroOff", it) }
+                put("historyCount", tracker.history.size)
+            }
+        }, image = if (ctx.config.visionEnabled) ctx.screen.quickShot() else null, changed = true)
     }
 
     private suspend fun startSingle(a: Args, ctx: ToolContext, turn: Turn, advisor: String): ToolExecution {
@@ -782,7 +809,9 @@ internal object PhoneDdzTurn : PhoneTool {
                     DdzPhase.Call -> when {
                         turn.mode == DdzMode.Human && !turn.humanActionSeen -> {
                             val hand = DdzCards.hand(frame, view)?.takeIf { it.size == 17 }
-                            val level = hand?.let(HumanDdzPolicy::callLevel)
+                            val level = hand?.let { cards ->
+                                turn.advisor?.let { url -> adviseBid(url, cards) } ?: bidLevel(cards)
+                            }
                             val button = level?.let { view.buttons.getOrNull(it) }
                             when {
                                 hand == null || button == null -> humanPause(turn, DdzSessionReason.UNKNOWN_SCENE)
@@ -795,7 +824,7 @@ internal object PhoneDdzTurn : PhoneTool {
                             }
                             left = true
                         }
-                        !turn.single -> if (left || view.phase != from) return view
+                        !turn.single -> if ((left || view.phase != from) && !(turn.mode == DdzMode.Human && turn.humanActionSeen)) return view
                         !turn.bid -> {
                             // 叫分按钮出来时牌可能还在发(手里才十几张)、认不全:等下一帧,不交还模型
                             val hand = DdzCards.hand(frame, view)?.takeIf { it.size == 17 }
