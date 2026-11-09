@@ -182,6 +182,10 @@ internal object DdzCards {
         if (frame.width != 2412 || frame.height != 1080) return false
         val view = DdzScreen.read(frame)
         if (view.phase == DdzPhase.Other || singleStageTable(frame) || singleLobby(frame) || singleStage(frame)) return false
+        // The game's "取消托管" overlay covers the table watermark. Its dedicated blue
+        // button is a stronger positive signal than the obscured marker, and the caller
+        // already handles AutoPlay by tapping that button before reading the table again.
+        if (view.phase == DdzPhase.AutoPlay) return true
         var marked = 0
         var pixels = 0
         for (y in CLASSIC_MARK_Y until CLASSIC_MARK_Y + CLASSIC_MARK_H) for (x in CLASSIC_MARK_X until CLASSIC_MARK_X + CLASSIC_MARK_W) {

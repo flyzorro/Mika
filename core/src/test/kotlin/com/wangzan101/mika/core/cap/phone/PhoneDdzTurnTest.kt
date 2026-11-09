@@ -1050,6 +1050,11 @@ class PhoneDdzTurnTest {
         assertFalse(DdzCards.classicHumanTable(blank))
     }
 
+    @Test fun classicHumanEligibilityAcceptsTheKnownAutoplayOverlay() {
+        assertEquals(DdzPhase.AutoPlay, DdzScreen.read(full("auto")).phase)
+        assertTrue(DdzCards.classicHumanTable(full("auto")))
+    }
+
     @Test fun humanPopupHasADistinctPauseReason() = runTest {
         val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(full("call"), full("vd_relief"))))
         val dispatcher = toolDispatcher(game)
