@@ -32,8 +32,6 @@ internal object PhoneDdzTurn : PhoneTool {
     private const val MAX_POLLS = 300
     /** Human play recognition gets a longer bounded settling window than single-player animation. */
     private const val HUMAN_SETTLE_POLLS = 48
-    /** 叫分按钮出现后不能等过游戏倒计时;手牌没认全(不是 17 张)时暂停交还模型,不猜着叫。 */
-    private const val HUMAN_CALL_POLLS = 14
     /** 真人牌桌切换/发牌时可能短暂读不到正面标记;重试一小段,别立刻交还模型。 */
     private const val HUMAN_SCENE_RETRY_POLLS = 12
     /** 再来一局几秒就发牌;过了这么久还没有多半是弹窗,交给模型看。 */
@@ -270,11 +268,7 @@ internal object PhoneDdzTurn : PhoneTool {
             move.moved || action == "wait" -> awaitDecision(
                 ctx, turn, view.phase,
                 moved = move.moved || (action == "wait" && turn.mode == DdzMode.Human),
-                polls = when {
-                    action == "again" -> AGAIN_POLLS
-                    turn.mode == DdzMode.Human && view.phase == DdzPhase.Call -> HUMAN_CALL_POLLS
-                    else -> MAX_POLLS
-                },
+                polls = if (action == "again") AGAIN_POLLS else MAX_POLLS,
             )
             else -> read(ctx, turn) ?: view
         }
@@ -806,12 +800,8 @@ internal object PhoneDdzTurn : PhoneTool {
                     }
                     humanSceneMisses = 0
                     turn.humanEligible = true
+                    // 牌桌上的 Other 是别家在叫分、出牌(一家最多 15 秒):接着等,总时长由 polls 管
                     if (view.phase == DdzPhase.Other) {
-                        if (++humanSceneMisses > HUMAN_SCENE_RETRY_POLLS) {
-                            turn.state = DdzSessionState.Paused
-                            turn.reason = DdzSessionReason.UNKNOWN_SCENE
-                            return view
-                        }
                         waitOrSteer { delay(POLL_MS) } ?: return last
                         continue
                     }

@@ -867,6 +867,20 @@ class PhoneDdzTurnTest {
         assertTrue(game.taps.isEmpty())
     }
 
+    @Test fun humanLoopWaitsThroughOtherPlayersTurns() = runTest {
+        // Live 2026-11-09 run 3: after our bid the tool paused unknown_scene 1.8 s into the next
+        // player's turn (no buttons for us), and the game's autoplay took the hand.
+        val waiting = full("hand_k2")
+        assertTrue("a human table where another player has the clock", DdzCards.classicHumanTable(waiting))
+        val call = full("call")
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(call, call) + List(20) { waiting } + listOf(lobbyFrame("vd_lobby"))))
+        val dispatcher = toolDispatcher(game)
+        PhoneDdzTurn.adviseBid = { _, _ -> 0 }
+        val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","auto":true,"advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
+        assertEquals(result.toString(), "lobby_return", result.text("reason"))
+        assertEquals("only our 不叫 was tapped", 1, game.taps.size)
+    }
+
     @Test fun humanWaitAutomaticallyCallsAndDeclinesDoubling() = runTest {
         val call = full("call")
         val double = full("double")
@@ -880,16 +894,15 @@ class PhoneDdzTurnTest {
         assertEquals(DdzScreen.read(double).buttons[0].let { it.x to it.y }, game.taps[1])
     }
 
-    @Test fun humanCallingHasATwoSecondBudget() = runTest {
-        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(full("call"), full("call"))))
+    @Test fun humanWaitAtCallingWaitsThroughOtherPlayersBids() = runTest {
+        val call = full("call")
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(call, call, call) + List(20) { full("hand_k2") } + listOf(lobbyFrame("vd_lobby"))))
         val dispatcher = toolDispatcher(game)
-        val started = testScheduler.currentTime
+        PhoneDdzTurn.adviseBid = { _, _ -> 0 }
         PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
         val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"wait"}""").jsonObject), dispatcher.ctx)
-
-        assertEquals("calling", result.text("state"))
-        assertTrue(game.taps.isNotEmpty())
-        assertTrue("calling must not wait through the game clock", testScheduler.currentTime - started <= 2_100)
+        assertEquals(result.toString(), "lobby_return", result.text("reason"))
+        assertEquals("only our 不叫 was tapped", 1, game.taps.size)
     }
 
     @Test fun humanAutoStartReportsAPauseFromItsLoop() = runTest {

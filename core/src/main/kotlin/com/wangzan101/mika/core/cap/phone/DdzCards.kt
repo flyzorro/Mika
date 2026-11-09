@@ -181,7 +181,9 @@ internal object DdzCards {
     fun classicHumanTable(frame: RawFrame): Boolean {
         if (frame.width != 2412 || frame.height != 1080) return false
         val view = DdzScreen.read(frame)
-        if (view.phase == DdzPhase.Other || singleStageTable(frame) || singleLobby(frame) || singleStage(frame)) return false
+        // 轮到别家时自己没有按钮(phase 是 Other):手牌还在、有一家头上有闹钟,就还是在牌桌上等
+        val waiting = view.phase == DdzPhase.Other && view.handCount > 0 && clock(frame) != null
+        if ((view.phase == DdzPhase.Other && !waiting) || singleStageTable(frame) || singleLobby(frame) || singleStage(frame)) return false
         // The game's "取消托管" overlay covers the table watermark. Its dedicated blue
         // button is a stronger positive signal than the obscured marker, and the caller
         // already handles AutoPlay by tapping that button before reading the table again.
