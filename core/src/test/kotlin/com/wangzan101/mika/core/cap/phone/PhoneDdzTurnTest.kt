@@ -888,6 +888,17 @@ class PhoneDdzTurnTest {
         assertTrue(game.taps.isEmpty())
     }
 
+    @Test fun humanLandlordDeclinesDoublingWhenTheTwentyCardHandIsUnreadable() = runTest {
+        // Live 2026-11-09 run 7: as landlord the 20-card hand is unreadable at doubling (vd_20);
+        // the tool paused unknown_scene instead of taking the safe 不加倍.
+        val double = full("vd_20")
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(List(4) { double }))
+        val dispatcher = toolDispatcher(game)
+        val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","auto":true,"advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
+        assertNull(result.toString(), result.text("reason"))
+        assertEquals("不加倍 is the first (blue) button", listOf(DdzScreen.read(double).buttons[0].let { it.x to it.y }), game.taps)
+    }
+
     @Test fun humanLoopWaitsWhenNoClockIsReadable() = runTest {
         // Live 2026-11-09 run 6: everyone decides doubling at once with no clock on any seat; the
         // tool paused unknown_scene 1.8 s in. vd_17 also has a clock the reader misses.

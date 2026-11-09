@@ -904,8 +904,9 @@ internal object PhoneDdzTurn : PhoneTool {
                             val button = if (double) {
                                 view.buttons.lastOrNull { it.color == DdzColor.Green || it.color == DdzColor.Yellow }
                             } else view.buttons.firstOrNull()
+                            // 地主拿了底牌的 20 张常认不出:认不出就不加倍(和底牌认不出一样保守),不停下
                             when {
-                                hand == null || button == null -> humanPause(turn, DdzSessionReason.UNKNOWN_SCENE)
+                                button == null -> humanPause(turn, DdzSessionReason.UNKNOWN_SCENE)
                                 button.color == DdzColor.Gray -> humanPause(turn, DdzSessionReason.REJECTED_ACTION)
                                 press(button, ctx, turn).moved -> {
                                     turn.declined = !double
