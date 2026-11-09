@@ -25,9 +25,7 @@ import uuid
 
 VERSION = "0.1.0"
 API = "/api/v1"
-PHONE_FILES = "/sdcard/Android/data/com.wangzan101.mika/files"
-INFO_FILE = PHONE_FILES + "/mcp-usb.json"
-CONNECT_SCRIPT = PHONE_FILES + "/connect-computer.sh"
+DEFAULT_PACKAGE = "com.wangzan101.mika"
 MAX_RESPONSE = 4 * 1024 * 1024
 FILE_CHUNK = 128 * 1024
 MAX_ATTACH_BYTES = 200 * 1024 * 1024
@@ -275,19 +273,23 @@ def connection(args, secrets):
     if args.token_file:
         raise CliError("arguments", "--token-file requires --url; ADB reads the current token from the phone.")
     adb = Adb(args.adb, args.device or os.environ.get("ANDROID_SERIAL"))
+    package = args.package
+    phone_files = "/sdcard/Android/data/%s/files" % package
+    info_file = phone_files + "/mcp-usb.json"
+    connect_script = phone_files + "/connect-computer.sh"
     progress(args, "starting ADB server...")
     adb.start_server()
     adb.select()
     if args.command == "connect":
         progress(args, "running phone bootstrap...")
         try:
-            adb.run("shell", "sh", CONNECT_SCRIPT, timeout=60)
+            adb.run("shell", "sh", connect_script, timeout=60)
         except CliError as exc:
             if exc.code != "adb":
                 raise
             raise CliError("adb", "Mika's phone bootstrap did not complete. " + RETRY_HINT) from None
     try:
-        info = json.loads(adb.run("shell", "cat", INFO_FILE))
+        info = json.loads(adb.run("shell", "cat", info_file))
         if not isinstance(info, dict):
             raise ValueError()
     except ValueError:
@@ -636,6 +638,7 @@ def parser():
     common = Parser(add_help=False)
     for flag, help_text in [
         ("--device", "ADB serial; required when more than one phone is online"),
+        ("--package", "Mika Android package (default: %s; use com.wangzan101.mika.dev for Mika Dev)" % DEFAULT_PACKAGE),
         ("--url", "Phone HTTP origin or /api/v1 URL; bypasses ADB"),
         ("--token-file", "UTF-8 file containing the token for --url"),
         ("--adb", "ADB executable (default: adb)"),
@@ -703,7 +706,7 @@ def main(argv=None):
     compact = json_flag(argv)
     try:
         args = parser().parse_args(argv)
-        for key, default in {"device": None, "url": None, "token_file": None, "adb": "adb", "request_timeout": 15}.items():
+        for key, default in {"device": None, "package": DEFAULT_PACKAGE, "url": None, "token_file": None, "adb": "adb", "request_timeout": 15}.items():
             if not hasattr(args, key):
                 setattr(args, key, default)
         if args.command == "ui":

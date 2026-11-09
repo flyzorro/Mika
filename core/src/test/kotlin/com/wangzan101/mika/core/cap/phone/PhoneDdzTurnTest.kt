@@ -651,6 +651,31 @@ class PhoneDdzTurnTest {
         assertTrue(game.taps.isEmpty())
     }
 
+    @Test fun humanStartKeepsTheTrackerWhenRecoveringTheSameGame() = runTest {
+        val asked = mutableListOf<String>()
+        val saved = PhoneDdzTurn.advise
+        PhoneDdzTurn.advise = { _, body -> asked += body; """{"play":[]}""" }
+        try {
+            val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(full("call"), full("call"), full("hand_t1"))))
+            val dispatcher = toolDispatcher(game)
+            val start = Args(PhoneDdzTurn.def, Json.parseToJsonElement(
+                """{"action":"start","mode":"human","advisor":"http://mac:3426"}"""
+            ).jsonObject)
+            PhoneDdzTurn.execute(start, dispatcher.ctx)
+            PhoneDdzTurn.useTracker(dispatcher.ctx, leftLedPairs())
+
+            val recovered = PhoneDdzTurn.execute(start, dispatcher.ctx)
+            assertEquals("calling", recovered.text("state"))
+
+            PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"wait"}""").jsonObject), dispatcher.ctx)
+            assertTrue("the recovered session must keep its confirmed history", asked.isNotEmpty())
+            val body = Json.parseToJsonElement(asked.single()).jsonObject
+            assertTrue(body["history"]!!.jsonArray.isNotEmpty())
+        } finally {
+            PhoneDdzTurn.advise = saved
+        }
+    }
+
     @Test fun humanStartRequiresItsAdvisor() = runTest {
         val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(full("call"))))
         var thrown = false
@@ -794,6 +819,47 @@ class PhoneDdzTurnTest {
         assertTrue(game.taps.isEmpty())
     }
 
+    @Test fun malformedSnapshotsAreRejectedWithoutChangingTheSession() = runTest {
+        val farmer = """"hand":["3","4","5","6","7","8","9","10","J","Q","K","A","2","SJ","BJ","3","4"]"""
+        val cases = mapOf(
+            "missing history" to ("""{"action":"resume",$farmer,"bottom":["5","6","7"],"phase":"call","seat":"landlord"}""" to "invalid_snapshot"),
+            "missing seat" to ("""{"action":"resume",$farmer,"bottom":["5","6","7"],"history":[],"phase":"call"}""" to "invalid_snapshot"),
+            "unknown phase" to ("""{"action":"resume",$farmer,"bottom":["5","6","7"],"history":[],"phase":"bid","seat":"landlord"}""" to "phase"),
+            "two bottom cards" to ("""{"action":"resume",$farmer,"bottom":["5","6"],"history":[],"phase":"call","seat":"landlord"}""" to "bottom_count"),
+            "five threes" to ("""{"action":"resume","hand":["3","3","3","3","3","4","5","6","7","8","9","10","J","Q","K","A","2","SJ","BJ","4"],
+                "bottom":["5","6","7"],"history":[],"phase":"call","seat":"landlord"}""" to "duplicate_card"),
+        )
+        for ((name, case) in cases) {
+            val (body, reason) = case
+            val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(full("call"))))
+            val dispatcher = toolDispatcher(game)
+            PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
+            val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement(body).jsonObject), dispatcher.ctx)
+            assertEquals(name, "invalid_snapshot", result.text("error"))
+            assertEquals(name, reason, result.text("reason"))
+            assertEquals(name, "calling", result.text("state"))
+            assertTrue(name, game.taps.isEmpty())
+        }
+    }
+
+    @Test fun resumeWithTheRightHandButTheWrongTurnPausesBeforeItActs() = runTest {
+        // Hand and bottom match lead.jpg exactly; the snapshot claims a follow (with a table play the
+        // screen does not show) while the screen is a lead. The phase and visible-play checks both reject it.
+        val lead = full("lead")
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(lead, lead)))
+        val dispatcher = toolDispatcher(game)
+        PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
+        val resumed = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""
+            {"action":"resume","hand":["BJ","SJ","2","2","2","K","Q","10","9","4","4","4","3","3","3"],
+             "bottom":["K","Q","8"],"history":[["5","6","7","8","9"],["6","7","8","9","10"],[]],"phase":"follow","seat":"landlord"}
+        """.trimIndent()).jsonObject), dispatcher.ctx)
+        assertEquals("true", resumed.text("ok"))
+        val next = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"wait"}""").jsonObject), dispatcher.ctx)
+        assertEquals("paused", next.text("state"))
+        assertEquals("snapshot_mismatch", next.text("reason"))
+        assertTrue(game.taps.isEmpty())
+    }
+
     @Test fun humanStartRefusesTheSinglePlayerStageTable() = runTest {
         val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(full("vd_stage_call"))))
         val result = run(game, """{"action":"start","mode":"human","advisor":"http://mac:3426"}""")
@@ -812,6 +878,18 @@ class PhoneDdzTurnTest {
         assertEquals(2, game.taps.size)
         assertEquals(DdzScreen.read(call).buttons[3].let { it.x to it.y }, game.taps[0])
         assertEquals(DdzScreen.read(double).buttons[0].let { it.x to it.y }, game.taps[1])
+    }
+
+    @Test fun humanCallingHasATwoSecondBudget() = runTest {
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(full("call"), full("call"))))
+        val dispatcher = toolDispatcher(game)
+        val started = testScheduler.currentTime
+        PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
+        val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"wait"}""").jsonObject), dispatcher.ctx)
+
+        assertEquals("calling", result.text("state"))
+        assertTrue(game.taps.isNotEmpty())
+        assertTrue("calling must not wait through the game clock", testScheduler.currentTime - started <= 2_100)
     }
 
     @Test fun humanAutoStartKeepsTheWholeDecisionLoopInsideTheToolAndUsesDouZeroBid() = runTest {
@@ -860,6 +938,18 @@ class PhoneDdzTurnTest {
         assertEquals("paused", result.text("state"))
         assertEquals("unknown_scene", result.text("reason"))
         assertTrue(game.taps.isEmpty())
+    }
+
+    @Test fun humanWaitRecoversFromOneTransientUnknownFrame() = runTest {
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(full("call"), fullBlank, full("call"))))
+        val dispatcher = toolDispatcher(game)
+        PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
+
+        val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"wait"}""").jsonObject), dispatcher.ctx)
+
+        assertNull(result.toString(), result.text("reason"))
+        assertEquals("calling", result.text("state"))
+        assertTrue(game.taps.isNotEmpty())
     }
 
     @Test fun humanAppSwitchPausesWithAStableReason() = runTest {
@@ -959,6 +1049,19 @@ class PhoneDdzTurnTest {
         assertTrue(game.taps.isEmpty())
     }
 
+    @Test fun humanPausePointsTheModelToSnapshotResume() = runTest {
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(full("hand_t1"))))
+        val dispatcher = toolDispatcher(game)
+        PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
+        PhoneDdzTurn.useTracker(dispatcher.ctx, DdzTracker(DdzSettlingPolicy.HUMAN).apply { fail("douzero_history_mismatch") })
+
+        val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"wait"}""").jsonObject), dispatcher.ctx)
+        val recovery = result.content["recovery"]!!.jsonObject
+
+        assertEquals("resume", recovery["action"]!!.jsonPrimitive.content)
+        assertEquals(setOf("hand", "bottom", "history", "phase", "seat"), recovery["required"]!!.jsonArray.map { it.jsonPrimitive.content }.toSet())
+    }
+
     @Test fun humanHandDriftPausesBeforeAskingTheAdvisor() = runTest {
         val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(full("hand_t1"))))
         val dispatcher = toolDispatcher(game)
@@ -987,6 +1090,45 @@ class PhoneDdzTurnTest {
         }
     }
 
+    @Test fun humanHandCountMismatchPausesForSnapshotResume() = runTest {
+        var calls = 0
+        val saved = PhoneDdzTurn.advise
+        PhoneDdzTurn.advise = { _, _ -> calls++; """{"error":"hand_count_mismatch"}""" }
+        try {
+            val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(full("hand_t1"))))
+            val dispatcher = toolDispatcher(game)
+            PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
+            PhoneDdzTurn.useTracker(dispatcher.ctx, leftLedPairs())
+            val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"wait"}""").jsonObject), dispatcher.ctx)
+            assertEquals("paused", result.text("state"))
+            assertEquals("history_mismatch", result.text("reason"))
+            assertEquals("resume", result.content["recovery"]!!.jsonObject["action"]!!.jsonPrimitive.content)
+            assertEquals("a deterministic mismatch is not retried", 1, calls)
+            assertTrue(game.taps.isEmpty())
+        } finally {
+            PhoneDdzTurn.advise = saved
+        }
+    }
+
+    @Test fun humanAdvisorFailureRetriesOnceBeforePausing() = runTest {
+        var calls = 0
+        val saved = PhoneDdzTurn.advise
+        PhoneDdzTurn.advise = { _, _ -> if (calls++ == 0) null else """{"play":["3"]}""" }
+        try {
+            val follow = full("hand_t1")
+            val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(List(12) { follow }))
+            val dispatcher = toolDispatcher(game)
+            PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
+            PhoneDdzTurn.useTracker(dispatcher.ctx, leftLedPairs())
+            val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"wait"}""").jsonObject), dispatcher.ctx)
+            assertTrue(result.toString(), result.text("reason") != "service_unavailable")
+            assertTrue("the advisor is retried after one failure", calls >= 2)
+            assertTrue("the retried advice was played", game.taps.isNotEmpty())
+        } finally {
+            PhoneDdzTurn.advise = saved
+        }
+    }
+
     @Test fun humanPopupPausesWithoutTreatingItAsAPlayableScene() = runTest {
         val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(full("call"), full("vd_relief"))))
         val dispatcher = toolDispatcher(game)
@@ -999,6 +1141,20 @@ class PhoneDdzTurnTest {
 
     @Test fun humanLobbyReturnPausesWithAnExplicitReason() = runTest {
         val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(full("call"), lobbyFrame("vd_lobby"))))
+        val dispatcher = toolDispatcher(game)
+        PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
+        val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"wait"}""").jsonObject), dispatcher.ctx)
+        assertEquals("paused", result.text("state"))
+        assertEquals("lobby_return", result.text("reason"))
+        assertNull("the game ended; there is no table to resume", result.content["recovery"])
+        val again = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"wait"}""").jsonObject), dispatcher.ctx)
+        assertEquals("lobby_return", again.text("reason"))
+        assertNull(again.content["recovery"])
+        assertTrue(game.taps.isEmpty())
+    }
+
+    @Test fun humanSceneRetryReportsALobbyThatAppearsMidRetry() = runTest {
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(full("call"), fullBlank, lobbyFrame("vd_lobby"))))
         val dispatcher = toolDispatcher(game)
         PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
         val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"wait"}""").jsonObject), dispatcher.ctx)
@@ -1087,6 +1243,8 @@ class PhoneDdzTurnTest {
         assertTrue(PhoneDdzTurn.def.description.contains("wait"))
         assertTrue(PhoneDdzTurn.def.description.contains("call"))
         assertTrue(PhoneDdzTurn.def.description.contains("pause"))
+        assertTrue(PhoneDdzTurn.def.description.contains("do not call `start` or `play`"))
+        assertTrue(PhoneDdzTurn.def.description.contains("call `resume`"))
         val schema = Json.parseToJsonElement(PhoneDdzTurn.def.spec().parametersJsonSchema).jsonObject
         val snapshot = schema["properties"]!!.jsonObject["snapshot"]!!.jsonObject
         assertEquals(setOf("hand", "bottom", "history", "phase", "seat"), snapshot["required"]!!.jsonArray.map { it.jsonPrimitive.content }.toSet())
