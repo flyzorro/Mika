@@ -23,6 +23,7 @@ internal object DdzSessionReason {
     const val USER_STOP = "user_stop"
     const val INVALID_SNAPSHOT = "invalid_snapshot"
     const val UNKNOWN_SCENE = "unknown_scene"
+    const val JOINED_MID_GAME = "joined_mid_game"
     const val REJECTED_ACTION = "rejected_action"
     const val HISTORY_MISMATCH = "history_mismatch"
     const val HAND_DRIFT = "hand_drift"
