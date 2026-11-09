@@ -32,6 +32,10 @@ internal object PhoneDdzTurn : PhoneTool {
     private const val MAX_POLLS = 300
     /** Human play recognition gets a longer bounded settling window than single-player animation. */
     private const val HUMAN_SETTLE_POLLS = 48
+    /** 叫分按钮出现后不能等过游戏倒计时;手牌未齐时保守不叫。 */
+    private const val HUMAN_CALL_POLLS = 14
+    /** 真人牌桌切换/发牌时可能短暂读不到正面标记;重试一小段,别立刻交还模型。 */
+    private const val HUMAN_SCENE_RETRY_POLLS = 12
     /** 再来一局几秒就发牌;过了这么久还没有多半是弹窗,交给模型看。 */
     private const val AGAIN_POLLS = 60
     /** Mika 屏上大厅右下角的快速开始(单机经典场,每局押金币)。 */
@@ -228,7 +232,7 @@ internal object PhoneDdzTurn : PhoneTool {
         if (action == "start") return start(a, ctx, turn).also { turn.actionsSeen = ctx.evidence.actions }
         if (action == "resume") return resume(a, ctx, turn)
         if (turn.state == DdzSessionState.Paused) return paused(turn)
-        val frame = ctx.screen.rawFrame(if (turn.advisor != null) FULL_ROWS else DdzScreen.ROWS) ?: return refused("no_frame")
+        var frame = ctx.screen.rawFrame(if (turn.advisor != null) FULL_ROWS else DdzScreen.ROWS) ?: return refused("no_frame")
         // 闯关牌桌只在单机模式里有:模型关了弹窗(广告)回到这桌上,还是单机,不用再 start;打了一半的这手照旧交给模型
         if (turn.mode != DdzMode.Human && !turn.single && turn.advisor != null && DdzCards.singleStageTable(frame)) {
             markSingle(ctx, turn.advisor!!)
@@ -236,16 +240,28 @@ internal object PhoneDdzTurn : PhoneTool {
             turn.expectedHand = null
             turn.joining = true
         }
-        val initialView = DdzScreen.read(frame)
+        var initialView = DdzScreen.read(frame)
         if (turn.mode == DdzMode.Human && !DdzCards.classicHumanTable(frame)) {
-            turn.state = DdzSessionState.Paused
-            turn.reason = when {
+            val handoff = when {
                 DdzCards.singleLobby(frame) -> DdzSessionReason.LOBBY_RETURN
                 DdzCards.unknownPopup(frame) -> DdzSessionReason.UNKNOWN_POPUP
-                else -> DdzSessionReason.UNKNOWN_SCENE
+                else -> null
             }
-            turn.humanEligible = false
-            return paused(turn)
+            if (handoff != null) {
+                turn.state = DdzSessionState.Paused
+                turn.reason = handoff
+                turn.humanEligible = false
+                return paused(turn)
+            }
+            val recovered = recoverHumanScene(ctx)
+            if (recovered == null) {
+                turn.state = DdzSessionState.Paused
+                turn.reason = DdzSessionReason.UNKNOWN_SCENE
+                turn.humanEligible = false
+                return paused(turn)
+            }
+            frame = recovered.first
+            initialView = recovered.second
         }
         if (turn.mode == DdzMode.Human) turn.humanEligible = true
         val view = takeBackControl(initialView, ctx, turn).also { dealt(turn, it) }
@@ -263,7 +279,11 @@ internal object PhoneDdzTurn : PhoneTool {
             move.moved || action == "wait" -> awaitDecision(
                 ctx, turn, view.phase,
                 moved = move.moved || (action == "wait" && turn.mode == DdzMode.Human),
-                polls = if (action == "again") AGAIN_POLLS else MAX_POLLS,
+                polls = when {
+                    action == "again" -> AGAIN_POLLS
+                    turn.mode == DdzMode.Human && view.phase == DdzPhase.Call -> HUMAN_CALL_POLLS
+                    else -> MAX_POLLS
+                },
             )
             else -> read(ctx, turn) ?: view
         }
@@ -293,6 +313,13 @@ internal object PhoneDdzTurn : PhoneTool {
             turn.mode?.let { put("mode", it.wire) }
             put("state", turn.state.wire)
             turn.reason?.let { put("reason", it) }
+            if (turn.mode == DdzMode.Human && turn.state == DdzSessionState.Paused) {
+                put("recovery", buildJsonObject {
+                    put("action", "resume")
+                    put("required", JsonArray(listOf("hand", "bottom", "history", "phase", "seat").map(::JsonPrimitive)))
+                    put("instruction", "Read the current screenshot, build the complete visible snapshot, then call resume. Do not call start or play while paused.")
+                })
+            }
             move.error?.let { put("error", it); put("recoverable", true) }
             move.note?.let { put("note", it) }
             put("phase", next.phase.name.lowercase())
@@ -340,6 +367,7 @@ internal object PhoneDdzTurn : PhoneTool {
         // required eligibility gate before any human-mode state is installed.
         if (!DdzCards.classicHumanTable(page)) return refused("not_human_game")
         val view = DdzScreen.read(page)
+        val recoveringSameGame = turn.mode == DdzMode.Human && turn.atTable && turn.advisor == advisor && turn.tracker != null
         turn.single = false
         turn.mode = DdzMode.Human
         turn.phase = view.phase
@@ -349,9 +377,11 @@ internal object PhoneDdzTurn : PhoneTool {
         turn.advisor = advisor
         turn.atTable = true
         turn.actionsSeen = ctx.evidence.actions
-        turn.tracker = null
-        turn.expectedHand = null
-        turn.snapshot = null
+        if (!recoveringSameGame) {
+            turn.tracker = null
+            turn.expectedHand = null
+            turn.snapshot = null
+        }
         return ToolExecution(buildJsonObject {
             put("ok", true)
             put("mode", DdzMode.Human.wire)
@@ -449,6 +479,13 @@ internal object PhoneDdzTurn : PhoneTool {
         turn.mode?.let { put("mode", it.wire) }
         put("state", DdzSessionState.Paused.wire)
         turn.reason?.let { put("reason", it) }
+        if (turn.mode == DdzMode.Human) {
+            put("recovery", buildJsonObject {
+                put("action", "resume")
+                put("required", JsonArray(listOf("hand", "bottom", "history", "phase", "seat").map(::JsonPrimitive)))
+                put("instruction", "Read the current screenshot, build the complete visible snapshot, then call resume. Do not call start or play while paused.")
+            })
+        }
     })
 
     private fun resume(a: Args, ctx: ToolContext, turn: Turn): ToolExecution {
@@ -568,7 +605,8 @@ internal object PhoneDdzTurn : PhoneTool {
 
     private fun pauseReason(error: String) = when (error) {
         "hand_mismatch", "hand_drift" -> DdzSessionReason.HAND_DRIFT
-        "douzero_history_mismatch", "history_not_ready" -> DdzSessionReason.HISTORY_MISMATCH
+        "douzero_history_mismatch", "douzero_hand_count_mismatch", "douzero_card_count_mismatch",
+        "douzero_ambiguous_card", "history_not_ready" -> DdzSessionReason.HISTORY_MISMATCH
         "douzero_unreachable", "douzero_bad_reply" -> DdzSessionReason.SERVICE_UNAVAILABLE
         "rejected", "select_failed", "confirm_failed", "douzero_move_failed_pick" -> DdzSessionReason.REJECTED_ACTION
         else -> DdzSessionReason.UNKNOWN_SCENE
@@ -709,6 +747,7 @@ internal object PhoneDdzTurn : PhoneTool {
         var last = DdzView(DdzPhase.Other, emptyList(), 0, 0.0, 0, emptySet())
         var budget = polls
         var humanPhase: DdzPhase? = null
+        var humanSceneMisses = 0
         turn.humanActionSeen = false
         // 一直看不到手牌就不是在牌桌上(大厅、选关页、弹窗),干等等不来:发牌用不了这么久
         var empty = 0
@@ -721,20 +760,36 @@ internal object PhoneDdzTurn : PhoneTool {
                 last = view
                 if (turn.mode == DdzMode.Human) {
                     if (!DdzCards.classicHumanTable(frame)) {
-                        turn.humanEligible = false
-                        turn.state = DdzSessionState.Paused
-                        turn.reason = when {
+                        val handoff = when {
                             DdzCards.singleLobby(frame) -> DdzSessionReason.LOBBY_RETURN
                             DdzCards.unknownPopup(frame) -> DdzSessionReason.UNKNOWN_POPUP
-                            else -> DdzSessionReason.UNKNOWN_SCENE
+                            else -> null
                         }
-                        return view
+                        if (handoff != null) {
+                            turn.humanEligible = false
+                            turn.state = DdzSessionState.Paused
+                            turn.reason = handoff
+                            return view
+                        }
+                        if (++humanSceneMisses > HUMAN_SCENE_RETRY_POLLS) {
+                            turn.humanEligible = false
+                            turn.state = DdzSessionState.Paused
+                            turn.reason = DdzSessionReason.UNKNOWN_SCENE
+                            return view
+                        }
+                        waitOrSteer { delay(POLL_MS) } ?: return last
+                        continue
                     }
+                    humanSceneMisses = 0
                     turn.humanEligible = true
                     if (view.phase == DdzPhase.Other) {
-                        turn.state = DdzSessionState.Paused
-                        turn.reason = DdzSessionReason.UNKNOWN_SCENE
-                        return view
+                        if (++humanSceneMisses > HUMAN_SCENE_RETRY_POLLS) {
+                            turn.state = DdzSessionState.Paused
+                            turn.reason = DdzSessionReason.UNKNOWN_SCENE
+                            return view
+                        }
+                        waitOrSteer { delay(POLL_MS) } ?: return last
+                        continue
                     }
                     if (humanPhase != view.phase) {
                         humanPhase = view.phase
@@ -785,7 +840,7 @@ internal object PhoneDdzTurn : PhoneTool {
                             val level = hand?.let(HumanDdzPolicy::callLevel)
                             val button = level?.let { view.buttons.getOrNull(it) }
                             when {
-                                hand == null || button == null -> humanPause(turn, DdzSessionReason.UNKNOWN_SCENE)
+                                button == null -> humanPause(turn, DdzSessionReason.UNKNOWN_SCENE)
                                 button.color == DdzColor.Gray -> humanPause(turn, DdzSessionReason.REJECTED_ACTION)
                                 press(button, ctx, turn).moved -> {
                                     turn.bid = true
@@ -937,7 +992,10 @@ internal object PhoneDdzTurn : PhoneTool {
             tracker.fail("hand_drift")
             return humanPause(turn, DdzSessionReason.HAND_DRIFT).let { Auto.Off }
         }
-        val play = askDouZero(advisor, tracker, hand)
+        // A transient service failure gets one quick retry; a replay mismatch is deterministic.
+        val play = askDouZero(advisor, tracker, hand).let { first ->
+            if (first.exceptionOrNull()?.message in TRANSIENT_ADVISOR_ERRORS) askDouZero(advisor, tracker, hand) else first
+        }
         val cards = play.getOrElse {
             tracker.fail(it.message ?: "douzero_unreachable")
             return humanPause(turn, pauseReason(it.message ?: "douzero_unreachable")).let { Auto.Off }
@@ -979,6 +1037,19 @@ internal object PhoneDdzTurn : PhoneTool {
     private fun humanPause(turn: Turn, reason: String) {
         turn.state = DdzSessionState.Paused
         turn.reason = reason
+    }
+
+    /** Recover one short transition before classifying a human-table action as unknown. */
+    private suspend fun recoverHumanScene(ctx: ToolContext): Pair<com.wangzan101.mika.core.uistate.RawFrame, DdzView>? {
+        repeat(HUMAN_SCENE_RETRY_POLLS) {
+            waitOrSteer { delay(POLL_MS) } ?: return null
+            val frame = ctx.screen.rawFrame(FULL_ROWS) ?: return@repeat
+            if (DdzCards.classicHumanTable(frame)) {
+                val view = DdzScreen.read(frame)
+                if (view.phase != DdzPhase.Other) return frame to view
+            }
+        }
+        return null
     }
 
     /** Check the recovered state against the next visible screen before any automatic input. */
@@ -1075,6 +1146,7 @@ internal object PhoneDdzTurn : PhoneTool {
 
     /** 单机局里每一帧都要认牌,一次把这些行读全。 */
     private val FULL_ROWS = (DdzScreen.ROWS + DdzCards.ROWS + DdzCards.LOBBY_ROWS).distinct()
+    private val TRANSIENT_ADVISOR_ERRORS = setOf("douzero_unreachable", "douzero_bad_reply")
     private val SNAPSHOT_PHASES = setOf("call", "double", "lead", "follow")
     private val SNAPSHOT_SEATS = setOf("landlord", "landlord_up", "landlord_down")
 
