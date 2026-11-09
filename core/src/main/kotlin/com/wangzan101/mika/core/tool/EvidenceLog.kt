@@ -27,6 +27,9 @@ internal class EvidenceLog(private val clock: () -> Long = System::currentTimeMi
     /** 最近几次读到的界面状态的文字(界面读取去重用)。 */
     val recentReads = ArrayDeque<String>()
     val actionLog = ArrayDeque<String>()
+    /** 记过的动作一共几个;[actionLog] 有长度上限,数不清总数。 */
+    var actions = 0L
+        private set
     /** 用户给的事实:记忆检索结果、本次任务里对 ask_user 的回答。 */
     val userFacts = ArrayDeque<String>()
     /** list_apps 给过的 App 名字,launch_app 的事实里带上。 */
@@ -63,6 +66,7 @@ internal class EvidenceLog(private val clock: () -> Long = System::currentTimeMi
     fun noteTakeover(line: String) {
         ledger.noteTakeover()
         takeovers += line
+        actions++
         actionLog.addLast(line)
         while (actionLog.size > MAX_ACTION_LOG) actionLog.removeFirst()
     }
@@ -79,6 +83,7 @@ internal class EvidenceLog(private val clock: () -> Long = System::currentTimeMi
             else -> "生效"
         }
         val what = listOfNotNull(target?.take(if (wide) 120 else 40), typed).joinToString(" ")
+        actions++
         actionLog.addLast("$label $name($what) $effect")
         while (actionLog.size > MAX_ACTION_LOG) actionLog.removeFirst()
     }

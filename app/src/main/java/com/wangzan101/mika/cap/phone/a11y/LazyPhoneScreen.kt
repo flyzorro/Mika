@@ -115,6 +115,9 @@ class LazyPhoneScreen(
     override suspend fun checkScreen(): ScreenCheck? = port?.checkScreen()
     override suspend fun isProtected() = port?.isProtected() ?: false
     override suspend fun frameGrid() = port?.frameGrid()
+    override suspend fun rawFrame(rows: List<Int>) = port?.rawFrame(rows)
+    override suspend fun quickShot() = port?.quickShot()
+    override suspend fun quickTap(x: Int, y: Int) = port?.quickTap(x, y) ?: false
 
     private fun empty() = ScreenSnapshot(snapshotId(), null, emptyList(), width, height, hasWindow = false)
 

@@ -29,7 +29,7 @@ class LegacyNames(
         for (t in infos) {
             // 新增的手机命令没有无前缀的历史名称。
             if (t.verb in setOf(Verb.Query, Verb.Collect, Verb.PhoneRun, Verb.PhoneFind, Verb.PhoneExtract,
-                    Verb.PhoneDialog, Verb.PhoneEvent, Verb.PhoneGesture, Verb.PhoneCommand)) continue
+                    Verb.PhoneDialog, Verb.PhoneEvent, Verb.PhoneGesture, Verb.PhoneCommand, Verb.PhoneGame)) continue
             val cap = t.capability ?: continue
             val prefix = formerPrefix[cap] ?: continue
             if (!t.name.startsWith("${cap}_")) continue

@@ -23,6 +23,7 @@ import android.view.accessibility.AccessibilityWindowInfo
 import com.wangzan101.mika.core.cap.phone.GesturePacing
 import com.wangzan101.mika.core.cap.phone.TypingPacing
 import com.wangzan101.mika.core.uistate.ActionResult
+import com.wangzan101.mika.core.uistate.RawFrame
 import com.wangzan101.mika.core.uistate.APP_IN_USE_BY_OTHER_TASK
 import com.wangzan101.mika.core.uistate.AppWait
 import com.wangzan101.mika.core.uistate.AppCopy
@@ -282,6 +283,33 @@ class AndroidScreen(
         if (!frameServable()) return@withContext null
         val bmp = display.current?.frames?.value ?: return@withContext null
         runCatching { FrameGrid.sample(bmp.width, bmp.height, bmp::getPixel) }.getOrNull()
+    }
+
+    override suspend fun rawFrame(rows: List<Int>): RawFrame? = withContext(Dispatchers.IO) {
+        if (!frameServable()) return@withContext null
+        val bmp = display.current?.latestFrameBitmap() ?: return@withContext null
+        try {
+            RawFrame(bmp.width, bmp.height, rows.filter { it in 0 until bmp.height }.associateWith { y ->
+                IntArray(bmp.width).also { bmp.getPixels(it, 0, bmp.width, 0, y, bmp.width, 1) }
+            })
+        } finally {
+            bmp.recycle()
+        }
+    }
+
+    override suspend fun quickShot(): ByteArray? = withContext(Dispatchers.IO) {
+        if (!frameServable()) return@withContext null
+        val bmp = display.current?.latestFrameBitmap() ?: return@withContext null
+        try {
+            java.io.ByteArrayOutputStream().also { bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, QUICK_SHOT_QUALITY, it) }.toByteArray()
+        } finally {
+            bmp.recycle()
+        }
+    }
+
+    override suspend fun quickTap(x: Int, y: Int): Boolean = withContext(Dispatchers.IO) {
+        if (!hasDisplay) return@withContext false
+        a11y.gesture(displayId, Path().apply { moveTo(x.toFloat(), y.toFloat()) }, QUICK_TAP_MS) || shell.injectTap(displayId, x, y)
     }
 
     override suspend fun checkScreen(): ScreenCheck = withContext(Dispatchers.IO) {
@@ -2208,6 +2236,8 @@ class AndroidScreen(
 
     private companion object {
         const val TAG = "MikaScreen"
+        const val QUICK_TAP_MS = 50L
+        const val QUICK_SHOT_QUALITY = 85
         /** 动作开始后多久之内主屏冒出来的任务算这个动作开出来的。 */
         const val SPILL_WINDOW_MS = 6_000L
         /**
