@@ -32,7 +32,7 @@ internal object PhoneDdzTurn : PhoneTool {
     private const val MAX_POLLS = 300
     /** Human play recognition gets a longer bounded settling window than single-player animation. */
     private const val HUMAN_SETTLE_POLLS = 48
-    /** 叫分按钮出现后不能等过游戏倒计时;手牌未齐时保守不叫。 */
+    /** 叫分按钮出现后不能等过游戏倒计时;手牌没认全(不是 17 张)时暂停交还模型,不猜着叫。 */
     private const val HUMAN_CALL_POLLS = 14
     /** 真人牌桌切换/发牌时可能短暂读不到正面标记;重试一小段,别立刻交还模型。 */
     private const val HUMAN_SCENE_RETRY_POLLS = 12
@@ -243,26 +243,15 @@ internal object PhoneDdzTurn : PhoneTool {
         }
         var initialView = DdzScreen.read(frame)
         if (turn.mode == DdzMode.Human && !DdzCards.classicHumanTable(frame)) {
-            val handoff = when {
-                DdzCards.singleLobby(frame) -> DdzSessionReason.LOBBY_RETURN
-                DdzCards.unknownPopup(frame) -> DdzSessionReason.UNKNOWN_POPUP
-                else -> null
-            }
-            if (handoff != null) {
+            val next = if (humanHandoff(frame) == null) recoverHumanScene(ctx) else frame
+            if (next == null || !DdzCards.classicHumanTable(next)) {
                 turn.state = DdzSessionState.Paused
-                turn.reason = handoff
+                turn.reason = next?.let(::humanHandoff) ?: DdzSessionReason.UNKNOWN_SCENE
                 turn.humanEligible = false
                 return paused(turn)
             }
-            val recovered = recoverHumanScene(ctx)
-            if (recovered == null) {
-                turn.state = DdzSessionState.Paused
-                turn.reason = DdzSessionReason.UNKNOWN_SCENE
-                turn.humanEligible = false
-                return paused(turn)
-            }
-            frame = recovered.first
-            initialView = recovered.second
+            frame = next
+            initialView = DdzScreen.read(next)
         }
         if (turn.mode == DdzMode.Human) turn.humanEligible = true
         val view = takeBackControl(initialView, ctx, turn).also { dealt(turn, it) }
@@ -314,13 +303,7 @@ internal object PhoneDdzTurn : PhoneTool {
             turn.mode?.let { put("mode", it.wire) }
             put("state", turn.state.wire)
             turn.reason?.let { put("reason", it) }
-            if (turn.mode == DdzMode.Human && turn.state == DdzSessionState.Paused) {
-                put("recovery", buildJsonObject {
-                    put("action", "resume")
-                    put("required", JsonArray(listOf("hand", "bottom", "history", "phase", "seat").map(::JsonPrimitive)))
-                    put("instruction", "Read the current screenshot, build the complete visible snapshot, then call resume. Do not call start or play while paused.")
-                })
-            }
+            recoveryHint(turn)?.let { put("recovery", it) }
             move.error?.let { put("error", it); put("recoverable", true) }
             move.note?.let { put("note", it) }
             put("phase", next.phase.name.lowercase())
@@ -506,14 +489,20 @@ internal object PhoneDdzTurn : PhoneTool {
         turn.mode?.let { put("mode", it.wire) }
         put("state", DdzSessionState.Paused.wire)
         turn.reason?.let { put("reason", it) }
-        if (turn.mode == DdzMode.Human) {
-            put("recovery", buildJsonObject {
-                put("action", "resume")
-                put("required", JsonArray(listOf("hand", "bottom", "history", "phase", "seat").map(::JsonPrimitive)))
-                put("instruction", "Read the current screenshot, build the complete visible snapshot, then call resume. Do not call start or play while paused.")
-            })
-        }
+        recoveryHint(turn)?.let { put("recovery", it) }
     })
+
+    /** Points a paused human game at snapshot resume. Lobby return and app switch end the game
+     * (there is no table to read), so they get no hint. */
+    private fun recoveryHint(turn: Turn): JsonObject? {
+        if (turn.mode != DdzMode.Human || turn.state != DdzSessionState.Paused) return null
+        if (turn.reason == DdzSessionReason.LOBBY_RETURN || turn.reason == DdzSessionReason.APP_SWITCH) return null
+        return buildJsonObject {
+            put("action", "resume")
+            put("required", JsonArray(listOf("hand", "bottom", "history", "phase", "seat").map(::JsonPrimitive)))
+            put("instruction", "Read the current screenshot, build the complete visible snapshot, then call resume. Do not call start or play while paused.")
+        }
+    }
 
     private fun resume(a: Args, ctx: ToolContext, turn: Turn): ToolExecution {
         if (turn.mode != DdzMode.Human) return refused("resume_requires_human")
@@ -787,11 +776,7 @@ internal object PhoneDdzTurn : PhoneTool {
                 last = view
                 if (turn.mode == DdzMode.Human) {
                     if (!DdzCards.classicHumanTable(frame)) {
-                        val handoff = when {
-                            DdzCards.singleLobby(frame) -> DdzSessionReason.LOBBY_RETURN
-                            DdzCards.unknownPopup(frame) -> DdzSessionReason.UNKNOWN_POPUP
-                            else -> null
-                        }
+                        val handoff = humanHandoff(frame)
                         if (handoff != null) {
                             turn.humanEligible = false
                             turn.state = DdzSessionState.Paused
@@ -1068,14 +1053,23 @@ internal object PhoneDdzTurn : PhoneTool {
         turn.reason = reason
     }
 
-    /** Recover one short transition before classifying a human-table action as unknown. */
-    private suspend fun recoverHumanScene(ctx: ToolContext): Pair<com.wangzan101.mika.core.uistate.RawFrame, DdzView>? {
+    /** Known non-table scenes that end automatic human play; null when the scene is just unrecognised. */
+    private fun humanHandoff(frame: com.wangzan101.mika.core.uistate.RawFrame): String? = when {
+        DdzCards.singleLobby(frame) -> DdzSessionReason.LOBBY_RETURN
+        DdzCards.unknownPopup(frame) -> DdzSessionReason.UNKNOWN_POPUP
+        else -> null
+    }
+
+    /** Wait out one short transition before calling a human-table scene unknown. Returns the first
+     * readable table frame, the first lobby/popup frame (nothing left to wait for), or null. */
+    private suspend fun recoverHumanScene(ctx: ToolContext): com.wangzan101.mika.core.uistate.RawFrame? {
         repeat(HUMAN_SCENE_RETRY_POLLS) {
             waitOrSteer { delay(POLL_MS) } ?: return null
             val frame = ctx.screen.rawFrame(FULL_ROWS) ?: return@repeat
             if (DdzCards.classicHumanTable(frame)) {
-                val view = DdzScreen.read(frame)
-                if (view.phase != DdzPhase.Other) return frame to view
+                if (DdzScreen.read(frame).phase != DdzPhase.Other) return frame
+            } else if (humanHandoff(frame) != null) {
+                return frame
             }
         }
         return null
@@ -1160,11 +1154,7 @@ internal object PhoneDdzTurn : PhoneTool {
         if (turn?.mode == DdzMode.Human) {
             if (!DdzCards.classicHumanTable(frame)) {
                 turn.humanEligible = false
-                turn.reason = when {
-                    DdzCards.singleLobby(frame) -> DdzSessionReason.LOBBY_RETURN
-                    DdzCards.unknownPopup(frame) -> DdzSessionReason.UNKNOWN_POPUP
-                    else -> DdzSessionReason.UNKNOWN_SCENE
-                }
+                turn.reason = humanHandoff(frame) ?: DdzSessionReason.UNKNOWN_SCENE
                 turn.state = DdzSessionState.Paused
                 return null
             }

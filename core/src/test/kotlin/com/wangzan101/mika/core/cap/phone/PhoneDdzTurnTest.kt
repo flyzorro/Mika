@@ -1146,6 +1146,20 @@ class PhoneDdzTurnTest {
         val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"wait"}""").jsonObject), dispatcher.ctx)
         assertEquals("paused", result.text("state"))
         assertEquals("lobby_return", result.text("reason"))
+        assertNull("the game ended; there is no table to resume", result.content["recovery"])
+        val again = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"wait"}""").jsonObject), dispatcher.ctx)
+        assertEquals("lobby_return", again.text("reason"))
+        assertNull(again.content["recovery"])
+        assertTrue(game.taps.isEmpty())
+    }
+
+    @Test fun humanSceneRetryReportsALobbyThatAppearsMidRetry() = runTest {
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(full("call"), fullBlank, lobbyFrame("vd_lobby"))))
+        val dispatcher = toolDispatcher(game)
+        PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
+        val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"wait"}""").jsonObject), dispatcher.ctx)
+        assertEquals("paused", result.text("state"))
+        assertEquals("lobby_return", result.text("reason"))
         assertTrue(game.taps.isEmpty())
     }
 

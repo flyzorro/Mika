@@ -367,6 +367,15 @@ else:
             self.assertEqual(["-s", "phone-a", "forward", "--remove", "tcp:" + str(server.server_port)], calls()[-1])
             self.assertTrue(any(c[2:4] == ["shell", "sh"] for c in calls()))
 
+    def test_package_flag_reads_that_apps_files(self):
+        dev = "/sdcard/Android/data/com.wangzan101.mika.dev/files/"
+        with api() as server:
+            adb, env, _, calls = self.fake_adb(server)
+            result, body = self.invoke("connect", "--adb", str(adb), "--package", "com.wangzan101.mika.dev", env=env)
+            self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+            self.assertIn(["-s", "phone-a", "shell", "sh", dev + "connect-computer.sh"], calls())
+            self.assertIn(["-s", "phone-a", "shell", "cat", dev + "mcp-usb.json"], calls())
+
     def test_unique_wireless_device_can_have_spaces_in_its_service_name(self):
         serial = "test-phone (2)._adb-tls-connect._tcp"
         with api() as server:
