@@ -38,6 +38,8 @@ internal class DdzTracker(private val settling: DdzSettlingPolicy = DdzSettlingP
     private var meFrames = 0
     /** 出完了、还没读到他出了什么的几家,按出牌顺序。 */
     private val waiting = ArrayDeque<Pair<DdzSeat, Int>>()
+    /** 还在等的几家里读到过「不出」的:真人桌上「不出」有时只亮一帧就被清掉。 */
+    private val passSeen = mutableSetOf<DdzSeat>()
     /** 左右两家剩几张:上一帧的读数,和连着两帧一样的读数(一帧认错不算)。 */
     private val countSeen = mutableMapOf<DdzSeat, Int?>()
     private val count = mutableMapOf<DdzSeat, Int?>()
@@ -73,6 +75,7 @@ internal class DdzTracker(private val settling: DdzSettlingPolicy = DdzSettlingP
             history.clear()
             confirmedSeats.clear()
             waiting.clear()
+            passSeen.clear()
         }
         if (landlord == null) {
             if (leadingWith20) {
@@ -208,6 +211,7 @@ internal class DdzTracker(private val settling: DdzSettlingPolicy = DdzSettlingP
         }
         active = current
         waiting.clear()
+        passSeen.clear()
         broken = null
         leftMe = true
         firstUnsure = 0
@@ -256,6 +260,7 @@ internal class DdzTracker(private val settling: DdzSettlingPolicy = DdzSettlingP
             val guessed = seen is DdzSeen.Cards && seat != landlord && seen.ranks.any { it.startsWith(DdzCards.UNKNOWN) }
             // 剩的张数说这家出了几张:读到的张数对不上(还叠着、还没落下)、或者明明出了牌却像「不出」,都再等等
             val played = unplayed(seat)
+            if (seen == DdzSeen.Pass) passSeen += seat
             when {
                 seen is DdzSeen.Cards && !guessed && (played == null || played == seen.ranks.size) -> {
                     if (!steady(seat to seen, if (played == null) settling.steadyFrames else settling.countedFrames)) return
@@ -264,6 +269,11 @@ internal class DdzTracker(private val settling: DdzSettlingPolicy = DdzSettlingP
                 // 「不出」也一样:飞过来的牌缩在头像边上那一下,也会落在「不出」那一条里
                 seen == DdzSeen.Pass && (played == null || played == 0) -> {
                     if (!steady(seat to seen)) return
+                    record(seat, emptyList())
+                }
+                // 读到过「不出」、之后出牌区一直空着(没有牌落下来):「不出」被清掉了,还是不出
+                seen == DdzSeen.Empty && seat in passSeen && (played == null || played == 0) -> {
+                    if (!steady(seat to "pass_cleared")) return
                     record(seat, emptyList())
                 }
                 // 张数没少、出牌区好一阵都空着或者还摆着他上一手:是「不出」。字被清桌(炸弹、新一轮)抹掉了,
@@ -281,6 +291,7 @@ internal class DdzTracker(private val settling: DdzSettlingPolicy = DdzSettlingP
                 }
             }
             waiting.removeFirst()
+            passSeen -= seat
         }
     }
 

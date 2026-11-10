@@ -47,6 +47,21 @@ class DdzTrackerTest {
         assertEquals(3, tracker.history.size)
     }
 
+    @Test fun aPassShownForOneFrameThenClearedIsStillAPass() {
+        // Live 2026-11-09 run 10 (human table): Right's 不出 was visible for one frame and cleared
+        // the next; the tracker waited on Right until the turn clock ran out (unread_right).
+        tracker.observe(DdzSeat.Me, { DdzSeen.Empty }, { bottom }, leadingWith20 = true)
+        tracker.mine(listOf("3"))
+        right = DdzSeen.Pass
+        see(DdzSeat.Left)                 // clock left Right; 不出 shows for this one frame
+        right = DdzSeen.Empty
+        repeat(2) { see(DdzSeat.Left) }   // 不出 already cleared
+        left = DdzSeen.Cards(listOf("5"))
+        repeat(4) { see(DdzSeat.Me) }     // Left played; our turn
+        assertEquals(listOf(listOf("3"), emptyList(), listOf("5")), tracker.history)
+        assertTrue(tracker.ready())
+    }
+
     @Test fun leadingWithTwentyCardsMakesMeTheLandlord() {
         see(DdzSeat.Left) // 加倍时的闹钟
         tracker.observe(DdzSeat.Me, { DdzSeen.Empty }, { bottom }, leadingWith20 = true)
