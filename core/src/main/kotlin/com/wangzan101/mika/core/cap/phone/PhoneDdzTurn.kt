@@ -32,6 +32,8 @@ internal object PhoneDdzTurn : PhoneTool {
     private const val MAX_POLLS = 300
     /** Human play recognition gets a longer bounded settling window than single-player animation. */
     private const val HUMAN_SETTLE_POLLS = 48
+    /** 真人局每手 15 秒:等别家的牌读稳最多这么久(按时间,读一帧比 POLL_MS 慢),剩下的时间交给模型。 */
+    private const val HUMAN_SETTLE_MS = 6_000L
     /** 真人牌桌切换/发牌时可能短暂读不到正面标记;重试一小段,别立刻交还模型。 */
     private const val HUMAN_SCENE_RETRY_POLLS = 12
     /** start(auto) 刚点完快速开始/继续:匹配、发牌要十几秒,最多等约 20 秒牌桌出来。 */
@@ -87,6 +89,7 @@ internal object PhoneDdzTurn : PhoneTool {
         var settling = 0
         /** Human opponents may take longer to finish a visible play. */
         var humanSettling = 0
+        var settleSince = 0L
         /** DouZero 出完这一手后手里该剩的牌;下一手认到的不一样,就是有张牌认错、点到了别的牌。 */
         var expectedHand: List<String>? = null
         /** 刚点了继续闯关,还没看到这一手的手牌。 */
@@ -279,7 +282,7 @@ internal object PhoneDdzTurn : PhoneTool {
         val waitMs = now() - waitStart
         if (move.moved) turn.rejected = 0
         // 漏了一手、这一局交给模型自己出:模型慢了一步(轮次已过)之类的错误照实报回去,不暂停,模型接着 wait / 出牌
-        val modelPlays = turn.mode == DdzMode.Human && turn.tracker?.broken == DdzSessionReason.MISSED_PLAY
+        val modelPlays = turn.mode == DdzMode.Human && handedToModel(turn.tracker?.broken)
         if (!turn.stopped && turn.state != DdzSessionState.Paused && turn.mode == DdzMode.Human && move.error != null && !modelPlays) {
             turn.state = DdzSessionState.Paused
             turn.reason = pauseReason(move.error)
@@ -831,6 +834,7 @@ internal object PhoneDdzTurn : PhoneTool {
                         turn.humanActionSeen = false
                         // 每个新的决定都有完整的等待:上一手(上一局)用掉的不算到这一手
                         turn.humanSettling = 0
+                        turn.settleSince = now()
                     }
                 }
                 // 见过闯关牌桌以后,没有「闯关模式」字样的画面(广告、弹窗)一律不认:广告的按钮和白块会被认成轮到我出、手里一张。
@@ -1033,14 +1037,15 @@ internal object PhoneDdzTurn : PhoneTool {
     ): Auto {
         val tracker = turn.tracker ?: return humanPause(turn, DdzSessionReason.HISTORY_MISMATCH).let { Auto.Off }
         val advisor = turn.advisor ?: return humanPause(turn, DdzSessionReason.SERVICE_UNAVAILABLE).let { Auto.Off }
-        // 漏了一手(看不到):这一局剩下的交给模型自己出,不暂停;下一局叫分时历史重来
-        if (tracker.broken == DdzSessionReason.MISSED_PLAY) return Auto.Off
+        // 漏了一手、或别家的一手一直读不到/读不准:这一局剩下的交给模型自己出,不暂停;下一局叫分时历史重来
+        if (handedToModel(tracker.broken)) return Auto.Off
         if (tracker.broken != null) return humanPause(turn, pauseReason(tracker.broken!!)).let { Auto.Off }
         val hand = DdzCards.hand(frame, view)
         if (!tracker.ready() || hand == null) {
-            if (turn.humanSettling++ < HUMAN_SETTLE_POLLS) return Auto.Settling
-            tracker.fail("history_not_ready")
-            return humanPause(turn, DdzSessionReason.HISTORY_MISMATCH).let { Auto.Off }
+            if (turn.humanSettling++ < HUMAN_SETTLE_POLLS && now() - turn.settleSince < HUMAN_SETTLE_MS) return Auto.Settling
+            // 别家的这一手一直读不稳:不干等到游戏托管,这一局剩下的交给模型自己出(和漏了一手一样)
+            tracker.fail(DdzSessionReason.MISSED_PLAY)
+            return Auto.Off
         }
         turn.humanSettling = 0
         if (turn.expectedHand?.sorted() != null && turn.expectedHand!!.sorted() != hand.sorted()) {
@@ -1105,6 +1110,10 @@ internal object PhoneDdzTurn : PhoneTool {
         }
         return null
     }
+
+    /** Tracker failures where this hand's history is lost but the table is fine: the model plays the rest of the hand. */
+    private fun handedToModel(broken: String?) = broken != null &&
+        (broken == DdzSessionReason.MISSED_PLAY || broken.startsWith("unread_") || broken.startsWith("unsure_"))
 
     /** Known non-table scenes that end automatic human play; null when the scene is just unrecognised. */
     private fun humanHandoff(frame: com.wangzan101.mika.core.uistate.RawFrame): String? = when {

@@ -942,14 +942,18 @@ class PhoneDdzTurnTest {
         fun waitingOnRight() = DdzTracker(DdzSettlingPolicy.HUMAN).apply {
             restore(DdzSeat.Left, listOf("J", "7", "4"), listOf(listOf("10", "10", "9", "9", "8", "8")), current = DdzSeat.Right)
         }
+        // When the window runs out the hand goes to the model (missed_play) instead of pausing
+        // and running out the game clock (live 2026-11-10 run 13).
         PhoneDdzTurn.execute(start, dispatcher.ctx)
         PhoneDdzTurn.useTracker(dispatcher.ctx, waitingOnRight())
-        assertEquals("paused", PhoneDdzTurn.execute(wait, dispatcher.ctx).text("state"))
+        val first = PhoneDdzTurn.execute(wait, dispatcher.ctx)
+        assertEquals(first.toString(), "playing", first.text("state"))
+        assertTrue(first.toString(), first.text("douzeroOff") != null)
         // Next game: a tracker that is not ready yet must get the full settling window again.
         PhoneDdzTurn.execute(start, dispatcher.ctx)
         PhoneDdzTurn.useTracker(dispatcher.ctx, waitingOnRight())
         val before = game.reads
-        assertEquals("paused", PhoneDdzTurn.execute(wait, dispatcher.ctx).text("state"))
+        assertEquals("playing", PhoneDdzTurn.execute(wait, dispatcher.ctx).text("state"))
         assertTrue("waited ${game.reads - before} frames before giving up", game.reads - before > 40)
     }
 

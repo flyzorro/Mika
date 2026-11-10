@@ -62,6 +62,21 @@ class DdzTrackerTest {
         assertTrue(tracker.ready())
     }
 
+    @Test fun aPlayReadOnceThenClearedIsStillThatPlay() {
+        // Live 2026-11-10 run 13: the landlord's single (ribbon over the rank) read once as "?",
+        // then the area read empty every frame; the tracker waited until the clock ran out.
+        tracker.observe(DdzSeat.Me, { DdzSeen.Empty }, { bottom }, leadingWith20 = true)
+        tracker.mine(listOf("3"))
+        right = DdzSeen.Cards(listOf("5"))
+        see(DdzSeat.Left)                 // Right's 5 visible for one frame
+        right = DdzSeen.Empty
+        repeat(3) { see(DdzSeat.Left) }   // then never readable again
+        left = DdzSeen.Pass
+        repeat(4) { see(DdzSeat.Me) }
+        assertEquals(listOf(listOf("3"), listOf("5"), emptyList()), tracker.history)
+        assertTrue(tracker.ready())
+    }
+
     @Test fun bothPassingTooFastToSeeStillGivesMeTheLead() {
         // Live 2026-11-10 run 11: nobody could beat our BJ, both were passed instantly (the clock
         // never showed on them), and our lead was taken for our own lingering buttons until autoplay.
