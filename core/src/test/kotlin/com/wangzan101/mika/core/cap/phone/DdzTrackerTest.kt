@@ -62,6 +62,27 @@ class DdzTrackerTest {
         assertTrue(tracker.ready())
     }
 
+    @Test fun bothPassingTooFastToSeeStillGivesMeTheLead() {
+        // Live 2026-11-10 run 11: nobody could beat our BJ, both were passed instantly (the clock
+        // never showed on them), and our lead was taken for our own lingering buttons until autoplay.
+        tracker.observe(DdzSeat.Me, { DdzSeen.Empty }, { bottom }, leadingWith20 = true)
+        tracker.mine(listOf("BJ"))
+        left = DdzSeen.Pass
+        right = DdzSeen.Pass
+        repeat(5) { tracker.observe(DdzSeat.Me, { if (it == DdzSide.Left) left else right }, { bottom }, leading = true) }
+        assertEquals(listOf(listOf("BJ"), emptyList(), emptyList()), tracker.history)
+        assertTrue(tracker.ready())
+    }
+
+    @Test fun myOwnLingeringButtonsAfterALeadAreNotANewTurn() {
+        tracker.observe(DdzSeat.Me, { DdzSeen.Empty }, { bottom }, leadingWith20 = true)
+        tracker.mine(listOf("3"))
+        // Buttons still on screen right after our lead; the table shows nothing from the others yet.
+        repeat(5) { tracker.observe(DdzSeat.Me, { DdzSeen.Empty }, { bottom }, leading = true) }
+        assertEquals(listOf(listOf("3")), tracker.history)
+        assertFalse(tracker.ready())
+    }
+
     @Test fun aPlayThatNeverShowedBreaksTheHistoryInsteadOfBorrowingTheNextOne() {
         // Live 2026-11-10 run 10: Right beat our SJ but the play was never on screen (the trick
         // cleared fast); Right's next lead 7 was recorded as its answer to SJ and DouZero refused.

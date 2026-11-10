@@ -109,6 +109,9 @@ internal class DdzTracker(private val settling: DdzSettlingPolicy = DdzSettlingP
         // 轮到自己先出,说明上一轮最后出牌的是自己、后面两家都没要;闯关的牌桌一轮结束就清桌,连「不出」都不留
         val seen = if (leading) { side: DdzSide -> read(side).let { if (it == DdzSeen.Empty) DdzSeen.Pass else it } } else read
         if (turn != DdzSeat.Me) leftMe = true
+        // 我出的牌没人要得起:两家都被秒过(闹钟没在他们头上停过),又轮到我先出。两家都摆着「不出」,
+        // 就不是我刚出完、按钮还留着的那几帧(那时桌上没有他们的「不出」)
+        if (turn == DdzSeat.Me && !leftMe && leading && read(DdzSide.Left) == DdzSeen.Pass && read(DdzSide.Right) == DdzSeen.Pass) leftMe = true
         if (turn == DdzSeat.Me && !leftMe) return
         resolve(seen)
         // 张数少了的那家出过牌了:闹钟还没离开他(出得太快、清桌太快)也当他这一手出完,马上读
