@@ -32,10 +32,10 @@ internal object PhoneDdzTurn : PhoneTool {
     private const val MAX_POLLS = 300
     /** Human play recognition gets a longer bounded settling window than single-player animation. */
     private const val HUMAN_SETTLE_POLLS = 48
-    /** 叫分按钮出现后不能等过游戏倒计时;手牌没认全(不是 17 张)时暂停交还模型,不猜着叫。 */
-    private const val HUMAN_CALL_POLLS = 14
     /** 真人牌桌切换/发牌时可能短暂读不到正面标记;重试一小段,别立刻交还模型。 */
     private const val HUMAN_SCENE_RETRY_POLLS = 12
+    /** start(auto) 刚点完快速开始/继续:匹配、发牌要十几秒,最多等约 20 秒牌桌出来。 */
+    private const val START_TABLE_POLLS = 134
     /** 再来一局几秒就发牌;过了这么久还没有多半是弹窗,交给模型看。 */
     private const val AGAIN_POLLS = 60
     /** Mika 屏上大厅右下角的快速开始(单机经典场,每局押金币)。 */
@@ -133,6 +133,7 @@ internal object PhoneDdzTurn : PhoneTool {
         val turn = ctx[STATE] ?: Turn().also { ctx[STATE] = it }
         turn.tracker = tracker
         turn.expectedHand = expectedHand
+        turn.joining = false
     }
 
     /** 问 DouZero;测试里换掉。返回响应正文,连不上为 null。 */
@@ -269,11 +270,7 @@ internal object PhoneDdzTurn : PhoneTool {
             move.moved || action == "wait" -> awaitDecision(
                 ctx, turn, view.phase,
                 moved = move.moved || (action == "wait" && turn.mode == DdzMode.Human),
-                polls = when {
-                    action == "again" -> AGAIN_POLLS
-                    turn.mode == DdzMode.Human && view.phase == DdzPhase.Call -> HUMAN_CALL_POLLS
-                    else -> MAX_POLLS
-                },
+                polls = if (action == "again") AGAIN_POLLS else MAX_POLLS,
             )
             else -> read(ctx, turn) ?: view
         }
@@ -282,16 +279,7 @@ internal object PhoneDdzTurn : PhoneTool {
         if (!turn.stopped && turn.state != DdzSessionState.Paused && turn.mode == DdzMode.Human && move.error != null) {
             turn.state = DdzSessionState.Paused
             turn.reason = pauseReason(move.error)
-        } else if (!turn.stopped && turn.mode == DdzMode.Human && next.phase == DdzPhase.Other) {
-            turn.state = DdzSessionState.Paused
-            // awaitDecision classifies known handoff scenes such as lobby return;
-            // retain that structured reason instead of degrading it to unknown_scene.
-            if (turn.reason == null) turn.reason = DdzSessionReason.UNKNOWN_SCENE
-        } else if (!turn.stopped && turn.state != DdzSessionState.Paused) {
-            turn.phase = next.phase
-            turn.state = stateFor(next.phase)
-            turn.reason = null
-        }
+        } else settle(turn, next)
         val shotStart = now()
         val needsLook = next.phase !in setOf(DdzPhase.Result, DdzPhase.AutoPlay) && ctx.config.visionEnabled
         val shot = if (needsLook) ctx.screen.quickShot() else null
@@ -345,13 +333,19 @@ internal object PhoneDdzTurn : PhoneTool {
     }
 
     private suspend fun startHuman(a: Args, ctx: ToolContext, turn: Turn, advisor: String): ToolExecution {
-        val page = ctx.screen.rawFrame(FULL_ROWS) ?: return refused("no_frame")
+        var page = ctx.screen.rawFrame(FULL_ROWS) ?: return refused("no_frame")
         // Human mode may only attach to the current classic table. Stage tables and the
         // single-player lobby share the same button colors, so the explicit markers are a
         // required eligibility gate before any human-mode state is installed.
-        if (!DdzCards.classicHumanTable(page)) return refused("not_human_game")
+        if (!DdzCards.classicHumanTable(page)) {
+            if (!a.bool("auto", false)) return refused("not_human_game")
+            // 模型点完快速开始就调 start:在这里等牌桌出来(不点任何东西),免得模型自己等、错过叫分
+            page = awaitHumanTable(ctx, turn) ?: return refused("not_human_game")
+        }
         val view = DdzScreen.read(page)
-        val recoveringSameGame = turn.mode == DdzMode.Human && turn.atTable && turn.advisor == advisor && turn.tracker != null
+        // 同一局里重复 start 才保留历史:上一局已结算、或历史已作废(含中途接手)都按新接手处理
+        val recoveringSameGame = turn.mode == DdzMode.Human && turn.atTable && turn.advisor == advisor &&
+            turn.tracker?.broken == null && turn.tracker != null && turn.state != DdzSessionState.Result
         turn.single = false
         turn.mode = DdzMode.Human
         turn.phase = view.phase
@@ -365,6 +359,8 @@ internal object PhoneDdzTurn : PhoneTool {
             turn.tracker = null
             turn.expectedHand = null
             turn.snapshot = null
+            // 第一帧牌桌之前不知道这一局打到哪了:由 track 按第一帧的阶段定接不接
+            turn.joining = true
         }
         if (!a.bool("auto", false)) {
             return ToolExecution(buildJsonObject {
@@ -379,14 +375,14 @@ internal object PhoneDdzTurn : PhoneTool {
         // automatic loop inside the tool so the model cannot spend a turn between call,
         // double, and DouZero play decisions.
         val next = awaitDecision(ctx, turn, DdzPhase.Other, moved = true, polls = MAX_POLLS)
-        turn.phase = next.phase
-        turn.state = stateFor(next.phase)
+        settle(turn, next)
         turn.seenAt = now()
         return ToolExecution(buildJsonObject {
             put("ok", true)
             put("mode", DdzMode.Human.wire)
             put("state", turn.state.wire)
             turn.reason?.let { put("reason", it) }
+            recoveryHint(turn)?.let { put("recovery", it) }
             put("phase", next.phase.name.lowercase())
             put("handCount", next.handCount)
             if (turn.decisions.isNotEmpty()) {
@@ -492,11 +488,24 @@ internal object PhoneDdzTurn : PhoneTool {
         recoveryHint(turn)?.let { put("recovery", it) }
     })
 
+    /** After the wait loop: keep a pause the loop set (and its reason); otherwise report the phase it reached. */
+    private fun settle(turn: Turn, next: DdzView) {
+        if (turn.stopped || turn.state == DdzSessionState.Paused) return
+        if (turn.mode == DdzMode.Human && next.phase == DdzPhase.Other) {
+            turn.state = DdzSessionState.Paused
+            turn.reason = turn.reason ?: DdzSessionReason.UNKNOWN_SCENE
+            return
+        }
+        turn.phase = next.phase
+        turn.state = stateFor(next.phase)
+        turn.reason = null
+    }
+
     /** Points a paused human game at snapshot resume. Lobby return and app switch end the game
-     * (there is no table to read), so they get no hint. */
+     * (there is no table to read), and a game joined mid-way has plays nobody saw, so they get no hint. */
     private fun recoveryHint(turn: Turn): JsonObject? {
         if (turn.mode != DdzMode.Human || turn.state != DdzSessionState.Paused) return null
-        if (turn.reason == DdzSessionReason.LOBBY_RETURN || turn.reason == DdzSessionReason.APP_SWITCH) return null
+        if (turn.reason in setOf(DdzSessionReason.LOBBY_RETURN, DdzSessionReason.APP_SWITCH, DdzSessionReason.JOINED_MID_GAME)) return null
         return buildJsonObject {
             put("action", "resume")
             put("required", JsonArray(listOf("hand", "bottom", "history", "phase", "seat").map(::JsonPrimitive)))
@@ -517,6 +526,7 @@ internal object PhoneDdzTurn : PhoneTool {
                 // Install only after every field and every historical move has validated.
                 turn.snapshot = recovered.value.snapshot
                 turn.tracker = recovered.value.tracker
+                turn.joining = false
                 turn.humanSettling = 0
                 turn.stopped = false
                 turn.phase = phaseOf(snapshot.phase)
@@ -720,7 +730,7 @@ internal object PhoneDdzTurn : PhoneTool {
             for (index in toggle) {
                 if (!tap(ctx, turn, view.cardX(index), DdzScreen.CARD_Y)) return null
                 delay(TAP_GAP_MS)
-                if (turn?.mode == DdzMode.Human && read(ctx, turn) == null) return null
+                if (turn?.mode == DdzMode.Human && readTable(ctx, turn) == null) return null
             }
             // 抬牌有动画:还没抬到位就再点一下,会把它点回去。多看几帧,真没抬起来才重点
             repeat(LIFT_POLLS) {
@@ -749,6 +759,8 @@ internal object PhoneDdzTurn : PhoneTool {
 
     /** 模型想的时候超时进了托管:先取消,再按取消后的画面做。 */
     private suspend fun takeBackControl(view: DdzView, ctx: ToolContext, turn: Turn): DdzView {
+        // 真人局刚接手、还没确认这一局接得上:托管留着,让游戏自己打完
+        if (turn.mode == DdzMode.Human && turn.joining) return view
         if (view.phase != DdzPhase.AutoPlay || !tap(ctx, turn, view.buttons[0].x, view.buttons[0].y)) return view
         delay(SETTLE_MS)
         return read(ctx, turn) ?: view
@@ -794,15 +806,7 @@ internal object PhoneDdzTurn : PhoneTool {
                     }
                     humanSceneMisses = 0
                     turn.humanEligible = true
-                    if (view.phase == DdzPhase.Other) {
-                        if (++humanSceneMisses > HUMAN_SCENE_RETRY_POLLS) {
-                            turn.state = DdzSessionState.Paused
-                            turn.reason = DdzSessionReason.UNKNOWN_SCENE
-                            return view
-                        }
-                        waitOrSteer { delay(POLL_MS) } ?: return last
-                        continue
-                    }
+                    // 牌桌上的 Other 是别家在叫分、出牌(一家最多 15 秒):不停,照常往下记历史、接着等,总时长由 polls 管
                     if (humanPhase != view.phase) {
                         humanPhase = view.phase
                         turn.humanActionSeen = false
@@ -844,6 +848,10 @@ internal object PhoneDdzTurn : PhoneTool {
                 if (view.phase != DdzPhase.Double) turn.declined = false
                 dealt(turn, view)
                 if (turn.single || turn.mode == DdzMode.Human) track(turn, frame, view)
+                if (turn.mode == DdzMode.Human && turn.tracker?.broken == DdzSessionReason.JOINED_MID_GAME) {
+                    humanPause(turn, DdzSessionReason.JOINED_MID_GAME)
+                    return view
+                }
                 when (view.phase) {
                     // 单机局叫分按牌力定,不等模型(叫分只有十来秒);灰的分数点不了,按不叫算
                     DdzPhase.Call -> when {
@@ -894,8 +902,9 @@ internal object PhoneDdzTurn : PhoneTool {
                             val button = if (double) {
                                 view.buttons.lastOrNull { it.color == DdzColor.Green || it.color == DdzColor.Yellow }
                             } else view.buttons.firstOrNull()
+                            // 地主拿了底牌的 20 张常认不出:认不出就不加倍(和底牌认不出一样保守),不停下
                             when {
-                                hand == null || button == null -> humanPause(turn, DdzSessionReason.UNKNOWN_SCENE)
+                                button == null -> humanPause(turn, DdzSessionReason.UNKNOWN_SCENE)
                                 button.color == DdzColor.Gray -> humanPause(turn, DdzSessionReason.REJECTED_ACTION)
                                 press(button, ctx, turn).moved -> {
                                     turn.declined = !double
@@ -969,9 +978,12 @@ internal object PhoneDdzTurn : PhoneTool {
         if (view.phase == DdzPhase.Call) { turn.tracker = null; turn.expectedHand = null; turn.joining = false; return }
         // 农民 17 张、地主 20 张说明自己还没出过牌,在那之前的出牌都还摆在桌上,接得上;别的张数是打了一半,这一手不交给 DouZero。
         // 发牌时手牌一张张多起来,要等到加倍或者轮到自己才数
-        if (turn.joining && view.phase != DdzPhase.Other) {
+        // 真人局的结算画面说明不了下一局:等下一个牌桌画面再定
+        if (turn.joining && view.phase != DdzPhase.Other && !(turn.mode == DdzMode.Human && view.phase == DdzPhase.Result)) {
             turn.joining = false
-            if (view.handCount != 17 && view.handCount != 20) turn.tracker = DdzTracker().apply { fail("joined_mid_game") }
+            // 真人局读不出别家剩几张,托管时自己一直不出、手里照样 17 张:只有加倍时(还没人出过牌)才接得上
+            val fresh = if (turn.mode == DdzMode.Human) view.phase == DdzPhase.Double else view.handCount == 17 || view.handCount == 20
+            if (!fresh) turn.tracker = DdzTracker().apply { fail(DdzSessionReason.JOINED_MID_GAME) }
         }
         val tracker = turn.tracker ?: DdzTracker(if (turn.mode == DdzMode.Human) DdzSettlingPolicy.HUMAN else DdzSettlingPolicy.SINGLE).also { turn.tracker = it }
         val mine = view.phase == DdzPhase.Follow || view.phase == DdzPhase.Lead
@@ -1051,6 +1063,17 @@ internal object PhoneDdzTurn : PhoneTool {
     private fun humanPause(turn: Turn, reason: String) {
         turn.state = DdzSessionState.Paused
         turn.reason = reason
+    }
+
+    /** Poll (without tapping) until the classic human table is on screen; null on timeout, stop, or steer. */
+    private suspend fun awaitHumanTable(ctx: ToolContext, turn: Turn): com.wangzan101.mika.core.uistate.RawFrame? {
+        repeat(START_TABLE_POLLS) {
+            waitOrSteer { delay(POLL_MS) } ?: return null
+            if (turn.stopped) return null
+            val frame = ctx.screen.rawFrame(FULL_ROWS) ?: return@repeat
+            if (DdzCards.classicHumanTable(frame)) return frame
+        }
+        return null
     }
 
     /** Known non-table scenes that end automatic human play; null when the scene is just unrecognised. */
@@ -1154,13 +1177,23 @@ internal object PhoneDdzTurn : PhoneTool {
         if (turn?.mode == DdzMode.Human) {
             if (!DdzCards.classicHumanTable(frame)) {
                 turn.humanEligible = false
-                turn.reason = humanHandoff(frame) ?: DdzSessionReason.UNKNOWN_SCENE
-                turn.state = DdzSessionState.Paused
+                // 大厅、弹窗是确定离开了牌桌,停下;认不出的单帧(出牌动画等)只报 null,停不停交给等待循环按帧数定
+                humanHandoff(frame)?.let { turn.reason = it; turn.state = DdzSessionState.Paused }
                 return null
             }
             turn.humanEligible = true
         }
         return DdzScreen.read(frame)
+    }
+
+    /** Human mode: wait out a few unrecognised frames (animations) before giving up on the table; null if it never comes back or the session paused. */
+    private suspend fun readTable(ctx: ToolContext, turn: Turn): DdzView? {
+        repeat(HUMAN_SCENE_RETRY_POLLS) {
+            read(ctx, turn)?.let { return it }
+            if (turn.state == DdzSessionState.Paused || turn.stopped) return null
+            delay(POLL_MS)
+        }
+        return null
     }
 
     /** 单机局里每一帧都要认牌,一次把这些行读全。 */

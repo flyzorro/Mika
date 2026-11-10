@@ -867,6 +867,65 @@ class PhoneDdzTurnTest {
         assertTrue(game.taps.isEmpty())
     }
 
+    @Test fun humanAutoStartWaitsForTheTableAfterQuickStart() = runTest {
+        // Live 2026-11-09 run 6: the model waited 25 s after 快速开始 before calling start
+        // (start used to refuse the matching screen) and missed bidding.
+        val matching = lobbyFrame("vd_lobby")
+        val call = full("call")
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(List(5) { matching } + listOf(call, call, lobbyFrame("vd_lobby"))))
+        val dispatcher = toolDispatcher(game)
+        PhoneDdzTurn.adviseBid = { _, _ -> 0 }
+        val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","auto":true,"advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
+        assertNull(result.toString(), result.text("error"))
+        assertEquals("bid at the deal after waiting for the table", 1, game.taps.size)
+    }
+
+    @Test fun humanAutoStartGivesUpWhenNoTableAppears() = runTest {
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(lobbyFrame("vd_lobby"))))
+        val dispatcher = toolDispatcher(game)
+        val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","auto":true,"advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
+        assertEquals("not_human_game", result.text("error"))
+        assertTrue(game.taps.isEmpty())
+    }
+
+    @Test fun humanLandlordDeclinesDoublingWhenTheTwentyCardHandIsUnreadable() = runTest {
+        // Live 2026-11-09 run 7: as landlord the 20-card hand is unreadable at doubling (vd_20);
+        // the tool paused unknown_scene instead of taking the safe 不加倍.
+        val double = full("vd_20")
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(List(4) { double }))
+        val dispatcher = toolDispatcher(game)
+        val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","auto":true,"advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
+        assertNull(result.toString(), result.text("reason"))
+        assertEquals("不加倍 is the first (blue) button", listOf(DdzScreen.read(double).buttons[0].let { it.x to it.y }), game.taps)
+    }
+
+    @Test fun humanLoopWaitsWhenNoClockIsReadable() = runTest {
+        // Live 2026-11-09 run 6: everyone decides doubling at once with no clock on any seat; the
+        // tool paused unknown_scene 1.8 s in. vd_17 also has a clock the reader misses.
+        val waiting = full("vd_17")
+        assertTrue("our hand is on the human table while others decide", DdzCards.classicHumanTable(waiting))
+        val call = full("call")
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(call, call) + List(20) { waiting } + listOf(lobbyFrame("vd_lobby"))))
+        val dispatcher = toolDispatcher(game)
+        PhoneDdzTurn.adviseBid = { _, _ -> 0 }
+        val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","auto":true,"advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
+        assertEquals(result.toString(), "lobby_return", result.text("reason"))
+    }
+
+    @Test fun humanLoopWaitsThroughOtherPlayersTurns() = runTest {
+        // Live 2026-11-09 run 3: after our bid the tool paused unknown_scene 1.8 s into the next
+        // player's turn (no buttons for us), and the game's autoplay took the hand.
+        val waiting = full("hand_k2")
+        assertTrue("a human table where another player has the clock", DdzCards.classicHumanTable(waiting))
+        val call = full("call")
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(call, call) + List(20) { waiting } + listOf(lobbyFrame("vd_lobby"))))
+        val dispatcher = toolDispatcher(game)
+        PhoneDdzTurn.adviseBid = { _, _ -> 0 }
+        val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","auto":true,"advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
+        assertEquals(result.toString(), "lobby_return", result.text("reason"))
+        assertEquals("only our 不叫 was tapped", 1, game.taps.size)
+    }
+
     @Test fun humanWaitAutomaticallyCallsAndDeclinesDoubling() = runTest {
         val call = full("call")
         val double = full("double")
@@ -880,16 +939,109 @@ class PhoneDdzTurnTest {
         assertEquals(DdzScreen.read(double).buttons[0].let { it.x to it.y }, game.taps[1])
     }
 
-    @Test fun humanCallingHasATwoSecondBudget() = runTest {
-        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(full("call"), full("call"))))
+    @Test fun humanWaitAtCallingWaitsThroughOtherPlayersBids() = runTest {
+        val call = full("call")
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(call, call, call) + List(20) { full("hand_k2") } + listOf(lobbyFrame("vd_lobby"))))
         val dispatcher = toolDispatcher(game)
-        val started = testScheduler.currentTime
+        PhoneDdzTurn.adviseBid = { _, _ -> 0 }
         PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
         val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"wait"}""").jsonObject), dispatcher.ctx)
+        assertEquals(result.toString(), "lobby_return", result.text("reason"))
+        assertEquals("only our 不叫 was tapped", 1, game.taps.size)
+    }
 
-        assertEquals("calling", result.text("state"))
-        assertTrue(game.taps.isNotEmpty())
-        assertTrue("calling must not wait through the game clock", testScheduler.currentTime - started <= 2_100)
+    @Test fun humanAutoStartReportsAPauseFromItsLoop() = runTest {
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(full("call"), lobbyFrame("vd_lobby"))))
+        val dispatcher = toolDispatcher(game)
+        val savedBid = PhoneDdzTurn.adviseBid
+        PhoneDdzTurn.adviseBid = { _, _ -> 0 }
+        try {
+            val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","auto":true,"advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
+            assertEquals(result.toString(), "paused", result.text("state"))
+            assertEquals("lobby_return", result.text("reason"))
+        } finally {
+            PhoneDdzTurn.adviseBid = savedBid
+        }
+    }
+
+    @Test fun humanAutoStartSitsOutAGameAlreadyOnAutoplay() = runTest {
+        // Live 2026-11-09: quick start seated us in a game already on autoplay, far into play.
+        val asked = mutableListOf<String>()
+        val saved = PhoneDdzTurn.advise
+        PhoneDdzTurn.advise = { _, body -> asked += body; """{"play":[]}""" }
+        try {
+            val autoplay = full("human_autoplay_left11_right5")
+            val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(autoplay, autoplay, autoplay, full("human_follow_left8_right2"))))
+            val dispatcher = toolDispatcher(game)
+            val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","auto":true,"advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
+            assertEquals(result.toString(), "paused", result.text("state"))
+            assertEquals("joined_mid_game", result.text("reason"))
+            assertNull("the history cannot be rebuilt, so no resume hint", result.content["recovery"])
+            assertTrue("the game's own autoplay is left on", game.taps.isEmpty())
+            assertTrue("DouZero is never asked with a partial history", asked.isEmpty())
+        } finally {
+            PhoneDdzTurn.advise = saved
+        }
+    }
+
+    @Test fun humanWaitLeavesAutoplayOnUntilTheJoinIsVerified() = runTest {
+        val autoplay = full("human_autoplay_left11_right5")
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(List(6) { autoplay }))
+        val dispatcher = toolDispatcher(game)
+        PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
+        val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"wait"}""").jsonObject), dispatcher.ctx)
+        assertEquals("joined_mid_game", result.text("reason"))
+        assertTrue("取消托管 is not tapped on a game joined mid-way", game.taps.isEmpty())
+    }
+
+    @Test fun humanAutoStartOnTheResultScreenIsNotAMidGameJoin() = runTest {
+        val result = full("result")
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(List(4) { result }))
+        val dispatcher = toolDispatcher(game)
+        val start = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","auto":true,"advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
+        assertEquals(start.toString(), "result", start.text("phase"))
+        assertNull(start.text("reason"))
+    }
+
+    @Test fun humanStartAfterAFinishedGameDoesNotReuseItsHistory() = runTest {
+        val asked = mutableListOf<String>()
+        val saved = PhoneDdzTurn.advise
+        PhoneDdzTurn.advise = { _, body -> asked += body; """{"play":[]}""" }
+        try {
+            val follow = full("hand_t1")
+            val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(full("result")) + List(6) { follow }))
+            val dispatcher = toolDispatcher(game)
+            val start = """{"action":"start","mode":"human","advisor":"http://mac:3426"}"""
+            PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement(start).jsonObject), dispatcher.ctx)
+            PhoneDdzTurn.useTracker(dispatcher.ctx, leftLedPairs())
+            // The model tapped 再来一局 itself; the next game is already at a play turn.
+            val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement(
+                """{"action":"start","mode":"human","auto":true,"advisor":"http://mac:3426"}"""
+            ).jsonObject), dispatcher.ctx)
+            assertEquals("joined_mid_game", result.text("reason"))
+            assertTrue("the finished game's history must not reach DouZero", asked.isEmpty())
+        } finally {
+            PhoneDdzTurn.advise = saved
+        }
+    }
+
+    @Test fun humanWaitSitsOutAGameJoinedAtAPlayTurn() = runTest {
+        val asked = mutableListOf<String>()
+        val saved = PhoneDdzTurn.advise
+        PhoneDdzTurn.advise = { _, body -> asked += body; """{"play":[]}""" }
+        try {
+            val follow = full("human_follow_left8_right2")
+            val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(List(6) { follow }))
+            val dispatcher = toolDispatcher(game)
+            PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
+            val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"wait"}""").jsonObject), dispatcher.ctx)
+            assertEquals("paused", result.text("state"))
+            assertEquals("joined_mid_game", result.text("reason"))
+            assertTrue(asked.isEmpty())
+            assertTrue(game.taps.isEmpty())
+        } finally {
+            PhoneDdzTurn.advise = saved
+        }
     }
 
     @Test fun humanAutoStartKeepsTheWholeDecisionLoopInsideTheToolAndUsesDouZeroBid() = runTest {
@@ -1003,6 +1155,28 @@ class PhoneDdzTurnTest {
             assertTrue("advisor was called", asked.isNotEmpty())
             assertTrue("a lead card was submitted", game.taps.isNotEmpty())
             assertEquals("lead", result.text("phase"))
+        } finally {
+            PhoneDdzTurn.advise = saved
+        }
+    }
+
+    @Test fun humanSelectionContinuesPastOneUnrecognisedFrame() = runTest {
+        // Live 2026-11-09: one unrecognised frame mid-play paused the session (unknown_scene)
+        // and the game's autoplay took the hand.
+        val saved = PhoneDdzTurn.advise
+        PhoneDdzTurn.advise = { _, _ -> """{"play":["3"]}""" }
+        try {
+            val lead = full("lead")
+            val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(lead, lead, lead, lead, fullBlank) + List(8) { lead }))
+            val dispatcher = toolDispatcher(game)
+            PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
+            PhoneDdzTurn.useTracker(dispatcher.ctx, DdzTracker(DdzSettlingPolicy.HUMAN).apply {
+                observe(DdzSeat.Me, { DdzSeen.Empty }, { listOf("3", "4", "5") }, leadingWith20 = true, leading = true)
+            })
+            val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"wait"}""").jsonObject), dispatcher.ctx)
+            // The blank frame comes right after the first card tap; selection must keep going.
+            assertTrue("selection stopped at the transient frame: ${game.taps}", game.taps.size > 1)
+            assertTrue(result.text("reason") != "unknown_scene")
         } finally {
             PhoneDdzTurn.advise = saved
         }
