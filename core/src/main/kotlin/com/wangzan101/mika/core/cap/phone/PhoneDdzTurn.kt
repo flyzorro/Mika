@@ -70,8 +70,6 @@ internal object PhoneDdzTurn : PhoneTool {
      * [advisor]:DouZero 服务地址。[tracker]:这一局的出牌历史;记不下去了这一局剩下的交还模型。
      */
     private class Turn {
-        /** TEMP diagnostics: last DDZTRACE line, to log only changes. */
-        var lastTrace: String? = null
         var seenAt: Long? = null
         var rejected = 0
         var single = false
@@ -737,9 +735,7 @@ internal object PhoneDdzTurn : PhoneTool {
             DdzScreen.read(frame).takeIf { it.lifted == want && it.handCount == view.handCount }?.let { DdzCards.hand(frame, it) }
         }
         val left = before?.filterIndexed { index, _ -> index !in want }
-        // TEMP diagnostics; remove after.
-        println("DDZTRACE submit phase=${view.phase} want=$want x=${want.map { view.cardX(it) }} before=$before left=$left buttons=${view.buttons.map { "${it.color}@${it.x}" }}")
-        return confirm(view, want.size, left, ctx, turn).also { println("DDZTRACE submit result=$it") }
+        return confirm(view, want.size, left, ctx, turn)
     }
 
     /**
@@ -768,8 +764,6 @@ internal object PhoneDdzTurn : PhoneTool {
         repeat(HUMAN_SCENE_RETRY_POLLS) {
             val frame = ctx.screen.rawFrame(FULL_ROWS)
             val after = frame?.let(DdzScreen::read)
-            // TEMP diagnostics; remove after.
-            println("DDZTRACE verify phase=${after?.phase} count=${after?.handCount} hand=${if (frame != null && after != null) DdzCards.hand(frame, after) else null}")
             if (frame != null && after != null) {
                 when {
                     // 出完最后几张,一局结束
@@ -1077,12 +1071,6 @@ internal object PhoneDdzTurn : PhoneTool {
         tracker.observe(seat, { DdzCards.play(frame, it) }, { DdzCards.bottom(frame) }, view.phase == DdzPhase.Lead && view.handCount == 20, view.phase == DdzPhase.Lead) {
             if (DdzCards.singleStageTable(frame)) DdzCards.counts(frame) else emptyMap()
         }
-        // TEMP diagnostics for the live human-mode run; remove after.
-        if (turn.mode == DdzMode.Human) {
-            val line = "phase=${view.phase} hand=${view.handCount} clock=${DdzCards.clock(frame)} seat=$seat " +
-                "L=${DdzCards.play(frame, DdzSide.Left)} R=${DdzCards.play(frame, DdzSide.Right)} ${tracker.debugState()}"
-            if (line != turn.lastTrace) { turn.lastTrace = line; println("DDZTRACE ${System.currentTimeMillis() % 100_000} $line") }
-        }
     }
 
     private enum class Auto { Played, Settling, Off }
@@ -1154,7 +1142,6 @@ internal object PhoneDdzTurn : PhoneTool {
     }
 
     private fun humanPause(turn: Turn, reason: String) {
-        println("DDZTRACE pause $reason ${turn.tracker?.debugState()}") // TEMP diagnostics; remove after.
         turn.state = DdzSessionState.Paused
         turn.reason = reason
     }
