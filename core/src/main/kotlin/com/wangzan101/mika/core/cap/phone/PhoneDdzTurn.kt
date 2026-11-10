@@ -111,6 +111,8 @@ internal object PhoneDdzTurn : PhoneTool {
         var requestedRoom: String? = null
         /** 底部读到的场次名和 [requestedRoom] 对不上时,读到的那个名字(如「至尊场」)。 */
         var roomLabel: String? = null
+        /** TEMP diagnostics: last DDZTRACE line, to log only changes. */
+        var lastTrace: String? = null
         var seenAt: Long? = null
         var rejected = 0
         var single = false
@@ -1599,6 +1601,12 @@ internal object PhoneDdzTurn : PhoneTool {
         ) {
             if (DdzCards.singleStageTable(frame)) DdzCards.counts(frame) else emptyMap()
         }
+        // TEMP diagnostics for the live human-mode run; remove after.
+        if (turn.mode == DdzMode.Human) {
+            val line = "phase=${view.phase} hand=${view.handCount} clock=$clock seat=${trackedSeat(view.phase, clock)} " +
+                "L=${DdzCards.play(frame, DdzSide.Left)} R=${DdzCards.play(frame, DdzSide.Right)} ${tracker.debugState()}"
+            if (line != turn.lastTrace) { turn.lastTrace = line; println("DDZTRACE ${System.currentTimeMillis() % 100_000} $line") }
+        }
     }
 
     /**
@@ -1786,6 +1794,7 @@ internal object PhoneDdzTurn : PhoneTool {
     }
 
     private fun humanPause(turn: Turn, reason: String) {
+        println("DDZTRACE pause $reason ${turn.tracker?.debugState()}") // TEMP diagnostics; remove after.
         turn.state = DdzSessionState.Paused
         turn.reason = reason
     }
