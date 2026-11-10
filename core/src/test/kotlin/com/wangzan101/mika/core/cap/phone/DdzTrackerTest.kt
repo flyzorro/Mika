@@ -62,6 +62,22 @@ class DdzTrackerTest {
         assertTrue(tracker.ready())
     }
 
+    @Test fun aPlayThatNeverShowedBreaksTheHistoryInsteadOfBorrowingTheNextOne() {
+        // Live 2026-11-10 run 10: Right beat our SJ but the play was never on screen (the trick
+        // cleared fast); Right's next lead 7 was recorded as its answer to SJ and DouZero refused.
+        tracker.observe(DdzSeat.Me, { DdzSeen.Empty }, { bottom }, leadingWith20 = true)
+        tracker.mine(listOf("SJ"))
+        repeat(3) { see(DdzSeat.Left) }   // Right played, nothing readable
+        left = DdzSeen.Pass
+        repeat(2) { see(DdzSeat.Me) }     // Left passed; the game passes for us (要不起)
+        left = DdzSeen.Empty
+        repeat(2) { see(DdzSeat.Right) }  // new trick, Right to lead
+        right = DdzSeen.Cards(listOf("7"))
+        repeat(4) { see(DdzSeat.Left) }   // Right led 7
+        assertEquals("missed_play", tracker.broken)
+        assertFalse(tracker.history.contains(listOf("7")))
+    }
+
     @Test fun leadingWithTwentyCardsMakesMeTheLandlord() {
         see(DdzSeat.Left) // 加倍时的闹钟
         tracker.observe(DdzSeat.Me, { DdzSeen.Empty }, { bottom }, leadingWith20 = true)

@@ -133,6 +133,8 @@ internal class DdzTracker(private val settling: DdzSettlingPolicy = DdzSettlingP
         active = turn
         var seat: DdzSeat = from
         while (seat != turn) {
+            // 这家上一手还没读到又轮过他一次:那一手(王、炸弹之类,桌很快清掉)已经看不到了,别拿他下一手顶上
+            if (waiting.any { it.first == seat }) return fail(DdzSessionReason.MISSED_PLAY)
             waiting.addLast(seat to settling.maxUnconfirmedFrames)
             seat = seat.next
         }

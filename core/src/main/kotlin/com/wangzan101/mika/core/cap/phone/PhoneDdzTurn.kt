@@ -1016,6 +1016,8 @@ internal object PhoneDdzTurn : PhoneTool {
     ): Auto {
         val tracker = turn.tracker ?: return humanPause(turn, DdzSessionReason.HISTORY_MISMATCH).let { Auto.Off }
         val advisor = turn.advisor ?: return humanPause(turn, DdzSessionReason.SERVICE_UNAVAILABLE).let { Auto.Off }
+        // 漏了一手(看不到):这一局剩下的交给模型自己出,不暂停;下一局叫分时历史重来
+        if (tracker.broken == DdzSessionReason.MISSED_PLAY) return Auto.Off
         if (tracker.broken != null) return humanPause(turn, pauseReason(tracker.broken!!)).let { Auto.Off }
         val hand = DdzCards.hand(frame, view)
         if (!tracker.ready() || hand == null) {
