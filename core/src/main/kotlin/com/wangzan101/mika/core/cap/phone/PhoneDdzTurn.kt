@@ -68,8 +68,6 @@ internal object PhoneDdzTurn : PhoneTool {
      * [advisor]:DouZero 服务地址。[tracker]:这一局的出牌历史;记不下去了这一局剩下的交还模型。
      */
     private class Turn {
-        /** TEMP diagnostics: last DDZTRACE line, to log only changes. */
-        var lastTrace: String? = null
         var seenAt: Long? = null
         var rejected = 0
         var single = false
@@ -997,12 +995,6 @@ internal object PhoneDdzTurn : PhoneTool {
         tracker.observe(seat, { DdzCards.play(frame, it) }, { DdzCards.bottom(frame) }, view.phase == DdzPhase.Lead && view.handCount == 20, view.phase == DdzPhase.Lead) {
             if (DdzCards.singleStageTable(frame)) DdzCards.counts(frame) else emptyMap()
         }
-        // TEMP diagnostics for the live human-mode run; remove after.
-        if (turn.mode == DdzMode.Human) {
-            val line = "phase=${view.phase} hand=${view.handCount} clock=${DdzCards.clock(frame)} seat=$seat " +
-                "L=${DdzCards.play(frame, DdzSide.Left)} R=${DdzCards.play(frame, DdzSide.Right)} ${tracker.debugState()}"
-            if (line != turn.lastTrace) { turn.lastTrace = line; println("DDZTRACE ${System.currentTimeMillis() % 100_000} $line") }
-        }
     }
 
     private enum class Auto { Played, Settling, Off }
@@ -1069,7 +1061,6 @@ internal object PhoneDdzTurn : PhoneTool {
     }
 
     private fun humanPause(turn: Turn, reason: String) {
-        println("DDZTRACE pause $reason ${turn.tracker?.debugState()}") // TEMP diagnostics; remove after.
         turn.state = DdzSessionState.Paused
         turn.reason = reason
     }

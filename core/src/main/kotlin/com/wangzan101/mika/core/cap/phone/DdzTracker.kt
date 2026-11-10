@@ -169,10 +169,6 @@ internal class DdzTracker(private val settling: DdzSettlingPolicy = DdzSettlingP
         active = DdzSeat.Me.next
     }
 
-    /** TEMP diagnostics for the live human-mode run (logged as DDZTRACE); remove after. */
-    fun debugState() = "landlord=$landlord active=$active waiting=${waiting.map { it.first }} leftMe=$leftMe " +
-        "hist=${history.size} last=${history.takeLast(3)} broken=$broken trace=${trace.toList().takeLast(5)}"
-
     /** 轮到自己时能不能交给 DouZero:别家的都读到了、历史没断。 */
     fun ready(): Boolean = broken == null && landlord != null && waiting.isEmpty() && active == DdzSeat.Me
 
