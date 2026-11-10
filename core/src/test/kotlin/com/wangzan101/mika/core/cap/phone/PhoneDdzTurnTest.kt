@@ -888,6 +888,32 @@ class PhoneDdzTurnTest {
         assertTrue(game.taps.isEmpty())
     }
 
+    @Test fun eachHumanDecisionGetsItsOwnSettlingWindow() = runTest {
+        // Live 2026-11-10 run 10: the settling counter used up in one game carried into the next,
+        // so the next game's first not-yet-ready decision failed history_not_ready at once.
+        val follow = full("hand_t1")
+        val game = object : Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(follow))) {
+            var reads = 0
+            override suspend fun rawFrame(rows: List<Int>): RawFrame? { reads++; return super.rawFrame(rows) }
+        }
+        val dispatcher = toolDispatcher(game)
+        val start = Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","advisor":"http://mac:3426"}""").jsonObject)
+        val wait = Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"wait"}""").jsonObject)
+        // Right still has to play before us and its play never shows: the tracker is not ready.
+        fun waitingOnRight() = DdzTracker(DdzSettlingPolicy.HUMAN).apply {
+            restore(DdzSeat.Left, listOf("J", "7", "4"), listOf(listOf("10", "10", "9", "9", "8", "8")), current = DdzSeat.Right)
+        }
+        PhoneDdzTurn.execute(start, dispatcher.ctx)
+        PhoneDdzTurn.useTracker(dispatcher.ctx, waitingOnRight())
+        assertEquals("paused", PhoneDdzTurn.execute(wait, dispatcher.ctx).text("state"))
+        // Next game: a tracker that is not ready yet must get the full settling window again.
+        PhoneDdzTurn.execute(start, dispatcher.ctx)
+        PhoneDdzTurn.useTracker(dispatcher.ctx, waitingOnRight())
+        val before = game.reads
+        assertEquals("paused", PhoneDdzTurn.execute(wait, dispatcher.ctx).text("state"))
+        assertTrue("waited ${game.reads - before} frames before giving up", game.reads - before > 40)
+    }
+
     @Test fun humanLandlordDeclinesDoublingWhenTheTwentyCardHandIsUnreadable() = runTest {
         // Live 2026-11-09 run 7: as landlord the 20-card hand is unreadable at doubling (vd_20);
         // the tool paused unknown_scene instead of taking the safe 不加倍.

@@ -812,6 +812,8 @@ internal object PhoneDdzTurn : PhoneTool {
                     if (humanPhase != view.phase) {
                         humanPhase = view.phase
                         turn.humanActionSeen = false
+                        // 每个新的决定都有完整的等待:上一手(上一局)用掉的不算到这一手
+                        turn.humanSettling = 0
                     }
                 }
                 // 见过闯关牌桌以后,没有「闯关模式」字样的画面(广告、弹窗)一律不认:广告的按钮和白块会被认成轮到我出、手里一张。
