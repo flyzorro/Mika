@@ -1099,7 +1099,9 @@ internal object PhoneDdzTurn : PhoneTool {
             DdzScreen.read(frame, classic = classicTable(turn)).takeIf { it.lifted == want && it.handCount == view.handCount }?.let { DdzCards.hand(frame, it) }
         }
         val left = before?.filterIndexed { index, _ -> index !in want }
-        return confirm(view, want.size, left, ctx, turn)
+        // TEMP diagnostics; remove after.
+        println("DDZTRACE submit phase=${view.phase} want=$want x=${want.map { view.cardX(it) }} before=$before left=$left buttons=${view.buttons.map { "${it.color}@${it.x}" }}")
+        return confirm(view, want.size, left, ctx, turn).also { println("DDZTRACE submit result=$it") }
     }
 
     /**
@@ -1133,6 +1135,8 @@ internal object PhoneDdzTurn : PhoneTool {
         while (waited < VERDICT_MS + HUMAN_SCENE_RETRY_POLLS * POLL_MS) {
             val frame = ctx.screen.rawFrame(FULL_ROWS)
             val after = frame?.let { DdzScreen.read(it, classic = classic) }
+            // TEMP diagnostics; remove after.
+            println("DDZTRACE verify phase=${after?.phase} count=${after?.handCount} hand=${if (frame != null && after != null) DdzCards.hand(frame, after) else null}")
             if (frame != null && after != null) {
                 when {
                     // 出完最后几张,一局结束;真人场直接换成离开/换桌/继续的结算页,它认成 Other(那一页也会数出一排「手牌」)
