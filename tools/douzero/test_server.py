@@ -183,6 +183,24 @@ class EndgameTest(unittest.TestCase):
         self.assertFalse(solver.landlord_wins(hands, "landlord_down", (), "landlord_down"))
 
 
+class FinishInTwoTest(unittest.TestCase):
+    def test_a_safe_pair_then_the_last_card_beats_a_single_into_a_known_joker(self):
+        # Live 2026-11-10 run 19: landlord holding 2 2 6 led a single 2 (the small joker is out there
+        # and beats it) instead of 2 2 (only a K bomb can stop it) then 6. 29 cards left: too many for the search.
+        history = [["4", "4"], ["8", "8"], [], ["9", "9"], [], [], ["Q", "Q"], [], [], ["5", "7", "10", "10", "10", "J", "J", "J"],
+                   ["3", "3", "3", "3"], [], [], ["5"], ["2"], ["BJ"], [], [], ["A", "A"], [], []]
+        play = ADVISOR.act("landlord", ["2", "2", "6"], ["5", "6", "7"], history)
+        self.assertEqual(["2", "2"], [NAMES[c] for c in play])
+
+    def test_an_easily_beaten_first_move_is_left_to_douzero(self):
+        import endgame
+        hand = cards(["3", "3", "6"])
+        unknown = cards(["4", "4", "5", "5", "7", "7", "8", "8", "9", "9", "10", "10", "J", "J", "Q", "Q", "K", "K"])
+        legal = [cards(m) for m in (["3"], ["6"], ["3", "3"])]
+        # any pair beats 3 3: no safe first move
+        self.assertIsNone(endgame.finish_in_two(hand, legal, (), unknown, 9, 9))
+
+
 class RibbonMisreadTest(unittest.TestCase):
     def test_an_illegal_landlord_play_gets_its_ribboned_card_refilled(self):
         # 实机上的一手:地主出 44433,最后一张带绶带的 3 在落下时认成了 J;只有补成 3 才合规
