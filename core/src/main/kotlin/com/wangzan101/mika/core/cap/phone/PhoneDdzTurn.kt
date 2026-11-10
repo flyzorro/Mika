@@ -685,12 +685,12 @@ internal object PhoneDdzTurn : PhoneTool {
             want == null || want.isEmpty() -> "card_not_in_hand"
             else -> null
         }
-        val selected = if (error == null) select(want!!, ctx, turn) else null
-        if (selected != null) {
-            if (confirm(view, ctx, turn)) return Move(true)
-        }
+        val sent = if (error == null) submit(want!!, view, ctx, turn) else null
+        if (sent == Sent.Played) return Move(true)
+        // 出去的不是要的牌(或看不出出了什么):不能再保底出一手,照实报
+        if (sent == Sent.Drift) return Move(false, "hand_drift")
         // 模型读错、出的牌不合规:还来得及就让它改一次,来不及或改过了就保底
-        val reason = error ?: if (selected == null) "select_failed" else "rejected"
+        val reason = error ?: if (sent == Sent.SelectFailed) "select_failed" else "rejected"
         if (turn.rejected == 0 && thinkMs < RETRY_BUDGET_MS) {
             turn.rejected++
             return Move(false, reason)
@@ -708,28 +708,81 @@ internal object PhoneDdzTurn : PhoneTool {
         // 按钮没了就是这一手已经过去;提示抬不起牌就是要不起
         if (after.phase != DdzPhase.Follow) return Move(true)
         if (after.lifted.isEmpty()) return press(view.buttons[0], ctx, turn)
-        return if (confirm(view, ctx, turn)) Move(true) else press(view.buttons[0], ctx, turn)
+        return when (confirm(view, after.lifted.size, null, ctx, turn)) {
+            Sent.Played -> Move(true)
+            Sent.Drift -> Move(false, "hand_drift")
+            else -> press(view.buttons[0], ctx, turn)
+        }
     }
 
     private suspend fun smallest(view: DdzView, ctx: ToolContext, turn: Turn): Move {
-        select(setOf(view.handCount - 1), ctx, turn) ?: return Move(false, "select_failed")
-        return if (confirm(view, ctx, turn)) Move(true) else Move(false, "rejected")
+        return when (submit(setOf(view.handCount - 1), view, ctx, turn)) {
+            Sent.Played -> Move(true)
+            Sent.SelectFailed -> Move(false, "select_failed")
+            Sent.Drift -> Move(false, "hand_drift")
+            Sent.Rejected -> Move(false, "rejected")
+        }
+    }
+
+    private enum class Sent { Played, SelectFailed, Rejected, Drift }
+
+    /**
+     * 出手牌里下标为 [want] 的几张:选牌,再按选牌前 [view] 里的「出牌」。所有出牌(DouZero 的、模型的、出最小的)都走这里。
+     * 选好后读一次手牌,出完要看到手里正好少了这几张才算出去([confirm])。
+     */
+    private suspend fun submit(want: Set<Int>, view: DdzView, ctx: ToolContext, turn: Turn?): Sent {
+        val selected = select(want, ctx, turn) ?: return Sent.SelectFailed
+        if (selected.phase != view.phase || selected.handCount != view.handCount) return Sent.Drift
+        val before = ctx.screen.rawFrame(FULL_ROWS)?.let { frame ->
+            DdzScreen.read(frame).takeIf { it.lifted == want && it.handCount == view.handCount }?.let { DdzCards.hand(frame, it) }
+        }
+        val left = before?.filterIndexed { index, _ -> index !in want }
+        return confirm(view, want.size, left, ctx, turn)
     }
 
     /**
-     * 按出牌,看画面确认牌出去了。抬牌动画里按下去游戏可能不认,没出去就再按一次;还不走才算不合规。
-     * 用选牌前的 [view] 里的位置:按钮不动,而选完这一帧可能已经超时、没有按钮了。
+     * 按出牌,看手牌确认这 [count] 张出去了:张数少了 [count] 张、读得出手牌时剩下的正好是 [left] 才算出去。
+     * 抬牌动画里按下去游戏可能不认,手牌一点没动就再按一次;还不动是不合规。认不出的帧接着看,一直看不出出了什么、
+     * 或者少的不是这几张,是 [Sent.Drift]:不能当成出去了记进历史。
+     * 用选牌前的 [view] 里的位置:按钮不动,而选完那一帧可能还在动画里、按钮认不全。跟牌要认出三个按钮、先出要一个,
+     * 否则最后一个不一定是「出牌」(可能是「提示」),不按。
      */
-    private suspend fun confirm(view: DdzView, ctx: ToolContext, turn: Turn? = null): Boolean {
+    private suspend fun confirm(view: DdzView, count: Int, left: List<String>?, ctx: ToolContext, turn: Turn? = null): Sent {
         // 只剩不出时最后一个按钮就是不出,不能当出牌按
-        if (DdzScreen.onlyPass(view)) return false
+        if (DdzScreen.onlyPass(view)) return Sent.Rejected
+        val buttons = if (view.phase == DdzPhase.Follow) 3 else 1
+        if (view.buttons.size != buttons) return Sent.Rejected
         repeat(2) {
-            if (!tap(ctx, turn, view.buttons.last().x, view.buttons.last().y)) return false
+            if (!tap(ctx, turn, view.buttons.last().x, view.buttons.last().y)) return Sent.Rejected
             delay(VERDICT_MS)
-            val after = read(ctx, turn)
-            if (after == null || after.phase != view.phase || after.handCount != view.handCount) return true
+            val verdict = verify(view, count, left, ctx)
+            if (verdict != null) return verdict
         }
-        return false
+        return Sent.Rejected
+    }
+
+    /** 按了出牌之后看手牌:出去了、少的不对(Drift),或者一点没动(null,可以再按一次)。 */
+    private suspend fun verify(view: DdzView, count: Int, left: List<String>?, ctx: ToolContext): Sent? {
+        repeat(HUMAN_SCENE_RETRY_POLLS) {
+            val frame = ctx.screen.rawFrame(FULL_ROWS)
+            val after = frame?.let(DdzScreen::read)
+            if (frame != null && after != null) {
+                when {
+                    // 出完最后几张,一局结束
+                    after.phase == DdzPhase.Result -> return Sent.Played
+                    after.handCount == view.handCount - count -> {
+                        if (left == null) return Sent.Played
+                        // 牌还在动的那几帧认不出,接着看
+                        DdzCards.hand(frame, after)?.let { return if (it.sorted() == left.sorted()) Sent.Played else Sent.Drift }
+                    }
+                    // 认得出的画面上手牌一张没少、还轮到我:这一下游戏没认,再按一次
+                    after.handCount == view.handCount && after.phase == view.phase -> return null
+                }
+            }
+            delay(POLL_MS)
+        }
+        // 一直看不出出了什么:不能当成出去了
+        return Sent.Drift
     }
 
     /** 把抬起的牌改成 [want];点完看画面,没到位再补一次。 */
@@ -1079,15 +1132,17 @@ internal object PhoneDdzTurn : PhoneTool {
             tracker.fail("douzero_move_failed_pick")
             return humanPause(turn, DdzSessionReason.REJECTED_ACTION).let { Auto.Off }
         }
-        val selected = select(want, ctx, turn)
-            ?: return humanPause(turn, DdzSessionReason.REJECTED_ACTION).let { Auto.Off }
-        if (selected.phase != view.phase || selected.handCount != hand.size) {
-            tracker.fail("hand_drift")
-            return humanPause(turn, DdzSessionReason.HAND_DRIFT).let { Auto.Off }
-        }
-        if (!confirm(selected, ctx, turn)) {
-            tracker.fail("confirm_failed")
-            return humanPause(turn, DdzSessionReason.REJECTED_ACTION).let { Auto.Off }
+        when (submit(want, view, ctx, turn)) {
+            Sent.Played -> Unit
+            Sent.SelectFailed -> return humanPause(turn, DdzSessionReason.REJECTED_ACTION).let { Auto.Off }
+            Sent.Drift -> {
+                tracker.fail("hand_drift")
+                return humanPause(turn, DdzSessionReason.HAND_DRIFT).let { Auto.Off }
+            }
+            Sent.Rejected -> {
+                tracker.fail("confirm_failed")
+                return humanPause(turn, DdzSessionReason.REJECTED_ACTION).let { Auto.Off }
+            }
         }
         tracker.mine(chosen)
         turn.expectedHand = hand.toMutableList().apply { chosen.forEach { remove(it) } }
@@ -1180,7 +1235,12 @@ internal object PhoneDdzTurn : PhoneTool {
                 cards.isEmpty() -> if (view.phase == DdzPhase.Follow && press(view.buttons[0], ctx, turn).moved) null else "pass"
                 else -> when (val want = pick(hand!!, cards)) {
                     null -> "pick"
-                    else -> if (select(want, ctx, turn) == null) "select" else if (!confirm(view, ctx, turn)) "confirm" else null
+                    else -> when (submit(want, view, ctx, turn)) {
+                        Sent.Played -> null
+                        Sent.SelectFailed -> "select"
+                        Sent.Rejected -> "confirm"
+                        Sent.Drift -> "hand_drift"
+                    }
                 }
             }
             val done = stuck == null

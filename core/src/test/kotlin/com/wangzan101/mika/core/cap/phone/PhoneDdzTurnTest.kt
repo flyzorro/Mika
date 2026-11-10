@@ -33,10 +33,11 @@ class PhoneDdzTurnTest {
 
     private fun frame(name: String): RawFrame {
         val image = ImageIO.read(javaClass.getResourceAsStream("/ddz/$name.jpg")!!)
-        return RawFrame(image.width, image.height, DdzScreen.ROWS.associateWith { image.getRGB(0, it, image.width, 1, null, 0, image.width) })
+        // Same rows the phone reads (FULL_ROWS): submitting a play reads the hand back to verify it.
+        return RawFrame(image.width, image.height, (DdzScreen.ROWS + DdzCards.ROWS + DdzCards.LOBBY_ROWS).distinct().associateWith { image.getRGB(0, it, image.width, 1, null, 0, image.width) })
     }
 
-    private val blank = RawFrame(2412, 1080, DdzScreen.ROWS.associateWith { IntArray(2412) })
+    private val blank = RawFrame(2412, 1080, (DdzScreen.ROWS + DdzCards.ROWS + DdzCards.LOBBY_ROWS).distinct().associateWith { IntArray(2412) })
 
     private open class Game(val app: String, val frames: ArrayDeque<RawFrame>, val base: FakeScreen = FakeScreen()) : ScreenPort by base {
         val taps = mutableListOf<Pair<Int, Int>>()
@@ -167,6 +168,15 @@ class PhoneDdzTurnTest {
 
     @Test fun holdsTheScreenGateLikeOtherTaps() {
         assertFalse(PhoneDdzTurn.composite)
+    }
+
+    @Test fun aPlayIsOnlyDoneWhenExactlyThoseCardsLeftTheHand() = runTest {
+        // Live 2026-11-10 run 14: the screen changed after 出牌 but a different card had left the
+        // hand; the move was recorded as played and the history went wrong (hand_drift one turn later).
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(frame("lead"), frame("lead_lifted"), frame("lead_lifted"), frame("lead_pressed"))))
+        // Lead 3 (the smallest); the next frame shows three 3s gone, not one.
+        val result = run(game, """{"action":"hint"}""")
+        assertEquals(result.toString(), "hand_drift", result.text("error"))
     }
 
     @Test fun pressesPlayAgainWhenTheFirstPressWasIgnored() = runTest {
