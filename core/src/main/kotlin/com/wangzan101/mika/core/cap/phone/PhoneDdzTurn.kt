@@ -1082,15 +1082,16 @@ internal object PhoneDdzTurn : PhoneTool {
     ): Auto {
         val tracker = turn.tracker ?: return humanPause(turn, DdzSessionReason.HISTORY_MISMATCH).let { Auto.Off }
         val advisor = turn.advisor ?: return humanPause(turn, DdzSessionReason.SERVICE_UNAVAILABLE).let { Auto.Off }
-        // 漏了一手、或别家的一手一直读不到/读不准:这一局剩下的交给模型自己出,不暂停;下一局叫分时历史重来
-        if (handedToModel(tracker.broken)) return Auto.Off
+        // 漏了一手、或别家的一手一直读不到/读不准:这一局剩下的由工具按简单规则打完(模型常常比 15 秒慢);
+        // 下一局叫分时历史重来,又交给 DouZero
+        if (handedToModel(tracker.broken)) return fallback(ctx, turn, tracker, frame, view)
         if (tracker.broken != null) return humanPause(turn, pauseReason(tracker.broken!!)).let { Auto.Off }
         val hand = DdzCards.hand(frame, view)
         if (!tracker.ready() || hand == null) {
             if (turn.humanSettling++ < HUMAN_SETTLE_POLLS && now() - turn.settleSince < HUMAN_SETTLE_MS) return Auto.Settling
-            // 别家的这一手一直读不稳:不干等到游戏托管,这一局剩下的交给模型自己出(和漏了一手一样)
+            // 别家的这一手一直读不稳:不干等到游戏托管,和漏了一手一样按简单规则打完这一局
             tracker.fail(DdzSessionReason.MISSED_PLAY)
-            return Auto.Off
+            return fallback(ctx, turn, tracker, frame, view)
         }
         turn.humanSettling = 0
         if (turn.expectedHand?.sorted() != null && turn.expectedHand!!.sorted() != hand.sorted()) {
@@ -1138,6 +1139,32 @@ internal object PhoneDdzTurn : PhoneTool {
         }
         tracker.mine(chosen)
         turn.expectedHand = hand.toMutableList().apply { chosen.forEach { remove(it) } }
+        return Auto.Played
+    }
+
+    /**
+     * 这一局的历史记不全、DouZero 用不上时的出法:跟牌时桌上最大的是队友的就不出,是对手的就按游戏的「提示」
+     * (压不了就不出);先出就出最小的一张。出牌照样走 [submit] 核对,出不去就停下。
+     */
+    private suspend fun fallback(
+        ctx: ToolContext, turn: Turn, tracker: DdzTracker, frame: com.wangzan101.mika.core.uistate.RawFrame, view: DdzView,
+    ): Auto {
+        val move = when (view.phase) {
+            DdzPhase.Lead -> smallest(view, ctx, turn)
+            DdzPhase.Follow -> {
+                // 轮到我跟:左家出了牌,桌上最大的就是他的;左家不出,就是右家的
+                val top = when (DdzCards.play(frame, DdzSide.Left)) {
+                    DdzSeen.Pass, DdzSeen.Empty -> DdzSeat.Right
+                    else -> DdzSeat.Left
+                }
+                val lord = tracker.landlord
+                val teammate = lord != null && lord != DdzSeat.Me && top != lord
+                if (teammate) press(view.buttons[0], ctx, turn) else hint(view, ctx, turn)
+            }
+            else -> return Auto.Settling
+        }
+        if (!move.moved) return humanPause(turn, pauseReason(move.error ?: "rejected")).let { Auto.Off }
+        turn.expectedHand = null
         return Auto.Played
     }
 
