@@ -197,6 +197,15 @@ class Agent:
             if wins.get(tuple(sorted(move)), 0) < top:
                 return list(max((m for m in score if wins.get(m, 0) == top), key=score.get))
             allowed = {m for m in score if wins.get(m, 0) == top}
+        if solved is None:
+            # 剩的牌多、搜不动:自己能两手出完、第一手很难被压时,先出那手再出完(DouZero 偶尔先出一张会被王压的单张)
+            others = [p for p in endgame.SEATS if p != infoset.player_position]
+            left = infoset.num_cards_left_dict
+            rival = tuple(sorted(infoset.last_move)) if [] in infoset.legal_actions else ()
+            quick = endgame.finish_in_two(tuple(sorted(infoset.player_hand_cards)), infoset.legal_actions, rival,
+                                          sorted(infoset.other_hand_cards), left[others[0]], left[others[1]])
+            if quick is not None and tuple(sorted(move)) != quick[0]:
+                return list(quick[0])
         ok = lambda m: allowed is None or tuple(sorted(m)) in allowed
         # 地主只剩一张、桌上是他的牌、我是他前面最后一个能管的农民:不管就是让他出完。DouZero 残局偶尔会选不出,
         # 能管就挑管得上的里面分最高的

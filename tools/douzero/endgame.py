@@ -4,6 +4,7 @@
 每种分法都当成明牌,地主一边、两个农民一边,算双方都不失误时谁赢;挑赢的分法最多的那一手。
 算不完(超时、分法太多)就不管,照用 DouZero 的。
 """
+import random
 import time
 from collections import Counter
 from itertools import combinations
@@ -146,3 +147,38 @@ def best(infoset, budget=1.5):
     except Timeout:
         return None
     return wins, total
+
+
+# 两手出完:第一手被压的机会不超过这么多才换;把未知牌随机分给两家这么多次来估
+SAFE_FIRST = 0.3
+SAMPLES = 300
+
+
+def finish_in_two(hand, legal, rival, unknown, left_a, left_b, samples=SAMPLES, limit=SAFE_FIRST, seed=0):
+    """剩的牌多、搜不动时的一条捷径:自己手里能两手出完(先出一手、剩下的正好是一手)时,挑第一手最不容易被压的。
+
+    把 [unknown](两家手里合起来的牌)随机分成 [left_a]、[left_b] 张,看有没有一家压得住第一手;第一手没人压就接着出完。
+    [legal] 是现在能出的牌,[rival] 是要压的那手(() 是自己先出)。返回 (第一手, 被压的机会),没有够安全的为 None。
+    """
+    best = None
+    for move in legal:
+        if not move:
+            continue
+        rest = minus(hand, move)
+        if not rest:
+            return tuple(sorted(move)), 0.0  # 一手出完
+        if md.get_move_type(list(rest))["type"] == md.TYPE_15_WRONG:
+            continue
+        rng = random.Random(seed)
+        beaten = 0
+        pool = list(unknown)
+        for _ in range(samples):
+            rng.shuffle(pool)
+            a, b = pool[:left_a], pool[left_a:left_a + left_b]
+            if any(m for m in moves(a, list(move))) or any(m for m in moves(b, list(move))):
+                beaten += 1
+        chance = beaten / samples
+        if best is None or chance < best[1]:
+            best = (tuple(sorted(move)), chance)
+    return best if best is not None and best[1] <= limit else None
+

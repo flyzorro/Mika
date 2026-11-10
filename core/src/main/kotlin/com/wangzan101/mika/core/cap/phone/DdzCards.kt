@@ -202,6 +202,40 @@ internal object DdzCards {
         return marked.toDouble() / pixels >= CLASSIC_MARK_DENSITY || view.phase == DdzPhase.Result
     }
 
+    /**
+     * 真人场(普通场等)的结算:下面一排绿「离开」、蓝「换桌」、黄「继续」三个大按钮。只看这一行里从左到右
+     * 依次有够宽的绿、蓝、黄三段,不靠固定横坐标。
+     */
+    fun humanResult(frame: RawFrame): Boolean {
+        if (frame.width != 2412 || frame.height != 1080) return false
+        fun color(p: Int): Char? {
+            val r = p shr 16 and 0xff
+            val g = p shr 8 and 0xff
+            val b = p and 0xff
+            return when {
+                g > 150 && r < 120 && b < 120 -> 'G'
+                b > 200 && r < 120 -> 'B'
+                r > 200 && g > 150 && b < 90 -> 'Y'
+                else -> null
+            }
+        }
+        val seen = StringBuilder()
+        var run: Char? = null
+        var length = 0
+        for (x in 0 until frame.width) {
+            val c = color(frame.pixel(x, HUMAN_RESULT_Y))
+            if (c == run) { length++; continue }
+            if (run != null && length >= HUMAN_RESULT_MIN_RUN && seen.lastOrNull() != run) seen.append(run)
+            run = c
+            length = 1
+        }
+        if (run != null && length >= HUMAN_RESULT_MIN_RUN && seen.lastOrNull() != run) seen.append(run)
+        return "GBY" in seen
+    }
+    /** 三个按钮上半截的一行(按钮在 790-880 之间,字在中间);读屏的行里有它(手牌那一段到 800 为止)。 */
+    private const val HUMAN_RESULT_Y = 795
+    private const val HUMAN_RESULT_MIN_RUN = 60
+
     /** A dimmed centered overlay, such as the relief popup, blocks the table. */
     fun unknownPopup(frame: RawFrame): Boolean {
         if (frame.width != 2412 || frame.height != 1080) return false
@@ -360,7 +394,8 @@ internal object DdzCards {
         // 牌面贴着区域底边时探测行不能越出读到的行;闯关的大牌中间可能是王的图案,量宽度要到牌的下沿附近
         val bottom = (top - y0 until rich.size).firstOrNull { !rich[it] }?.let { y0 + it } ?: y1
         // 闯关的牌上会压着「顺子」「炸弹」这类特效,只量一行会量短:牌顶下面一点(点数还没开始)和下沿附近都量,取最宽的
-        val probes = if (probeNearBottom) listOf(top + 5, bottom - 10, bottom - 30) else listOf(minOf(top + minRows, y1 - 1))
+        // 真人桌地主出的王下半张是地主的图案,只在下面量会量短(算成 0 张):牌顶下面一点也量,取最宽的
+        val probes = if (probeNearBottom) listOf(top + 5, bottom - 10, bottom - 30) else listOf(top + 10, minOf(top + minRows, y1 - 1))
         val span = probes.mapNotNull { probe ->
             DdzScreen.runs(right - x0, gap = 12, minWidth = 40) { white(x0 + it, probe) }.maxByOrNull { it.last - it.first }
         }.maxByOrNull { it.last - it.first } ?: return null

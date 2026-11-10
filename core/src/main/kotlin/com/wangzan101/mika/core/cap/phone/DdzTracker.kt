@@ -264,7 +264,9 @@ internal class DdzTracker(private val settling: DdzSettlingPolicy = DdzSettlingP
             if (seen == DdzSeen.Pass || (seen is DdzSeen.Cards && !guessed)) lastSeen[seat] = seen
             when {
                 seen is DdzSeen.Cards && !guessed && (played == null || played == seen.ranks.size) -> {
-                    if (!steady(seat to seen, if (played == null) settling.steadyFrames else settling.countedFrames)) return
+                    // 地主最后一张的 ? 后面猜的点数一帧一个样:比稳不稳时只看 ?,不看猜的
+                    val key = DdzSeen.Cards(seen.ranks.map { if (it.startsWith(DdzCards.UNKNOWN)) DdzCards.UNKNOWN else it })
+                    if (!steady(seat to key, if (played == null) settling.steadyFrames else settling.countedFrames)) return
                     record(seat, seen.ranks)
                 }
                 // 「不出」也一样:飞过来的牌缩在头像边上那一下,也会落在「不出」那一条里

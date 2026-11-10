@@ -898,22 +898,43 @@ class PhoneDdzTurnTest {
         assertTrue(game.taps.isEmpty())
     }
 
-    @Test fun aMissedPlayHandsTheRestOfTheHandToTheModelWithoutPausing() = runTest {
+    /** A hand whose history is lost (missed_play) at hand_t1: Left shows pairs on top, we follow. */
+    private suspend fun lostHistoryFollow(landlord: DdzSeat, asked: MutableList<String>): Game {
+        PhoneDdzTurn.advise = { _, body -> asked += body; """{"play":[]}""" }
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(List(6) { full("hand_t1") }))
+        val dispatcher = toolDispatcher(game)
+        PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
+        PhoneDdzTurn.useTracker(dispatcher.ctx, DdzTracker(DdzSettlingPolicy.HUMAN).apply {
+            restore(landlord, listOf("J", "7", "4"), emptyList())
+            fail(DdzSessionReason.MISSED_PLAY)
+        })
+        PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"wait"}""").jsonObject), dispatcher.ctx)
+        return game
+    }
+
+    @Test fun lostHistoryPassesOnOurTeammatesPlay() = runTest {
+        // Live 2026-11-10 run 16: handing a lost hand to the model was slower than the 15 s clock and
+        // the game auto-played a bomb for us. The tool finishes the hand itself with simple rules.
         val asked = mutableListOf<String>()
         val saved = PhoneDdzTurn.advise
-        PhoneDdzTurn.advise = { _, body -> asked += body; """{"play":[]}""" }
         try {
-            val follow = full("hand_t1")
-            val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(List(4) { follow }))
-            val dispatcher = toolDispatcher(game)
-            PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
-            PhoneDdzTurn.useTracker(dispatcher.ctx, DdzTracker(DdzSettlingPolicy.HUMAN).apply { fail(DdzSessionReason.MISSED_PLAY) })
-            val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"wait"}""").jsonObject), dispatcher.ctx)
-            assertEquals(result.toString(), "playing", result.text("state"))
-            assertEquals("follow", result.text("phase"))
-            assertEquals("missed_play", result.text("douzeroOff"))
+            val game = lostHistoryFollow(landlord = DdzSeat.Right, asked = asked) // Left is our teammate
+            val pass = DdzScreen.read(full("hand_t1")).buttons[0].let { it.x to it.y }
+            assertEquals("不出 on the teammate's pairs", pass, game.taps.first())
+            assertTrue("DouZero is not asked with a lost history", asked.isEmpty())
+        } finally {
+            PhoneDdzTurn.advise = saved
+        }
+    }
+
+    @Test fun lostHistoryUsesTheGamesHintAgainstAnOpponent() = runTest {
+        val asked = mutableListOf<String>()
+        val saved = PhoneDdzTurn.advise
+        try {
+            val game = lostHistoryFollow(landlord = DdzSeat.Left, asked = asked) // Left (the landlord) is on top
+            val hint = DdzScreen.read(full("hand_t1")).buttons[1].let { it.x to it.y }
+            assertEquals("提示 against the landlord's pairs", hint, game.taps.first())
             assertTrue(asked.isEmpty())
-            assertTrue(game.taps.isEmpty())
         } finally {
             PhoneDdzTurn.advise = saved
         }
@@ -930,11 +951,7 @@ class PhoneDdzTurnTest {
         PhoneDdzTurn.useTracker(dispatcher.ctx, DdzTracker(DdzSettlingPolicy.HUMAN).apply { fail(DdzSessionReason.MISSED_PLAY) })
         val late = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"pass"}""").jsonObject), dispatcher.ctx)
         assertEquals(late.toString(), "wrong_phase", late.text("error"))
-        assertTrue("the hand stays with the model", late.text("state") != "paused")
-        val next = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"wait"}""").jsonObject), dispatcher.ctx)
-        assertEquals(next.toString(), "follow", next.text("phase"))
-        assertEquals("missed_play", next.text("douzeroOff"))
-        assertTrue(game.taps.isEmpty())
+        assertTrue("a late move does not pause a hand whose history is lost", late.text("state") != "paused")
     }
 
     @Test fun eachHumanDecisionGetsItsOwnSettlingWindow() = runTest {
@@ -957,14 +974,16 @@ class PhoneDdzTurnTest {
         PhoneDdzTurn.execute(start, dispatcher.ctx)
         PhoneDdzTurn.useTracker(dispatcher.ctx, waitingOnRight())
         val first = PhoneDdzTurn.execute(wait, dispatcher.ctx)
-        assertEquals(first.toString(), "playing", first.text("state"))
         assertTrue(first.toString(), first.text("douzeroOff") != null)
-        // Next game: a tracker that is not ready yet must get the full settling window again.
+        // Next game: a tracker that is not ready yet must get the full settling window again before the
+        // lost-history fallback taps anything.
         PhoneDdzTurn.execute(start, dispatcher.ctx)
         PhoneDdzTurn.useTracker(dispatcher.ctx, waitingOnRight())
         val before = game.reads
-        assertEquals("playing", PhoneDdzTurn.execute(wait, dispatcher.ctx).text("state"))
+        val tapsBefore = game.taps.size
+        PhoneDdzTurn.execute(wait, dispatcher.ctx)
         assertTrue("waited ${game.reads - before} frames before giving up", game.reads - before > 40)
+        assertTrue("the fallback acted after the window", game.taps.size > tapsBefore)
     }
 
     @Test fun humanLandlordDeclinesDoublingWhenTheTwentyCardHandIsUnreadable() = runTest {
@@ -991,6 +1010,16 @@ class PhoneDdzTurnTest {
         assertEquals(result.toString(), "lobby_return", result.text("reason"))
     }
 
+    @Test fun theHumanResultScreenEndsTheHandInsteadOfPausing() = runTest {
+        val call = full("call")
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(call, call) + List(3) { full("human_result_leave_change_continue") }))
+        val dispatcher = toolDispatcher(game)
+        PhoneDdzTurn.adviseBid = { _, _ -> 0 }
+        val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","auto":true,"advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
+        assertEquals(result.toString(), "result", result.text("phase"))
+        assertNull(result.text("reason"))
+    }
+
     @Test fun humanLoopWaitsThroughOtherPlayersTurns() = runTest {
         // Live 2026-11-09 run 3: after our bid the tool paused unknown_scene 1.8 s into the next
         // player's turn (no buttons for us), and the game's autoplay took the hand.
@@ -1013,7 +1042,8 @@ class PhoneDdzTurnTest {
         PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
         val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"wait"}""").jsonObject), dispatcher.ctx)
         assertEquals("lead", result.text("phase"))
-        assertEquals(2, game.taps.size)
+        // Static lead frames never settle the history; the lost-history fallback may tap after bid + double.
+        assertTrue(game.taps.toString(), game.taps.size >= 2)
         assertEquals(DdzScreen.read(call).buttons[3].let { it.x to it.y }, game.taps[0])
         assertEquals(DdzScreen.read(double).buttons[0].let { it.x to it.y }, game.taps[1])
     }
@@ -1135,7 +1165,9 @@ class PhoneDdzTurnTest {
             val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","auto":true,"advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
             assertEquals("lead", result.text("phase"))
             assertEquals(1, bidCalls)
-            assertEquals(2, game.taps.size)
+            // Bid then double; the static lead frames afterwards never settle the history, so the lost-history
+            // fallback may tap on after these two.
+            assertTrue(game.taps.toString(), game.taps.size >= 2)
         } finally {
             PhoneDdzTurn.adviseBid = savedBid
         }

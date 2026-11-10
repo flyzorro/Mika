@@ -77,6 +77,23 @@ class DdzTrackerTest {
         assertTrue(tracker.ready())
     }
 
+    @Test fun theLandlordsRibbonCardIsSteadyEvenWhenItsGuessesChange() {
+        // Live 2026-11-10 runs 13/16: the guesses behind "?" changed from frame to frame, so three equal
+        // reads never happened and the landlord's play was never recorded.
+        see(DdzSeat.Right)
+        right = DdzSeen.Cards(listOf("3"))   // the landlord (Right) leads
+        repeat(3) { see(DdzSeat.Left) }
+        left = DdzSeen.Pass
+        repeat(4) { see(DdzSeat.Me) }
+        tracker.mine(listOf("4"))
+        val guesses = listOf("?7,4,J", "?5,J,7", "?4,7,J", "?J,5,7")
+        repeat(4) { i ->
+            right = DdzSeen.Cards(listOf("5", "5", "5", guesses[i]))
+            see(DdzSeat.Left)
+        }
+        assertEquals(listOf("5", "5", "5"), tracker.history.last().take(3))
+    }
+
     @Test fun bothPassingTooFastToSeeStillGivesMeTheLead() {
         // Live 2026-11-10 run 11: nobody could beat our BJ, both were passed instantly (the clock
         // never showed on them), and our lead was taken for our own lingering buttons until autoplay.
