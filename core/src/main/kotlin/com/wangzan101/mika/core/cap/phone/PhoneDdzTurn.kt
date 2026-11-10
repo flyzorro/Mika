@@ -1607,7 +1607,7 @@ internal object PhoneDdzTurn : PhoneTool {
         }
         // TEMP diagnostics for the live human-mode run; remove after.
         if (turn.mode == DdzMode.Human) {
-            val line = "phase=${view.phase} hand=${view.handCount} clock=$clock seat=${trackedSeat(view.phase, clock)} " +
+            val line = "phase=${view.phase} hand=${view.handCount}${DdzCards.hand(frame, view)} lifted=${view.lifted} clock=$clock seat=${trackedSeat(view.phase, clock)} " +
                 "L=${DdzCards.play(frame, DdzSide.Left)} R=${DdzCards.play(frame, DdzSide.Right)} ${tracker.debugState()}"
             if (line != turn.lastTrace) { turn.lastTrace = line; println("DDZTRACE ${System.currentTimeMillis() % 100_000} $line") }
         }
@@ -1682,6 +1682,7 @@ internal object PhoneDdzTurn : PhoneTool {
         }
         turn.humanSettling = 0
         if (hand != null && turn.expectedHand?.sorted() != null && turn.expectedHand!!.sorted() != hand.sorted()) {
+            println("DDZTRACE drift expected=${turn.expectedHand} read=$hand count=${view.handCount} lifted=${view.lifted} left=${view.handLeft} pitch=${view.pitch}") // TEMP diagnostics; remove after.
             // 认到的牌和上一手该剩的不一样:这一局剩下的按简单规则打完,不停下把这一手交给托管
             tracker.fail(DdzSessionReason.HAND_DRIFT)
             return fallback(ctx, turn, tracker, frame, view)
