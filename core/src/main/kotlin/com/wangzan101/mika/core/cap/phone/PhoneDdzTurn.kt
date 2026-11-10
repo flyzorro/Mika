@@ -732,7 +732,7 @@ internal object PhoneDdzTurn : PhoneTool {
     /** 把抬起的牌改成 [want];点完看画面,没到位再补一次。 */
     private suspend fun select(want: Set<Int>, ctx: ToolContext, turn: Turn? = null): DdzView? {
         repeat(2) {
-            val view = read(ctx, turn)?.takeIf { it.phase == DdzPhase.Follow || it.phase == DdzPhase.Lead } ?: return null
+            val view = decisionView(ctx, turn) ?: return null
             val toggle = (want - view.lifted) + (view.lifted - want)
             if (toggle.isEmpty()) return view
             for (index in toggle) {
@@ -747,6 +747,17 @@ internal object PhoneDdzTurn : PhoneTool {
             }
         }
         return read(ctx, turn)?.takeIf { it.lifted == want }
+    }
+
+    /** 选牌的起点:出牌/跟牌的画面。真人局等过几帧过渡(刚当地主插底牌之类),单机局照旧只看一帧。 */
+    private suspend fun decisionView(ctx: ToolContext, turn: Turn?): DdzView? {
+        val tries = if (turn?.mode == DdzMode.Human) HUMAN_SCENE_RETRY_POLLS else 1
+        repeat(tries) { i ->
+            read(ctx, turn)?.takeIf { it.phase == DdzPhase.Follow || it.phase == DdzPhase.Lead }?.let { return it }
+            if (turn?.state == DdzSessionState.Paused || turn?.stopped == true) return null
+            if (i < tries - 1) delay(POLL_MS)
+        }
+        return null
     }
 
     private suspend fun press(button: DdzButton, ctx: ToolContext, turn: Turn? = null) =

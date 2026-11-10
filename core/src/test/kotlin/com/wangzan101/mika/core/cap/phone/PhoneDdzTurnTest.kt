@@ -1225,6 +1225,27 @@ class PhoneDdzTurnTest {
         }
     }
 
+    @Test fun humanSelectionWaitsOutATransitionBeforeItsFirstTap() = runTest {
+        // Live 2026-11-10 run 12: right after we became landlord the first frame read by the card
+        // selection was a transition; selection gave up at once (rejected_action) and autoplay took over.
+        val saved = PhoneDdzTurn.advise
+        PhoneDdzTurn.advise = { _, _ -> """{"play":["3"]}""" }
+        try {
+            val lead = full("lead")
+            val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(lead, lead, lead, full("hand_k2")) + List(8) { lead }))
+            val dispatcher = toolDispatcher(game)
+            PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
+            PhoneDdzTurn.useTracker(dispatcher.ctx, DdzTracker(DdzSettlingPolicy.HUMAN).apply {
+                observe(DdzSeat.Me, { DdzSeen.Empty }, { listOf("3", "4", "5") }, leadingWith20 = true, leading = true)
+            })
+            val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"wait"}""").jsonObject), dispatcher.ctx)
+            // Static frames never show the card lifted, so how the selection ends is not under test here.
+            assertTrue("a card was tapped after the transition: ${game.taps} $result", game.taps.isNotEmpty())
+        } finally {
+            PhoneDdzTurn.advise = saved
+        }
+    }
+
     @Test fun humanSelectionContinuesPastOneUnrecognisedFrame() = runTest {
         // Live 2026-11-09: one unrecognised frame mid-play paused the session (unknown_scene)
         // and the game's autoplay took the hand.
