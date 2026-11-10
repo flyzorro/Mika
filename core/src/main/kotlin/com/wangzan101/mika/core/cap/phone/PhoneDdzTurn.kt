@@ -278,9 +278,15 @@ internal object PhoneDdzTurn : PhoneTool {
         }
         val waitMs = now() - waitStart
         if (move.moved) turn.rejected = 0
-        if (!turn.stopped && turn.state != DdzSessionState.Paused && turn.mode == DdzMode.Human && move.error != null) {
+        // 漏了一手、这一局交给模型自己出:模型慢了一步(轮次已过)之类的错误照实报回去,不暂停,模型接着 wait / 出牌
+        val modelPlays = turn.mode == DdzMode.Human && turn.tracker?.broken == DdzSessionReason.MISSED_PLAY
+        if (!turn.stopped && turn.state != DdzSessionState.Paused && turn.mode == DdzMode.Human && move.error != null && !modelPlays) {
             turn.state = DdzSessionState.Paused
             turn.reason = pauseReason(move.error)
+        } else if (modelPlays && !turn.stopped && turn.state != DdzSessionState.Paused && next.phase == DdzPhase.Other) {
+            turn.phase = next.phase
+            turn.state = DdzSessionState.Playing
+            turn.reason = null
         } else settle(turn, next)
         val shotStart = now()
         val needsLook = next.phase !in setOf(DdzPhase.Result, DdzPhase.AutoPlay) && ctx.config.visionEnabled

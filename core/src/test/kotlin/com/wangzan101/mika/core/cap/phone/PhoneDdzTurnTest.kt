@@ -909,6 +909,24 @@ class PhoneDdzTurnTest {
         }
     }
 
+    @Test fun aLateModelMoveAfterAMissedPlayDoesNotPauseTheHand() = runTest {
+        // Live 2026-11-10 run 12: the model's pass arrived after the game had passed for us;
+        // the error paused the session and the model could no longer play the hand.
+        val follow = full("hand_t1")
+        val othersTurn = full("hand_k2")
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(follow, othersTurn, othersTurn, follow, follow, follow)))
+        val dispatcher = toolDispatcher(game)
+        PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
+        PhoneDdzTurn.useTracker(dispatcher.ctx, DdzTracker(DdzSettlingPolicy.HUMAN).apply { fail(DdzSessionReason.MISSED_PLAY) })
+        val late = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"pass"}""").jsonObject), dispatcher.ctx)
+        assertEquals(late.toString(), "wrong_phase", late.text("error"))
+        assertTrue("the hand stays with the model", late.text("state") != "paused")
+        val next = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"wait"}""").jsonObject), dispatcher.ctx)
+        assertEquals(next.toString(), "follow", next.text("phase"))
+        assertEquals("missed_play", next.text("douzeroOff"))
+        assertTrue(game.taps.isEmpty())
+    }
+
     @Test fun eachHumanDecisionGetsItsOwnSettlingWindow() = runTest {
         // Live 2026-11-10 run 10: the settling counter used up in one game carried into the next,
         // so the next game's first not-yet-ready decision failed history_not_ready at once.
