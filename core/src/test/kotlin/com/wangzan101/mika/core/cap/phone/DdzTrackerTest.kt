@@ -47,6 +47,73 @@ class DdzTrackerTest {
         assertEquals(3, tracker.history.size)
     }
 
+    @Test fun aPassShownForOneFrameThenClearedIsStillAPass() {
+        // Live 2026-11-09 run 10 (human table): Right's 不出 was visible for one frame and cleared
+        // the next; the tracker waited on Right until the turn clock ran out (unread_right).
+        tracker.observe(DdzSeat.Me, { DdzSeen.Empty }, { bottom }, leadingWith20 = true)
+        tracker.mine(listOf("3"))
+        right = DdzSeen.Pass
+        see(DdzSeat.Left)                 // clock left Right; 不出 shows for this one frame
+        right = DdzSeen.Empty
+        repeat(2) { see(DdzSeat.Left) }   // 不出 already cleared
+        left = DdzSeen.Cards(listOf("5"))
+        repeat(4) { see(DdzSeat.Me) }     // Left played; our turn
+        assertEquals(listOf(listOf("3"), emptyList(), listOf("5")), tracker.history)
+        assertTrue(tracker.ready())
+    }
+
+    @Test fun aPlayReadOnceThenClearedIsStillThatPlay() {
+        // Live 2026-11-10 run 13: the landlord's single (ribbon over the rank) read once as "?",
+        // then the area read empty every frame; the tracker waited until the clock ran out.
+        tracker.observe(DdzSeat.Me, { DdzSeen.Empty }, { bottom }, leadingWith20 = true)
+        tracker.mine(listOf("3"))
+        right = DdzSeen.Cards(listOf("5"))
+        see(DdzSeat.Left)                 // Right's 5 visible for one frame
+        right = DdzSeen.Empty
+        repeat(3) { see(DdzSeat.Left) }   // then never readable again
+        left = DdzSeen.Pass
+        repeat(4) { see(DdzSeat.Me) }
+        assertEquals(listOf(listOf("3"), listOf("5"), emptyList()), tracker.history)
+        assertTrue(tracker.ready())
+    }
+
+    @Test fun bothPassingTooFastToSeeStillGivesMeTheLead() {
+        // Live 2026-11-10 run 11: nobody could beat our BJ, both were passed instantly (the clock
+        // never showed on them), and our lead was taken for our own lingering buttons until autoplay.
+        tracker.observe(DdzSeat.Me, { DdzSeen.Empty }, { bottom }, leadingWith20 = true)
+        tracker.mine(listOf("BJ"))
+        left = DdzSeen.Pass
+        right = DdzSeen.Pass
+        repeat(5) { tracker.observe(DdzSeat.Me, { if (it == DdzSide.Left) left else right }, { bottom }, leading = true) }
+        assertEquals(listOf(listOf("BJ"), emptyList(), emptyList()), tracker.history)
+        assertTrue(tracker.ready())
+    }
+
+    @Test fun myOwnLingeringButtonsAfterALeadAreNotANewTurn() {
+        tracker.observe(DdzSeat.Me, { DdzSeen.Empty }, { bottom }, leadingWith20 = true)
+        tracker.mine(listOf("3"))
+        // Buttons still on screen right after our lead; the table shows nothing from the others yet.
+        repeat(5) { tracker.observe(DdzSeat.Me, { DdzSeen.Empty }, { bottom }, leading = true) }
+        assertEquals(listOf(listOf("3")), tracker.history)
+        assertFalse(tracker.ready())
+    }
+
+    @Test fun aPlayThatNeverShowedBreaksTheHistoryInsteadOfBorrowingTheNextOne() {
+        // Live 2026-11-10 run 10: Right beat our SJ but the play was never on screen (the trick
+        // cleared fast); Right's next lead 7 was recorded as its answer to SJ and DouZero refused.
+        tracker.observe(DdzSeat.Me, { DdzSeen.Empty }, { bottom }, leadingWith20 = true)
+        tracker.mine(listOf("SJ"))
+        repeat(3) { see(DdzSeat.Left) }   // Right played, nothing readable
+        left = DdzSeen.Pass
+        repeat(2) { see(DdzSeat.Me) }     // Left passed; the game passes for us (要不起)
+        left = DdzSeen.Empty
+        repeat(2) { see(DdzSeat.Right) }  // new trick, Right to lead
+        right = DdzSeen.Cards(listOf("7"))
+        repeat(4) { see(DdzSeat.Left) }   // Right led 7
+        assertEquals("missed_play", tracker.broken)
+        assertFalse(tracker.history.contains(listOf("7")))
+    }
+
     @Test fun leadingWithTwentyCardsMakesMeTheLandlord() {
         see(DdzSeat.Left) // 加倍时的闹钟
         tracker.observe(DdzSeat.Me, { DdzSeen.Empty }, { bottom }, leadingWith20 = true)

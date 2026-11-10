@@ -24,6 +24,8 @@ internal object DdzSessionReason {
     const val INVALID_SNAPSHOT = "invalid_snapshot"
     const val UNKNOWN_SCENE = "unknown_scene"
     const val JOINED_MID_GAME = "joined_mid_game"
+    /** Tracker error: a play was never on screen; the model plays the rest of this hand. */
+    const val MISSED_PLAY = "missed_play"
     const val REJECTED_ACTION = "rejected_action"
     const val HISTORY_MISMATCH = "history_mismatch"
     const val HAND_DRIFT = "hand_drift"

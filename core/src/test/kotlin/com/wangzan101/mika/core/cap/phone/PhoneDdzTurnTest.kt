@@ -33,10 +33,11 @@ class PhoneDdzTurnTest {
 
     private fun frame(name: String): RawFrame {
         val image = ImageIO.read(javaClass.getResourceAsStream("/ddz/$name.jpg")!!)
-        return RawFrame(image.width, image.height, DdzScreen.ROWS.associateWith { image.getRGB(0, it, image.width, 1, null, 0, image.width) })
+        // Same rows the phone reads (FULL_ROWS): submitting a play reads the hand back to verify it.
+        return RawFrame(image.width, image.height, (DdzScreen.ROWS + DdzCards.ROWS + DdzCards.LOBBY_ROWS).distinct().associateWith { image.getRGB(0, it, image.width, 1, null, 0, image.width) })
     }
 
-    private val blank = RawFrame(2412, 1080, DdzScreen.ROWS.associateWith { IntArray(2412) })
+    private val blank = RawFrame(2412, 1080, (DdzScreen.ROWS + DdzCards.ROWS + DdzCards.LOBBY_ROWS).distinct().associateWith { IntArray(2412) })
 
     private open class Game(val app: String, val frames: ArrayDeque<RawFrame>, val base: FakeScreen = FakeScreen()) : ScreenPort by base {
         val taps = mutableListOf<Pair<Int, Int>>()
@@ -167,6 +168,15 @@ class PhoneDdzTurnTest {
 
     @Test fun holdsTheScreenGateLikeOtherTaps() {
         assertFalse(PhoneDdzTurn.composite)
+    }
+
+    @Test fun aPlayIsOnlyDoneWhenExactlyThoseCardsLeftTheHand() = runTest {
+        // Live 2026-11-10 run 14: the screen changed after 出牌 but a different card had left the
+        // hand; the move was recorded as played and the history went wrong (hand_drift one turn later).
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(frame("lead"), frame("lead_lifted"), frame("lead_lifted"), frame("lead_pressed"))))
+        // Lead 3 (the smallest); the next frame shows three 3s gone, not one.
+        val result = run(game, """{"action":"hint"}""")
+        assertEquals(result.toString(), "hand_drift", result.text("error"))
     }
 
     @Test fun pressesPlayAgainWhenTheFirstPressWasIgnored() = runTest {
@@ -888,6 +898,75 @@ class PhoneDdzTurnTest {
         assertTrue(game.taps.isEmpty())
     }
 
+    @Test fun aMissedPlayHandsTheRestOfTheHandToTheModelWithoutPausing() = runTest {
+        val asked = mutableListOf<String>()
+        val saved = PhoneDdzTurn.advise
+        PhoneDdzTurn.advise = { _, body -> asked += body; """{"play":[]}""" }
+        try {
+            val follow = full("hand_t1")
+            val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(List(4) { follow }))
+            val dispatcher = toolDispatcher(game)
+            PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
+            PhoneDdzTurn.useTracker(dispatcher.ctx, DdzTracker(DdzSettlingPolicy.HUMAN).apply { fail(DdzSessionReason.MISSED_PLAY) })
+            val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"wait"}""").jsonObject), dispatcher.ctx)
+            assertEquals(result.toString(), "playing", result.text("state"))
+            assertEquals("follow", result.text("phase"))
+            assertEquals("missed_play", result.text("douzeroOff"))
+            assertTrue(asked.isEmpty())
+            assertTrue(game.taps.isEmpty())
+        } finally {
+            PhoneDdzTurn.advise = saved
+        }
+    }
+
+    @Test fun aLateModelMoveAfterAMissedPlayDoesNotPauseTheHand() = runTest {
+        // Live 2026-11-10 run 12: the model's pass arrived after the game had passed for us;
+        // the error paused the session and the model could no longer play the hand.
+        val follow = full("hand_t1")
+        val othersTurn = full("hand_k2")
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(follow, othersTurn, othersTurn, follow, follow, follow)))
+        val dispatcher = toolDispatcher(game)
+        PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
+        PhoneDdzTurn.useTracker(dispatcher.ctx, DdzTracker(DdzSettlingPolicy.HUMAN).apply { fail(DdzSessionReason.MISSED_PLAY) })
+        val late = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"pass"}""").jsonObject), dispatcher.ctx)
+        assertEquals(late.toString(), "wrong_phase", late.text("error"))
+        assertTrue("the hand stays with the model", late.text("state") != "paused")
+        val next = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"wait"}""").jsonObject), dispatcher.ctx)
+        assertEquals(next.toString(), "follow", next.text("phase"))
+        assertEquals("missed_play", next.text("douzeroOff"))
+        assertTrue(game.taps.isEmpty())
+    }
+
+    @Test fun eachHumanDecisionGetsItsOwnSettlingWindow() = runTest {
+        // Live 2026-11-10 run 10: the settling counter used up in one game carried into the next,
+        // so the next game's first not-yet-ready decision failed history_not_ready at once.
+        val follow = full("hand_t1")
+        val game = object : Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(follow))) {
+            var reads = 0
+            override suspend fun rawFrame(rows: List<Int>): RawFrame? { reads++; return super.rawFrame(rows) }
+        }
+        val dispatcher = toolDispatcher(game)
+        val start = Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","advisor":"http://mac:3426"}""").jsonObject)
+        val wait = Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"wait"}""").jsonObject)
+        // Right still has to play before us and its play never shows: the tracker is not ready.
+        fun waitingOnRight() = DdzTracker(DdzSettlingPolicy.HUMAN).apply {
+            restore(DdzSeat.Left, listOf("J", "7", "4"), listOf(listOf("10", "10", "9", "9", "8", "8")), current = DdzSeat.Right)
+        }
+        // When the window runs out the hand goes to the model (missed_play) instead of pausing
+        // and running out the game clock (live 2026-11-10 run 13).
+        PhoneDdzTurn.execute(start, dispatcher.ctx)
+        PhoneDdzTurn.useTracker(dispatcher.ctx, waitingOnRight())
+        val first = PhoneDdzTurn.execute(wait, dispatcher.ctx)
+        assertEquals(first.toString(), "playing", first.text("state"))
+        assertTrue(first.toString(), first.text("douzeroOff") != null)
+        // Next game: a tracker that is not ready yet must get the full settling window again.
+        PhoneDdzTurn.execute(start, dispatcher.ctx)
+        PhoneDdzTurn.useTracker(dispatcher.ctx, waitingOnRight())
+        val before = game.reads
+        assertEquals("playing", PhoneDdzTurn.execute(wait, dispatcher.ctx).text("state"))
+        assertTrue("waited ${game.reads - before} frames before giving up", game.reads - before > 40)
+    }
+
     @Test fun humanLandlordDeclinesDoublingWhenTheTwentyCardHandIsUnreadable() = runTest {
         // Live 2026-11-09 run 7: as landlord the 20-card hand is unreadable at doubling (vd_20);
         // the tool paused unknown_scene instead of taking the safe 不加倍.
@@ -1155,6 +1234,27 @@ class PhoneDdzTurnTest {
             assertTrue("advisor was called", asked.isNotEmpty())
             assertTrue("a lead card was submitted", game.taps.isNotEmpty())
             assertEquals("lead", result.text("phase"))
+        } finally {
+            PhoneDdzTurn.advise = saved
+        }
+    }
+
+    @Test fun humanSelectionWaitsOutATransitionBeforeItsFirstTap() = runTest {
+        // Live 2026-11-10 run 12: right after we became landlord the first frame read by the card
+        // selection was a transition; selection gave up at once (rejected_action) and autoplay took over.
+        val saved = PhoneDdzTurn.advise
+        PhoneDdzTurn.advise = { _, _ -> """{"play":["3"]}""" }
+        try {
+            val lead = full("lead")
+            val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(lead, lead, lead, full("hand_k2")) + List(8) { lead }))
+            val dispatcher = toolDispatcher(game)
+            PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
+            PhoneDdzTurn.useTracker(dispatcher.ctx, DdzTracker(DdzSettlingPolicy.HUMAN).apply {
+                observe(DdzSeat.Me, { DdzSeen.Empty }, { listOf("3", "4", "5") }, leadingWith20 = true, leading = true)
+            })
+            val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"wait"}""").jsonObject), dispatcher.ctx)
+            // Static frames never show the card lifted, so how the selection ends is not under test here.
+            assertTrue("a card was tapped after the transition: ${game.taps} $result", game.taps.isNotEmpty())
         } finally {
             PhoneDdzTurn.advise = saved
         }
