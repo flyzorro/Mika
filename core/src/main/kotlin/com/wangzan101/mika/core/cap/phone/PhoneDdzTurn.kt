@@ -860,6 +860,8 @@ internal object PhoneDdzTurn : PhoneTool {
             if (view != null) {
                 last = view
                 if (turn.mode == DdzMode.Human) {
+                    // 真人场结算页(离开/换桌/继续):这一局打完了,不是弹窗
+                    if (DdzCards.humanResult(frame)) return view.copy(phase = DdzPhase.Result)
                     if (!DdzCards.classicHumanTable(frame)) {
                         val handoff = humanHandoff(frame)
                         if (handoff != null) {
@@ -1190,6 +1192,7 @@ internal object PhoneDdzTurn : PhoneTool {
 
     /** Known non-table scenes that end automatic human play; null when the scene is just unrecognised. */
     private fun humanHandoff(frame: com.wangzan101.mika.core.uistate.RawFrame): String? = when {
+        DdzCards.humanResult(frame) -> null
         DdzCards.singleLobby(frame) -> DdzSessionReason.LOBBY_RETURN
         DdzCards.unknownPopup(frame) -> DdzSessionReason.UNKNOWN_POPUP
         else -> null

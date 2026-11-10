@@ -1010,6 +1010,16 @@ class PhoneDdzTurnTest {
         assertEquals(result.toString(), "lobby_return", result.text("reason"))
     }
 
+    @Test fun theHumanResultScreenEndsTheHandInsteadOfPausing() = runTest {
+        val call = full("call")
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(call, call) + List(3) { full("human_result_leave_change_continue") }))
+        val dispatcher = toolDispatcher(game)
+        PhoneDdzTurn.adviseBid = { _, _ -> 0 }
+        val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","auto":true,"advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
+        assertEquals(result.toString(), "result", result.text("phase"))
+        assertNull(result.text("reason"))
+    }
+
     @Test fun humanLoopWaitsThroughOtherPlayersTurns() = runTest {
         // Live 2026-11-09 run 3: after our bid the tool paused unknown_scene 1.8 s into the next
         // player's turn (no buttons for us), and the game's autoplay took the hand.

@@ -2,12 +2,33 @@ package com.wangzan101.mika.core.cap.phone
 
 import com.wangzan101.mika.core.uistate.RawFrame
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import javax.imageio.ImageIO
 
 class DdzCardsTest {
+    /** A frame with the rows the phone reads; lossless .png when the fixture needs exact whites (borderline cases). */
+    private fun fullFrame(name: String): RawFrame {
+        val image = ImageIO.read((javaClass.getResourceAsStream("/ddz/$name.png") ?: javaClass.getResourceAsStream("/ddz/$name.jpg"))!!)
+        return RawFrame(image.width, image.height, (DdzScreen.ROWS + DdzCards.ROWS + DdzCards.LOBBY_ROWS).distinct().associateWith { image.getRGB(0, it, image.width, 1, null, 0, image.width) })
+    }
+
+    @Test fun theLandlordsJokerIsACard() {
+        // Live 2026-11-10 run 16: the landlord's big joker (landlord art across its lower half) read
+        // as Empty, so the play was missed (missed_play).
+        assertEquals(DdzSeen.Cards(listOf("BJ")), DdzCards.play(fullFrame("human_right_landlord_joker"), DdzSide.Right))
+    }
+
+    @Test fun theHumanResultScreenIsRecognised() {
+        // Live 2026-11-09/10: the 普通场 result (离开 / 换桌 / 继续) was taken for an unknown popup.
+        assertTrue(DdzCards.humanResult(fullFrame("human_result_leave_change_continue")))
+        for (name in listOf("call", "lead", "hand_t1", "hand_k2", "result", "human_autoplay_left11_right5", "vd_lobby", "vd_relief")) {
+            assertFalse(name, DdzCards.humanResult(fullFrame(name)))
+        }
+    }
+
     private fun frame(name: String): RawFrame {
         val image = ImageIO.read(javaClass.getResourceAsStream("/ddz/$name.jpg")!!)
         return RawFrame(image.width, image.height, (DdzScreen.ROWS + DdzCards.ROWS).distinct().associateWith { image.getRGB(0, it, image.width, 1, null, 0, image.width) })
