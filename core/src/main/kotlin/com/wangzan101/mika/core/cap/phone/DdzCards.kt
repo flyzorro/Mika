@@ -225,7 +225,8 @@ internal object DdzCards {
         val view = DdzScreen.read(frame)
         // 轮到别家时自己没有按钮(phase 是 Other):手牌还在就还是在牌桌上等(下面照样要水印)。
         // 不看闹钟:三家同时加倍时没有闹钟,闹钟也常读不出
-        val waiting = view.phase == DdzPhase.Other && view.handCount > 0
+        // 广告视频大半是黑的(水印那一块也算「暗」)、左边一张白卡片会读成手牌:轮到别家的牌桌中间上方都是蓝色桌布,广告最多一成
+        val waiting = view.phase == DdzPhase.Other && view.handCount > 0 && felt(frame) >= FELT_DENSITY
         if ((view.phase == DdzPhase.Other && !waiting) || singleStageTable(frame) || singleLobby(frame) || singleStage(frame) || classicLobby(frame)) return false
         // The game's "取消托管" overlay covers the table watermark. Its dedicated blue
         // button is a stronger positive signal than the obscured marker, and the caller
@@ -298,6 +299,25 @@ internal object DdzCards {
         return gold.toDouble() / pixels >= LOBBY_TAB_DENSITY
     }
 
+    /** 牌桌中间上方(底牌下面、出牌区上面)一条里蓝色桌布的占比。 */
+    private fun felt(frame: RawFrame): Double {
+        var blue = 0
+        var pixels = 0
+        for (y in FELT_Y0 until FELT_Y1 step 3) for (x in FELT_X0 until FELT_X1 step 4) {
+            val p = frame.pixel(x, y)
+            val r = p shr 16 and 0xff
+            val b = p and 0xff
+            if (b > 110 && b - r > 50) blue++
+            pixels++
+        }
+        return blue.toDouble() / pixels
+    }
+
+    private const val FELT_X0 = 1000
+    private const val FELT_X1 = 1400
+    private const val FELT_Y0 = 150
+    private const val FELT_Y1 = 200
+    private const val FELT_DENSITY = 0.5
     private const val LOBBY_TAB_X0 = 20
     private const val LOBBY_TAB_X1 = 380
     private const val LOBBY_TAB_Y0 = 250

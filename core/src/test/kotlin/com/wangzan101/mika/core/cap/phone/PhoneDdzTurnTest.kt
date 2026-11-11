@@ -1864,6 +1864,8 @@ class PhoneDdzTurnTest {
         assertFalse(DdzCards.classicHumanTable(blank))
         // Live 2026-11-11: the 经典模式 room list's white room cards read as two cards in hand and the blue 中级场 card as a button
         assertFalse(DdzCards.classicHumanTable(full("popup_classic_lobby")))
+        // Live 2026-11-11: a reward video is mostly black (passes the dark watermark test) with a white card that reads as a hand
+        assertFalse(DdzCards.classicHumanTable(full("popup_reward_video_kuaishou")))
     }
 
     @Test fun classicHumanEligibilityAcceptsTheKnownAutoplayOverlay() {
