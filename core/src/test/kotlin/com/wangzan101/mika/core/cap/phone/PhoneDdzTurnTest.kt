@@ -1118,6 +1118,31 @@ class PhoneDdzTurnTest {
         assertEquals(listOf(872 to 400), game.taps.take(1))
     }
 
+    @Test fun humanStartWalksIntoTheEliteRoomWhenAsked() = runTest {
+        // 2026-11-11:豆豆超过普通场 200 万的上限,点普通场只弹「您的豆豆足够到高级的房间游戏啦」;
+        // 模型自己点精英场再 start,晚了 26 秒,接手时已发完牌叫完分,DouZero 没上。room=elite 由工具自己点精英场
+        val rooms = shot("human_classic_rooms")
+        val call = full("call")
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(rooms, call) + List(6) { call } + List(2) { lobbyFrame("vd_lobby") }))
+        val dispatcher = toolDispatcher(game)
+        PhoneDdzTurn.adviseBid = { _, _ -> 0 }
+        PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","auto":true,"room":"elite","advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
+        assertEquals(listOf(1360 to 400), game.taps.take(1))
+    }
+
+    @Test fun humanStartRefusesAnUnknownRoomWithoutTapping() = runTest {
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(shot("human_classic_rooms"))))
+        val dispatcher = toolDispatcher(game)
+        var thrown = false
+        try {
+            PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","auto":true,"room":"rich","advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
+        } catch (_: ArgError) {
+            thrown = true
+        }
+        assertTrue(thrown)
+        assertTrue(game.taps.isEmpty())
+    }
+
     @Test fun humanStartRefusesTheSinglePlayerClassicRoomsPage() = runTest {
         val screen = shot("single_classic_rooms")
         for (auto in listOf(false, true)) {
