@@ -1166,6 +1166,7 @@ internal object PhoneDdzTurn : PhoneTool {
             val toggle = (want - view.lifted) + (view.lifted - want)
             println("DDZTRACE select want=$want lifted=${view.lifted} phase=${view.phase} count=${view.handCount} left=${view.handLeft} pitch=${view.pitch} toggle=$toggle x=${toggle.map { view.cardX(it) }}") // TEMP
             if (toggle.isEmpty()) return view
+            if (turn?.mode == DdzMode.Human) ctx.screen.rawFrame(FULL_ROWS)?.let(DdzFrameDump::seen) // TEMP diagnostics; remove after.
             for (index in toggle) {
                 if (!tap(ctx, turn, view.cardX(index), DdzScreen.CARD_Y)) return null.also { println("DDZTRACE select_failed tap index=$index") } // TEMP
                 delay(TAP_GAP_MS)
@@ -1176,10 +1177,16 @@ internal object PhoneDdzTurn : PhoneTool {
                 delay(SETTLE_MS)
                 val seen = read(ctx, turn)
                 println("DDZTRACE select poll lifted=${seen?.lifted} phase=${seen?.phase} count=${seen?.handCount}") // TEMP
+                if (turn?.mode == DdzMode.Human) ctx.screen.rawFrame(FULL_ROWS)?.let(DdzFrameDump::seen) // TEMP diagnostics; remove after.
                 seen?.takeIf { it.lifted == want }?.let { return it }
             }
         }
-        return read(ctx, turn)?.takeIf { it.lifted == want }.also { if (it == null) println("DDZTRACE select_failed want=$want") } // TEMP
+        return read(ctx, turn)?.takeIf { it.lifted == want }.also {
+            if (it == null) {
+                println("DDZTRACE select_failed want=$want") // TEMP
+                if (turn?.mode == DdzMode.Human) DdzFrameDump.dump("select_failed", ctx.screen.rawFrame(FULL_ROWS), FULL_ROWS) // TEMP diagnostics; remove after.
+            }
+        }
     }
 
     /** 选牌的起点:出牌/跟牌的画面。真人局等过几帧过渡(刚当地主插底牌之类),单机局照旧只看一帧。 */
