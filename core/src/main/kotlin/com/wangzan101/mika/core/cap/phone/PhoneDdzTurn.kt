@@ -86,7 +86,7 @@ internal object PhoneDdzTurn : PhoneTool {
 
     /**
      * [single]:这一局是确认过的单机局(见 [markSingle]),只有它为真才让 DouZero 出牌,真人局不用。
-     * [advisor]:DouZero 服务地址。[tracker]:这一局的出牌历史;记不下去了这一局剩下的交还模型。
+     * [advisor]:DouZero 服务地址。[tracker]:这一局的出牌历史;记不下去了这一局剩下的交还模型,单机经典场除外(由工具按简单规则打完)。
      */
     private class Turn {
         var seenAt: Long? = null
@@ -156,6 +156,8 @@ internal object PhoneDdzTurn : PhoneTool {
         turn.tracker = tracker
         turn.expectedHand = expectedHand
         turn.joining = false
+        // 上一段等待留下的「连着几帧没手牌」不算到这一手:否则第一帧手牌会被当成新发的一手,刚装上的历史被清掉
+        turn.noHand = 0
     }
 
     /** 问 DouZero;测试里换掉。返回响应正文,连不上为 null。 */
@@ -199,7 +201,7 @@ internal object PhoneDdzTurn : PhoneTool {
         "seat" to buildJsonObject { put("type", "string"); put("description", "resume: landlord, landlord_up, or landlord_down."); put("enum", JsonArray(listOf("landlord", "landlord_up", "landlord_down").map(::JsonPrimitive))) },
         "snapshot" to snapshotSchema(),
         "level" to buildJsonObject { put("type", "integer"); put("description", "call: 0-3.") },
-        "hands" to buildJsonObject { put("type", "integer"); put("description", "start: how many 闯关 hands to play in a row before returning, 1-10 (default 1).") },
+        "hands" to buildJsonObject { put("type", "integer"); put("description", "start: how many hands to play in a row before returning (闯关 continues or classic 再来一局), 1-10 (default 1).") },
     ), listOf("action"))
 
     private fun ranks(text: String) = buildJsonObject {
@@ -355,9 +357,9 @@ internal object PhoneDdzTurn : PhoneTool {
     private class Move(val moved: Boolean, val error: String? = null, val note: String? = null)
 
     /**
-     * 只在确认是单机的入口点开始,并记下这是单机局;从这一局起 DouZero 替模型出牌。入口有三个:大厅里标着「单机模式」的
-     * 快速开始(要金币)、单机「经典模式」场次页的快速开始(同样押金币,场次由游戏挑),和单机模式里闯关页的报名
-     * (首次免费,过关奖励金币)。
+     * 只在确认是单机的入口点开始,并记下这是单机局;从这一局起 DouZero 替模型出牌。入口有四个:大厅里标着「单机模式」的
+     * 快速开始(要金币)、单机「经典模式」场次页的快速开始(同样押金币,场次由游戏挑)、单机经典场的结算页
+     * (点黄色再来一局,下一局继续交给 DouZero),和单机模式里闯关页的报名(首次免费,过关奖励金币)。
      */
     private suspend fun start(a: Args, ctx: ToolContext, turn: Turn): ToolExecution {
         val advisor = a.str("advisor") ?: throw ArgError("advisor", "required")
@@ -447,14 +449,30 @@ internal object PhoneDdzTurn : PhoneTool {
     }
 
     private suspend fun startSingle(a: Args, ctx: ToolContext, turn: Turn, advisor: String): ToolExecution {
-        val page = ctx.screen.rawFrame(FULL_ROWS) ?: return refused("no_frame")
+        var page = ctx.screen.rawFrame(FULL_ROWS) ?: return refused("no_frame")
+        // 单机经典场的结算上可能压着「当前金币可前往更高级场次」:先点它的确定,再认下面的再来一局。
+        // 真人结算页没有这个弹窗,也绝不在那页上点任何东西。
+        if (!DdzCards.humanResult(page)) {
+            var popupTries = 0
+            while (popupTries++ < 3) {
+                val popup = DdzCards.singleMoreCoinsPopup(page) ?: break
+                if (!tap(ctx, turn, popup.first, popup.second)) return if (turn.stopped) stopped(turn) else refused("tap_failed")
+                delay(POPUP_TAP_MS)
+                page = ctx.screen.rawFrame(FULL_ROWS) ?: return refused("no_frame")
+            }
+        }
         // 已经坐在闯关的牌桌上(模型自己点了下一关、继续闯关):从这里接,下面按头一帧的手牌张数看是不是打了一半
         val seated = DdzCards.singleStageTable(page)
         val stage = if (DdzCards.singleStage(page)) DdzCards.stageButton(page) ?: return refused("no_stage_button") else null
         // 闯关一手打完的结算(赢了或输了):点黄色的继续,发下一手
         val result = if (DdzCards.stageWin(page) || DdzCards.stageLoss(page)) DdzCards.stageContinue(page) else null
+        // 单机经典场的结算页(宽的黄色再来一局;真人结算的离开/换桌/继续不认):点它,下一局照常由 DouZero 接手
+        val classicResult = if (result == null && !DdzCards.humanResult(page)) {
+            DdzScreen.read(page).takeIf { it.phase == DdzPhase.Result }?.buttons?.firstOrNull()
+        } else null
         val tap = when {
             result != null -> result
+            classicResult != null -> classicResult.x to classicResult.y
             seated -> null
             // 单机大厅的快速开始:经典场,每局押金币;金币不够弹的救济金交给模型(只点免费的直接领取)
             DdzCards.singleLobby(page) -> QUICK_START_X to QUICK_START_Y
@@ -465,8 +483,8 @@ internal object PhoneDdzTurn : PhoneTool {
         }
         if (tap != null && !tap(ctx, turn, tap.first, tap.second)) return if (turn.stopped) stopped(turn) else refused("tap_failed")
         if (turn.stopped) return stopped(turn)
-        // 结算点了继续,画面还要一会儿才退:退之前还看得到的结算是这一手的,不再算
-        turn.leaving = result != null
+        // 结算点了继续/再来一局,画面还要一会儿才退:退之前还看得到的结算是这一手的,不再算
+        turn.leaving = result != null || classicResult != null
         markSingle(ctx, advisor)
         // 上一手剩下的牌不算数:不清掉,新发的一手会被当成手牌对不上
         turn.expectedHand = null
@@ -982,7 +1000,8 @@ internal object PhoneDdzTurn : PhoneTool {
                 val won = turn.single && DdzCards.stageWin(frame)
                 val settled = won || (turn.single && DdzCards.stageLoss(frame))
                 if (settled && turn.leaving) { waitOrSteer { delay(POLL_MS) } ?: return last; continue }
-                turn.leaving = false
+                // 刚点过结算上的继续/再来一局:那页还留着就不算新的一手,等它退掉再清标记
+                if (view.phase != DdzPhase.Result) turn.leaving = false
                 if (settled) {
                     turn.tracker = null
                     turn.expectedHand = null
@@ -1084,12 +1103,15 @@ internal object PhoneDdzTurn : PhoneTool {
                     DdzPhase.Result -> {
                         turn.tracker = null
                         turn.expectedHand = null
+                        // 刚在结算上点过继续/再来一局,这一页还没退:别连着再点一次
+                        if (turn.single && !turn.stage && turn.leaving) { waitOrSteer { delay(POLL_MS) } ?: return view; continue }
                         // 单机经典场打完一手:还要接着打就自己点黄色的再来一局(结算上那个宽的,不是救济金里看视频的双倍领取)
                         if (turn.single && !turn.stage && turn.handsLeft > 1 && (left || view.phase != from)) {
                             if (ctx.screen.peek().packageName != PACKAGE) return view
                             turn.played++
                             turn.handsLeft--
                             if (!tap(ctx, turn, view.buttons[0].x, view.buttons[0].y)) return view
+                            turn.leaving = true
                             delay(CONTINUE_MS)
                             empty = 0
                             budget = polls
@@ -1261,7 +1283,8 @@ internal object PhoneDdzTurn : PhoneTool {
 
     /**
      * 这一局的历史记不全、DouZero 用不上时的出法:跟牌时桌上最大的是队友的就不出,是对手的就按游戏的「提示」
-     * (压不了就不出);先出就出点数最小的一整组([smallest])。出牌照样走 [submit] 核对,出不去就停下。
+     * (压不了就不出);先出就出点数最小的一整组([smallest])。出牌照样走 [submit] 核对:真人局出不去就暂停等模型接快照,
+     * 单机经典场没有暂停的语义,交还模型接着打。
      */
     private suspend fun fallback(
         ctx: ToolContext, turn: Turn, tracker: DdzTracker, frame: com.wangzan101.mika.core.uistate.RawFrame, view: DdzView,
@@ -1283,7 +1306,8 @@ internal object PhoneDdzTurn : PhoneTool {
         if (!move.moved) {
             // 前台换了之类的暂停已经记下了,别用 unknown_scene 盖掉
             if (turn.state == DdzSessionState.Paused) return Auto.Off
-            return humanPause(turn, pauseReason(move.error ?: "rejected")).let { Auto.Off }
+            if (turn.mode == DdzMode.Human) return humanPause(turn, pauseReason(move.error ?: "rejected")).let { Auto.Off }
+            return Auto.Off
         }
         turn.expectedHand = null
         return Auto.Played
@@ -1435,6 +1459,8 @@ internal object PhoneDdzTurn : PhoneTool {
         (broken == DdzSessionReason.MISSED_PLAY || broken == DdzSessionReason.UNREAD_HAND ||
             broken == DdzSessionReason.JOINED_MID_GAME || broken == DdzSessionReason.HAND_DRIFT ||
             broken == DdzSessionReason.INVALID_ADVISOR_PLAY ||
+            // 单机 byDouZero 自己的失败也是这一局记不下去了(手牌/历史/地主对不上),同样按规则打完这一局
+            broken == "history_not_ready" || broken == "hand_unreadable" || broken == "landlord_mismatch" ||
             broken.startsWith("unread_") || broken.startsWith("unsure_") ||
             broken.startsWith("douzero_") ||
             broken == "select_failed" || broken == "confirm_failed" || broken == "tap_failed")
@@ -1484,13 +1510,20 @@ internal object PhoneDdzTurn : PhoneTool {
 
     /**
      * 轮到自己出牌:历史对得上就问 DouZero 出这一手([Auto.Played],接着等);别家的牌还在飞、没读到,
-     * 再等几帧([Auto.Settling]);对不上(读漏、认不准、DouZero 不认这段历史)这一手用提示保底、
-     * 这一局剩下的交还模型([Auto.Off])。
+     * 再等几帧([Auto.Settling]);对不上(读漏、认不准、DouZero 不认这段历史)这一手用提示保底。
+     * 单机经典场这一局剩下的由工具按简单规则打完(模型一手 8-15 秒,15 秒的倒计时等不起),下一局叫分时
+     * tracker 重来再交给 DouZero;闯关仍交还模型([Auto.Off])。
      */
     private suspend fun byDouZero(ctx: ToolContext, turn: Turn, frame: com.wangzan101.mika.core.uistate.RawFrame, view: DdzView): Auto {
         val tracker = turn.tracker ?: return Auto.Off
         val advisor = turn.advisor ?: return Auto.Off
-        if (!turn.single || tracker.broken != null) return Auto.Off
+        if (!turn.single) return Auto.Off
+        val broken = tracker.broken
+        if (broken != null) {
+            // 这一局已经交给规则:后面的每一手都按简单规则打,不再问 DouZero、也不交回模型
+            if (!turn.stage && finishByRules(broken)) return fallback(ctx, turn, tracker, frame, view)
+            return Auto.Off
+        }
         val hand = DdzCards.hand(frame, view)
         // 别家的牌还在飞、或者动画(顺子、炸弹的特效)正盖着手牌:再等几帧
         if ((!tracker.ready() || hand == null) && tracker.broken == null && turn.settling++ < SETTLE_POLLS) return Auto.Settling
@@ -1530,6 +1563,22 @@ internal object PhoneDdzTurn : PhoneTool {
             }
             tracker.fail("douzero_move_failed_$stuck")
         } else tracker.fail(failure ?: "douzero_unknown")
+        // 单机经典场没有暂停的语义,模型一手 8-15 秒又赶不上 15 秒的倒计时:发现失败的这一手就在同一次调用里
+        // 由工具按简单规则出完,不等下一次调用。出牌失败时牌可能已经抬起、这一手也可能已经过去,先重读一帧再判阶段。
+        if (turn.single && !turn.stage && finishByRules(tracker.broken)) {
+            var useFrame = frame
+            var useView = view
+            if (play != null && failure == null) {
+                val nextFrame = ctx.screen.rawFrame(FULL_ROWS)
+                val nextView = nextFrame?.let { DdzScreen.read(it, classic = classicTable(turn)) }
+                if (nextFrame != null && nextView != null) {
+                    useFrame = nextFrame
+                    useView = nextView
+                }
+            }
+            // fallback 自己失败仍是 Auto.Off:单机没有快照恢复,交还模型接着打
+            return fallback(ctx, turn, tracker, useFrame, useView)
+        }
         // 这一手起交还模型自己出:提示只会挑压得过的,分不清压的是不是队友
         return Auto.Off
     }
