@@ -1103,6 +1103,8 @@ class PhoneDdzTurnTest {
         var ocr = 0
         val game = object : Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(fullBlank))) {
             override suspend fun readVisibleText(): List<VisibleTextLine>? { ocr++; delay(800); return null }
+            // 真机上每一轮截到的都是新数组(内容一样):指纹得按内容算,不能按数组身份
+            override suspend fun rawFrame(rows: List<Int>): RawFrame = RawFrame(2412, 1080, rows.associateWith { IntArray(2412) })
         }
         val dispatcher = toolDispatcher(game)
         val started = testScheduler.currentTime

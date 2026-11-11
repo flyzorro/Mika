@@ -21,8 +21,11 @@ const val DEFAULT_SWIPE_MS = 400L
 class RawFrame(val width: Int, val height: Int, private val rows: Map<Int, IntArray>) {
     fun pixel(x: Int, y: Int): Int = rows.getValue(y)[x]
 
-    /** 整帧的指纹(行内容直接参与哈希,与行序无关):同一画面两次截到的一模一样,画面动过就不一样。 */
-    fun contentHash(): Int = rows.hashCode()
+    /**
+     * 整帧的指纹:按行号和每行的像素内容算,同一画面两次截到的一模一样,画面动过就不一样。
+     * 不能用 rows.hashCode():IntArray 的 hashCode 只看数组身份,每次截图都是新数组,永远对不上。
+     */
+    fun contentHash(): Int = rows.entries.sumOf { (y, row) -> 31 * y + row.contentHashCode() }
 }
 
 /** 与 tap 的换算互逆:n = round(p*999/(size-1)),夹在 0–999。 */
