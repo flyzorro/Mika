@@ -20,6 +20,7 @@ import kotlinx.serialization.json.put
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlin.math.roundToInt
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -217,6 +218,56 @@ class PhoneDdzTurnTest {
     }
 
     private val fullBlank = RawFrame(2412, 1080, (DdzScreen.ROWS + DdzCards.ROWS + DdzCards.LOBBY_ROWS).distinct().associateWith { IntArray(2412) })
+
+    /** hand_t1 这一手,从大到小;上一手 DouZero 出完后手里该剩的牌。 */
+    private val handT1 = "SJ 2 2 2 A A A A Q J 10 9 9 8 7 3 3".split(' ')
+
+    /** 在真实帧上改几笔,做出测试用的画面。 */
+    private fun editedFrame(name: String, edit: (RawFrame, MutableMap<Int, IntArray>, DdzView) -> Unit): RawFrame {
+        val image = ImageIO.read(javaClass.getResourceAsStream("/ddz/$name.jpg")!!)
+        val rows = (DdzScreen.ROWS + DdzCards.ROWS + DdzCards.LOBBY_ROWS).distinct()
+            .associateWith { image.getRGB(0, it, image.width, 1, null, 0, image.width) }.toMutableMap()
+        val base = RawFrame(image.width, image.height, rows)
+        edit(base, rows, DdzScreen.read(base))
+        return RawFrame(image.width, image.height, rows)
+    }
+
+    /**
+     * 手牌认不出的一帧:第一张牌的点数抹成牌面白,整手认牌返回 null,张数和按钮照旧。
+     * [liftIndex] 抬起那张牌(只靠下标和几何,不靠点数);[noPlays] 抹掉两家的出牌区,让跟踪器一直认不出地主。
+     */
+    private fun unreadableHand(name: String = "hand_t1", liftIndex: Int? = null, noPlays: Boolean = false): RawFrame =
+        editedFrame(name) { base, rows, view ->
+            val bar = DdzScreen.blackBar(base)
+            val k = (base.width - bar) / 2292.0
+            // 抬牌检测行和牌顶先抹成牌面:炸弹火苗压在上面,会被当成这几张抬起了
+            val handEnd = minOf(base.width, view.handLeft + ((view.handCount - 1) * view.pitch).roundToInt() + 222)
+            for ((y, px) in rows) if (y in 600..680) for (x in view.handLeft until handEnd) px[x] = -1
+            // 第一张牌的点数抹平:整手认牌返回 null(牌面还是白的,张数不变)
+            for ((y, px) in rows) if (y in 560..716) for (x in view.handLeft until view.handLeft + 80) px[x] = -1
+            if (liftIndex != null) {
+                val x = view.handLeft + (liftIndex * view.pitch).roundToInt() + 8
+                // 各种间距下的抬牌行都点一下(牌面上有字就算抬起);只涂十来像素,别把手牌那一行断开
+                for (y in listOf(618, 650, 676)) rows[y]?.let { px -> for (i in x until x + 12) px[i] = 0xFF0B2B4A.toInt() }
+            }
+            if (noPlays) {
+                val spans = listOf(
+                    (bar + 280 * k).toInt() until (bar + 880 * k).toInt(),
+                    (bar + 1360 * k).toInt() until (bar + 1990 * k).toInt(),
+                )
+                for (y in 220..420) rows[y]?.let { px -> for (span in spans) for (x in span) px[x] = 0 }
+            }
+        }
+
+    /** 同一帧上第一张牌没了:手牌少一张,用来核对出牌。 */
+    private fun oneCardLess(name: String = "hand_t1"): RawFrame = editedFrame(name) { _, rows, view ->
+        val gap = (view.pitch * 0.72).roundToInt()
+        rows[DdzScreen.HAND_ROW]?.let { px -> for (x in view.handLeft until view.handLeft + gap) px[x] = 0xFF0B2B4A.toInt() }
+    }
+
+    private fun readyFollowTracker() = DdzTracker(DdzSettlingPolicy.HUMAN).apply {
+        restore(DdzSeat.Left, listOf("J", "7", "4"), listOf(listOf("10", "10", "9", "9", "8", "8")), current = DdzSeat.Me)
+    }
 
     @Test fun aSingleGameLetsDouZeroPlayAndKeepsGoing() = runTest {
         val asked = mutableListOf<String>()
@@ -1390,6 +1441,82 @@ class PhoneDdzTurnTest {
 
         assertEquals("resume", recovery["action"]!!.jsonPrimitive.content)
         assertEquals(setOf("hand", "bottom", "history", "phase", "seat"), recovery["required"]!!.jsonArray.map { it.jsonPrimitive.content }.toSet())
+    }
+
+    @Test fun anUnreadableHandWithTheExpectedCardsStillLetsDouZeroPlay() = runTest {
+        // Live 2026-11-11: our 8-card hand became unreadable on our turn and the whole hand was
+        // given up as missed_play. The previous DouZero play tells us exactly what is left.
+        val asked = mutableListOf<String>()
+        val saved = PhoneDdzTurn.advise
+        PhoneDdzTurn.advise = { _, body -> asked += body; """{"play":["3"]}""" }
+        try {
+            val unreadable = unreadableHand(liftIndex = 15)
+            val after = oneCardLess()
+            assertNull("construction: the hand must not be readable", DdzCards.hand(unreadable, DdzScreen.read(unreadable)))
+            assertEquals("construction: one card left the hand", 16, DdzScreen.read(after).handCount)
+            val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(List(5) { unreadable } + listOf(after, full("result"))))
+            val dispatcher = toolDispatcher(game)
+            PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
+            PhoneDdzTurn.useTracker(dispatcher.ctx, readyFollowTracker(), expectedHand = handT1)
+            val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"wait"}""").jsonObject), dispatcher.ctx)
+            assertEquals(result.content.toString(), handT1, Json.parseToJsonElement(asked.single()).jsonObject["hand"]!!.jsonArray.map { it.jsonPrimitive.content })
+            assertEquals(result.content.toString(), listOf(DdzScreen.read(unreadable).buttons.last().let { it.x to it.y }), game.taps)
+            assertNull("the hand continues on DouZero", result.text("douzeroOff"))
+            assertEquals("result", result.text("phase"))
+        } finally {
+            PhoneDdzTurn.advise = saved
+        }
+    }
+
+    @Test fun anUnreadableHandWithoutTheExpectedCardsFallsBackAsUnreadHand() = runTest {
+        val saved = PhoneDdzTurn.advise
+        PhoneDdzTurn.advise = { _, _ -> error("DouZero is not asked when the hand is unknown") }
+        try {
+            val unreadable = unreadableHand()
+            assertEquals("follow", DdzScreen.read(unreadable).phase.name.lowercase())
+            assertEquals(17, DdzScreen.read(unreadable).handCount)
+            assertTrue(DdzCards.classicHumanTable(unreadable))
+            var reads = 0
+            var firstTapReads = -1
+            val game = object : Game(
+                PhoneDdzTurn.PACKAGE, ArrayDeque(List(60) { unreadable } + List(3) { lobbyFrame("vd_lobby") }),
+            ) {
+                override suspend fun rawFrame(rows: List<Int>): RawFrame? { reads++; return super.rawFrame(rows) }
+                override suspend fun quickTap(x: Int, y: Int): Boolean {
+                    if (firstTapReads < 0) firstTapReads = reads
+                    return super.quickTap(x, y)
+                }
+            }
+            val dispatcher = toolDispatcher(game)
+            PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
+            PhoneDdzTurn.useTracker(dispatcher.ctx, readyFollowTracker())
+            val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"wait"}""").jsonObject), dispatcher.ctx)
+            assertEquals("reads=$reads firstTap=$firstTapReads ${result.content}", "unread_hand", result.text("douzeroOff"))
+            assertTrue("waited the settling window: $firstTapReads", firstTapReads > 40)
+        } finally {
+            PhoneDdzTurn.advise = saved
+        }
+    }
+
+    @Test fun aTrackerThatIsNotReadyStillFailsAsMissedPlay() = runTest {
+        val saved = PhoneDdzTurn.advise
+        PhoneDdzTurn.advise = { _, _ -> error("DouZero is not asked while the history is unread") }
+        try {
+            // 两家的出牌区都读成空的:跟踪器一直认不出地主,没 ready
+            val unreadable = unreadableHand(noPlays = true)
+            assertNull("construction: the hand must not be readable", DdzCards.hand(unreadable, DdzScreen.read(unreadable)))
+            assertEquals("follow", DdzScreen.read(unreadable).phase.name.lowercase())
+            assertEquals(17, DdzScreen.read(unreadable).handCount)
+            assertTrue(DdzCards.classicHumanTable(unreadable))
+            val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(List(60) { unreadable } + List(3) { lobbyFrame("vd_lobby") }))
+            val dispatcher = toolDispatcher(game)
+            PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
+            PhoneDdzTurn.useTracker(dispatcher.ctx, DdzTracker(DdzSettlingPolicy.HUMAN))
+            val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"wait"}""").jsonObject), dispatcher.ctx)
+            assertEquals(result.content.toString(), "missed_play", result.text("douzeroOff"))
+        } finally {
+            PhoneDdzTurn.advise = saved
+        }
     }
 
     @Test fun humanHandDriftPausesBeforeAskingTheAdvisor() = runTest {

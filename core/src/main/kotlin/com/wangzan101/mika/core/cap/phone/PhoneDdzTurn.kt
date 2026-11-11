@@ -1091,20 +1091,30 @@ internal object PhoneDdzTurn : PhoneTool {
         if (handedToModel(tracker.broken)) return fallback(ctx, turn, tracker, frame, view)
         if (tracker.broken != null) return humanPause(turn, pauseReason(tracker.broken!!)).let { Auto.Off }
         val hand = DdzCards.hand(frame, view)
-        if (!tracker.ready() || hand == null) {
+        // 别家的牌还没读到:等它读稳,用满了就是漏了一手
+        if (!tracker.ready()) {
             if (turn.humanSettling++ < HUMAN_SETTLE_POLLS && now() - turn.settleSince < HUMAN_SETTLE_MS) return Auto.Settling
             // 别家的这一手一直读不稳:不干等到游戏托管,和漏了一手一样按简单规则打完这一局
             tracker.fail(DdzSessionReason.MISSED_PLAY)
             return fallback(ctx, turn, tracker, frame, view)
         }
+        // 自己的手牌一时认不出:上一手是 DouZero 出的、张数又对得上,就按该剩下的牌接着问 DouZero
+        val expected = turn.expectedHand?.takeIf { it.isNotEmpty() && it.size == view.handCount }
+        val played = hand ?: expected
+        if (played == null) {
+            if (turn.humanSettling++ < HUMAN_SETTLE_POLLS && now() - turn.settleSince < HUMAN_SETTLE_MS) return Auto.Settling
+            // 别家的牌读到了、自己的手牌一直认不出:这一局交给简单规则,不记成漏了一手
+            tracker.fail(DdzSessionReason.UNREAD_HAND)
+            return fallback(ctx, turn, tracker, frame, view)
+        }
         turn.humanSettling = 0
-        if (turn.expectedHand?.sorted() != null && turn.expectedHand!!.sorted() != hand.sorted()) {
+        if (hand != null && turn.expectedHand?.sorted() != null && turn.expectedHand!!.sorted() != hand.sorted()) {
             tracker.fail("hand_drift")
             return humanPause(turn, DdzSessionReason.HAND_DRIFT).let { Auto.Off }
         }
         // A transient service failure gets one quick retry; a replay mismatch is deterministic.
-        val play = askDouZero(advisor, tracker, hand).let { first ->
-            if (first.exceptionOrNull()?.message in TRANSIENT_ADVISOR_ERRORS) askDouZero(advisor, tracker, hand) else first
+        val play = askDouZero(advisor, tracker, played).let { first ->
+            if (first.exceptionOrNull()?.message in TRANSIENT_ADVISOR_ERRORS) askDouZero(advisor, tracker, played) else first
         }
         val cards = play.getOrElse {
             tracker.fail(it.message ?: "douzero_unreachable")
@@ -1122,10 +1132,10 @@ internal object PhoneDdzTurn : PhoneTool {
             val button = view.buttons.firstOrNull() ?: return humanPause(turn, DdzSessionReason.REJECTED_ACTION).let { Auto.Off }
             if (!press(button, ctx, turn).moved) return humanPause(turn, DdzSessionReason.REJECTED_ACTION).let { Auto.Off }
             tracker.mine(emptyList())
-            turn.expectedHand = hand
+            turn.expectedHand = played
             return Auto.Played
         }
-        val want = pick(hand, chosen) ?: run {
+        val want = pick(played, chosen) ?: run {
             tracker.fail("douzero_move_failed_pick")
             return humanPause(turn, DdzSessionReason.REJECTED_ACTION).let { Auto.Off }
         }
@@ -1142,7 +1152,7 @@ internal object PhoneDdzTurn : PhoneTool {
             }
         }
         tracker.mine(chosen)
-        turn.expectedHand = hand.toMutableList().apply { chosen.forEach { remove(it) } }
+        turn.expectedHand = played.toMutableList().apply { chosen.forEach { remove(it) } }
         return Auto.Played
     }
 
@@ -1190,7 +1200,8 @@ internal object PhoneDdzTurn : PhoneTool {
 
     /** Tracker failures where this hand's history is lost but the table is fine: the model plays the rest of the hand. */
     private fun handedToModel(broken: String?) = broken != null &&
-        (broken == DdzSessionReason.MISSED_PLAY || broken.startsWith("unread_") || broken.startsWith("unsure_"))
+        (broken == DdzSessionReason.MISSED_PLAY || broken == DdzSessionReason.UNREAD_HAND ||
+            broken.startsWith("unread_") || broken.startsWith("unsure_"))
 
     /** Known non-table scenes that end automatic human play; null when the scene is just unrecognised. */
     private fun humanHandoff(frame: com.wangzan101.mika.core.uistate.RawFrame): String? = when {
