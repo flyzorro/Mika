@@ -2185,6 +2185,7 @@ internal object PhoneDdzTurn : PhoneTool {
             }
             tracker.fail("douzero_move_failed_$stuck")
         } else tracker.fail(failure ?: "douzero_unknown")
+        DdzFrameDump.dump("single_${tracker.broken}", frame, FULL_ROWS) // TEMP diagnostics (单机 DouZero 停用也抓); remove after.
         // 单机经典场没有暂停的语义,模型一手 8-15 秒又赶不上 15 秒的倒计时:发现失败的这一手就在同一次调用里
         // 由工具按简单规则出完,不等下一次调用。出牌失败时牌可能已经抬起、这一手也可能已经过去,先重读一帧再判阶段。
         if (turn.single && !turn.stage && finishByRules(tracker.broken)) {
