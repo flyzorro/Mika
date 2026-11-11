@@ -14,6 +14,7 @@ import com.wangzan101.mika.core.uistate.screen
 import kotlinx.coroutines.delay
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonObjectBuilder
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
@@ -119,6 +120,8 @@ internal object PhoneDdzTurn : PhoneTool {
         var lost = 0
         /** 单机经典场这一轮打完了几手(经典场的结算分不出输赢)。 */
         var played = 0
+        /** 这一局的结算已经计过数:停在同一张结算页上再等,不能再算一次;发新牌时清掉。 */
+        var counted = false
         /** start 刚在结算上点了继续,结算还没退。 */
         var leaving = false
         /** 这一轮见过闯关的牌桌:之后不是牌桌的画面不认。 */
@@ -338,12 +341,7 @@ internal object PhoneDdzTurn : PhoneTool {
             if (turn.won > 0) put("handsWon", turn.won)
             if (turn.lost > 0) put("handsLost", turn.lost)
             if (turn.played > 0) put("handsPlayed", turn.played)
-            if (turn.decisions.isNotEmpty()) {
-                // DouZero 这次替模型打了几手、每手从轮到自己到牌出去花了多久
-                put("autoPlayed", turn.decisions.size)
-                put("autoMs", JsonArray(turn.decisions.map(::JsonPrimitive)))
-                turn.decisions.clear()
-            }
+            putAutoPlayed(turn)
             turn.tracker?.let { t ->
                 t.broken?.let { put("douzeroOff", it); put("douzeroTrace", t.trace.joinToString(" ")) }
                 if (turn.mode == DdzMode.Human) put("historyCount", t.history.size)
@@ -352,6 +350,14 @@ internal object PhoneDdzTurn : PhoneTool {
                 put("thinkMs", thinkMs); put("tapMs", tapMs); put("waitMs", waitMs); put("shotMs", shotMs)
             })
         }, image = shot, frame = shot, changed = move.moved)
+    }
+
+    /** DouZero 这次替模型打了几手、每手从轮到自己到牌出去花了多久;报完就清空,下一次调用不重复报。 */
+    private fun JsonObjectBuilder.putAutoPlayed(turn: Turn) {
+        if (turn.decisions.isEmpty()) return
+        put("autoPlayed", turn.decisions.size)
+        put("autoMs", JsonArray(turn.decisions.map(::JsonPrimitive)))
+        turn.decisions.clear()
     }
 
     private class Move(val moved: Boolean, val error: String? = null, val note: String? = null)
@@ -436,11 +442,7 @@ internal object PhoneDdzTurn : PhoneTool {
             recoveryHint(turn)?.let { put("recovery", it) }
             put("phase", next.phase.name.lowercase())
             put("handCount", next.handCount)
-            if (turn.decisions.isNotEmpty()) {
-                put("autoPlayed", turn.decisions.size)
-                put("autoMs", JsonArray(turn.decisions.map(::JsonPrimitive)))
-                turn.decisions.clear()
-            }
+            putAutoPlayed(turn)
             turn.tracker?.let { tracker ->
                 tracker.broken?.let { put("douzeroOff", it) }
                 put("historyCount", tracker.history.size)
@@ -492,6 +494,7 @@ internal object PhoneDdzTurn : PhoneTool {
         turn.won = 0
         turn.lost = 0
         turn.played = 0
+        turn.counted = false
         turn.stage = seated || result != null
         turn.atTable = seated
         turn.tracker = null
@@ -512,6 +515,7 @@ internal object PhoneDdzTurn : PhoneTool {
             if (turn.won > 0) put("handsWon", turn.won)
             if (turn.lost > 0) put("handsLost", turn.lost)
             if (turn.played > 0) put("handsPlayed", turn.played)
+            putAutoPlayed(turn)
             turn.tracker?.let { t -> t.broken?.let { put("douzeroOff", it); put("douzeroTrace", t.trace.joinToString(" ")) } }
         }, image = if (ctx.config.visionEnabled) ctx.screen.quickShot() else null, changed = true)
     }
@@ -999,18 +1003,27 @@ internal object PhoneDdzTurn : PhoneTool {
                 // 闯关打完一手(赢或输):还要接着打就自己点黄色的继续(不点蓝色的离开、不点看视频的),马上发下一手;否则交回模型
                 val won = turn.single && DdzCards.stageWin(frame)
                 val settled = won || (turn.single && DdzCards.stageLoss(frame))
+                // 叫分、加倍、出牌都是新的一手打起来了:上一手的结算已经计过数,这一手重新计
+                if (!settled && view.phase != DdzPhase.Result && view.phase != DdzPhase.Other) turn.counted = false
                 if (settled && turn.leaving) { waitOrSteer { delay(POLL_MS) } ?: return last; continue }
                 // 刚点过结算上的继续/再来一局:那页还留着就不算新的一手,等它退掉再清标记
                 if (view.phase != DdzPhase.Result) turn.leaving = false
                 if (settled) {
                     turn.tracker = null
                     turn.expectedHand = null
-                    if (turn.handsLeft <= 1) { if (won) turn.won++ else turn.lost++; return view.copy(phase = DdzPhase.Result) }
+                    // 同一手只算一次:停在这张结算页上再等,不能又算一手
+                    if (turn.handsLeft <= 1) {
+                        if (!turn.counted) { if (won) turn.won++ else turn.lost++; turn.counted = true }
+                        return view.copy(phase = DdzPhase.Result)
+                    }
                     // 「胜利」先出来,「继续」按钮晚一点才画上:没有就再等一帧
                     val next = DdzCards.stageContinue(frame)
                     if (next == null || ctx.screen.peek().packageName != PACKAGE) { waitOrSteer { delay(POLL_MS) } ?: return last; continue }
-                    if (won) turn.won++ else turn.lost++
-                    turn.handsLeft--
+                    if (!turn.counted) {
+                        if (won) turn.won++ else turn.lost++
+                        turn.counted = true
+                        turn.handsLeft--
+                    }
                     if (!tap(ctx, turn, next.first, next.second)) return last
                     delay(CONTINUE_MS)
                     empty = 0
@@ -1106,9 +1119,11 @@ internal object PhoneDdzTurn : PhoneTool {
                         // 刚在结算上点过继续/再来一局,这一页还没退:别连着再点一次
                         if (turn.single && !turn.stage && turn.leaving) { waitOrSteer { delay(POLL_MS) } ?: return view; continue }
                         // 单机经典场打完一手:还要接着打就自己点黄色的再来一局(结算上那个宽的,不是救济金里看视频的双倍领取)
-                        if (turn.single && !turn.stage && turn.handsLeft > 1 && (left || view.phase != from)) {
+                        // 同一局只算一次:停在这张结算页上再等(left 为真)不能又算一局
+                        if (turn.single && !turn.stage && turn.handsLeft > 1 && !turn.counted && (left || view.phase != from)) {
                             if (ctx.screen.peek().packageName != PACKAGE) return view
                             turn.played++
+                            turn.counted = true
                             turn.handsLeft--
                             if (!tap(ctx, turn, view.buttons[0].x, view.buttons[0].y)) return view
                             turn.leaving = true
@@ -1119,7 +1134,10 @@ internal object PhoneDdzTurn : PhoneTool {
                             continue
                         }
                         if (turn.mode == DdzMode.Human) return view
-                        if (left || view.phase != from) { if (turn.single && !turn.stage) turn.played++; return view }
+                        if (left || view.phase != from) {
+                            if (turn.single && !turn.stage && !turn.counted) { turn.played++; turn.counted = true }
+                            return view
+                        }
                     }
                     else -> if (left || view.phase != from || (turn.mode == DdzMode.Human && !turn.humanActionSeen)) {
                         if (turn.mode == DdzMode.Human) {
