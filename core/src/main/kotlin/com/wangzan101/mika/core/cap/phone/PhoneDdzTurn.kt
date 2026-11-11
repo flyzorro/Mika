@@ -301,12 +301,12 @@ internal object PhoneDdzTurn : PhoneTool {
         }
         val waitMs = now() - waitStart
         if (move.moved) turn.rejected = 0
-        // 漏了一手、这一局交给模型自己出:模型慢了一步(轮次已过)之类的错误照实报回去,不暂停,模型接着 wait / 出牌
-        val modelPlays = turn.mode == DdzMode.Human && handedToModel(turn.tracker?.broken)
-        if (!turn.stopped && turn.state != DdzSessionState.Paused && turn.mode == DdzMode.Human && move.error != null && !modelPlays) {
+        // 漏了一手、或这一局已由工具按简单规则打:模型慢了一步(轮次已过)之类的错误照实报回去,不暂停,模型接着 wait / 出牌
+        val playsByRules = turn.mode == DdzMode.Human && finishByRules(turn.tracker?.broken)
+        if (!turn.stopped && turn.state != DdzSessionState.Paused && turn.mode == DdzMode.Human && move.error != null && !playsByRules) {
             turn.state = DdzSessionState.Paused
             turn.reason = pauseReason(move.error)
-        } else if (modelPlays && !turn.stopped && turn.state != DdzSessionState.Paused && next.phase == DdzPhase.Other) {
+        } else if (playsByRules && !turn.stopped && turn.state != DdzSessionState.Paused && next.phase == DdzPhase.Other) {
             turn.phase = next.phase
             turn.state = DdzSessionState.Playing
             turn.reason = null
@@ -1125,7 +1125,7 @@ internal object PhoneDdzTurn : PhoneTool {
         val advisor = turn.advisor ?: return humanPause(turn, DdzSessionReason.SERVICE_UNAVAILABLE).let { Auto.Off }
         // 漏了一手、或别家的一手一直读不到/读不准:这一局剩下的由工具按简单规则打完(模型常常比 15 秒慢);
         // 下一局叫分时历史重来,又交给 DouZero
-        if (handedToModel(tracker.broken)) return fallback(ctx, turn, tracker, frame, view)
+        if (finishByRules(tracker.broken)) return fallback(ctx, turn, tracker, frame, view)
         if (tracker.broken != null) return humanPause(turn, pauseReason(tracker.broken!!)).let { Auto.Off }
         val hand = DdzCards.hand(frame, view)
         // 别家的牌还没读到:等它读稳,用满了就是漏了一手
@@ -1146,46 +1146,62 @@ internal object PhoneDdzTurn : PhoneTool {
         }
         turn.humanSettling = 0
         if (hand != null && turn.expectedHand?.sorted() != null && turn.expectedHand!!.sorted() != hand.sorted()) {
-            tracker.fail("hand_drift")
-            return humanPause(turn, DdzSessionReason.HAND_DRIFT).let { Auto.Off }
+            // 认到的牌和上一手该剩的不一样:这一局剩下的按简单规则打完,不停下把这一手交给托管
+            tracker.fail(DdzSessionReason.HAND_DRIFT)
+            return fallback(ctx, turn, tracker, frame, view)
         }
         // A transient service failure gets one quick retry; a replay mismatch is deterministic.
         val play = askDouZero(advisor, tracker, played).let { first ->
             if (first.exceptionOrNull()?.message in TRANSIENT_ADVISOR_ERRORS) askDouZero(advisor, tracker, played) else first
         }
         val cards = play.getOrElse {
+            // DouZero 连不上、不认这段历史:这一局剩下的按简单规则打完,下一局再交给它
             tracker.fail(it.message ?: "douzero_unreachable")
-            return humanPause(turn, pauseReason(it.message ?: "douzero_unreachable")).let { Auto.Off }
+            return fallback(ctx, turn, tracker, frame, view)
         }
         if (cards.any { it !in DdzCards.RANKS }) {
             tracker.fail("douzero_bad_reply")
-            return humanPause(turn, DdzSessionReason.SERVICE_UNAVAILABLE).let { Auto.Off }
+            return fallback(ctx, turn, tracker, frame, view)
         }
         // An empty answer means pass only when following. A lead requires an explicit advisor move;
         // guessing a card here can silently play the wrong hand.
         val chosen = cards
         if (chosen.isEmpty()) {
-            if (view.phase != DdzPhase.Follow) return humanPause(turn, DdzSessionReason.INVALID_ADVISOR_PLAY).let { Auto.Off }
+            if (view.phase != DdzPhase.Follow) {
+                // 先出时 DouZero 没给明确的牌:猜一张可能出成别的牌,这一局剩下的按简单规则打
+                tracker.fail(DdzSessionReason.INVALID_ADVISOR_PLAY)
+                return fallback(ctx, turn, tracker, frame, view)
+            }
             val button = view.buttons.firstOrNull() ?: return humanPause(turn, DdzSessionReason.REJECTED_ACTION).let { Auto.Off }
-            if (!press(button, ctx, turn).moved) return humanPause(turn, DdzSessionReason.REJECTED_ACTION).let { Auto.Off }
+            if (!press(button, ctx, turn).moved) {
+                // 「不出」按不下去:这一局剩下的按简单规则打完
+                tracker.fail("tap_failed")
+                return fallback(ctx, turn, tracker, frame, view)
+            }
             tracker.mine(emptyList())
             turn.expectedHand = played
             return Auto.Played
         }
         val want = pick(played, chosen) ?: run {
             tracker.fail("douzero_move_failed_pick")
-            return humanPause(turn, DdzSessionReason.REJECTED_ACTION).let { Auto.Off }
+            return fallback(ctx, turn, tracker, frame, view)
         }
         when (submit(want, view, ctx, turn)) {
             Sent.Played -> Unit
-            Sent.SelectFailed -> return humanPause(turn, DdzSessionReason.REJECTED_ACTION).let { Auto.Off }
+            Sent.SelectFailed -> {
+                tracker.fail("select_failed")
+                return fallback(ctx, turn, tracker, frame, view)
+            }
             Sent.Drift -> {
-                tracker.fail("hand_drift")
-                return humanPause(turn, DdzSessionReason.HAND_DRIFT).let { Auto.Off }
+                // 出牌已经按下去、牌也出去了(出的不是要的,或一直看不出出了什么):这一手算出过,轮次多半也过了,
+                // 不能拿按之前那一帧再出一次;后面几手按简单规则打
+                tracker.fail(DdzSessionReason.HAND_DRIFT)
+                turn.expectedHand = null
+                return Auto.Played
             }
             Sent.Rejected -> {
                 tracker.fail("confirm_failed")
-                return humanPause(turn, DdzSessionReason.REJECTED_ACTION).let { Auto.Off }
+                return fallback(ctx, turn, tracker, frame, view)
             }
         }
         tracker.mine(chosen)
@@ -1214,7 +1230,11 @@ internal object PhoneDdzTurn : PhoneTool {
             }
             else -> return Auto.Settling
         }
-        if (!move.moved) return humanPause(turn, pauseReason(move.error ?: "rejected")).let { Auto.Off }
+        if (!move.moved) {
+            // 前台换了之类的暂停已经记下了,别用 unknown_scene 盖掉
+            if (turn.state == DdzSessionState.Paused) return Auto.Off
+            return humanPause(turn, pauseReason(move.error ?: "rejected")).let { Auto.Off }
+        }
         turn.expectedHand = null
         return Auto.Played
     }
@@ -1342,13 +1362,18 @@ internal object PhoneDdzTurn : PhoneTool {
 
 
     /**
-     * Tracker failures where this hand's history is lost but the table is fine: the tool plays the rest of the hand by rules.
-     * A hand joined mid-way too: the game keeps 托管 on into the next deal, so sitting it out never ends.
+     * Tracker failures that mean this hand's history can no longer be trusted, so the tool plays the rest of the hand
+     * by simple rules instead of pausing: the game's 托管 or the turn clock would lose far more beans. A hand joined
+     * mid-way too: the game keeps 托管 on into the next deal, so sitting it out never ends. DouZero comes back at the
+     * next deal, when the tracker starts over at the call.
      */
-    private fun handedToModel(broken: String?) = broken != null &&
+    private fun finishByRules(broken: String?) = broken != null &&
         (broken == DdzSessionReason.MISSED_PLAY || broken == DdzSessionReason.UNREAD_HAND ||
-            broken == DdzSessionReason.JOINED_MID_GAME ||
-            broken.startsWith("unread_") || broken.startsWith("unsure_"))
+            broken == DdzSessionReason.JOINED_MID_GAME || broken == DdzSessionReason.HAND_DRIFT ||
+            broken == DdzSessionReason.INVALID_ADVISOR_PLAY ||
+            broken.startsWith("unread_") || broken.startsWith("unsure_") ||
+            broken.startsWith("douzero_") ||
+            broken == "select_failed" || broken == "confirm_failed" || broken == "tap_failed")
 
     /** Known non-table scenes that end automatic human play; null when the scene is just unrecognised. */
     private fun humanHandoff(frame: com.wangzan101.mika.core.uistate.RawFrame): String? = when {
@@ -1452,7 +1477,7 @@ internal object PhoneDdzTurn : PhoneTool {
             put("bottom", JsonArray(tracker.bottom.orEmpty().map(::JsonPrimitive)))
             put("history", JsonArray(tracker.history.map { m -> JsonArray(m.map(::JsonPrimitive)) }))
         }.toString()
-        val reply = advise(url, body)?.let { runCatching { kotlinx.serialization.json.Json.parseToJsonElement(it) as? JsonObject }.getOrNull() }
+        val reply = runCatching { advise(url, body) }.getOrNull()?.let { runCatching { kotlinx.serialization.json.Json.parseToJsonElement(it) as? JsonObject }.getOrNull() }
             ?: return Result.failure(IllegalStateException("douzero_unreachable"))
         (reply["error"] as? JsonPrimitive)?.contentOrNull?.let { return Result.failure(IllegalStateException("douzero_$it")) }
         val play = (reply["play"] as? JsonArray)?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull }
