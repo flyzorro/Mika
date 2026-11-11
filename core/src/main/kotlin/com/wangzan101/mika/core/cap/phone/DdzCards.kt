@@ -717,11 +717,12 @@ internal object DdzCards {
             val ribbon = wideLast != null && i == n - 1 && (0 until 6).sumOf { r -> (52 until 62).count { c ->
                 frame.pixel(cx + c, top + 4 + r).let { p -> (p shr 16 and 0xff) > 170 && (p shr 8 and 0xff) < 110 && (p and 0xff) < 110 }
             } } >= 45
-            // 只有最后一张右上角可能压着绶带;前面的牌点数(10 有两位)可以看全,但别碰到下一张牌左边的阴影
+            // 只有最后一张右上角可能压着绶带;前面的牌点数(10 有两位)可以看全,但别碰到下一张牌左边的阴影。
+            // Mika 的屏间距 51.5:黑 10 的 0 伸到第 47 列,窗口只留 46 会切掉右边,认不准;留到 pitch - 3
             // 最后一张整张露着:窄了 10 的 0 会切掉,宽了地主的绶带会进来;给了 [wideLast] 就两种都量,取更像的
             val widths = if (i == n - 1) listOfNotNull(glyphWidth, wideLast).map { (minOf(it.toDouble(), pitch) - 3).toInt() }.distinct()
                 .let { if (ribbon) it.take(1) else it }
-            else listOf(minOf(pitch - 5, 48 * k).toInt())
+            else listOf(minOf(pitch - 3, 48 * k).toInt())
             widths.mapNotNull { wide ->
                 val ink = Array(glyphRows) { r -> BooleanArray(wide) { c ->
                     (!ribbon || c < RIBBON_COL + RIBBON_SLOPE * r) && textInk(frame.pixel(cx + c, top + 4 + r))
