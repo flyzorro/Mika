@@ -1184,7 +1184,7 @@ internal object PhoneDdzTurn : PhoneTool {
         return read(ctx, turn)?.takeIf { it.lifted == want }.also {
             if (it == null) {
                 println("DDZTRACE select_failed want=$want") // TEMP
-                if (turn?.mode == DdzMode.Human) DdzFrameDump.dump("select_failed", ctx.screen.rawFrame(FULL_ROWS), FULL_ROWS) // TEMP diagnostics; remove after.
+                DdzFrameDump.dump("select_failed", ctx.screen.rawFrame(FULL_ROWS), FULL_ROWS) // TEMP diagnostics (单机也抓); remove after.
             }
         }
     }
@@ -1588,11 +1588,8 @@ internal object PhoneDdzTurn : PhoneTool {
 
     /** 把这一帧喂给这一局的出牌历史;叫分时还没开局,换一局重新记。 */
     private fun track(turn: Turn, frame: com.wangzan101.mika.core.uistate.RawFrame, view: DdzView) {
-        if (turn.mode == DdzMode.Human) DdzFrameDump.seen(frame) // TEMP diagnostics; remove after.
-        if (view.phase == DdzPhase.Call) {
-            turn.tracker = null; turn.expectedHand = null; turn.joining = false; turn.doubleDecided = false
-            return
-        }
+        DdzFrameDump.seen(frame) // TEMP diagnostics (单机也抓); remove after.
+        if (view.phase == DdzPhase.Call) { turn.tracker = null; turn.expectedHand = null; turn.joining = false; turn.doubleDecided = false; return }
         // 结算页、「当前金币可前往更高级场次」弹窗、大厅不是出牌的一刻:弹窗把两家出牌区整片盖住,读出来全是认不准,
         // 这一手还没出牌就 unsure_first_play 了。没有手牌、又轮不到我、还看不见闹钟的画面同样不喂。
         // 例外:游戏替我「要不起」的那一两秒没有按钮也没有闹钟,但别家刚出的炸弹还清楚地摆在出牌区;
@@ -1618,8 +1615,8 @@ internal object PhoneDdzTurn : PhoneTool {
         ) {
             if (DdzCards.singleStageTable(frame)) DdzCards.counts(frame) else emptyMap()
         }
-        // TEMP diagnostics for the live human-mode run; remove after.
-        if (turn.mode == DdzMode.Human) {
+        // TEMP diagnostics for live runs (单机也抓); remove after.
+        run {
             if (brokenBefore == null && tracker.broken != null) DdzFrameDump.dump("fail_${tracker.broken}", frame, FULL_ROWS)
             for (side in DdzSide.entries) if (DdzCards.play(frame, side) == DdzSeen.Unsure) DdzFrameDump.dump("unsure_${side.name}", frame, FULL_ROWS)
             val line = "phase=${view.phase} hand=${view.handCount}${DdzCards.hand(frame, view)} lifted=${view.lifted} clock=$clock seat=$seat " +
