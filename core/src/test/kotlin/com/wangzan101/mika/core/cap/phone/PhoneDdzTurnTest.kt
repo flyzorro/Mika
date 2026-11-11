@@ -898,6 +898,30 @@ class PhoneDdzTurnTest {
         assertTrue(game.taps.isEmpty())
     }
 
+    @Test fun humanStartReportsTheSizeCompatWindowInsteadOfAGuess() = runTest {
+        // 安卓的兼容小窗:游戏画面只占屏幕一角,截到的帧不是 2412×1080;认牌的坐标全不对
+        for (auto in listOf(false, true)) {
+            val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(RawFrame(724, 448, emptyMap()))))
+            val json = if (auto) """{"action":"start","mode":"human","auto":true,"advisor":"http://mac:3426"}"""
+            else """{"action":"start","mode":"human","advisor":"http://mac:3426"}"""
+            val result = run(game, json)
+            assertEquals("letterboxed", result.text("error"))
+            assertTrue(game.taps.isEmpty())
+        }
+    }
+
+    @Test fun humanAutoStartKeepsWaitingWhileTheTableIsStillMatching() = runTest {
+        // 真人场匹配的倒计时就有 30 秒:原来的约 20 秒上限会让牌桌还没出来就放弃
+        val matching = lobbyFrame("vd_lobby")
+        val call = full("call")
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(List(250) { matching } + listOf(call, call, lobbyFrame("vd_lobby"))))
+        val dispatcher = toolDispatcher(game)
+        PhoneDdzTurn.adviseBid = { _, _ -> 0 }
+        val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","auto":true,"advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
+        assertNull(result.toString(), result.text("error"))
+        assertEquals("bid at the deal after the long match", 1, game.taps.size)
+    }
+
     /** A hand whose history is lost (missed_play) at hand_t1: Left shows pairs on top, we follow. */
     private suspend fun lostHistoryFollow(landlord: DdzSeat, asked: MutableList<String>): Game {
         PhoneDdzTurn.advise = { _, body -> asked += body; """{"play":[]}""" }
