@@ -80,6 +80,8 @@ class DdzCardsTest {
         assertEquals(DdzSeen.Cards("A K Q J 10 9 8".split(' ')), DdzCards.play(frame("human_right_straight_A_to_8"), DdzSide.Right))
         assertEquals(DdzSeen.Cards("8 7 6 5 4 3".split(' ')), DdzCards.play(frame("human_right_straight_8_to_3"), DdzSide.Right))
         assertEquals(DdzSeen.Cards("5 5 4 4 3 3".split(' ')), DdzCards.play(frame("human_left_pairs_554433"), DdzSide.Left))
+        // At that spacing the rank window must still hold the whole 「10」, or its 「0」 is cut and 10 reads like K
+        assertEquals(DdzSeen.Cards("10 10 10 3".split(' ')), DdzCards.play(frame("human_left_10_10_10_3"), DdzSide.Left))
     }
 
     @Test fun aSingleRibbonCardItCannotReadIsLeftForTheRulesWithGuesses() {

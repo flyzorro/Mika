@@ -490,7 +490,7 @@ internal object DdzCards {
             // 只有最后一张右上角可能压着绶带;前面的牌点数(10 有两位)可以看全,但别碰到下一张牌左边的阴影
             // 最后一张整张露着:窄了 10 的 0 会切掉,宽了地主的绶带会进来;给了 [wideLast] 就两种都量,取更像的
             val widths = if (i == n - 1) listOfNotNull(glyphWidth, wideLast).map { (minOf(it.toDouble(), pitch) - 3).toInt() }.distinct()
-            else listOf(minOf(pitch - 8, 48 * k).toInt())
+            else listOf(minOf(pitch - 5, 48 * k).toInt())
             // 闯关地主的最后一张:绶带的黑边从点数右上斜着往下(第 r 行在 43+0.85r 列),会和点数连成一块;
             // 看得到绶带的红就把那条边和它右边都擦掉,那里本来就被绶带盖着
             val ribbon = wideLast != null && i == n - 1 && (0 until 6).sumOf { r -> (52 until 62).count { c ->
