@@ -71,6 +71,21 @@ class DdzCardsTest {
         }
     }
 
+    /** 2026-11-11 21:16 单机经典场:结算上弹「当前金币可前往更高级场次」,只有一个黄色的确定。 */
+    @Test fun theHigherRoomPopupIsClosedWithItsOkButton() {
+        val ok = DdzCards.singleMoreCoinsPopup(fullFrame("single_more_coins_popup"))
+        assertNotNull("更高场次弹窗", ok)
+        assertTrue("只点黄色确定: $ok", ok!!.first in 1041..1384 && ok.second in 722..808)
+    }
+
+    @Test fun noOtherDdzScreenIsTakenForTheHigherRoomPopup() {
+        // 主资源里也有一个 /ddz(样本字),按其中一张测试图找到测试资源的目录
+        val dir = File(javaClass.getResource("/ddz/human_main_lobby.png")!!.toURI()).parentFile
+        val names = dir.listFiles()!!.map { it.name.substringBeforeLast('.') }.filter { it != "single_more_coins_popup" }
+        assertTrue("fixtures: ${names.size}", names.size >= 80)
+        for (name in names) assertNull(name, DdzCards.singleMoreCoinsPopup(fullFrame(name)))
+    }
+
     private fun frame(name: String): RawFrame {
         val image = ImageIO.read((javaClass.getResourceAsStream("/ddz/$name.png") ?: javaClass.getResourceAsStream("/ddz/$name.jpg"))!!)
         return RawFrame(image.width, image.height, (DdzScreen.ROWS + DdzCards.ROWS).distinct().associateWith { image.getRGB(0, it, image.width, 1, null, 0, image.width) })

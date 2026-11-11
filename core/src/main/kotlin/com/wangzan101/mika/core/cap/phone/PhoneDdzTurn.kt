@@ -966,6 +966,17 @@ internal object PhoneDdzTurn : PhoneTool {
                     continue
                 }
                 if (offTable) { waitOrSteer { delay(POLL_MS) } ?: return last; continue }
+                // 单机经典场一手打完,结算上可能弹「当前金币可前往更高级场次」:只点它的确定,关掉再照常点再来一局。
+                // 自己点,模型就不会因为点屏幕把单机标记清掉
+                if (turn.single && !turn.stage) {
+                    val higherRoom = DdzCards.singleMoreCoinsPopup(frame)
+                    if (higherRoom != null) {
+                        if (!tap(ctx, turn, higherRoom.first, higherRoom.second)) return last
+                        delay(POPUP_TAP_MS)
+                        waitOrSteer { delay(POLL_MS) } ?: return last
+                        continue
+                    }
+                }
                 if (view.phase != DdzPhase.Call) turn.bid = false
                 if (view.phase != DdzPhase.Double) turn.declined = false
                 dealt(turn, view)
@@ -1094,6 +1105,10 @@ internal object PhoneDdzTurn : PhoneTool {
     /** 把这一帧喂给这一局的出牌历史;叫分时还没开局,换一局重新记。 */
     private fun track(turn: Turn, frame: com.wangzan101.mika.core.uistate.RawFrame, view: DdzView) {
         if (view.phase == DdzPhase.Call) { turn.tracker = null; turn.expectedHand = null; turn.joining = false; return }
+        // 结算页、「当前金币可前往更高级场次」弹窗、大厅不是出牌的一刻:弹窗把两家出牌区整片盖住,读出来全是认不准,
+        // 这一手还没出牌就 unsure_first_play 了。没有手牌、又轮不到我、还看不见闹钟的画面同样不喂
+        if (view.phase == DdzPhase.Result || view.handCount == 0 ||
+            (view.phase == DdzPhase.Other && view.buttons.isEmpty() && DdzCards.clock(frame) == null)) return
         // 农民 17 张、地主 20 张说明自己还没出过牌,在那之前的出牌都还摆在桌上,接得上;别的张数是打了一半,这一手不交给 DouZero。
         // 发牌时手牌一张张多起来,要等到加倍或者轮到自己才数
         // 真人局的结算画面说明不了下一局:等下一个牌桌画面再定
