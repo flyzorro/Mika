@@ -1245,6 +1245,12 @@ internal object PhoneDdzTurn : PhoneTool {
             if (frame != null && DdzCards.classicHumanTable(frame)) return HumanEntry(frame)
             // 单机的「经典模式」场次页:不是真人场,绝不点
             if (frame != null && DdzCards.singleClassicRooms(frame)) return HumanEntry(null, "single_player_rooms")
+            // 豆豆太多点了低级场:只点右上角的叉关弹窗(绝不点「立即前往」),然后交还模型换更高的场
+            val tooMany = frame?.let { DdzCards.humanBeansTooMany(it) }
+            if (tooMany != null) {
+                tapOnTheWay(ctx, turn, tooMany.first, tooMany.second)
+                return HumanEntry(null, DdzSessionReason.BEANS_TOO_MANY)
+            }
             // 金豆输光后冷启动开在商店的金豆页:这页只有左上角的返回箭头不花钱,只点它,别的一概不点;
             // 连点几次还在这页就交还模型
             if (frame != null && DdzCards.humanShop(frame)) {

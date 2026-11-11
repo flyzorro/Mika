@@ -35,6 +35,8 @@ internal object DdzSessionReason {
     const val APP_SWITCH = "app_switch"
     const val LOBBY_RETURN = "lobby_return"
     const val UNKNOWN_POPUP = "unknown_popup"
+    /** 「您的豆豆足够到高级的房间游戏啦」:选的场次太低,关掉弹窗后交还模型换更高的场。 */
+    const val BEANS_TOO_MANY = "beans_too_many"
     const val INVALID_ADVISOR_PLAY = "invalid_advisor_play"
     const val SNAPSHOT_MISMATCH = "snapshot_mismatch"
     const val INVALID_ACTOR = "actor"
