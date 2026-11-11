@@ -53,6 +53,7 @@ internal object DdzCards {
     private const val STAGE_LEFT_EDGE = 460
     private const val STAGE_RIGHT_EDGE = 1990
     private const val CONTENT_WIDTH = 2292.0
+    private const val MIKA_PLAY_PITCH = 51.5
 
     private val handGlyphs by lazy { load("/ddz/hand.txt", HAND_W * HAND_H) }
     private val tableGlyphs by lazy { load("/ddz/table.txt", TABLE_W * TABLE_H) }
@@ -92,7 +93,8 @@ internal object DdzCards {
         } else {
             val (x0, x1) = if (side == DdzSide.Left) bar + (280 * k).toInt() to bar + (880 * k).toInt()
             else bar + (1360 * k).toInt() to bar + (1990 * k).toInt()
-            strip(frame, x0, x1, 220, 420, pitch = 53 * k, width = 103 * k, glyphRows = 60, glyphWidth = (44 * k).toInt(), k = k)
+            // 出的牌间距:主屏 53;Mika 的屏(没黑边)只有 51.5,不跟着横向放大,按 53 × 1.05 算六七张就错位
+            strip(frame, x0, x1, 220, 420, pitch = if (bar == 0) MIKA_PLAY_PITCH else 53 * k, width = 103 * k, glyphRows = 60, glyphWidth = (44 * k).toInt(), k = k)
         }
         if (cards == null) return if (passed(frame, side, bar, k, stage)) DdzSeen.Pass else DdzSeen.Empty
         val ranks = cards.map { it.rank }.toMutableList()
@@ -223,8 +225,9 @@ internal object DdzCards {
         val view = DdzScreen.read(frame)
         // 轮到别家时自己没有按钮(phase 是 Other):手牌还在就还是在牌桌上等(下面照样要水印)。
         // 不看闹钟:三家同时加倍时没有闹钟,闹钟也常读不出
-        val waiting = view.phase == DdzPhase.Other && view.handCount > 0
-        if ((view.phase == DdzPhase.Other && !waiting) || singleStageTable(frame) || singleLobby(frame) || singleStage(frame)) return false
+        // 广告视频大半是黑的(水印那一块也算「暗」)、左边一张白卡片会读成手牌:轮到别家的牌桌中间上方都是蓝色桌布,广告最多一成
+        val waiting = view.phase == DdzPhase.Other && view.handCount > 0 && felt(frame) >= FELT_DENSITY
+        if ((view.phase == DdzPhase.Other && !waiting) || singleStageTable(frame) || singleLobby(frame) || singleStage(frame) || classicLobby(frame)) return false
         // The game's "取消托管" overlay covers the table watermark. Its dedicated blue
         // button is a stronger positive signal than the obscured marker, and the caller
         // already handles AutoPlay by tapping that button before reading the table again.
@@ -277,6 +280,50 @@ internal object DdzCards {
     private const val HUMAN_RESULT_MIN_RUN = 60
 
     /** A dimmed centered overlay, such as the relief popup, blocks the table. */
+    /**
+     * 经典模式的场次列表:左边一列选中的「经典模式」是一条金色的签。白色的场次卡会被读成手牌、蓝色的中级场读成按钮,
+     * 不先排除就会当成轮到自己跟牌。牌桌这一块最多 6% 是金色,场次列表约 69%。
+     */
+    fun classicLobby(frame: RawFrame): Boolean {
+        if (frame.width != 2412 || frame.height != 1080) return false
+        var gold = 0
+        var pixels = 0
+        for (y in LOBBY_TAB_Y0 until LOBBY_TAB_Y1 step 2) for (x in LOBBY_TAB_X0 until LOBBY_TAB_X1 step 3) {
+            val p = frame.pixel(x, y)
+            val r = p shr 16 and 0xff
+            val g = p shr 8 and 0xff
+            val b = p and 0xff
+            if (r > 190 && g > 140 && b < 110 && r - b > 100) gold++
+            pixels++
+        }
+        return gold.toDouble() / pixels >= LOBBY_TAB_DENSITY
+    }
+
+    /** 牌桌中间上方(底牌下面、出牌区上面)一条里蓝色桌布的占比。 */
+    private fun felt(frame: RawFrame): Double {
+        var blue = 0
+        var pixels = 0
+        for (y in FELT_Y0 until FELT_Y1 step 3) for (x in FELT_X0 until FELT_X1 step 4) {
+            val p = frame.pixel(x, y)
+            val r = p shr 16 and 0xff
+            val b = p and 0xff
+            if (b > 110 && b - r > 50) blue++
+            pixels++
+        }
+        return blue.toDouble() / pixels
+    }
+
+    private const val FELT_X0 = 1000
+    private const val FELT_X1 = 1400
+    private const val FELT_Y0 = 150
+    private const val FELT_Y1 = 200
+    private const val FELT_DENSITY = 0.5
+    private const val LOBBY_TAB_X0 = 20
+    private const val LOBBY_TAB_X1 = 380
+    private const val LOBBY_TAB_Y0 = 250
+    private const val LOBBY_TAB_Y1 = 310
+    private const val LOBBY_TAB_DENSITY = 0.4
+
     fun unknownPopup(frame: RawFrame): Boolean {
         if (frame.width != 2412 || frame.height != 1080) return false
         var dark = 0
@@ -463,7 +510,7 @@ internal object DdzCards {
             // 只有最后一张右上角可能压着绶带;前面的牌点数(10 有两位)可以看全,但别碰到下一张牌左边的阴影
             // 最后一张整张露着:窄了 10 的 0 会切掉,宽了地主的绶带会进来;给了 [wideLast] 就两种都量,取更像的
             val widths = if (i == n - 1) listOfNotNull(glyphWidth, wideLast).map { (minOf(it.toDouble(), pitch) - 3).toInt() }.distinct()
-            else listOf(minOf(pitch - 8, 48 * k).toInt())
+            else listOf(minOf(pitch - 5, 48 * k).toInt())
             // 闯关地主的最后一张:绶带的黑边从点数右上斜着往下(第 r 行在 43+0.85r 列),会和点数连成一块;
             // 看得到绶带的红就把那条边和它右边都擦掉,那里本来就被绶带盖着
             val ribbon = wideLast != null && i == n - 1 && (0 until 6).sumOf { r -> (52 until 62).count { c ->
