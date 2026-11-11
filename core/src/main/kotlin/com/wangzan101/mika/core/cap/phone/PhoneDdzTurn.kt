@@ -52,6 +52,8 @@ internal object PhoneDdzTurn : PhoneTool {
     /** Mika 屏上真人场次页绿色「普通场」卡片的中心(5 万-200 万金豆)。 */
     private const val HUMAN_NORMAL_ROOM_X = 872
     private const val HUMAN_NORMAL_ROOM_Y = 400
+    /** 同一排青色「精英场」卡片的中心(200 万-6000 万金豆):豆豆过了普通场上限,点普通场只会弹「去高级房间」。 */
+    private const val HUMAN_ELITE_ROOM_X = 1360
     /** Mika 屏上闯关页的报名。 */
     private const val STAGE_BUTTON_Y = 920
     private const val AUTO_CANCEL_MS = 600L
@@ -172,6 +174,11 @@ internal object PhoneDdzTurn : PhoneTool {
         },
         "auto" to buildJsonObject { put("type", "boolean"); put("description", "start human mode: keep call, double, and DouZero play inside this tool until a pause or result.") },
         "advisor" to buildJsonObject { put("type", "string"); put("description", "start: DouZero service URL, required for both modes.") },
+        "room" to buildJsonObject {
+            put("type", "string")
+            put("enum", JsonArray(listOf("normal", "elite").map(::JsonPrimitive)))
+            put("description", "start human mode with auto=true: which classic room to sit down in, normal (普通场, 5万-200万, default) or elite (精英场, 200万-6000万, much higher stakes).")
+        },
         "hand" to ranks("play: your whole hand; resume: the complete current hand."),
         "play" to ranks("The cards to play."),
         "bottom" to ranks("resume: the three visible bottom cards."),
@@ -360,10 +367,16 @@ internal object PhoneDdzTurn : PhoneTool {
         // Human mode may only attach to the current classic table. Stage tables and the
         // single-player lobby share the same button colors, so the explicit markers are a
         // required eligibility gate before any human-mode state is installed.
+        // 选场先校验,认不得的场次一下都不点
+        val roomX = when (a.str("room")?.trim()?.lowercase() ?: "normal") {
+            "normal" -> HUMAN_NORMAL_ROOM_X
+            "elite" -> HUMAN_ELITE_ROOM_X
+            else -> throw ArgError("room", "must be normal or elite")
+        }
         if (!DdzCards.classicHumanTable(page)) {
             if (!a.bool("auto", false)) return refused("not_human_game")
-            // 在主大厅点「真人对战」、在真人场次页点「普通场」,再等匹配和牌桌出来
-            val entry = awaitHumanEntry(ctx, turn, page)
+            // 在主大厅点「真人对战」、在真人场次页点选的场次(默认普通场),再等匹配和牌桌出来
+            val entry = awaitHumanEntry(ctx, turn, page, roomX)
             page = entry.frame ?: return refused(entry.error ?: "not_human_game")
         }
         val view = DdzScreen.read(page, classic = true)
@@ -1207,12 +1220,12 @@ internal object PhoneDdzTurn : PhoneTool {
     private class HumanEntry(val frame: com.wangzan101.mika.core.uistate.RawFrame?, val error: String? = null)
 
     /**
-     * 从游戏主大厅点中间的「真人对战」、在真人场次页点「普通场」,然后等匹配和牌桌;单机的经典场次页不点。
-     * 路上真人场的领金豆弹窗自己领(只点免费的),单机救济金、看视频领取、广告由 [clearPopup] 收拾;领完回到场次页再点一次普通场。
+     * 从游戏主大厅点中间的「真人对战」、在真人场次页点横坐标 [roomX] 的场次卡(普通场或精英场),然后等匹配和牌桌;单机的经典场次页不点。
+     * 路上真人场的领金豆弹窗自己领(只点免费的),单机救济金、看视频领取、广告由 [clearPopup] 收拾;领完回到场次页再点一次同一个场次。
      * 最多等约 45 秒(真人场匹配的倒计时就有 30 秒),弹窗另算。只认 Mika 的屏,认不出的画面一律不点。
      */
     private suspend fun awaitHumanEntry(
-        ctx: ToolContext, turn: Turn, first: com.wangzan101.mika.core.uistate.RawFrame,
+        ctx: ToolContext, turn: Turn, first: com.wangzan101.mika.core.uistate.RawFrame, roomX: Int,
     ): HumanEntry {
         var page: com.wangzan101.mika.core.uistate.RawFrame? = first
         var lobbyTapped = false
@@ -1254,7 +1267,7 @@ internal object PhoneDdzTurn : PhoneTool {
                 }
             } else if (frame != null && DdzCards.humanClassicRooms(frame)) {
                 if (!roomsTapped) {
-                    if (!tapOnTheWay(ctx, turn, HUMAN_NORMAL_ROOM_X, HUMAN_NORMAL_ROOM_Y)) return HumanEntry(null)
+                    if (!tapOnTheWay(ctx, turn, roomX, HUMAN_NORMAL_ROOM_Y)) return HumanEntry(null)
                     roomsTapped = true
                 }
             } else if (clearPopup(ctx, turn, frame)) {
