@@ -118,6 +118,16 @@ class DdzCardsTest {
         assertEquals(DdzSeen.Cards("10 10 10 3".split(' ')), DdzCards.play(frame("human_left_10_10_10_3"), DdzSide.Left))
     }
 
+    @Test fun readsSettledRedTenPairOnMikasScreen() {
+        assertEquals(DdzSeen.Cards(listOf("10", "10")), DdzCards.play(frame("human_left_pair_10_red"), DdzSide.Left))
+    }
+
+    @Test fun doesNotInventRankWhileRedTenPairIsLanding() {
+        val seen = DdzCards.play(frame("human_left_pair_10_red_landing"), DdzSide.Left)
+        assertTrue("$seen", seen == DdzSeen.Unsure ||
+            (seen is DdzSeen.Cards && seen.ranks.all { it == "10" || it.startsWith(DdzCards.UNKNOWN) }))
+    }
+
     @Test fun aSingleRibbonCardItCannotReadIsLeftForTheRulesWithGuesses() {
         val frame = frame("table_left10_right8")
         // 单张什么都说得通,只能靠猜:最像的就是 10

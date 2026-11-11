@@ -96,7 +96,7 @@ internal object DdzCards {
             // 出的牌间距:主屏 53;Mika 的屏(没黑边)只有 51.5,不跟着横向放大,按 53 × 1.05 算六七张就错位
             // 真人右家十张牌排满后,地主绶带那张会在最后一张下面错开一格
             strip(frame, x0, x1, 220, 420, pitch = if (bar == 0) MIKA_PLAY_PITCH else 53 * k, width = 103 * k, glyphRows = 60, glyphWidth = (44 * k).toInt(),
-                k = k, tailDy = if (side == DdzSide.Right) HUMAN_RIBBON_DY else null)
+                k = k, wideLast = (48 * k).toInt(), tailDy = if (side == DdzSide.Right) HUMAN_RIBBON_DY else null)
         }
         if (cards == null) return if (passed(frame, side, bar, k, stage)) DdzSeen.Pass else DdzSeen.Empty
         val ranks = cards.map { it.rank }.toMutableList()
@@ -615,15 +615,16 @@ internal object DdzCards {
     ): List<Read> {
         return (0 until n).map { i ->
             val cx = left + (i * pitch).toInt() + 3
-            // 只有最后一张右上角可能压着绶带;前面的牌点数(10 有两位)可以看全,但别碰到下一张牌左边的阴影
-            // 最后一张整张露着:窄了 10 的 0 会切掉,宽了地主的绶带会进来;给了 [wideLast] 就两种都量,取更像的
-            val widths = if (i == n - 1) listOfNotNull(glyphWidth, wideLast).map { (minOf(it.toDouble(), pitch) - 3).toInt() }.distinct()
-            else listOf(minOf(pitch - 5, 48 * k).toInt())
             // 闯关地主的最后一张:绶带的黑边从点数右上斜着往下(第 r 行在 43+0.85r 列),会和点数连成一块;
             // 看得到绶带的红就把那条边和它右边都擦掉,那里本来就被绶带盖着
             val ribbon = wideLast != null && i == n - 1 && (0 until 6).sumOf { r -> (52 until 62).count { c ->
                 frame.pixel(cx + c, top + 4 + r).let { p -> (p shr 16 and 0xff) > 170 && (p shr 8 and 0xff) < 110 && (p and 0xff) < 110 }
             } } >= 45
+            // 只有最后一张右上角可能压着绶带;前面的牌点数(10 有两位)可以看全,但别碰到下一张牌左边的阴影
+            // 最后一张整张露着:窄了 10 的 0 会切掉,宽了地主的绶带会进来;给了 [wideLast] 就两种都量,取更像的
+            val widths = if (i == n - 1) listOfNotNull(glyphWidth, wideLast).map { (minOf(it.toDouble(), pitch) - 3).toInt() }.distinct()
+                .let { if (ribbon) it.take(1) else it }
+            else listOf(minOf(pitch - 5, 48 * k).toInt())
             widths.mapNotNull { wide ->
                 val ink = Array(glyphRows) { r -> BooleanArray(wide) { c ->
                     (!ribbon || c < RIBBON_COL + RIBBON_SLOPE * r) && textInk(frame.pixel(cx + c, top + 4 + r))
