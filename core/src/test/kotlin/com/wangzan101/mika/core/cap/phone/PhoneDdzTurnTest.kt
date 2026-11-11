@@ -971,6 +971,29 @@ class PhoneDdzTurnTest {
         assertTrue(game.taps.isEmpty())
     }
 
+    @Test fun humanAutoStartClaimsFreeBeansThenSitsDownAtTheNormalRoom() = runTest {
+        // 金豆输光点普通场:弹窗点「领取」、恭喜获得页点「普通领取」,回到场次页再点普通场,进桌叫分
+        val rooms = shot("human_classic_rooms")
+        val call = full("call")
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(
+            rooms, shot("human_relief_popup"), shot("human_relief_claimed"), rooms, call, call, lobbyFrame("vd_lobby"),
+        )))
+        val dispatcher = toolDispatcher(game)
+        val savedBid = PhoneDdzTurn.adviseBid
+        PhoneDdzTurn.adviseBid = { _, _ -> 0 }
+        try {
+            val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","auto":true,"advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
+            assertNull(result.toString(), result.text("error"))
+            assertEquals(872 to 400, game.taps[0]) // 普通场
+            assertTrue("「领取」: ${game.taps[1]}", game.taps[1].first in 980..1380 && game.taps[1].second in 675..790)
+            assertTrue("「普通领取」: ${game.taps[2]}", game.taps[2].first in 1520..1720 && game.taps[2].second in 840..900)
+            assertEquals("back into 普通场 after the claim", 872 to 400, game.taps[3])
+            assertTrue("绝不点带视频图标的「双倍领取」: ${game.taps}", game.taps.none { it.first in 1000..1440 && it.second in 815..925 })
+        } finally {
+            PhoneDdzTurn.adviseBid = savedBid
+        }
+    }
+
     @Test fun humanStartReportsTheSizeCompatWindowInsteadOfAGuess() = runTest {
         // 安卓的兼容小窗:游戏画面只占屏幕一角,截到的帧不是 2412×1080;认牌的坐标全不对
         for (auto in listOf(false, true)) {
@@ -1030,13 +1053,15 @@ class PhoneDdzTurnTest {
         }
     }
 
-    @Test fun humanStartNeverTapsTheReliefPopupOrTheClaimPage() = runTest {
+    @Test fun humanStartTapsOnlyTheFreeClaimsOnTheReliefScreens() = runTest {
+        // 领金豆弹窗只点「领取」,恭喜获得页只点「普通领取」,带视频图标的「双倍领取」一下都不点
         val popup = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(shot("human_relief_popup"))))
-        assertEquals("not_human_game", run(popup, """{"action":"start","mode":"human","auto":true,"advisor":"http://mac:3426"}""").text("error"))
-        assertTrue(popup.taps.isEmpty())
+        run(popup, """{"action":"start","mode":"human","auto":true,"advisor":"http://mac:3426"}""")
+        assertTrue(popup.taps.toString(), popup.taps.isNotEmpty() && popup.taps.all { it.first in 980..1380 && it.second in 675..790 })
         val claimed = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(shot("human_relief_claimed"))))
-        assertEquals("unknown_popup", run(claimed, """{"action":"start","mode":"human","auto":true,"advisor":"http://mac:3426"}""").text("error"))
-        assertTrue(claimed.taps.isEmpty())
+        run(claimed, """{"action":"start","mode":"human","auto":true,"advisor":"http://mac:3426"}""")
+        assertTrue(claimed.taps.toString(), claimed.taps.isNotEmpty() && claimed.taps.all { it.first in 1520..1720 && it.second in 840..900 })
+        assertTrue((popup.taps + claimed.taps).none { it.first in 1000..1440 && it.second in 815..925 })
     }
 
     @Test fun theHumanLobbyAndRoomsAreTellApartFromTheOtherScreens() {
