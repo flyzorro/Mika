@@ -1161,21 +1161,24 @@ internal object PhoneDdzTurn : PhoneTool {
     /** 把抬起的牌改成 [want];点完看画面,没到位再补一次。 */
     private suspend fun select(want: Set<Int>, ctx: ToolContext, turn: Turn? = null): DdzView? {
         repeat(2) {
-            val view = decisionView(ctx, turn) ?: return null
+            val view = decisionView(ctx, turn) ?: return null.also { println("DDZTRACE select_failed no_decision_view want=$want") } // TEMP
             val toggle = (want - view.lifted) + (view.lifted - want)
+            println("DDZTRACE select want=$want lifted=${view.lifted} phase=${view.phase} count=${view.handCount} left=${view.handLeft} pitch=${view.pitch} toggle=$toggle x=${toggle.map { view.cardX(it) }}") // TEMP
             if (toggle.isEmpty()) return view
             for (index in toggle) {
-                if (!tap(ctx, turn, view.cardX(index), DdzScreen.CARD_Y)) return null
+                if (!tap(ctx, turn, view.cardX(index), DdzScreen.CARD_Y)) return null.also { println("DDZTRACE select_failed tap index=$index") } // TEMP
                 delay(TAP_GAP_MS)
-                if (turn?.mode == DdzMode.Human && readTable(ctx, turn) == null) return null
+                if (turn?.mode == DdzMode.Human && readTable(ctx, turn) == null) return null.also { println("DDZTRACE select_failed no_table after index=$index") } // TEMP
             }
             // 抬牌有动画:还没抬到位就再点一下,会把它点回去。多看几帧,真没抬起来才重点
             repeat(LIFT_POLLS) {
                 delay(SETTLE_MS)
-                read(ctx, turn)?.takeIf { it.lifted == want }?.let { return it }
+                val seen = read(ctx, turn)
+                println("DDZTRACE select poll lifted=${seen?.lifted} phase=${seen?.phase} count=${seen?.handCount}") // TEMP
+                seen?.takeIf { it.lifted == want }?.let { return it }
             }
         }
-        return read(ctx, turn)?.takeIf { it.lifted == want }
+        return read(ctx, turn)?.takeIf { it.lifted == want }.also { if (it == null) println("DDZTRACE select_failed want=$want") } // TEMP
     }
 
     /** 选牌的起点:出牌/跟牌的画面。真人局等过几帧过渡(刚当地主插底牌之类),单机局照旧只看一帧。 */
