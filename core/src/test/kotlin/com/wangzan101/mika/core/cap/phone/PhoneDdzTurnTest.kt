@@ -286,6 +286,14 @@ class PhoneDdzTurnTest {
         return RawFrame(image.width, image.height, (DdzScreen.ROWS + DdzCards.ROWS + DdzCards.LOBBY_ROWS + DdzPopups.ROWS).distinct().associateWith { image.getRGB(0, it, image.width, 1, null, 0, image.width) })
     }
 
+    /** 把 Mika 屏上手牌那段整体点高 30 像素(和 DdzScreenTest 一样):620 行大半是牌面,默认读法会认成闯关牌桌。 */
+    private fun classicHandLifted(name: String): RawFrame {
+        val image = ImageIO.read(javaClass.getResourceAsStream("/ddz/$name.png")!!)
+        return RawFrame(image.width, image.height, (DdzScreen.ROWS + DdzCards.ROWS + DdzCards.LOBBY_ROWS + DdzPopups.ROWS).distinct().associateWith { y ->
+            IntArray(image.width) { x -> if (y >= 560 && x in 744..1673) image.getRGB(x, y + 30) else image.getRGB(x, y) }
+        })
+    }
+
     private val fullBlank = RawFrame(2412, 1080, (DdzScreen.ROWS + DdzCards.ROWS + DdzCards.LOBBY_ROWS + DdzPopups.ROWS).distinct().associateWith { IntArray(2412) })
 
     /** hand_t1 这一手,从大到小;上一手 DouZero 出完后手里该剩的牌。 */
@@ -437,6 +445,43 @@ class PhoneDdzTurnTest {
             assertEquals(name, listOf(2140 to 995), game.taps.take(1))
             assertEquals(name, 1, game.taps.count { it == 2140 to 995 })
         }
+    }
+
+    @Test fun aSinglePlayerClassicHandLiftedByOurTapIsNotReadAsTheStageTable() = runTest {
+        // 线上 2026-11-11 20:44:经典场(快速开始 新手场)6 张里 4 张点高 30 像素,620 行大半是牌面,
+        // 默认读法把手牌行错到 644、抬起的牌读空:select 把已经抬起的牌又点下去,最后 select_failed。
+        val lifted = classicHandLifted("human_hand_hint_raised_qqq107")
+        assertEquals("默认读法当成闯关牌桌", emptySet<Int>(), DdzScreen.read(lifted).lifted)
+        val classic = DdzScreen.read(lifted, classic = true)
+        assertEquals((0 until classic.handCount).toSet(), classic.lifted)
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(List(4) { lifted }))
+        val dispatcher = toolDispatcher(game)
+        PhoneDdzTurn.markSingle(dispatcher.ctx, "http://mac:3426")
+        val hand = List(classic.handCount) { "\"3\"" }.joinToString(",")
+        val result = PhoneDdzTurn.execute(
+            Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"play","hand":[$hand],"play":[$hand]}""").jsonObject),
+            dispatcher.ctx,
+        )
+        assertNotEquals("select_failed", result.text("error"))
+        assertTrue(game.taps.toString(), game.taps.none { it.second == DdzScreen.CARD_Y })
+    }
+
+    @Test fun aStageSessionKeepsReadingTheStageTableAsStage() = runTest {
+        // 闯关牌桌的手牌整体高 32 像素:按经典牌桌读会把整手牌都当成抬起的;闯关局照旧按闯关读
+        val call = lobbyFrame("vd_stage_call")
+        val lead = lobbyFrame("vd_stage_lead")
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(call)))
+        val dispatcher = toolDispatcher(game)
+        PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
+        game.frames.addAll(List(4) { lead })
+        val view = DdzScreen.read(lead)
+        assertEquals(setOf(19), view.lifted)
+        val hand = List(view.handCount) { "\"3\"" }.joinToString(",")
+        PhoneDdzTurn.execute(
+            Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"play","hand":[$hand],"play":["3"]}""").jsonObject),
+            dispatcher.ctx,
+        )
+        assertTrue(game.taps.toString(), game.taps.contains(view.cardX(0) to DdzScreen.CARD_Y))
     }
 
     @Test fun aFinishedClassicHandIsPlayedAgainButTheReliefPopupGoesToTheModel() = runTest {
