@@ -113,6 +113,8 @@ internal class DdzTracker(private val settling: DdzSettlingPolicy = DdzSettlingP
         // 就不是我刚出完、按钮还留着的那几帧(那时桌上没有他们的「不出」)
         if (turn == DdzSeat.Me && !leftMe && leading && read(DdzSide.Left) == DdzSeen.Pass && read(DdzSide.Right) == DdzSeen.Pass) leftMe = true
         if (turn == DdzSeat.Me && !leftMe) return
+        // 我方先出且上一手有效牌是我出的,轮到我前的每家都只能是不出;不等出牌区读稳
+        inferOwnLeadPasses(turn, leading)
         resolve(seen)
         // 张数少了的那家出过牌了:闹钟还没离开他(出得太快、清桌太快)也当他这一手出完,马上读
         for (seat in listOf(DdzSeat.Left, DdzSeat.Right)) {
@@ -124,6 +126,7 @@ internal class DdzTracker(private val settling: DdzSettlingPolicy = DdzSettlingP
         }
         if (turn == null || turn == active) return
         advance(turn)
+        inferOwnLeadPasses(turn, leading)
         resolve(seen)
     }
 
@@ -245,6 +248,20 @@ internal class DdzTracker(private val settling: DdzSettlingPolicy = DdzSettlingP
         confirmedSeats += seat
         if (cards.isNotEmpty()) lastPlay[seat] = cards.toList()
         note("${seat.name}=${cards.joinToString("")}")
+    }
+
+    private fun lastNonEmptyWasMine(): Boolean {
+        val index = history.indexOfLast { it.isNotEmpty() }
+        return index >= 0 && confirmedSeats.getOrNull(index) == DdzSeat.Me
+    }
+
+    private fun inferOwnLeadPasses(turn: DdzSeat?, leading: Boolean) {
+        if (turn != DdzSeat.Me || !leading || waiting.isEmpty() || waiting.any { it.first == DdzSeat.Me } || !lastNonEmptyWasMine()) return
+        while (waiting.isNotEmpty()) {
+            val (seat, _) = waiting.removeFirst()
+            record(seat, emptyList())
+            lastSeen -= seat
+        }
     }
 
     private fun note(event: String) {

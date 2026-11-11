@@ -106,6 +106,38 @@ class DdzTrackerTest {
         assertTrue(tracker.ready())
     }
 
+    @Test fun myLeadInfersPassesWhenOneAreaWasCleared() {
+        left = DdzSeen.Cards(listOf("5"))
+        repeat(4) { see(DdzSeat.Me) }
+        tracker.mine(listOf("9", "9"))
+        right = DdzSeen.Empty
+        left = DdzSeen.Pass
+        see(DdzSeat.Right)
+        see(DdzSeat.Left)
+        see(DdzSeat.Me)
+        tracker.observe(DdzSeat.Me, { if (it == DdzSide.Left) left else right }, { bottom }, leading = true)
+        assertNull(tracker.broken)
+        assertEquals(listOf(listOf("5"), listOf("9", "9"), emptyList(), emptyList()), tracker.history)
+        assertTrue(tracker.ready())
+    }
+
+    @Test fun leadInferenceIsSkippedWhenLastPlayWasNotMine() {
+        left = DdzSeen.Cards(listOf("5"))
+        repeat(4) { see(DdzSeat.Me) }
+        tracker.mine(emptyList())
+        right = DdzSeen.Cards(listOf("7"))
+        see(DdzSeat.Right)
+        see(DdzSeat.Left)
+        see(DdzSeat.Left)
+        see(DdzSeat.Left)
+        see(DdzSeat.Me)
+        left = DdzSeen.Pass
+        right = DdzSeen.Empty
+        tracker.observe(DdzSeat.Me, { if (it == DdzSide.Left) left else right }, { bottom }, leading = true)
+        assertEquals(listOf(listOf("5"), emptyList(), listOf("7")), tracker.history)
+        assertFalse(tracker.ready())
+    }
+
     @Test fun myOwnLingeringButtonsAfterALeadAreNotANewTurn() {
         tracker.observe(DdzSeat.Me, { DdzSeen.Empty }, { bottom }, leadingWith20 = true)
         tracker.mine(listOf("3"))
