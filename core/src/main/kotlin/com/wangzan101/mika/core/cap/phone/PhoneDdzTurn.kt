@@ -67,6 +67,8 @@ internal object PhoneDdzTurn : PhoneTool {
     private const val AUTO_CANCEL_MS = 600L
     /** 轮到自己时别家的牌还没落下、或动画盖着手牌,最多再等几帧(约 3 秒,倒计时有 15 秒)。 */
     private const val SETTLE_POLLS = 16
+    /** 自动出牌后画面一直不变:连着按这么多次还看不出牌出去了,就把这一手交回模型,别对着同一帧无限按。 */
+    private const val SAME_PLAY_POLLS = 3
     private const val NO_HAND_POLLS = 60
     private const val NEW_HAND_GAP = 8
     private const val LIFT_POLLS = 4
@@ -291,6 +293,26 @@ internal object PhoneDdzTurn : PhoneTool {
             initialView = DdzScreen.read(next, classic = true)
         }
         if (turn.mode == DdzMode.Human) turn.humanEligible = true
+        // 回大厅了(和在等待循环里一样):单机标记作废,下一局可能进的是真人场
+        if (turn.single && turn.atTable && initialView.phase == DdzPhase.Other && DdzCards.singleLobby(frame)) turn.single = false
+        // 单机经典场不在牌桌上(比如结算上盖着礼包广告):白块会被读成轮到我出、手里两张,点下去就点在广告上。
+        // 这一帧一下都不点,直接交还模型去关弹窗;闯关牌桌这时才发现也照旧记上,不算离开牌桌。
+        // 「当前金币可前往更高级场次」弹窗照旧交给下面的等待循环点头确定
+        if (turn.mode != DdzMode.Human && turn.single && DdzCards.singleStageTable(frame)) turn.stage = true
+        if (turn.mode != DdzMode.Human && turn.single && !turn.stage &&
+            !DdzCards.classicHumanTable(frame) && DdzCards.singleMoreCoinsPopup(frame) == null
+        ) {
+            turn.phase = DdzPhase.Other
+            turn.actionsSeen = ctx.evidence.actions
+            return ToolExecution(buildJsonObject {
+                put("ok", true)
+                turn.mode?.let { put("mode", it.wire) }
+                put("state", turn.state.wire)
+                put("phase", DdzPhase.Other.name.lowercase())
+                put("handCount", initialView.handCount)
+                put("note", "off_table")
+            })
+        }
         val view = takeBackControl(initialView, ctx, turn).also { dealt(turn, it) }
         if (turn.mode == DdzMode.Human && turn.snapshot != null && !snapshotMatches(turn.snapshot!!, frame, view, turn)) {
             humanPause(turn, DdzSessionReason.SNAPSHOT_MISMATCH)
@@ -946,6 +968,10 @@ internal object PhoneDdzTurn : PhoneTool {
         turn.humanActionSeen = false
         // 一直看不到手牌就不是在牌桌上(大厅、选关页、弹窗),干等等不来:发牌用不了这么久
         var empty = 0
+        // 上一次自动出牌(规则或 DouZero)时的画面;画面一直不变就是这一手没真的出去
+        var lastPlayed: DdzView? = null
+        // 对着同一帧连着出了几次牌还没看到变化
+        var unchangedPlays = 0
         while (budget-- > 0) {
             if (turn.stopped) return last
             if (turn.mode == DdzMode.Human && turn.state == DdzSessionState.Paused) return last
@@ -955,6 +981,14 @@ internal object PhoneDdzTurn : PhoneTool {
             val view = frame?.let { DdzScreen.read(it, classic = classicTable(turn) && !(turn.single && DdzCards.singleStageTable(it))) }
             if (view != null) {
                 last = view
+                // 上一次自动出牌之后画面变过没有:手牌张数变了、或者局面离开了这一手(phase 变了)才算真的出去了,
+                // 这时才重置等待预算;一直不变就是按下去游戏没认,不能靠它把这一手无限拖下去
+                val playedView = lastPlayed
+                if (playedView != null && (view.phase != playedView.phase || view.handCount != playedView.handCount)) {
+                    lastPlayed = null
+                    unchangedPlays = 0
+                    budget = polls
+                }
                 if (turn.mode == DdzMode.Human) {
                     // 真人场结算页(离开/换桌/继续):这一局打完了,不是弹窗
                     if (DdzCards.humanResult(frame)) return view.copy(phase = DdzPhase.Result)
@@ -997,14 +1031,16 @@ internal object PhoneDdzTurn : PhoneTool {
                 val table = turn.single && DdzCards.singleStageTable(frame)
                 if (table) turn.stage = true
                 val offTable = turn.single && turn.stage && !table
-                empty = if (offTable || (view.handCount == 0 && view.phase == DdzPhase.Other)) empty + 1 else 0
-                if (empty > NO_HAND_POLLS) return if (offTable) view.copy(phase = DdzPhase.Other) else view
+                // 单机经典场也一样:不在牌桌上(结算上盖着礼包广告)时白块会被读成轮到我出、手里两张,和闯关的 offTable 一起计数
+                val classicOffTable = turn.single && !turn.stage && !DdzCards.classicHumanTable(frame)
+                empty = if (offTable || classicOffTable || (view.handCount == 0 && view.phase == DdzPhase.Other)) empty + 1 else 0
+                if (empty > NO_HAND_POLLS) return if (offTable || classicOffTable) view.copy(phase = DdzPhase.Other) else view
                 if (view.phase != DdzPhase.Other) turn.atTable = true
                 // 进过牌桌又回了大厅:下一局可能进的是真人场,单机标记作废,要再 start 一次
                 if (turn.single && turn.atTable && view.phase == DdzPhase.Other && DdzCards.singleLobby(frame)) { turn.single = false; return view }
                 // 闯关打完一手(赢或输):还要接着打就自己点黄色的继续(不点蓝色的离开、不点看视频的),马上发下一手;否则交回模型
-                val won = turn.single && DdzCards.stageWin(frame)
-                val settled = won || (turn.single && DdzCards.stageLoss(frame))
+                val won = turn.single && turn.stage && DdzCards.stageWin(frame)
+                val settled = won || (turn.single && turn.stage && DdzCards.stageLoss(frame))
                 // 叫分、加倍、出牌都是新的一手打起来了:上一手的结算已经计过数,这一手重新计
                 if (!settled && view.phase != DdzPhase.Result && view.phase != DdzPhase.Other) turn.counted = false
                 if (settled && turn.leaving) { waitOrSteer { delay(POLL_MS) } ?: return last; continue }
@@ -1045,6 +1081,8 @@ internal object PhoneDdzTurn : PhoneTool {
                         continue
                     }
                 }
+                // 单机经典场不在牌桌上:不记牌、不叫分、不出牌,像闯关的 offTable 一样等到交给模型
+                if (classicOffTable) { waitOrSteer { delay(POLL_MS) } ?: return last; continue }
                 if (view.phase != DdzPhase.Call) turn.bid = false
                 if (view.phase != DdzPhase.Double) turn.declined = false
                 dealt(turn, view)
@@ -1149,8 +1187,11 @@ internal object PhoneDdzTurn : PhoneTool {
                                 Auto.Off -> return view
                             }
                         } else {
+                            // 同一帧上又该我动手、上一次自动出牌却一点没变:这一手按不出去,连着几次就交回模型
+                            // (单机没有暂停的语义),别对着同一帧一直按
+                            if (lastPlayed != null && ++unchangedPlays >= SAME_PLAY_POLLS) return view
                             when (byDouZero(ctx, turn, frame, view)) {
-                                Auto.Played -> { left = false; budget = polls }
+                                Auto.Played -> { left = false; lastPlayed = view }
                                 Auto.Settling -> Unit
                                 Auto.Off -> return view
                             }
