@@ -445,6 +445,103 @@ class PhoneDdzTurnTest {
         }
     }
 
+    /**
+     * 单机经典场的结算上盖着「1元超值礼」礼包广告(2026-11-12 00:07 真机):[DdzScreen.read] 把广告上的白块读成
+     * 轮到我出、手里 2 张,`classicHumanTable` 是 false。规则接手后绝不能拿这一帧去点。
+     */
+    private fun giftPackAd() = shot("single_gift_pack_ad_over_result")
+
+    @Test fun aGiftPackAdOverTheSingleResultIsNeverTappedByTheRules() = runTest {
+        val saved = PhoneDdzTurn.advise
+        PhoneDdzTurn.advise = { _, _ -> error("DouZero must not be asked off the table") }
+        try {
+            val ad = giftPackAd()
+            assertFalse("construction: the ad is not the classic table", DdzCards.classicHumanTable(ad))
+            val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(List(70) { ad }))
+            val dispatcher = toolDispatcher(game)
+            PhoneDdzTurn.markSingle(dispatcher.ctx, "http://mac:3426")
+            // 规则已经接手(tracker broken):以前这里会由 fallback 的 smallest() 点在广告的「第1天」面板上
+            PhoneDdzTurn.useTracker(dispatcher.ctx, DdzTracker(DdzSettlingPolicy.SINGLE).apply { fail("unsure_left") })
+            val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"wait"}""").jsonObject), dispatcher.ctx)
+            assertEquals(result.content.toString(), "other", result.text("phase"))
+            assertTrue("the ad must not be tapped: ${game.taps}", game.taps.isEmpty())
+        } finally {
+            PhoneDdzTurn.advise = saved
+        }
+    }
+
+    @Test fun aGiftPackAdOverTheSingleResultNeverAsksDouZeroEvenWhenTheTrackerIsFine() = runTest {
+        val saved = PhoneDdzTurn.advise
+        PhoneDdzTurn.advise = { _, _ -> error("must not ask") }
+        try {
+            val ad = giftPackAd()
+            val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(List(70) { ad }))
+            val dispatcher = toolDispatcher(game)
+            PhoneDdzTurn.markSingle(dispatcher.ctx, "http://mac:3426")
+            PhoneDdzTurn.useTracker(dispatcher.ctx, leftLedPairs())
+            val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"wait"}""").jsonObject), dispatcher.ctx)
+            assertEquals(result.content.toString(), "other", result.text("phase"))
+            assertNull("off the table DouZero is never asked: ${result.content}", result.text("douzeroOff"))
+            assertTrue("the ad must not be tapped: ${game.taps}", game.taps.isEmpty())
+        } finally {
+            PhoneDdzTurn.advise = saved
+        }
+    }
+
+    @Test fun hintOnTheGiftPackAdDoesNotPlayAnything() = runTest {
+        val ad = giftPackAd()
+        // 广告上的白块读成轮到我出:不设门槛时 hint 会按「先出」走 smallest(),点在广告上
+        assertEquals(DdzPhase.Lead, DdzScreen.read(ad, classic = true).phase)
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(List(4) { ad }))
+        val dispatcher = toolDispatcher(game)
+        PhoneDdzTurn.markSingle(dispatcher.ctx, "http://mac:3426")
+        val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"hint"}""").jsonObject), dispatcher.ctx)
+        assertEquals(result.content.toString(), "other", result.text("phase"))
+        assertNull("nothing was played: ${result.content}", result.text("autoPlayed"))
+        assertTrue("the ad must not be tapped: ${game.taps}", game.taps.isEmpty())
+    }
+
+    @Test fun aRealSingleClassicTableStillReachesDouZero() = runTest {
+        val asked = mutableListOf<String>()
+        val saved = PhoneDdzTurn.advise
+        PhoneDdzTurn.advise = { _, body -> asked += body; """{"play":[]}""" }
+        try {
+            val follow = shot("single_classic_table_follow")
+            assertTrue("construction: the real table passes the gate", DdzCards.classicHumanTable(follow))
+            assertEquals("BJ SJ 4 4", DdzCards.hand(follow, DdzScreen.read(follow, classic = true))?.joinToString(" "))
+            val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(follow, follow, follow) + List(70) { fullBlank }))
+            val dispatcher = toolDispatcher(game)
+            PhoneDdzTurn.markSingle(dispatcher.ctx, "http://mac:3426")
+            PhoneDdzTurn.useTracker(dispatcher.ctx, leftLedPairs())
+            val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"wait"}""").jsonObject), dispatcher.ctx)
+            assertTrue("the gate must not block the real table: ${result.content}", asked.isNotEmpty())
+            val body = Json.parseToJsonElement(asked.first()).jsonObject
+            assertEquals("BJ SJ 4 4".split(' '), body["hand"]!!.jsonArray.map { it.jsonPrimitive.content })
+        } finally {
+            PhoneDdzTurn.advise = saved
+        }
+    }
+
+    @Test fun anAdThatAppearsDuringAWaitIsNotTakenForTheClassicTable() = runTest {
+        // 原地等的时候广告才盖上来(不是调用开始的那一帧):等待循环自己也不能点
+        val saved = PhoneDdzTurn.advise
+        PhoneDdzTurn.advise = { _, _ -> error("DouZero must not be asked off the table") }
+        try {
+            val others = full("hand_k2")
+            assertTrue("construction: another player's turn at a real table", DdzCards.classicHumanTable(others))
+            val ad = giftPackAd()
+            val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(others) + List(70) { ad }))
+            val dispatcher = toolDispatcher(game)
+            PhoneDdzTurn.markSingle(dispatcher.ctx, "http://mac:3426")
+            PhoneDdzTurn.useTracker(dispatcher.ctx, DdzTracker(DdzSettlingPolicy.SINGLE).apply { fail("unsure_left") })
+            val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"wait"}""").jsonObject), dispatcher.ctx)
+            assertEquals(result.content.toString(), "other", result.text("phase"))
+            assertTrue("nothing may be tapped: ${game.taps}", game.taps.isEmpty())
+        } finally {
+            PhoneDdzTurn.advise = saved
+        }
+    }
+
     @Test fun withoutTheSingleMarkDouZeroIsNeverAsked() = runTest {
         val saved = PhoneDdzTurn.advise
         PhoneDdzTurn.advise = { _, _ -> error("must not ask") }
@@ -820,7 +917,15 @@ class PhoneDdzTurnTest {
         PhoneDdzTurn.advise = { _, body -> asked += body; """{"play":[]}""" }
         try {
             val follow = full("hand_t1")
-            val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(lobbyFrame("vd_lobby")) + List(40) { follow }))
+            val pass = DdzScreen.read(follow).buttons[0].let { it.x to it.y }
+            // DouZero 出完这一手(不要)以后画面要真的走到别家:一直停在同一帧上,工具会(正确地)认为这一手没出去
+            val game = object : Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(lobbyFrame("vd_lobby")) + List(40) { follow })) {
+                override suspend fun quickTap(x: Int, y: Int): Boolean {
+                    taps += x to y
+                    if (x to y == pass) { frames.clear(); frames.addAll(List(70) { fullBlank }) }
+                    return true
+                }
+            }
             val dispatcher = toolDispatcher(game)
             fun args(json: String) = Args(PhoneDdzTurn.def, Json.parseToJsonElement(json).jsonObject)
             val started = PhoneDdzTurn.execute(args("""{"action":"start","advisor":"http://mac:3426"}"""), dispatcher.ctx)
@@ -829,6 +934,29 @@ class PhoneDdzTurnTest {
             assertEquals(1, asked.size)
             val waited = PhoneDdzTurn.execute(args("""{"action":"wait"}"""), dispatcher.ctx)
             assertNull("旧的手数不能在 wait 里再报一次: ${waited.content}", waited.text("autoPlayed"))
+        } finally {
+            PhoneDdzTurn.advise = saved
+        }
+    }
+
+    @Test fun aStuckSingleClassicFollowIsHandedBackAfterAFewPresses() = runTest {
+        // 单机经典场 tracker 已坏、规则接手,画面一直卡在同一张跟牌帧上(真机上比如门槛漏掉的弹窗):
+        // 以前 fallback 每轮都按一次不出、画面不变又重置等待预算,会对着同一帧无限按。现在按几次就交回模型。
+        val saved = PhoneDdzTurn.advise
+        PhoneDdzTurn.advise = { _, _ -> error("DouZero must not be asked once the hand is broken") }
+        try {
+            val follow = full("hand_t1")
+            val pass = DdzScreen.read(follow).buttons[0].let { it.x to it.y }
+            val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(lobbyFrame("vd_lobby")) + List(100) { follow }))
+            val dispatcher = toolDispatcher(game)
+            val result = PhoneDdzTurn.execute(
+                Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","advisor":"http://mac:3426"}""").jsonObject),
+                dispatcher.ctx,
+            )
+            assertEquals(result.toString(), "follow", result.text("phase"))
+            assertNotEquals(result.toString(), "paused", result.text("state"))
+            assertTrue("不能对着同一帧无限按: ${game.taps}", game.taps.size <= 16)
+            assertTrue("「不出」有上限: ${game.taps}", game.taps.count { it == pass } <= 3)
         } finally {
             PhoneDdzTurn.advise = saved
         }
