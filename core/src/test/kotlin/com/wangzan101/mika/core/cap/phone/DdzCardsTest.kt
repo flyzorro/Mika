@@ -7,6 +7,7 @@ import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.io.File
 import javax.imageio.ImageIO
 
 class DdzCardsTest {
@@ -234,5 +235,18 @@ class DdzCardsTest {
         assertEquals(DdzSide.Right, DdzCards.clock(frame("table_left55")))
         assertEquals(DdzSide.Left, DdzCards.clock(frame("table_rightKK")))
         assertNull(DdzCards.clock(frame("hand_t1")))
+    }
+
+    /** 2026-11-11 16:13:金豆输光后冷启动,游戏开在商店的金豆页;真人 start 不认得它,一下都没点就放弃了。 */
+    @Test fun theBeanStorePageIsRecognised() {
+        assertTrue(DdzCards.humanShop(fullFrame("human_shop_beans")))
+    }
+
+    @Test fun noOtherDdzScreenIsTakenForTheBeanStorePage() {
+        // 主资源里也有一个 /ddz(样本字),按其中一张测试图找到测试资源的目录
+        val dir = File(javaClass.getResource("/ddz/human_main_lobby.png")!!.toURI()).parentFile
+        val names = dir.listFiles()!!.map { it.name.substringBeforeLast('.') }.filter { it != "human_shop_beans" }
+        assertTrue("fixtures: ${names.size}", names.size >= 80)
+        for (name in names) assertFalse(name, DdzCards.humanShop(fullFrame(name)))
     }
 }

@@ -1108,6 +1108,36 @@ class PhoneDdzTurnTest {
         assertEquals(result.toString(), listOf(1285 to 560, 872 to 400), game.taps.take(2))
     }
 
+    @Test fun humanStartLeavesTheStorePageThenWalksIntoTheNormalRoom() = runTest {
+        // 2026-11-11 16:13:金豆输光后冷启动,游戏开在商店的金豆页。那页上什么都花钱,只点左上角的返回箭头,
+        // 回到主大厅再照常点「真人对战」、普通场。
+        val shop = shot("human_shop_beans")
+        val lobby = shot("human_main_lobby")
+        val rooms = shot("human_classic_rooms")
+        val matching = shot("human_matching")
+        val call = full("call")
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(shop, lobby, rooms, matching, call) + List(6) { call } + List(2) { lobbyFrame("vd_lobby") }))
+        val dispatcher = toolDispatcher(game)
+        PhoneDdzTurn.adviseBid = { _, _ -> 0 }
+        val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","auto":true,"advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
+        assertEquals(result.toString(), listOf(127 to 82, 1285 to 560, 872 to 400), game.taps.take(3))
+    }
+
+    @Test fun humanStartTapsOnlyTheStorePagesBackArrow() = runTest {
+        // 商店页别的地方一下都不点:连点几次返回还停在这页,就交还模型,不再点。
+        // 也不走 OCR:实测 16:13 认不出这页时每一轮都 OCR 整屏,start 拖了 294 秒
+        val shop = shot("human_shop_beans")
+        var ocr = 0
+        val game = object : Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(shop))) {
+            override suspend fun readVisibleText(): List<VisibleTextLine>? { ocr++; return null }
+        }
+        run(game, """{"action":"start","mode":"human","auto":true,"advisor":"http://mac:3426"}""")
+        assertTrue(game.taps.toString(), game.taps.isNotEmpty())
+        assertTrue(game.taps.toString(), game.taps.all { it == 127 to 82 })
+        assertTrue(game.taps.toString(), game.taps.size <= 3)
+        assertEquals("商店页不该 OCR", 0, ocr)
+    }
+
     @Test fun humanStartWalksFromTheRoomsPageIntoTheNormalRoom() = runTest {
         val rooms = shot("human_classic_rooms")
         val call = full("call")
