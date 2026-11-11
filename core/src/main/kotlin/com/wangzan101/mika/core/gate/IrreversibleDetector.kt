@@ -49,6 +49,8 @@ object IrreversibleDetector {
     private const val STRONG_MAX_LEN = 12
     private val STATUS_PREFIXES = listOf('待', '已')
     val STATUS_SUFFIXES = listOf("成功", "记录", "售后", "明细", "方式", "列表", "中心", "入口", "码")
+    /** 付款、下单类的词后面是「页」是页面名(结算页、支付页面),不是按钮;删除、撤回后面跟「页」仍是动作(删除页面)。 */
+    private val PAGE_NAME_ACTIONS = setOf(IrrevAction.pay, IrrevAction.order)
 
     /** 这些付款词只认按钮本身,或前面是「立即」「确认」「去」(「充值中心」「话费充值」「优惠买单」是入口,不算)。 */
     val EXACT_PAY = listOf("收银台", "买单", "充值", "储值", "提现", "转出", "打赏", "缴费", "捐赠", "捐款")
@@ -366,6 +368,7 @@ object IrreversibleDetector {
     private fun actionAt(t: String, w: String, i: Int): Boolean {
         if (i > 0 && t[i - 1] in STATUS_PREFIXES) return false
         val rest = t.substring(i + w.length).dropWhile { !it.isLetterOrDigit() }
+        if (STRONG[w] in PAGE_NAME_ACTIONS && rest.startsWith("页")) return false
         return STATUS_SUFFIXES.none { rest.startsWith(it) }
     }
 

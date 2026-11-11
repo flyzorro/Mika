@@ -260,6 +260,15 @@ class IrreversibleDetectorTest {
             "申请退款" to IrrevAction.order, "确认付款" to IrrevAction.pay)) {
             assertEquals(w, a, d.matchName(w))
         }
+    }
+
+    // 实测 2026-11-11:斗地主结算页左上角的返回,模型写的 target 以「结算页」开头,被当成下单拦下
+    @Test fun aPayOrOrderWordNamingAPageIsNotAnAction() {
+        for (w in listOf("结算页", "结算页左上角返回按钮", "支付页面", "购买页返回")) assertNull(w, d.matchName(w))
+        assertNull(d.classify("phone_tap", args("""{"x":62,"y":54,"target":"结算页左上角返回按钮"}"""), null))
+        // 删除、撤回一类后面跟「页」还是动作(删除页面就是删掉这一页)
+        assertEquals(IrrevAction.delete, d.matchName("删除页面"))
+        assertEquals(IrrevAction.order, d.matchName("去结算"))
         // 状态标签也不给通用「确认」当上下文
         val tabs = snap(el("@e1", "待付款", listOf(0, 0, 99, 99)), el("@e2", "确认", listOf(500, 600, 999, 700)))
         assertNull(d.classify("phone_tap", args("""{"ref":"@e2","snapshotId":"s1"}"""), tabs))
