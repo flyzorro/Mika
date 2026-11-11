@@ -846,17 +846,17 @@ internal object PhoneDdzTurn : PhoneTool {
         repeat(2) {
             if (!tap(ctx, turn, view.buttons.last().x, view.buttons.last().y)) return Sent.Rejected
             delay(VERDICT_MS)
-            val verdict = verify(view, count, left, ctx)
+            val verdict = verify(view, count, left, ctx, classicTable(turn))
             if (verdict != null) return verdict
         }
         return Sent.Rejected
     }
 
     /** 按了出牌之后看手牌:出去了、少的不对(Drift),或者一点没动(null,可以再按一次)。 */
-    private suspend fun verify(view: DdzView, count: Int, left: List<String>?, ctx: ToolContext): Sent? {
+    private suspend fun verify(view: DdzView, count: Int, left: List<String>?, ctx: ToolContext, classic: Boolean): Sent? {
         repeat(HUMAN_SCENE_RETRY_POLLS) {
             val frame = ctx.screen.rawFrame(FULL_ROWS)
-            val after = frame?.let(DdzScreen::read)
+            val after = frame?.let { DdzScreen.read(it, classic = classic) }
             if (frame != null && after != null) {
                 when {
                     // 出完最后几张,一局结束;真人场直接换成离开/换桌/继续的结算页,它认成 Other(那一页也会数出一排「手牌」)
@@ -950,7 +950,9 @@ internal object PhoneDdzTurn : PhoneTool {
             if (turn.stopped) return last
             if (turn.mode == DdzMode.Human && turn.state == DdzSessionState.Paused) return last
             val frame = ctx.screen.rawFrame(if (turn.single || turn.mode == DdzMode.Human) FULL_ROWS else DdzScreen.ROWS)
-            val view = frame?.let(DdzScreen::read)
+            // 经典牌桌按经典读:游戏轮到我时把提示的牌(如王炸)抬起,不按经典读会把这手牌当成闯关的高一截来数,少数一张
+            // 闯关刚开的第一帧 turn.stage 还没记上:这一帧本身是闯关牌桌就不按经典读
+            val view = frame?.let { DdzScreen.read(it, classic = classicTable(turn) && !(turn.single && DdzCards.singleStageTable(it))) }
             if (view != null) {
                 last = view
                 if (turn.mode == DdzMode.Human) {

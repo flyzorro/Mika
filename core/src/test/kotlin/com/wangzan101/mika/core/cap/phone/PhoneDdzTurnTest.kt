@@ -424,6 +424,27 @@ class PhoneDdzTurnTest {
         }
     }
 
+    @Test fun aSingleClassicHandWithTheHintRaisedIsReadAsClassic() = runTest {
+        // 实测 2026-11-11 23:56:单机经典场轮到我跟,游戏把提示的王炸抬起 17 像素;不按经典牌桌读时这手牌被当成闯关(高一截)来数,
+        // [BJ, SJ, 4, 4] 读成 [BJ, SJ, 4],DouZero 拿到的手牌少一张(和记着的手牌对不上就是 hand_drift)
+        val asked = mutableListOf<String>()
+        val saved = PhoneDdzTurn.advise
+        PhoneDdzTurn.advise = { _, body -> asked += body; """{"play":[]}""" }
+        try {
+            val follow = full("single_follow_rocket_lifted_bj_sj_4_4")
+            val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(follow, follow, follow) + List(70) { fullBlank }))
+            val dispatcher = toolDispatcher(game)
+            PhoneDdzTurn.markSingle(dispatcher.ctx, "http://mac:3426")
+            PhoneDdzTurn.useTracker(dispatcher.ctx, leftLedPairs())
+            val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"wait"}""").jsonObject), dispatcher.ctx)
+            assertTrue("要问 DouZero: ${result.content}", asked.isNotEmpty())
+            val body = Json.parseToJsonElement(asked.first()).jsonObject
+            assertEquals("BJ SJ 4 4".split(' '), body["hand"]!!.jsonArray.map { it.jsonPrimitive.content })
+        } finally {
+            PhoneDdzTurn.advise = saved
+        }
+    }
+
     @Test fun withoutTheSingleMarkDouZeroIsNeverAsked() = runTest {
         val saved = PhoneDdzTurn.advise
         PhoneDdzTurn.advise = { _, _ -> error("must not ask") }
