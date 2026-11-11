@@ -779,6 +779,52 @@ class PhoneDdzTurnTest {
         assertEquals(listOf(2140 to 995, DdzScreen.read(bust).buttons[0].let { it.x to it.y }), game.taps)
     }
 
+    @Test fun aFinishedSinglePlayerSessionCountsEachHandOnceEvenAfterWaitingAgain() = runTest {
+        // 2026-11-11 23:31: start 打满几局后停在结算页,模型再 wait 一次,同一局又被算成新的一局
+        val bust = lobbyFrame("vd_result_bust")
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(lobbyFrame("vd_lobby"), bust, full("call"), bust)))
+        val dispatcher = toolDispatcher(game)
+        fun args(json: String) = Args(PhoneDdzTurn.def, Json.parseToJsonElement(json).jsonObject)
+        val start = PhoneDdzTurn.execute(args("""{"action":"start","advisor":"http://mac:3426","hands":2}"""), dispatcher.ctx)
+        assertEquals(start.toString(), "2", start.text("handsPlayed"))
+        val wait = args("""{"action":"wait"}""")
+        assertEquals("停在同一个结算页上再 wait 不能再算一局", "2", PhoneDdzTurn.execute(wait, dispatcher.ctx).text("handsPlayed"))
+        assertEquals("第二次 wait 也一样", "2", PhoneDdzTurn.execute(wait, dispatcher.ctx).text("handsPlayed"))
+    }
+
+    @Test fun startReportsTheHandsDouZeroPlayedDuringItOnlyOnce() = runTest {
+        // start 期间 DouZero 出的手数要在 start 的返回里报出来,不能漏到紧接着的 wait 里
+        val asked = mutableListOf<String>()
+        val saved = PhoneDdzTurn.advise
+        PhoneDdzTurn.advise = { _, body -> asked += body; """{"play":[]}""" }
+        try {
+            val follow = full("hand_t1")
+            val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(lobbyFrame("vd_lobby")) + List(40) { follow }))
+            val dispatcher = toolDispatcher(game)
+            fun args(json: String) = Args(PhoneDdzTurn.def, Json.parseToJsonElement(json).jsonObject)
+            val started = PhoneDdzTurn.execute(args("""{"action":"start","advisor":"http://mac:3426"}"""), dispatcher.ctx)
+            assertEquals(started.toString(), "1", started.text("autoPlayed"))
+            assertEquals(1, started.content["autoMs"]!!.jsonArray.size)
+            assertEquals(1, asked.size)
+            val waited = PhoneDdzTurn.execute(args("""{"action":"wait"}"""), dispatcher.ctx)
+            assertNull("旧的手数不能在 wait 里再报一次: ${waited.content}", waited.text("autoPlayed"))
+        } finally {
+            PhoneDdzTurn.advise = saved
+        }
+    }
+
+    @Test fun aFinishedStageHandIsNotCountedAgainWhenWaitedOn() = runTest {
+        // 闯关的胜负计数也一样:停在胜利页上再 wait 不能又赢一手
+        val win = full("vd_stage_win_leave_continue")
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(full("vd_stage_right_clock"), full("vd_stage_right_clock"), win)))
+        val dispatcher = toolDispatcher(game)
+        fun args(json: String) = Args(PhoneDdzTurn.def, Json.parseToJsonElement(json).jsonObject)
+        val started = PhoneDdzTurn.execute(args("""{"action":"start","advisor":"http://mac:3426"}"""), dispatcher.ctx)
+        assertEquals(started.toString(), "1", started.text("handsWon"))
+        val waited = PhoneDdzTurn.execute(args("""{"action":"wait"}"""), dispatcher.ctx)
+        assertEquals("1", waited.text("handsWon"))
+    }
+
     @Test fun theLobbyLingeringRightAfterStartDoesNotCancelSinglePlayer() = runTest {
         val asked = mutableListOf<String>()
         val saved = PhoneDdzTurn.advise
