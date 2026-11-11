@@ -349,8 +349,9 @@ internal object PhoneDdzTurn : PhoneTool {
     private class Move(val moved: Boolean, val error: String? = null, val note: String? = null)
 
     /**
-     * 只在确认是单机的入口点开始,并记下这是单机局;从这一局起 DouZero 替模型出牌。入口有两个:大厅里标着「单机模式」的
-     * 快速开始(要金币),和单机模式里的闯关页的报名(首次免费,过关奖励金币)。
+     * 只在确认是单机的入口点开始,并记下这是单机局;从这一局起 DouZero 替模型出牌。入口有三个:大厅里标着「单机模式」的
+     * 快速开始(要金币)、单机「经典模式」场次页的快速开始(同样押金币,场次由游戏挑),和单机模式里闯关页的报名
+     * (首次免费,过关奖励金币)。
      */
     private suspend fun start(a: Args, ctx: ToolContext, turn: Turn): ToolExecution {
         val advisor = a.str("advisor") ?: throw ArgError("advisor", "required")
@@ -451,6 +452,8 @@ internal object PhoneDdzTurn : PhoneTool {
             seated -> null
             // 单机大厅的快速开始:经典场,每局押金币;金币不够弹的救济金交给模型(只点免费的直接领取)
             DdzCards.singleLobby(page) -> QUICK_START_X to QUICK_START_Y
+            // 单机的「经典模式」场次页:同样点右下角的快速开始,场次由游戏按当前金币挑,绝不点场次卡
+            DdzCards.singleClassicRooms(page) -> QUICK_START_X to QUICK_START_Y
             stage != null -> stage.first to STAGE_BUTTON_Y
             else -> return refused("not_single_player_lobby")
         }
