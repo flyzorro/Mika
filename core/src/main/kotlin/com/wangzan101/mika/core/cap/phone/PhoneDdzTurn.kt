@@ -781,8 +781,8 @@ internal object PhoneDdzTurn : PhoneTool {
             val after = frame?.let(DdzScreen::read)
             if (frame != null && after != null) {
                 when {
-                    // 出完最后几张,一局结束
-                    after.phase == DdzPhase.Result -> return Sent.Played
+                    // 出完最后几张,一局结束;真人场直接换成离开/换桌/继续的结算页,它认成 Other(那一页也会数出一排「手牌」)
+                    after.phase == DdzPhase.Result || DdzCards.humanResult(frame) -> return Sent.Played
                     after.handCount == view.handCount - count -> {
                         if (left == null) return Sent.Played
                         // 牌还在动的那几帧认不出,接着看
