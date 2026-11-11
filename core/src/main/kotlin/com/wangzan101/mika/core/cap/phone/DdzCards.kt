@@ -340,6 +340,82 @@ internal object DdzCards {
         return dark.toDouble() / pixels >= POPUP_DARK_DENSITY && bright.toDouble() / pixels >= POPUP_BRIGHT_DENSITY
     }
 
+    /**
+     * 真人场金豆不够时弹的领金豆弹窗:米色底板、正中一个黄色「领取」。返回「领取」的中点;认不准为 null。
+     * 和 [humanResult] / [unknownPopup] 一样固定区域比颜色,只认 2412×1080 的 Mika 屏。
+     */
+    fun humanReliefPopup(frame: RawFrame): Pair<Int, Int>? {
+        if (frame.width != 2412 || frame.height != 1080) return null
+        // 弹窗底板:正中一大片米色,别的画面没有这么整块的
+        var creamy = 0
+        var pixels = 0
+        for (y in RELIEF_PANEL_Y0 until RELIEF_PANEL_Y1) for (x in RELIEF_PANEL_X0 until RELIEF_PANEL_X1) {
+            if (cream(frame.pixel(x, y))) creamy++
+            pixels++
+        }
+        if (creamy.toDouble() / pixels < RELIEF_PANEL_DENSITY) return null
+        // 「领取」:按钮上下两条都是一整条金黄(中间被白字切开),正中够宽的那一条就是它
+        var cx = 0
+        for (y in listOf(RELIEF_CLAIM_TOP_Y, RELIEF_CLAIM_BOTTOM_Y)) {
+            val run = DdzScreen.runs(frame.width, gap = 30, minWidth = 300) { x ->
+                frame.pixel(x, y).let { p -> (p shr 16 and 0xff) > 200 && (p shr 8 and 0xff) in 121..214 && (p and 0xff) < 110 }
+            }.singleOrNull() ?: return null
+            if (run.first !in RELIEF_CLAIM_LEFT || run.last !in RELIEF_CLAIM_RIGHT) return null
+            cx = (run.first + run.last) / 2
+        }
+        return cx to RELIEF_CLAIM_TAP_Y
+    }
+
+    /**
+     * 「恭喜获得 金豆x5万」页:满屏亮黄横幅,下面绿「双倍领取」(带视频图标,绝不点)、右边文字链「普通领取」。
+     * 返回「普通领取」的中点;认不准为 null。同样只认 Mika 的屏。
+     */
+    fun humanReliefClaimed(frame: RawFrame): Pair<Int, Int>? {
+        if (frame.width != 2412 || frame.height != 1080) return null
+        // 满屏亮黄横幅:中间一带几乎全是亮黄,别的画面没有
+        var bright = 0
+        var pixels = 0
+        for (y in RELIEF_BANNER_Y0 until RELIEF_BANNER_Y1) for (x in RELIEF_BANNER_X0 until RELIEF_BANNER_X1) {
+            val p = frame.pixel(x, y)
+            if ((p shr 16 and 0xff) > 220 && (p shr 8 and 0xff) > 140 && (p and 0xff) < 140) bright++
+            pixels++
+        }
+        if (bright.toDouble() / pixels < RELIEF_BANNER_DENSITY) return null
+        // 绿色「双倍领取」:按钮下沿一整条绿,只用来认摆法,绝不给它的坐标
+        val green = DdzScreen.runs(frame.width, gap = 30, minWidth = 300) { x ->
+            frame.pixel(x, RELIEF_DOUBLE_Y).let { p -> (p shr 8 and 0xff) > 130 && (p shr 16 and 0xff) < 140 && (p and 0xff) < 140 }
+        }.singleOrNull() ?: return null
+        if (green.first !in RELIEF_DOUBLE_LEFT || green.last !in RELIEF_DOUBLE_RIGHT) return null
+        // 「普通领取」文字链:它下面那条浅灰下划线,取中点;绝不会落进绿色按钮里
+        val link = DdzScreen.runs(RELIEF_LINK_X1 - RELIEF_LINK_X0, gap = 10, minWidth = 80) { c ->
+            frame.pixel(RELIEF_LINK_X0 + c, RELIEF_LINK_UNDERLINE_Y).let { p -> min(p) > 140 && spread(p) < 45 }
+        }.singleOrNull() ?: return null
+        return (RELIEF_LINK_X0 + (link.first + link.last) / 2) to RELIEF_LINK_TAP_Y
+    }
+
+    private const val RELIEF_PANEL_X0 = 720
+    private const val RELIEF_PANEL_X1 = 1720
+    private const val RELIEF_PANEL_Y0 = 200
+    private const val RELIEF_PANEL_Y1 = 400
+    private const val RELIEF_PANEL_DENSITY = 0.6
+    private const val RELIEF_CLAIM_TOP_Y = 700
+    private const val RELIEF_CLAIM_BOTTOM_Y = 770
+    private val RELIEF_CLAIM_LEFT = 940..1100
+    private val RELIEF_CLAIM_RIGHT = 1300..1420
+    private const val RELIEF_CLAIM_TAP_Y = 730
+    private const val RELIEF_BANNER_X0 = 300
+    private const val RELIEF_BANNER_X1 = 2100
+    private const val RELIEF_BANNER_Y0 = 300
+    private const val RELIEF_BANNER_Y1 = 400
+    private const val RELIEF_BANNER_DENSITY = 0.75
+    private const val RELIEF_DOUBLE_Y = 900
+    private val RELIEF_DOUBLE_LEFT = 940..1100
+    private val RELIEF_DOUBLE_RIGHT = 1340..1500
+    private const val RELIEF_LINK_X0 = 1450
+    private const val RELIEF_LINK_X1 = 1850
+    private const val RELIEF_LINK_UNDERLINE_Y = 895
+    private const val RELIEF_LINK_TAP_Y = 870
+
     private const val CLASSIC_MARK_X = 1050
     private const val CLASSIC_MARK_Y = 350
     private const val CLASSIC_MARK_W = 350

@@ -1207,7 +1207,7 @@ internal object PhoneDdzTurn : PhoneTool {
 
     /**
      * 从游戏主大厅点中间的「真人对战」、在真人场次页点「普通场」,然后等匹配和牌桌;单机的经典场次页不点。
-     * 路上的救济金、看视频领取、广告由 [clearPopup] 收拾;领完回到场次页再点一次普通场。
+     * 路上真人场的领金豆弹窗自己领(只点免费的),单机救济金、看视频领取、广告由 [clearPopup] 收拾;领完回到场次页再点一次普通场。
      * 最多等约 45 秒(真人场匹配的倒计时就有 30 秒),弹窗另算。只认 Mika 的屏,认不出的画面一律不点。
      */
     private suspend fun awaitHumanEntry(
@@ -1224,6 +1224,19 @@ internal object PhoneDdzTurn : PhoneTool {
             if (frame != null && DdzCards.classicHumanTable(frame)) return HumanEntry(frame)
             // 单机的「经典模式」场次页:不是真人场,绝不点
             if (frame != null && DdzCards.singleClassicRooms(frame)) return HumanEntry(null, "single_player_rooms")
+            // 真人场金豆不够:弹窗点「领取」,「恭喜获得」页点「普通领取」(绝不点带视频图标的「双倍领取」);
+            // 弹窗盖在场次页上,要先于场次页认。领完回到场次页再点一次普通场
+            val relief = frame?.let { DdzCards.humanReliefPopup(it) ?: DdzCards.humanReliefClaimed(it) }
+            if (relief != null) {
+                if (!tapOnTheWay(ctx, turn, relief.first, relief.second)) return HumanEntry(null)
+                delay(POPUP_TAP_MS)
+                popupPolls++
+                polls = 0
+                roomsTapped = false
+                waitOrSteer { delay(POLL_MS) } ?: return HumanEntry(null)
+                page = ctx.screen.rawFrame(FULL_ROWS)
+                continue
+            }
             if (frame != null && DdzCards.humanMainLobby(frame)) {
                 if (!lobbyTapped) {
                     if (!tapOnTheWay(ctx, turn, HUMAN_ENTRY_X, HUMAN_ENTRY_Y)) return HumanEntry(null)

@@ -3,6 +3,7 @@ package com.wangzan101.mika.core.cap.phone
 import com.wangzan101.mika.core.uistate.RawFrame
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -26,6 +27,35 @@ class DdzCardsTest {
         assertTrue(DdzCards.humanResult(fullFrame("human_result_leave_change_continue")))
         for (name in listOf("call", "lead", "hand_t1", "hand_k2", "result", "human_autoplay_left11_right5", "vd_lobby", "vd_relief")) {
             assertFalse(name, DdzCards.humanResult(fullFrame(name)))
+        }
+    }
+
+    /** 2026-11-11 实测 Mika 屏:金豆输光点普通场,先弹领金豆、再出恭喜获得。两个画面都认得出,点也都落在免费按钮上。 */
+    @Test fun theHumanBeanReliefScreensAreRecognisedWithSafeTaps() {
+        val claim = DdzCards.humanReliefPopup(fullFrame("human_relief_popup"))
+        val normal = DdzCards.humanReliefClaimed(fullFrame("human_relief_claimed"))
+        assertNotNull("领金豆弹窗", claim)
+        assertNotNull("恭喜获得页", normal)
+        // 「领取」黄按钮、右边「普通领取」文字链、绿色「双倍领取」(带视频图标)按实测位置量
+        assertTrue("「领取」落在黄按钮上: $claim", claim!!.first in 980..1380 && claim.second in 675..790)
+        assertTrue("「普通领取」落在文字链上: $normal", normal!!.first in 1520..1720 && normal.second in 840..900)
+        assertTrue("绝不点带视频图标的「双倍领取」: $normal", normal.first !in 1000..1440 || normal.second !in 815..925)
+        // 两个画面互相不认错
+        assertNull(DdzCards.humanReliefPopup(fullFrame("human_relief_claimed")))
+        assertNull(DdzCards.humanReliefClaimed(fullFrame("human_relief_popup")))
+    }
+
+    @Test fun theHumanBeanReliefScreensAreNotConfusedWithOtherDdzScreens() {
+        // 牌桌、结算页、单机大厅、闯关页、单机救济金、真人场次页都不该被认成这两个画面
+        val others = listOf(
+            "call", "lead", "hand_t1", "result", "human_result_leave_change_continue", "human_autoplay_left11_right5",
+            "vd_lobby", "vd_relief", "vd_result_bust", "vd_stage_call", "vd_stage_win_leave_continue",
+            "vd_stage_loss", "vd_stage_continue", "vd_stage_ad_dialog", "human_classic_rooms",
+        )
+        for (name in others) {
+            val f = fullFrame(name)
+            assertNull("$name 当成领金豆弹窗", DdzCards.humanReliefPopup(f))
+            assertNull("$name 当成恭喜获得页", DdzCards.humanReliefClaimed(f))
         }
     }
 
