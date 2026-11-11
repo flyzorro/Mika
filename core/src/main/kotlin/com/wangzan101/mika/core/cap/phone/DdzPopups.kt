@@ -32,8 +32,10 @@ internal object DdzPopups {
         // 「获得加速机会」浮层盖着时倒计时不走:点右上角 ✕,会先问一句是否放弃
         if (has("获得加速机会")) return close(els, snapshot) ?: at(VIDEO_CLOSE_X, CLOSE_Y, "广告 ✕")
         if (els.any { COUNTDOWN.containsMatchIn(it.name) }) return Step.Wait
-        // 倒计时完了只剩结束页(「立刻打开」):点右上角 ✕
-        if (el("立刻打开") != null) return close(els, snapshot) ?: at(END_CLOSE_X, CLOSE_Y, "广告 ✕")
+        // 倒计时完了:视频还在放(「恭喜已获得奖励」)或换成了结束页(淘宝「立刻打开」、快手「立即下载」),都点右上角 ✕
+        if (els.any { el -> AD_MARKS.any { it in el.name } }) {
+            return close(els, snapshot) ?: if (has("已获得奖励")) at(VIDEO_CLOSE_X, CLOSE_Y, "广告 ✕") else at(END_CLOSE_X, CLOSE_Y, "广告 ✕")
+        }
         val ocr = texts.orEmpty()
         if (ocr.any { "点击任意空白" in it.text }) return at(BLANK_X, BLANK_Y, "空白处")
         if (ocr.any { "送钱" in it.text }) {
@@ -67,6 +69,8 @@ internal object DdzPopups {
     }
 
     private val COUNTDOWN = Regex("看\\d+s")
+    /** 激励视频和它结束页上才有的字;别的原生弹框(如登录游戏中心)不碰。 */
+    private val AD_MARKS = listOf("奖励", "广告", "立刻打开", "下载", "隐私")
     // 坐标按 0–999;救济金按钮的行按 1080 高的屏取像素
     private const val VIDEO_CLOSE_X = 942
     private const val END_CLOSE_X = 971

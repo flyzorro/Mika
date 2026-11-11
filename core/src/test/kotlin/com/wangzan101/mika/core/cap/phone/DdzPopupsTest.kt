@@ -65,6 +65,35 @@ class DdzPopupsTest {
         assertEquals(toPx(972, 2412), step.x)
     }
 
+    @Test fun aGrantedRewardVideoIsClosed() {
+        // Live 2026-11-11 (Kuaishou): after the countdown the bar says the reward is granted while the video plays on
+        val step = DdzPopups.next(screen(
+            el("恭喜已获得奖励", "TextView", 35, 56, 200, 111),
+            el("", "TextView", 884, 56, 909, 111),
+            el("", "ImageView", 930, 56, 955, 111),
+            el("立即下载", "TextView", 30, 650, 330, 760),
+        ), null, null) as Step.Tap
+        assertEquals("广告 ✕", step.what)
+        assertEquals(toPx(942, 2412), step.x)
+    }
+
+    @Test fun anyAdEndCardIsClosedNotDownloaded() {
+        // Live 2026-11-11: Kuaishou's end card says 立即下载 (Taobao's says 立刻打开); its cross is an empty TextView
+        val step = DdzPopups.next(screen(
+            el("快手极速版 刷视频即可领取现金红包随时提现 立即下载", "RelativeLayout", 0, 0, 999, 999),
+            el("", "TextView", 948, 31, 986, 114),
+            el("快手极速版", "TextView", 453, 409, 546, 466),
+            el("立即下载", "TextView", 415, 668, 584, 762),
+            el("摇一摇立即下载", "TextView", 443, 818, 600, 886),
+        ), null, null) as Step.Tap
+        assertEquals("广告 ✕", step.what)
+        assertEquals(toPx(967, 2412), step.x)
+    }
+
+    @Test fun anotherNativeDialogIsLeftToTheModel() {
+        assertNull(DdzPopups.next(screen(el("登录游戏中心", "TextView", 400, 300, 600, 350), el("退出游戏", "TextView", 300, 600, 450, 650)), null, null))
+    }
+
     @Test fun theRewardScreenIsTappedOnABlankSpot() {
         // OCR reads 「继续」 as 「多展」; the start of the line is stable
         assertEquals("空白处", tapped(DdzPopups.next(game, ocr("X2000", "金币", "点击任意空白区域多展"), null)))
