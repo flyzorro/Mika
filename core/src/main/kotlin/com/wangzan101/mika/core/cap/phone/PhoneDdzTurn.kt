@@ -1193,8 +1193,11 @@ internal object PhoneDdzTurn : PhoneTool {
                 return fallback(ctx, turn, tracker, frame, view)
             }
             Sent.Drift -> {
+                // 出牌已经按下去、牌也出去了(出的不是要的,或一直看不出出了什么):这一手算出过,轮次多半也过了,
+                // 不能拿按之前那一帧再出一次;后面几手按简单规则打
                 tracker.fail(DdzSessionReason.HAND_DRIFT)
-                return fallback(ctx, turn, tracker, frame, view)
+                turn.expectedHand = null
+                return Auto.Played
             }
             Sent.Rejected -> {
                 tracker.fail("confirm_failed")

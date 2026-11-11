@@ -1992,6 +1992,36 @@ class PhoneDdzTurnTest {
         }
     }
 
+    @Test fun aPlayThatDriftedAfterThePressIsNotPlayedAgainFromTheOldScreen() = runTest {
+        // 按了出牌、却看不出出去的是不是这几张(Drift):牌已经出去了,轮次也过了;
+        // 不能拿按之前那一帧再按简单规则出一次(会在别家回合乱点,或下一手按旧下标点错牌)
+        val saved = PhoneDdzTurn.advise
+        PhoneDdzTurn.advise = { _, _ -> """{"play":["Q","Q","Q","7"]}""" }
+        try {
+            val hint = shot("human_hand_hint_raised_qqq107") // 游戏已经把 Q Q Q 7 抬起
+            val play = DdzScreen.read(hint).buttons.last().let { it.x to it.y }
+            val game = object : Game(PhoneDdzTurn.PACKAGE, ArrayDeque(List(20) { hint })) {
+                override suspend fun quickTap(x: Int, y: Int): Boolean {
+                    taps += x to y
+                    // 按下出牌后 verify 那十二帧都认不出(报 Drift),之后这一局结束、出现结算页
+                    if (x to y == play) { frames.clear(); frames.addAll(List(12) { fullBlank } + full("human_result_leave_change_continue")) }
+                    return true
+                }
+            }
+            val dispatcher = toolDispatcher(game)
+            PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
+            PhoneDdzTurn.useTracker(dispatcher.ctx, DdzTracker(DdzSettlingPolicy.HUMAN).apply {
+                restore(DdzSeat.Right, listOf("J", "7", "4"), emptyList(), current = DdzSeat.Me)
+            })
+            val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"wait"}""").jsonObject), dispatcher.ctx)
+            assertEquals(result.content.toString() + game.taps, "hand_drift", result.text("douzeroOff"))
+            assertNotEquals(result.content.toString() + game.taps, "paused", result.text("state"))
+            assertEquals("只按了一次出牌,之后什么都没点", listOf(play), game.taps)
+        } finally {
+            PhoneDdzTurn.advise = saved
+        }
+    }
+
     @Test fun aHandBrokenMidHandKeepsUsingTheRulesOnLaterTurns() = runTest {
         // 同一局后面的每一手也不再问 DouZero、不暂停,直到下一局叫分
         val saved = PhoneDdzTurn.advise
