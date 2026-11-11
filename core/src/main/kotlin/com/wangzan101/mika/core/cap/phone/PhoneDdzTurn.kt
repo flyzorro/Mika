@@ -79,6 +79,7 @@ internal object PhoneDdzTurn : PhoneTool {
     internal fun bidLevel(hand: List<String>): Int = ConservativeDdzPolicy.callLevel(hand)
     private const val TAP_GAP_MS = 60L
     private const val SETTLE_MS = 250L
+    private val JOKERS = setOf("BJ", "SJ")
     private const val VERDICT_MS = 800L
     /** 这一手过了这么久就不再问模型,直接保底,免得倒计时走完。 */
     private const val RETRY_BUDGET_MS = 8_000L
@@ -755,12 +756,41 @@ internal object PhoneDdzTurn : PhoneTool {
     }
 
     private suspend fun smallest(view: DdzView, ctx: ToolContext, turn: Turn): Move {
-        return when (submit(setOf(view.handCount - 1), view, ctx, turn)) {
+        val hand = ctx.screen.rawFrame(FULL_ROWS)?.let { DdzCards.hand(it, view) }
+        // 读不出手牌就还是出最右边一张;读得出来就出点数最小的一整组,别把三张、对子拆着出
+        val want = if (hand != null && hand.size == view.handCount) leadGroup(hand) else setOf(view.handCount - 1)
+        return when (submit(want, view, ctx, turn)) {
             Sent.Played -> Move(true)
             Sent.SelectFailed -> Move(false, "select_failed")
             Sent.Drift -> Move(false, "hand_drift")
             Sent.Rejected -> Move(false, "rejected")
         }
+    }
+
+    /**
+     * 先出时从手牌里挑点数最小的一整组:单张、对子,或三张带一张最小的单牌(不带 2、不带王)。
+     * 4 张同点的炸弹、两张王凑成的王炸都留在后面;只剩炸弹就出最小的炸弹,只剩王炸就出两张王。
+     * [hand] 是从大到小的一手牌(见 [DdzCards.hand]),返回要出的下标。
+     */
+    internal fun leadGroup(hand: List<String>): Set<Int> {
+        val jokerBomb = "BJ" in hand && "SJ" in hand
+        val groups = hand.withIndex()
+            .groupBy { it.value }
+            .map { (rank, cards) -> rank to cards.map { it.index } }
+            .sortedBy { DdzCards.ORDER[it.first] ?: Int.MAX_VALUE }
+        val candidates = groups.filter { (rank, cards) -> cards.size < 4 && !(jokerBomb && rank in JOKERS) }
+        val first = candidates.firstOrNull()
+        if (first == null) {
+            // 没有能拆开的组:有炸弹出最小的炸弹,否则只剩王炸
+            return groups.firstOrNull { it.second.size == 4 }?.second?.toSet()
+                ?: groups.filter { it.first in JOKERS }.flatMap { it.second }.toSet()
+        }
+        val (_, cards) = first
+        if (cards.size < 3) return cards.toSet()
+        val kicker = candidates
+            .filter { it.second.size == 1 && it.first != "2" && it.first !in JOKERS }
+            .minByOrNull { DdzCards.ORDER[it.first] ?: Int.MAX_VALUE }
+        return (cards + kicker?.second.orEmpty()).toSet()
     }
 
     private enum class Sent { Played, SelectFailed, Rejected, Drift }
@@ -1231,7 +1261,7 @@ internal object PhoneDdzTurn : PhoneTool {
 
     /**
      * 这一局的历史记不全、DouZero 用不上时的出法:跟牌时桌上最大的是队友的就不出,是对手的就按游戏的「提示」
-     * (压不了就不出);先出就出最小的一张。出牌照样走 [submit] 核对,出不去就停下。
+     * (压不了就不出);先出就出点数最小的一整组([smallest])。出牌照样走 [submit] 核对,出不去就停下。
      */
     private suspend fun fallback(
         ctx: ToolContext, turn: Turn, tracker: DdzTracker, frame: com.wangzan101.mika.core.uistate.RawFrame, view: DdzView,

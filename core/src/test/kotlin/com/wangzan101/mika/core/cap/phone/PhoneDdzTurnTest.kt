@@ -227,10 +227,32 @@ class PhoneDdzTurnTest {
     @Test fun aPlayIsOnlyDoneWhenExactlyThoseCardsLeftTheHand() = runTest {
         // Live 2026-11-10 run 14: the screen changed after 出牌 but a different card had left the
         // hand; the move was recorded as played and the history went wrong (hand_drift one turn later).
-        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(frame("lead"), frame("lead_lifted"), frame("lead_lifted"), frame("lead_pressed"))))
-        // Lead 3 (the smallest); the next frame shows three 3s gone, not one.
+        // 先出一整组 9 3 3 3;下一帧少了别的牌(12 张,不是 11 张),不能当出过。
+        val group = liftedCards("lead", setOf(8, 12, 13, 14))
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(frame("lead"), group, group, frame("lead_pressed"))))
         val result = run(game, """{"action":"hint"}""")
         assertEquals(result.toString(), "hand_drift", result.text("error"))
+    }
+
+    @Test fun leadingWithHintLiftsTheWholeSmallestGroup() = runTest {
+        // 这手牌最小的能拆的组是三张 3,再带最小的单牌 9:抬起的得是这四张,不是最右一张
+        val lead = frame("lead")
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(List(8) { lead }))
+        run(game, """{"action":"hint"}""")
+        val view = DdzScreen.read(lead)
+        val cards = game.taps.filter { it.second == DdzScreen.CARD_Y }.map { it.first }.toSet()
+        assertEquals(setOf(8, 12, 13, 14).map { view.cardX(it) }.toSet(), cards)
+    }
+
+    @Test fun leadingWithAnUnreadableHandStillPlaysTheLastCard() = runTest {
+        // 第一帧认出轮到我;smallest 再读一帧时手牌认不出,退回出最右边一张,而不是去拆整组
+        val lead = frame("lead")
+        val unreadable = unreadableHand("lead")
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(lead, unreadable, lead, lead)))
+        run(game, """{"action":"hint"}""")
+        val view = DdzScreen.read(lead)
+        val cards = game.taps.filter { it.second == DdzScreen.CARD_Y }.map { it.first }.toSet()
+        assertEquals(game.taps.toString(), setOf(view.cardX(view.handCount - 1)), cards)
     }
 
     @Test fun pressesPlayAgainWhenTheFirstPressWasIgnored() = runTest {
@@ -344,18 +366,30 @@ class PhoneDdzTurnTest {
         rows[DdzScreen.HAND_ROW]?.let { px -> for (x in view.handLeft until view.handLeft + gap) px[x] = 0xFF0B2B4A.toInt() }
     }
 
-    /** 最后一张(最小)抬起来:出最小的一张时选牌对得上。 */
-    private fun liftedLastCard(name: String = "lead"): RawFrame = editedFrame(name) { base, rows, view ->
+    /** 把 [indices] 这几张抬起来:先出的一整组抬到位时选牌对得上。 */
+    private fun liftedCards(name: String, indices: Set<Int>): RawFrame = editedFrame(name) { base, rows, view ->
         val flatTop = if (DdzScreen.blackBar(base) > 0) 669 else 644
-        val x = view.handLeft + ((view.handCount - 1) * view.pitch).roundToInt()
-        for ((y, px) in rows) if (y in flatTop - 20 until flatTop) for (i in x until x + view.pitch.toInt()) px[i] = -1
+        for (index in indices) {
+            val x = view.handLeft + (index * view.pitch).roundToInt()
+            for ((y, px) in rows) if (y in flatTop - 20 until flatTop) for (i in x until x + view.pitch.toInt()) px[i] = -1
+        }
     }
 
-    /** 同一帧上最后一张(最小)没了:手牌少一张,用来核对出了最小的一张。 */
-    private fun withoutLastCard(name: String = "lead"): RawFrame = editedFrame(name) { _, rows, view ->
+    /** 出掉 [remove] 这几张之后的手牌:剩下的牌按原来的顺序挪到前面,张数跟着少。 */
+    private fun withoutCards(name: String, remove: Set<Int>): RawFrame = editedFrame(name) { _, rows, view ->
+        val kept = (0 until view.handCount).filter { it !in remove }
+        val original = rows.mapValues { it.value.copyOf() }
         val end = view.handLeft + ((view.handCount - 1) * view.pitch).roundToInt() + DdzScreen.CARD_WIDTH
-        val from = end - view.pitch.roundToInt()
-        for ((_, px) in rows) for (i in from until minOf(px.size, end + 4)) px[i] = 0xFF0B2B4A.toInt()
+        for ((_, px) in rows) for (x in view.handLeft until minOf(px.size, end + 4)) px[x] = 0xFF0B2B4A.toInt()
+        kept.forEachIndexed { newIndex, oldIndex ->
+            val from = view.handLeft + (oldIndex * view.pitch).roundToInt()
+            val to = view.handLeft + (newIndex * view.pitch).roundToInt()
+            val width = if (newIndex == kept.lastIndex) DdzScreen.CARD_WIDTH else view.pitch.roundToInt()
+            for ((y, px) in rows) {
+                val src = original.getValue(y)
+                for (i in 0 until width) if (to + i < px.size && from + i < src.size) px[to + i] = src[from + i]
+            }
+        }
     }
 
     private fun readyFollowTracker() = DdzTracker(DdzSettlingPolicy.HUMAN).apply {
@@ -892,6 +926,46 @@ class PhoneDdzTurnTest {
     @Test fun pickMapsRanksToDistinctCards() {
         assertEquals(setOf(1, 2), PhoneDdzTurn.pick(listOf("A", "3", "3"), listOf("3", "3")))
         assertNull(PhoneDdzTurn.pick(listOf("A", "3"), listOf("3", "3")))
+    }
+
+    @Test fun leadPlaysTheSmallestSingle() {
+        assertEquals(setOf(4), PhoneDdzTurn.leadGroup("K Q 9 7 3".split(' ')))
+    }
+
+    @Test fun leadPlaysTheSmallestPair() {
+        assertEquals(setOf(3, 4), PhoneDdzTurn.leadGroup("A A 9 4 4".split(' ')))
+    }
+
+    @Test fun leadKeepsTheMeasuredHandTogether() {
+        // 实测 2026-11-11:这手牌原来被一张张拆着出,现在最小的 4 是单张,只出它
+        val hand = "BJ SJ 2 2 2 A A A 10 8 8 8 8 6 6 6 5 5 5 4".split(' ')
+        assertEquals(setOf(19), PhoneDdzTurn.leadGroup(hand))
+    }
+
+    @Test fun leadPlaysThreeWithTheSmallestSingleKicker() {
+        assertEquals(setOf(2, 3, 4, 5), PhoneDdzTurn.leadGroup("A K 7 5 5 5".split(' ')))
+    }
+
+    @Test fun leadPlaysThreeAloneWhenNoKickerFits() {
+        // 2 是对子,不能当三张的带牌
+        assertEquals(setOf(2, 3, 4), PhoneDdzTurn.leadGroup("2 2 5 5 5".split(' ')))
+    }
+
+    @Test fun leadSkipsABombForTheSinglesAboveIt() {
+        assertEquals(setOf(0), PhoneDdzTurn.leadGroup("K 6 6 6 6".split(' ')))
+    }
+
+    @Test fun leadKeepsTheJokerBombForLast() {
+        assertEquals(setOf(2, 3), PhoneDdzTurn.leadGroup("BJ SJ 9 9".split(' ')))
+        assertEquals(setOf(0, 1), PhoneDdzTurn.leadGroup("BJ SJ".split(' ')))
+    }
+
+    @Test fun leadPlaysThePairBesideASingleJoker() {
+        assertEquals(setOf(1, 2), PhoneDdzTurn.leadGroup("BJ 9 9".split(' ')))
+    }
+
+    @Test fun leadFallsBackToTheSmallestBomb() {
+        assertEquals(setOf(4, 5, 6, 7), PhoneDdzTurn.leadGroup("8 8 8 8 5 5 5 5".split(' ')))
     }
 
     @Test fun humanStartReportsAnExplicitModeAndDoesNotTapTheTable() = runTest {
@@ -2225,13 +2299,14 @@ class PhoneDdzTurnTest {
         assertTrue(game.taps.isEmpty())
     }
 
-    @Test fun humanLeadWithAnEmptyAdvisorPlayFallsBackToTheSmallestCard() = runTest {
-        // 先出时 DouZero 没给明确的牌:猜一张可能出成别的牌,这一局剩下的按简单规则打(出最小的)
+    @Test fun humanLeadWithAnEmptyAdvisorPlayFallsBackToTheSmallestGroup() = runTest {
+        // 先出时 DouZero 没给明确的牌:猜一张可能出成别的牌,这一局剩下的按简单规则打(出点数最小的一整组)
         val saved = PhoneDdzTurn.advise
         PhoneDdzTurn.advise = { _, _ -> """{"play":[]}""" }
         try {
-            val lifted = liftedLastCard("lead")
-            val after = withoutLastCard("lead")
+            val group = setOf(8, 12, 13, 14)
+            val lifted = liftedCards("lead", group)
+            val after = withoutCards("lead", group)
             var played = false
             val game = object : Game(PhoneDdzTurn.PACKAGE, ArrayDeque(List(8) { lifted })) {
                 override suspend fun rawFrame(rows: List<Int>): RawFrame? = if (played) after else super.rawFrame(rows)
@@ -2245,7 +2320,7 @@ class PhoneDdzTurnTest {
             val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"wait"}""").jsonObject), dispatcher.ctx)
             assertEquals(result.content.toString() + game.taps, "invalid_advisor_play", result.text("douzeroOff"))
             assertNotEquals(result.content.toString() + game.taps, "paused", result.text("state"))
-            assertEquals("the smallest card was played", DdzScreen.read(lifted).buttons[0].let { it.x to it.y }, game.taps.single())
+            assertEquals("the smallest group was played", DdzScreen.read(lifted).buttons[0].let { it.x to it.y }, game.taps.single())
         } finally {
             PhoneDdzTurn.advise = saved
         }
