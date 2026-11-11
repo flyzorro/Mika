@@ -43,6 +43,12 @@ internal object PhoneDdzTurn : PhoneTool {
     /** Mika 屏上大厅右下角的快速开始(单机经典场,每局押金币)。 */
     private const val QUICK_START_X = 2140
     private const val QUICK_START_Y = 995
+    /** Mika 屏上游戏主大厅中间橙色「真人对战」卡片的中心。 */
+    private const val HUMAN_ENTRY_X = 1285
+    private const val HUMAN_ENTRY_Y = 560
+    /** Mika 屏上真人场次页绿色「普通场」卡片的中心(5 万-200 万金豆)。 */
+    private const val HUMAN_NORMAL_ROOM_X = 872
+    private const val HUMAN_NORMAL_ROOM_Y = 400
     /** Mika 屏上闯关页的报名。 */
     private const val STAGE_BUTTON_Y = 920
     private const val AUTO_CANCEL_MS = 600L
@@ -345,13 +351,16 @@ internal object PhoneDdzTurn : PhoneTool {
         var page = ctx.screen.rawFrame(FULL_ROWS) ?: return refused("no_frame")
         // 安卓的兼容小窗里游戏没铺满全屏,认牌的坐标全都不对:单独报出来,让模型先退出小窗
         if (letterboxed(page)) return refused("letterboxed")
+        // 单机的「经典模式」场次页也有场次卡,但不是真人场:直接拒绝,一下都不点
+        if (DdzCards.singleClassicRooms(page)) return refused("single_player_rooms")
         // Human mode may only attach to the current classic table. Stage tables and the
         // single-player lobby share the same button colors, so the explicit markers are a
         // required eligibility gate before any human-mode state is installed.
         if (!DdzCards.classicHumanTable(page)) {
             if (!a.bool("auto", false)) return refused("not_human_game")
-            // 模型点完快速开始就调 start:在这里等牌桌出来(不点任何东西),免得模型自己等、错过叫分
-            page = awaitHumanTable(ctx, turn) ?: return refused("not_human_game")
+            // 在主大厅点「真人对战」、在真人场次页点「普通场」,再等匹配和牌桌出来
+            val entry = awaitHumanEntry(ctx, turn, page)
+            page = entry.frame ?: return refused(entry.error ?: "not_human_game")
         }
         val view = DdzScreen.read(page)
         // 同一局里重复 start 才保留历史:上一局已结算、或历史已作废(含中途接手)都按新接手处理
@@ -1187,15 +1196,48 @@ internal object PhoneDdzTurn : PhoneTool {
         turn.reason = reason
     }
 
-    /** Poll (without tapping) until the classic human table is on screen; null on timeout, stop, or steer. */
-    private suspend fun awaitHumanTable(ctx: ToolContext, turn: Turn): com.wangzan101.mika.core.uistate.RawFrame? {
+    /** 从大厅/场次页走进真人牌桌的结果:[frame] 是牌桌;[error] 是要交还模型的明确画面。 */
+    private class HumanEntry(val frame: com.wangzan101.mika.core.uistate.RawFrame?, val error: String? = null)
+
+    /**
+     * 从游戏主大厅点中间的「真人对战」、在真人场次页点「普通场」,然后等匹配和牌桌;单机的经典场次页和弹窗都不点。
+     * 最多等约 45 秒(真人场匹配的倒计时就有 30 秒)。只认 Mika 的屏,认不出的画面一律不点。
+     */
+    private suspend fun awaitHumanEntry(
+        ctx: ToolContext, turn: Turn, first: com.wangzan101.mika.core.uistate.RawFrame,
+    ): HumanEntry {
+        var page = first
+        var lobbyTapped = false
+        var roomsTapped = false
         repeat(START_TABLE_POLLS) {
-            waitOrSteer { delay(POLL_MS) } ?: return null
-            if (turn.stopped) return null
-            val frame = ctx.screen.rawFrame(FULL_ROWS) ?: return@repeat
-            if (DdzCards.classicHumanTable(frame)) return frame
+            if (turn.stopped) return HumanEntry(null)
+            if (DdzCards.classicHumanTable(page)) return HumanEntry(page)
+            // 单机的「经典模式」场次页:不是真人场,绝不点
+            if (DdzCards.singleClassicRooms(page)) return HumanEntry(null, "single_player_rooms")
+            if (DdzCards.humanMainLobby(page)) {
+                if (!lobbyTapped) {
+                    if (!tapOnTheWay(ctx, turn, HUMAN_ENTRY_X, HUMAN_ENTRY_Y)) return HumanEntry(null)
+                    lobbyTapped = true
+                }
+            } else if (DdzCards.humanClassicRooms(page)) {
+                if (!roomsTapped) {
+                    if (!tapOnTheWay(ctx, turn, HUMAN_NORMAL_ROOM_X, HUMAN_NORMAL_ROOM_Y)) return HumanEntry(null)
+                    roomsTapped = true
+                }
+            } else if (DdzCards.unknownPopup(page)) {
+                // 领金豆之类的弹窗:不点,立刻交还模型
+                return HumanEntry(null, DdzSessionReason.UNKNOWN_POPUP)
+            }
+            waitOrSteer { delay(POLL_MS) } ?: return HumanEntry(null)
+            page = ctx.screen.rawFrame(FULL_ROWS) ?: return@repeat
         }
-        return null
+        return HumanEntry(null)
+    }
+
+    /** start 途中自己点的入口卡:上次暂停留下的真人会话也允许点这一下,点完立刻失效。 */
+    private suspend fun tapOnTheWay(ctx: ToolContext, turn: Turn, x: Int, y: Int): Boolean {
+        turn.humanEligible = true
+        return tap(ctx, turn, x, y)
     }
 
     /** Tracker failures where this hand's history is lost but the table is fine: the model plays the rest of the hand. */

@@ -217,6 +217,12 @@ class PhoneDdzTurnTest {
         return RawFrame(image.width, image.height, (DdzScreen.ROWS + DdzCards.ROWS + DdzCards.LOBBY_ROWS).distinct().associateWith { image.getRGB(0, it, image.width, 1, null, 0, image.width) })
     }
 
+    /** 无损 .png 的新截图(主大厅、场次页、匹配、弹窗);玩家认色和字形要用准色。 */
+    private fun shot(name: String): RawFrame {
+        val image = ImageIO.read((javaClass.getResourceAsStream("/ddz/$name.png") ?: javaClass.getResourceAsStream("/ddz/$name.jpg"))!!)
+        return RawFrame(image.width, image.height, (DdzScreen.ROWS + DdzCards.ROWS + DdzCards.LOBBY_ROWS).distinct().associateWith { image.getRGB(0, it, image.width, 1, null, 0, image.width) })
+    }
+
     private val fullBlank = RawFrame(2412, 1080, (DdzScreen.ROWS + DdzCards.ROWS + DdzCards.LOBBY_ROWS).distinct().associateWith { IntArray(2412) })
 
     /** hand_t1 这一手,从大到小;上一手 DouZero 出完后手里该剩的牌。 */
@@ -931,7 +937,7 @@ class PhoneDdzTurnTest {
     @Test fun humanAutoStartWaitsForTheTableAfterQuickStart() = runTest {
         // Live 2026-11-09 run 6: the model waited 25 s after 快速开始 before calling start
         // (start used to refuse the matching screen) and missed bidding.
-        val matching = lobbyFrame("vd_lobby")
+        val matching = fullBlank
         val call = full("call")
         val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(List(5) { matching } + listOf(call, call, lobbyFrame("vd_lobby"))))
         val dispatcher = toolDispatcher(game)
@@ -942,7 +948,7 @@ class PhoneDdzTurnTest {
     }
 
     @Test fun humanAutoStartGivesUpWhenNoTableAppears() = runTest {
-        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(lobbyFrame("vd_lobby"))))
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(fullBlank)))
         val dispatcher = toolDispatcher(game)
         val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","auto":true,"advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
         assertEquals("not_human_game", result.text("error"))
@@ -963,7 +969,7 @@ class PhoneDdzTurnTest {
 
     @Test fun humanAutoStartKeepsWaitingWhileTheTableIsStillMatching() = runTest {
         // 真人场匹配的倒计时就有 30 秒:原来的约 20 秒上限会让牌桌还没出来就放弃
-        val matching = lobbyFrame("vd_lobby")
+        val matching = fullBlank
         val call = full("call")
         val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(List(250) { matching } + listOf(call, call, lobbyFrame("vd_lobby"))))
         val dispatcher = toolDispatcher(game)
@@ -971,6 +977,81 @@ class PhoneDdzTurnTest {
         val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","auto":true,"advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
         assertNull(result.toString(), result.text("error"))
         assertEquals("bid at the deal after the long match", 1, game.taps.size)
+    }
+
+    @Test fun humanStartWalksFromTheMainLobbyIntoTheNormalRoom() = runTest {
+        // 2026-11-11: the model guessed (275,384) from a screenshot, hit 单机模式 and played the
+        // single-player classic room. From the main lobby the tool now taps 真人对战 by itself.
+        val lobby = shot("human_main_lobby")
+        val rooms = shot("human_classic_rooms")
+        val matching = shot("human_matching")
+        val call = full("call")
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(lobby, rooms, matching, call) + List(6) { call } + List(2) { lobbyFrame("vd_lobby") }))
+        val dispatcher = toolDispatcher(game)
+        PhoneDdzTurn.adviseBid = { _, _ -> 0 }
+        val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","auto":true,"advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
+        assertEquals(result.toString(), listOf(1285 to 560, 872 to 400), game.taps.take(2))
+    }
+
+    @Test fun humanStartWalksFromTheRoomsPageIntoTheNormalRoom() = runTest {
+        val rooms = shot("human_classic_rooms")
+        val call = full("call")
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(rooms, call) + List(6) { call } + List(2) { lobbyFrame("vd_lobby") }))
+        val dispatcher = toolDispatcher(game)
+        PhoneDdzTurn.adviseBid = { _, _ -> 0 }
+        PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","auto":true,"advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
+        assertEquals(listOf(872 to 400), game.taps.take(1))
+    }
+
+    @Test fun humanStartRefusesTheSinglePlayerClassicRoomsPage() = runTest {
+        val screen = shot("single_classic_rooms")
+        for (auto in listOf(false, true)) {
+            val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(screen)))
+            val json = if (auto) """{"action":"start","mode":"human","auto":true,"advisor":"http://mac:3426"}"""
+            else """{"action":"start","mode":"human","advisor":"http://mac:3426"}"""
+            assertEquals("single_player_rooms", run(game, json).text("error"))
+            assertTrue(game.taps.isEmpty())
+        }
+    }
+
+    @Test fun humanStartNeverTapsTheReliefPopupOrTheClaimPage() = runTest {
+        val popup = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(shot("human_relief_popup"))))
+        assertEquals("not_human_game", run(popup, """{"action":"start","mode":"human","auto":true,"advisor":"http://mac:3426"}""").text("error"))
+        assertTrue(popup.taps.isEmpty())
+        val claimed = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(shot("human_relief_claimed"))))
+        assertEquals("unknown_popup", run(claimed, """{"action":"start","mode":"human","auto":true,"advisor":"http://mac:3426"}""").text("error"))
+        assertTrue(claimed.taps.isEmpty())
+    }
+
+    @Test fun theHumanLobbyAndRoomsAreTellApartFromTheOtherScreens() {
+        assertTrue(DdzCards.humanMainLobby(shot("human_main_lobby")))
+        // 单机经典模式的主大厅是同一张:真人局照样从中间的「真人对战」进
+        assertTrue(DdzCards.humanMainLobby(lobbyFrame("vd_lobby")))
+        assertTrue(DdzCards.humanClassicRooms(shot("human_classic_rooms")))
+        assertTrue(DdzCards.singleClassicRooms(shot("single_classic_rooms")))
+        assertFalse(DdzCards.humanClassicRooms(shot("single_classic_rooms")))
+        assertFalse(DdzCards.singleClassicRooms(shot("human_classic_rooms")))
+        assertFalse(DdzCards.humanMainLobby(shot("single_classic_rooms")))
+        assertFalse(DdzCards.humanMainLobby(shot("human_classic_rooms")))
+        // 主屏左边有黑边、上面压着 Mika 的悬泡:坐标对不上,不认
+        assertFalse(DdzCards.humanMainLobby(lobbyFrame("lobby")))
+        for (name in listOf("vd_stage", "vd_stage_call", "vd_hand_follow", "call", "lead", "result",
+                "vd_result_bust", "human_result_leave_change_continue", "vd_relief")) {
+            val frame = lobbyFrame(name)
+            assertFalse("main lobby $name", DdzCards.humanMainLobby(frame))
+            assertFalse("human rooms $name", DdzCards.humanClassicRooms(frame))
+            assertFalse("single rooms $name", DdzCards.singleClassicRooms(frame))
+        }
+        val table = shot("human_right_landlord_joker")
+        assertFalse(DdzCards.humanMainLobby(table))
+        assertFalse(DdzCards.humanClassicRooms(table))
+        assertFalse(DdzCards.singleClassicRooms(table))
+        // 牌桌(别家在想)不能认成大厅或场次页
+        val waiting = shot("human_matching")
+        assertTrue(DdzCards.classicHumanTable(waiting))
+        assertFalse(DdzCards.humanMainLobby(waiting))
+        assertFalse(DdzCards.humanClassicRooms(waiting))
+        assertFalse(DdzCards.singleClassicRooms(waiting))
     }
 
     /** A hand whose history is lost (missed_play) at hand_t1: Left shows pairs on top, we follow. */

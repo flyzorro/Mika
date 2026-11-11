@@ -112,12 +112,13 @@ internal object DdzCards {
     }
 
     /** 认大厅、闯关页要读的行。 */
-    val LOBBY_ROWS: List<Int> = ((5 until 105) + (885 until 925) + STAGE_BUTTON_ROW).toList()
+    val LOBBY_ROWS: List<Int> = ((5 until 105) + (100 until 135) + (885 until 925) + STAGE_BUTTON_ROW).toList()
     private const val STAGE_BUTTON_ROW = 950
 
     private val lobbyRibbon by lazy { mark("/ddz/lobby.txt") }
     private val stageTitle by lazy { mark("/ddz/stage.txt") }
     private val stageTableTitle by lazy { mark("/ddz/stage_table.txt") }
+    private val singleRoomsTitle by lazy { mark("/ddz/single_rooms.txt") }
     private val stageWinBanner by lazy { mark("/ddz/stage_win.txt") }
     private val stageLossBanner by lazy { mark("/ddz/stage_loss.txt") }
     private const val MARK_W = 96
@@ -131,6 +132,45 @@ internal object DdzCards {
 
     /** 是不是单机模式里的闯关页(左上角写着「闯关模式」,报名首次免费、过关奖励金币)。同样只认 Mika 的屏。 */
     fun singleStage(frame: RawFrame): Boolean = matches(frame, 190, 60, 255, 45, stageTitle, STAGE_SLACK) { min(it) > 200 }
+
+    /**
+     * 游戏主大厅:左绿「单机模式」、中橙「真人对战」、右蓝「好友约牌」三张卡片。真人局从这里点中间的卡片进真人场。
+     * 只认 Mika 的屏(铺满、没有黑边):主屏左边有黑边,上面还压着 Mika 的悬浮胶囊。
+     */
+    fun humanMainLobby(frame: RawFrame): Boolean {
+        if (frame.width != 2412 || frame.height != 1080 || DdzScreen.blackBar(frame) != 0) return false
+        fun rgb(x: Int, y: Int) = frame.pixel(x, y).let { p -> Triple(p shr 16 and 0xff, p shr 8 and 0xff, p and 0xff) }
+        fun teal(x: Int, y: Int) = rgb(x, y).let { (r, g, b) -> r < 90 && g > 150 && b > 145 && kotlin.math.abs(g - b) < 70 }
+        fun gold(x: Int, y: Int) = rgb(x, y).let { (r, g, b) -> r > 220 && g > 180 && b < 190 && r - b > 45 && g - b > 25 }
+        fun blue(x: Int, y: Int) = rgb(x, y).let { (r, g, b) -> b > 200 && r < 135 && g > 135 }
+        val tealCards = listOf(580 to 600, 620 to 600, 980 to 600).count { (x, y) -> teal(x, y) }
+        val goldCards = listOf(1400 to 300, 1400 to 400, 1450 to 400).count { (x, y) -> gold(x, y) }
+        val blueCards = listOf(1600 to 300, 1900 to 300, 1600 to 400, 1980 to 400).count { (x, y) -> blue(x, y) }
+        return tealCards >= 2 && goldCards >= 2 && blueCards >= 2
+    }
+
+    /**
+     * 真人经典场次页:左边绿色的「普通场」,右边青色的「精英场」、蓝色的「土豪场」(金豆场次)。
+     * 单机的场次页是 M 币、左边写着「经典模式」、上方 S11 赛季,颜色对不上。只认 Mika 的屏。
+     */
+    fun humanClassicRooms(frame: RawFrame): Boolean {
+        if (frame.width != 2412 || frame.height != 1080 || DdzScreen.blackBar(frame) != 0) return false
+        fun rgb(x: Int, y: Int) = frame.pixel(x, y).let { p -> Triple(p shr 16 and 0xff, p shr 8 and 0xff, p and 0xff) }
+        fun green(x: Int, y: Int) = rgb(x, y).let { (r, g, b) -> r < 120 && g > 165 && b > 100 && g - r > 60 }
+        fun cyan(x: Int, y: Int) = rgb(x, y).let { (r, g, b) -> r < 80 && g > 170 && b > 160 }
+        fun blue(x: Int, y: Int) = rgb(x, y).let { (r, g, b) -> b > 200 && r < 135 && g > 135 }
+        val normal = listOf(700 to 300, 800 to 300, 950 to 300, 1020 to 300).count { (x, y) -> green(x, y) }
+        val elite = listOf(1200 to 300, 1300 to 300).count { (x, y) -> cyan(x, y) }
+        val rich = listOf(1700 to 300, 1900 to 300).count { (x, y) -> blue(x, y) }
+        return normal >= 3 && elite >= 1 && rich >= 1
+    }
+
+    /**
+     * 单机模式的「经典模式」场次页(左上角「经典模式」、上方 S11 赛季、场次用 M 币):不是真人场,绝不能点。
+     * 这页左边本身就是暗的,不看黑边,只靠标题字形认。
+     */
+    fun singleClassicRooms(frame: RawFrame): Boolean =
+        matches(frame, 190, 100, 300, 35, singleRoomsTitle, STAGE_SLACK, bar = false) { min(it) > 200 }
 
     /**
      * 闯关页上该点的按钮中线横坐标:没报名时是黄色的「报名」,闯到一半是绿色的「继续闯关」(第二个为 true)。
