@@ -54,11 +54,21 @@ internal object DdzScreen {
     private const val RESULT_TAP_Y = 895
     /** 量手牌宽度的行:两种屏上都在牌面内,也避开最后一张右上角的地主绶带。 */
     const val HAND_ROW = 676
-    /** 看牌抬没抬的行:牌顶往下一点,没抬的牌这里还没有字。Mika 的屏上牌桌整体高 26 像素。 */
-    private const val LIFT_ROW = 676
-    private const val LIFT_ROW_FULL_WIDTH = 650
-    /** 闯关的牌桌上手牌再高 32 像素:没抬的牌在这一行已经是牌面(经典牌桌上只有抬起的牌到这里)。 */
-    private const val STAGE_HAND_PROBE = 628
+    /**
+     * 没抬的牌顶:主屏 669,Mika 的屏 644(牌桌整体高)。牌顶比这高出 [LIFT_MIN] 才算抬起:
+     * 点起来的高 30,游戏轮到我时自己把提示的牌抬起的只高 17。
+     */
+    private const val FLAT_TOP = 669
+    private const val FLAT_TOP_FULL_WIDTH = 644
+    private const val LIFT_MIN = 8
+    /** 量牌顶的那几列(从牌左缘起):点数字的右边、地主绶带的左边。 */
+    private const val TOP_X0 = 56
+    private const val TOP_X1 = 80
+    /**
+     * 闯关的牌桌上手牌再高 32 像素(牌顶 612):没抬的牌在这一行已经是牌面。
+     * 经典牌桌上点起来的牌顶在 614 也会到这里;提示抬起的在 627,到不了(原来看 628,大半手牌被提示抬起就当成了闯关)。
+     */
+    private const val STAGE_HAND_PROBE = 620
     private const val STAGE_HAND_DY = -32
     private const val STAGE_LIFT_ROW = 608
     /** 按钮中线在扫描行下方。 */
@@ -67,22 +77,26 @@ internal object DdzScreen {
     /** 再来一局约 400 宽;救济金弹窗里同一行的双倍领取只有 286,那个要看广告,绝不能当成它。 */
     private const val MIN_RESULT_BUTTON = 350
     /** 认界面只看这几行。 */
-    val ROWS = listOf(BUTTON_ROW, CALL_ROW, STAGE_TOP_ROW, STAGE_BOTTOM_ROW, AUTO_ROW, RESULT_ROW, HAND_ROW, LIFT_ROW_FULL_WIDTH,
-        STAGE_HAND_PROBE, HAND_ROW + STAGE_HAND_DY, STAGE_LIFT_ROW)
+    val ROWS = listOf(BUTTON_ROW, CALL_ROW, STAGE_TOP_ROW, STAGE_BOTTOM_ROW, AUTO_ROW, RESULT_ROW, HAND_ROW,
+        STAGE_HAND_PROBE, HAND_ROW + STAGE_HAND_DY, STAGE_LIFT_ROW) +
+        (FLAT_TOP - LIFT_MIN until FLAT_TOP) + (FLAT_TOP_FULL_WIDTH - LIFT_MIN until FLAT_TOP_FULL_WIDTH)
 
     fun read(frame: RawFrame): DdzView {
         if (frame.height != FRAME_HEIGHT) return DdzView(DdzPhase.Other, emptyList(), 0, 0.0, 0, emptySet())
         val pitch = pitch(frame)
         val dy = if (pitch > BASE_PITCH && stageHand(frame)) STAGE_HAND_DY else 0
-        val liftRow = (if (pitch > BASE_PITCH) LIFT_ROW_FULL_WIDTH else LIFT_ROW) + dy
+        val flatTop = if (pitch > BASE_PITCH) FLAT_TOP_FULL_WIDTH else FLAT_TOP
         val (handLeft, handCount, step) = hand(frame, pitch, HAND_ROW + dy)
-        // 抬起的牌点数字上移到这一行;抬起的牌还会盖住右边一张,所以不能只看这一条是不是牌面。
         // 闯关的牌没抬时牌顶在 612、点数字从 611-629 起(看点数),原来那一行会碰到没抬的 K 这类字的顶:改看 608 这一行有没有字,
         // 没抬的牌在这里还是桌布(不算字),抬起 30 像素的牌这里正是点数(王的红字从牌顶下 23 像素起)
+        // 经典牌桌看每张牌自己的牌顶:没抬的牌顶上一行是桌布,或是左边抬起那张压在它上面的阴影(不够白);
+        // 平放牌顶往上 [LIFT_MIN] 行都还是这张牌的牌面(白或字)才算抬起。半抬、王都一样
         val lifted = (0 until handCount).filterTo(LinkedHashSet()) { i ->
-            val x = handLeft + (i * step).roundToInt() + 8
-            if (dy != 0) (x until x + 70).count { ink(frame.pixel(it, STAGE_LIFT_ROW)) } >= 6
-            else (x until x + 70).count { !isCard(frame.pixel(it, liftRow)) } >= 6
+            val x = handLeft + (i * step).roundToInt()
+            if (dy != 0) (x + 8 until x + 78).count { ink(frame.pixel(it, STAGE_LIFT_ROW)) } >= 6
+            else (flatTop - LIFT_MIN until flatTop).all { y ->
+                (x + TOP_X0 until x + TOP_X1).count { frame.pixel(it, y).let { p -> white(p) || ink(p) } } > (TOP_X1 - TOP_X0) / 2
+            }
         }
         fun view(phase: DdzPhase, buttons: List<DdzButton>) = DdzView(phase, buttons, handLeft, step, handCount, lifted, HAND_ROW + dy)
         val result = buttons(frame, RESULT_ROW).filter { it.color == DdzColor.Yellow && it.right - it.left >= MIN_RESULT_BUTTON }
@@ -171,6 +185,14 @@ internal object DdzScreen {
             kotlin.math.abs(r - g) < 14 && kotlin.math.abs(g - b) < 14 && r in 131..214 -> DdzColor.Gray
             else -> null
         }
+    }
+
+    /** 牌面的白:比 [isCard] 严,左边抬起那张投在牌顶上的灰影不算。 */
+    private fun white(argb: Int): Boolean {
+        val r = argb shr 16 and 0xff
+        val g = argb shr 8 and 0xff
+        val b = argb and 0xff
+        return minOf(r, g, b) > 190 && maxOf(r, g, b) - minOf(r, g, b) < 45
     }
 
     private fun isCard(argb: Int): Boolean {

@@ -83,6 +83,10 @@ class DdzCardsTest {
         assertEquals("BJ SJ 2 2 A A K Q J 10 9 8 7 6 6 4 4 3 3 3".split(' '), hand("vd_landlord_lead"))
     }
 
+    @Test fun readsHintLiftedHumanHand() {
+        assertEquals("BJ SJ K Q Q Q 10 7".split(' '), hand("human_hand_hint_raised_qqq107"))
+    }
+
     @Test fun readsWhatEachOpponentPlayed() {
         assertRibbonPlay("5 5", DdzCards.play(frame("table_left55"), DdzSide.Left))
         assertEquals(DdzSeen.Cards(listOf("K", "K")), DdzCards.play(frame("table_rightKK"), DdzSide.Right))

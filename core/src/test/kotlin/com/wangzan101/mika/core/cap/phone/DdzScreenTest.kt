@@ -8,7 +8,8 @@ import javax.imageio.ImageIO
 
 class DdzScreenTest {
     private fun frame(name: String): RawFrame {
-        val image = ImageIO.read(javaClass.getResourceAsStream("/ddz/$name.jpg")!!)
+        val image = ImageIO.read(javaClass.getResourceAsStream("/ddz/$name.jpg")
+            ?: javaClass.getResourceAsStream("/ddz/$name.png")!!)
         return RawFrame(image.width, image.height, DdzScreen.ROWS.associateWith { image.getRGB(0, it, image.width, 1, null, 0, image.width) })
     }
 
@@ -89,6 +90,14 @@ class DdzScreenTest {
         assertEquals(emptySet<Int>(), DdzScreen.read(frame("lead")).lifted)
         assertEquals(setOf(5, 6), DdzScreen.read(frame("follow_lifted")).lifted)
         assertEquals(setOf(14), DdzScreen.read(frame("lead_lifted")).lifted)
+    }
+
+    @Test fun seesHintLiftedCardsOnMikasDisplay() {
+        assertEquals(emptySet<Int>(), DdzScreen.read(frame("human_hand_jokers_flat")).lifted)
+        // 轮到我时游戏自己把提示的 Q Q Q 7 抬高 17 像素;10 没抬,它上方露出的是左边抬起那张 Q。大半手牌抬着也不是闯关牌桌
+        val hint = DdzScreen.read(frame("human_hand_hint_raised_qqq107"))
+        assertEquals(setOf(3, 4, 5, 7), hint.lifted)
+        assertEquals(DdzScreen.HAND_ROW, hint.handRow)
     }
 
     @Test fun playButtonIsLastInFollowAndOnlyOneInLead() {
