@@ -59,6 +59,17 @@ class DdzCardsTest {
         }
     }
 
+    @Test fun theBeansTooManyPopupIsClosedWithTheXAndNothingElseIsConfusedWithIt() {
+        val x = DdzCards.humanBeansTooMany(fullFrame("human_room_beans_too_many"))
+        assertNotNull("豆豆太多弹窗", x)
+        assertTrue("点右上角的叉,不点「立即前往」: $x", x!!.first in 1640..1710 && x.second in 255..315)
+        assertNull(DdzCards.humanReliefPopup(fullFrame("human_room_beans_too_many")))
+        for (name in listOf("human_relief_popup", "human_relief_claimed", "human_classic_rooms", "human_main_lobby", "human_matching",
+            "call", "lead", "result", "vd_lobby", "vd_relief")) {
+            assertNull("$name 当成豆豆太多弹窗", DdzCards.humanBeansTooMany(fullFrame(name)))
+        }
+    }
+
     private fun frame(name: String): RawFrame {
         val image = ImageIO.read((javaClass.getResourceAsStream("/ddz/$name.png") ?: javaClass.getResourceAsStream("/ddz/$name.jpg"))!!)
         return RawFrame(image.width, image.height, (DdzScreen.ROWS + DdzCards.ROWS).distinct().associateWith { image.getRGB(0, it, image.width, 1, null, 0, image.width) })

@@ -408,6 +408,40 @@ internal object DdzCards {
         return (RELIEF_LINK_X0 + (link.first + link.last) / 2) to RELIEF_LINK_TAP_Y
     }
 
+    /**
+     * 豆豆多了点低级场弹的「您的豆豆足够到高级的房间游戏啦」:米色底板从 y≈335 起(领金豆弹窗的底板从 200 起),
+     * 底下一个黄色「立即前往」。返回右上角关闭叉的位置(点它只关弹窗,不点「立即前往」);认不准为 null。
+     */
+    fun humanBeansTooMany(frame: RawFrame): Pair<Int, Int>? {
+        if (frame.width != 2412 || frame.height != 1080) return null
+        fun density(y0: Int, y1: Int): Double {
+            var creamy = 0
+            var pixels = 0
+            for (y in y0 until y1 step 2) for (x in BEANS_PANEL_X0 until BEANS_PANEL_X1 step 3) {
+                if (cream(frame.pixel(x, y))) creamy++
+                pixels++
+            }
+            return creamy.toDouble() / pixels
+        }
+        if (density(BEANS_PANEL_Y0, BEANS_PANEL_Y1) < 0.8) return null
+        if (density(BEANS_ABOVE_Y0, BEANS_ABOVE_Y1) > 0.15) return null
+        for (y in listOf(RELIEF_CLAIM_TOP_Y, RELIEF_CLAIM_BOTTOM_Y)) {
+            val run = DdzScreen.runs(frame.width, gap = 30, minWidth = 300) { x ->
+                frame.pixel(x, y).let { p -> (p shr 16 and 0xff) > 200 && (p shr 8 and 0xff) in 121..230 && (p and 0xff) < 110 }
+            }.singleOrNull() ?: return null
+            if (run.first !in 1000..1100 || run.last !in 1300..1420) return null
+        }
+        return BEANS_CLOSE_X to BEANS_CLOSE_Y
+    }
+
+    private const val BEANS_PANEL_X0 = 740
+    private const val BEANS_PANEL_X1 = 1680
+    private const val BEANS_PANEL_Y0 = 345
+    private const val BEANS_PANEL_Y1 = 420
+    private const val BEANS_ABOVE_Y0 = 200
+    private const val BEANS_ABOVE_Y1 = 325
+    private const val BEANS_CLOSE_X = 1676
+    private const val BEANS_CLOSE_Y = 284
     private const val RELIEF_PANEL_X0 = 720
     private const val RELIEF_PANEL_X1 = 1720
     private const val RELIEF_PANEL_Y0 = 200
