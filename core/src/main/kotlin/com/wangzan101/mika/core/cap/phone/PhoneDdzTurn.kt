@@ -254,7 +254,8 @@ internal object PhoneDdzTurn : PhoneTool {
             turn.expectedHand = null
             turn.joining = true
         }
-        var initialView = DdzScreen.read(frame)
+        // 真人局只在经典牌桌:不判闯关(整手牌被点高时会误判)
+        var initialView = DdzScreen.read(frame, classic = turn.mode == DdzMode.Human)
         if (turn.mode == DdzMode.Human && !DdzCards.classicHumanTable(frame)) {
             val next = if (humanHandoff(frame) != DdzSessionReason.LOBBY_RETURN) recoverHumanScene(ctx, turn) else frame
             if (next == null || !DdzCards.classicHumanTable(next)) {
@@ -264,7 +265,7 @@ internal object PhoneDdzTurn : PhoneTool {
                 return paused(turn)
             }
             frame = next
-            initialView = DdzScreen.read(next)
+            initialView = DdzScreen.read(next, classic = true)
         }
         if (turn.mode == DdzMode.Human) turn.humanEligible = true
         val view = takeBackControl(initialView, ctx, turn).also { dealt(turn, it) }
@@ -365,7 +366,7 @@ internal object PhoneDdzTurn : PhoneTool {
             val entry = awaitHumanEntry(ctx, turn, page)
             page = entry.frame ?: return refused(entry.error ?: "not_human_game")
         }
-        val view = DdzScreen.read(page)
+        val view = DdzScreen.read(page, classic = true)
         // 同一局里重复 start 才保留历史:上一局已结算、或历史已作废(含中途接手)都按新接手处理
         val recoveringSameGame = turn.mode == DdzMode.Human && turn.atTable && turn.advisor == advisor &&
             turn.tracker?.broken == null && turn.tracker != null && turn.state != DdzSessionState.Result
@@ -746,7 +747,7 @@ internal object PhoneDdzTurn : PhoneTool {
         val selected = select(want, ctx, turn) ?: return Sent.SelectFailed
         if (selected.phase != view.phase || selected.handCount != view.handCount) return Sent.Drift
         val before = ctx.screen.rawFrame(FULL_ROWS)?.let { frame ->
-            DdzScreen.read(frame).takeIf { it.lifted == want && it.handCount == view.handCount }?.let { DdzCards.hand(frame, it) }
+            DdzScreen.read(frame, classic = turn?.mode == DdzMode.Human).takeIf { it.lifted == want && it.handCount == view.handCount }?.let { DdzCards.hand(frame, it) }
         }
         val left = before?.filterIndexed { index, _ -> index !in want }
         return confirm(view, want.size, left, ctx, turn)
@@ -1327,7 +1328,7 @@ internal object PhoneDdzTurn : PhoneTool {
             waitOrSteer { delay(POLL_MS) } ?: return null
             val frame = ctx.screen.rawFrame(FULL_ROWS)
             if (frame != null && DdzCards.classicHumanTable(frame)) {
-                if (DdzScreen.read(frame).phase != DdzPhase.Other) return frame
+                if (DdzScreen.read(frame, classic = true).phase != DdzPhase.Other) return frame
             } else if (frame != null && humanHandoff(frame) != DdzSessionReason.LOBBY_RETURN && clearPopup(ctx, turn, frame)) {
                 // 牌桌上盖着的广告:工具自己关掉再接着认
                 popupPolls++
@@ -1431,7 +1432,7 @@ internal object PhoneDdzTurn : PhoneTool {
             }
             turn.humanEligible = true
         }
-        return DdzScreen.read(frame)
+        return DdzScreen.read(frame, classic = turn?.mode == DdzMode.Human)
     }
 
     /** Human mode: wait out a few unrecognised frames (animations) before giving up on the table; null if it never comes back or the session paused. */
