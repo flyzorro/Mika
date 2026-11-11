@@ -407,6 +407,19 @@ class PhoneDdzTurnTest {
         assertEquals(2140 to 995, game.taps.first())
     }
 
+    @Test fun theSinglePlayerClassicRoomsPageStartsFromItsQuickStart() = runTest {
+        // 单机「经典模式」场次页的右下角快速开始:场次由游戏按当前金币挑,一下都不点场次卡
+        for (name in listOf("single_classic_rooms", "single_classic_rooms_newbie")) {
+            val page = shot(name)
+            assertTrue(name, DdzCards.singleClassicRooms(page))
+            val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(page, page, fullBlank, full("call"))))
+            val result = run(game, """{"action":"start","advisor":"http://mac:3426"}""")
+            assertEquals(name, "true", result.text("ok"))
+            assertEquals(name, listOf(2140 to 995), game.taps.take(1))
+            assertEquals(name, 1, game.taps.count { it == 2140 to 995 })
+        }
+    }
+
     @Test fun aFinishedClassicHandIsPlayedAgainButTheReliefPopupGoesToTheModel() = runTest {
         // 打完一手的结算点再来一局;接着弹的救济金(双倍领取要看视频)不点,交给模型
         val bust = lobbyFrame("vd_result_bust")
@@ -1174,13 +1187,15 @@ class PhoneDdzTurnTest {
     }
 
     @Test fun humanStartRefusesTheSinglePlayerClassicRoomsPage() = runTest {
-        val screen = shot("single_classic_rooms")
-        for (auto in listOf(false, true)) {
-            val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(screen)))
-            val json = if (auto) """{"action":"start","mode":"human","auto":true,"advisor":"http://mac:3426"}"""
-            else """{"action":"start","mode":"human","advisor":"http://mac:3426"}"""
-            assertEquals("single_player_rooms", run(game, json).text("error"))
-            assertTrue(game.taps.isEmpty())
+        for (name in listOf("single_classic_rooms", "single_classic_rooms_newbie")) {
+            val screen = shot(name)
+            for (auto in listOf(false, true)) {
+                val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(screen)))
+                val json = if (auto) """{"action":"start","mode":"human","auto":true,"advisor":"http://mac:3426"}"""
+                else """{"action":"start","mode":"human","advisor":"http://mac:3426"}"""
+                assertEquals(name, "single_player_rooms", run(game, json).text("error"))
+                assertTrue(name, game.taps.isEmpty())
+            }
         }
     }
 
