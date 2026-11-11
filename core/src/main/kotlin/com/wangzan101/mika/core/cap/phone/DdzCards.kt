@@ -277,8 +277,22 @@ internal object DdzCards {
         if (run != null && length >= HUMAN_RESULT_MIN_RUN && seen.lastOrNull() != run) seen.append(run)
         return "GBY" in seen
     }
+
+    /**
+     * 真人场结算页上绿色「离开」的中点。只认 [humanResult] 的画面;最左边那段绿色就是「离开」,
+     * 绝不返回蓝色「换桌」、黄色「继续」;认不出为 null,调用方一下都不点。
+     */
+    fun humanResultLeave(frame: RawFrame): Pair<Int, Int>? {
+        if (!humanResult(frame)) return null
+        val run = DdzScreen.runs(frame.width, gap = 30, minWidth = HUMAN_RESULT_MIN_RUN) { x ->
+            frame.pixel(x, HUMAN_RESULT_Y).let { p -> (p shr 8 and 0xff) > 150 && (p shr 16 and 0xff) < 120 && (p and 0xff) < 120 }
+        }.firstOrNull() ?: return null
+        return (run.first + run.last) / 2 to HUMAN_RESULT_TAP_Y
+    }
+
     /** 三个按钮上半截的一行(按钮在 790-880 之间,字在中间);读屏的行里有它(手牌那一段到 800 为止)。 */
     private const val HUMAN_RESULT_Y = 795
+    private const val HUMAN_RESULT_TAP_Y = 833
     private const val HUMAN_RESULT_MIN_RUN = 60
 
     /** A dimmed centered overlay, such as the relief popup, blocks the table. */
