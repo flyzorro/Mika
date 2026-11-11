@@ -242,6 +242,17 @@ class PhoneDdzTurnTest {
         assertEquals("两次出牌", 2, game.taps.count { it.second != DdzScreen.CARD_Y })
     }
 
+    @Test fun playingTheLastCardsOntoTheHumanResultScreenIsAPlay() = runTest {
+        // 实测 2026-11-11 15:52:最后一张 BJ 出去这局就完了,真人场直接换成离开/换桌/继续的结算页;
+        // 那一页认成 Other、手牌 15 张,一直看不出出了什么,报成 hand_drift 停下
+        val hand = (List(14) { "4" } + "3").joinToString(",", "[", "]") { "\"$it\"" }
+        val lifted = frame("lead_lifted") // 最后一张已抬起,不用再选
+        val result = full("human_result_leave_change_continue")
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(lifted, lifted, lifted) + List(20) { result }))
+        val played = run(game, """{"action":"play","hand":$hand,"play":["3"]}""")
+        assertNull(played.toString(), played.text("error"))
+    }
+
     @Test fun againNeverTapsTheReliefPopup() = runTest {
         val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(frame("vd_relief"))))
         assertEquals("wrong_phase", run(game, """{"action":"again"}""").text("error"))
