@@ -195,6 +195,29 @@ class DdzTrackerTest {
         assertTrue(tracker.ready())
     }
 
+    @Test fun scatteredUnsureFramesDuringBiddingDoNotAddUpToAFailure() {
+        // Live 2026-11-11 single-player: 叫分、抢地主的特效零星几帧读成「认不准」,从发牌攒到 16 帧,
+        // 一手还没出就 unsure_first_play 停了;只数连着的才对
+        repeat(40) { i ->
+            right = if (i % 2 == 0) DdzSeen.Unsure else DdzSeen.Empty
+            see(DdzSeat.Left)
+        }
+        assertNull(tracker.broken)
+        assertNull(tracker.landlord)
+        right = DdzSeen.Cards(listOf("3"))
+        repeat(3) { see(DdzSeat.Left) }
+        assertEquals(DdzSeat.Right, tracker.landlord)
+        assertEquals(listOf(listOf("3")), tracker.history)
+    }
+
+    @Test fun sixteenConsecutiveUnsureFramesBeforeTheFirstPlayStillFail() {
+        right = DdzSeen.Unsure
+        repeat(15) { see(DdzSeat.Left) }
+        assertNull(tracker.broken)
+        see(DdzSeat.Left)
+        assertEquals("unsure_first_play", tracker.broken)
+    }
+
     @Test fun anUnreadableFirstPlayIsNotPinnedOnTheNextSeat() {
         right = DdzSeen.Unsure
         see(DdzSeat.Left)

@@ -85,7 +85,8 @@ internal class DdzTracker(private val settling: DdzSettlingPolicy = DdzSettlingP
             }
             for (side in DdzSide.entries) {
                 val seen = read(side)
-                // 地主的第一手认不准:可能还在飞,等几帧;一直认不准就停,不能跳过去等下一家,否则会把下一家当成地主
+                // 地主的第一手认不准:可能还在飞,等几帧;一直认不准就停,不能跳过去等下一家,否则会把下一家当成地主。
+                // 只数连着的:叫分、抢地主的特效零星几帧认不准,从发牌一路攒到上限就一手没出也停了
                 if (seen == DdzSeen.Unsure) {
                     if (++firstUnsure >= settling.maxUnconfirmedFrames) fail("unsure_first_play")
                     return
@@ -95,6 +96,8 @@ internal class DdzTracker(private val settling: DdzSettlingPolicy = DdzSettlingP
                 // 地主出第一手前是 20 张:剩的张数对不上出的张数(还叠成一摞,或者这家是 17 张的农民)就不算
                 val left = count[seat]
                 if (left != null && seen.ranks.size != FIRST - left) continue
+                // 读到了认得准的牌:连着的「认不准」重新数
+                firstUnsure = 0
                 // 张数对得上就不是叠着的一摞,两帧一样就够(别人出得快,等不起:接手时这手牌两三帧后就被收走了);
                 // 一帧不够:牌还在落下的那一帧,带绶带的 3 会认成 J
                 if (!steady(side to seen, if (left == null) settling.steadyFrames else settling.countedFrames)) return
@@ -104,6 +107,8 @@ internal class DdzTracker(private val settling: DdzSettlingPolicy = DdzSettlingP
                 active = seat.next
                 return
             }
+            // 这一帧没有哪边认不准:连着的「认不准」重新数
+            firstUnsure = 0
             return
         }
         // 轮到自己先出,说明上一轮最后出牌的是自己、后面两家都没要;闯关的牌桌一轮结束就清桌,连「不出」都不留
