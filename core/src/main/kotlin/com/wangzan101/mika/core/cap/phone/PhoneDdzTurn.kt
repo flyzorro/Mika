@@ -36,8 +36,8 @@ internal object PhoneDdzTurn : PhoneTool {
     private const val HUMAN_SETTLE_MS = 6_000L
     /** 真人牌桌切换/发牌时可能短暂读不到正面标记;重试一小段,别立刻交还模型。 */
     private const val HUMAN_SCENE_RETRY_POLLS = 12
-    /** start(auto) 刚点完快速开始/继续:匹配、发牌要十几秒,最多等约 20 秒牌桌出来。 */
-    private const val START_TABLE_POLLS = 134
+    /** start(auto) 刚点完快速开始/继续:真人场匹配的倒计时就有 30 秒,最多等约 45 秒牌桌出来。 */
+    private const val START_TABLE_POLLS = 300
     /** 再来一局几秒就发牌;过了这么久还没有多半是弹窗,交给模型看。 */
     private const val AGAIN_POLLS = 60
     /** Mika 屏上大厅右下角的快速开始(单机经典场,每局押金币)。 */
@@ -343,6 +343,8 @@ internal object PhoneDdzTurn : PhoneTool {
 
     private suspend fun startHuman(a: Args, ctx: ToolContext, turn: Turn, advisor: String): ToolExecution {
         var page = ctx.screen.rawFrame(FULL_ROWS) ?: return refused("no_frame")
+        // 安卓的兼容小窗里游戏没铺满全屏,认牌的坐标全都不对:单独报出来,让模型先退出小窗
+        if (letterboxed(page)) return refused("letterboxed")
         // Human mode may only attach to the current classic table. Stage tables and the
         // single-player lobby share the same button colors, so the explicit markers are a
         // required eligibility gate before any human-mode state is installed.
@@ -1327,6 +1329,10 @@ internal object PhoneDdzTurn : PhoneTool {
     private fun refused(code: String) = ToolExecution(buildJsonObject {
         put("ok", false); put("error", code); put("recoverable", true)
     })
+
+    /** 游戏没铺满 2412×1080(安卓的兼容小窗),所有按主屏量出来的坐标都对不上。 */
+    private fun letterboxed(frame: com.wangzan101.mika.core.uistate.RawFrame) =
+        frame.width != 2412 || frame.height != 1080
 
     private fun strings(a: Args, key: String): List<String> =
         (a.o[key] as? JsonArray).orEmpty().mapNotNull { (it as? JsonPrimitive)?.contentOrNull?.trim()?.uppercase() }
