@@ -262,12 +262,13 @@ internal object PhoneDdzTurn : PhoneTool {
         // 闯关牌桌只在单机模式里有:模型关了弹窗(广告)回到这桌上,还是单机,不用再 start;打了一半的这手照旧交给模型
         if (turn.mode != DdzMode.Human && !turn.single && turn.advisor != null && DdzCards.singleStageTable(frame)) {
             markSingle(ctx, turn.advisor!!)
+            turn.stage = true
             turn.tracker = null
             turn.expectedHand = null
             turn.joining = true
         }
         // 真人局只在经典牌桌:不判闯关(整手牌被点高时会误判)
-        var initialView = DdzScreen.read(frame, classic = turn.mode == DdzMode.Human)
+        var initialView = DdzScreen.read(frame, classic = classicTable(turn))
         if (turn.mode == DdzMode.Human && !DdzCards.classicHumanTable(frame)) {
             val next = if (humanHandoff(frame) != DdzSessionReason.LOBBY_RETURN) recoverHumanScene(ctx, turn) else frame
             if (next == null || !DdzCards.classicHumanTable(next)) {
@@ -768,7 +769,7 @@ internal object PhoneDdzTurn : PhoneTool {
         val selected = select(want, ctx, turn) ?: return Sent.SelectFailed
         if (selected.phase != view.phase || selected.handCount != view.handCount) return Sent.Drift
         val before = ctx.screen.rawFrame(FULL_ROWS)?.let { frame ->
-            DdzScreen.read(frame, classic = turn?.mode == DdzMode.Human).takeIf { it.lifted == want && it.handCount == view.handCount }?.let { DdzCards.hand(frame, it) }
+            DdzScreen.read(frame, classic = classicTable(turn)).takeIf { it.lifted == want && it.handCount == view.handCount }?.let { DdzCards.hand(frame, it) }
         }
         val left = before?.filterIndexed { index, _ -> index !in want }
         return confirm(view, want.size, left, ctx, turn)
@@ -1496,8 +1497,15 @@ internal object PhoneDdzTurn : PhoneTool {
             }
             turn.humanEligible = true
         }
-        return DdzScreen.read(frame, classic = turn?.mode == DdzMode.Human)
+        return DdzScreen.read(frame, classic = classicTable(turn))
     }
+
+    /**
+     * 按经典牌桌读([DdzScreen.read] 的 classic):真人局永远是经典牌桌;单机局看这一轮是不是闯关,
+     * 闯关的手牌整体高 32 像素。整手牌被我们点高 30 像素时 620 行大半是牌面,不然会被当成闯关的牌桌、抬起的牌读空。
+     */
+    private fun classicTable(turn: Turn?): Boolean =
+        turn != null && (turn.mode == DdzMode.Human || (turn.single && !turn.stage))
 
     /** Human mode: wait out a few unrecognised frames (animations) before giving up on the table; null if it never comes back or the session paused. */
     private suspend fun readTable(ctx: ToolContext, turn: Turn): DdzView? {
