@@ -1581,6 +1581,7 @@ internal object PhoneDdzTurn : PhoneTool {
 
     /** 把这一帧喂给这一局的出牌历史;叫分时还没开局,换一局重新记。 */
     private fun track(turn: Turn, frame: com.wangzan101.mika.core.uistate.RawFrame, view: DdzView) {
+        if (turn.mode == DdzMode.Human) DdzFrameDump.seen(frame) // TEMP diagnostics; remove after.
         if (view.phase == DdzPhase.Call) {
             turn.tracker = null; turn.expectedHand = null; turn.joining = false; turn.doubleDecided = false
             return
@@ -1603,6 +1604,7 @@ internal object PhoneDdzTurn : PhoneTool {
         }
         val tracker = turn.tracker ?: DdzTracker(if (turn.mode == DdzMode.Human) DdzSettlingPolicy.HUMAN else DdzSettlingPolicy.SINGLE).also { turn.tracker = it }
         val seat = trackedSeat(turn, view.phase, clock)
+        val brokenBefore = tracker.broken // TEMP diagnostics; remove after.
         tracker.observe(
             seat, { DdzCards.play(frame, it) }, { DdzCards.bottom(frame) },
             view.phase == DdzPhase.Lead && view.handCount == 20, trackedLeading(view.phase, seat),
@@ -1611,7 +1613,9 @@ internal object PhoneDdzTurn : PhoneTool {
         }
         // TEMP diagnostics for the live human-mode run; remove after.
         if (turn.mode == DdzMode.Human) {
-            val line = "phase=${view.phase} hand=${view.handCount}${DdzCards.hand(frame, view)} lifted=${view.lifted} clock=$clock seat=${trackedSeat(view.phase, clock)} " +
+            if (brokenBefore == null && tracker.broken != null) DdzFrameDump.dump("fail_${tracker.broken}", frame, FULL_ROWS)
+            for (side in DdzSide.entries) if (DdzCards.play(frame, side) == DdzSeen.Unsure) DdzFrameDump.dump("unsure_${side.name}", frame, FULL_ROWS)
+            val line = "phase=${view.phase} hand=${view.handCount}${DdzCards.hand(frame, view)} lifted=${view.lifted} clock=$clock seat=$seat " +
                 "L=${DdzCards.play(frame, DdzSide.Left)} R=${DdzCards.play(frame, DdzSide.Right)} ${tracker.debugState()}"
             if (line != turn.lastTrace) { turn.lastTrace = line; println("DDZTRACE ${System.currentTimeMillis() % 100_000} $line") }
         }
@@ -1668,11 +1672,13 @@ internal object PhoneDdzTurn : PhoneTool {
         if (finishByRules(tracker.broken)) return fallback(ctx, turn, tracker, frame, view)
         if (tracker.broken != null) return humanPause(turn, pauseReason(tracker.broken!!)).let { Auto.Off }
         val hand = DdzCards.hand(frame, view)
+        if (hand == null && view.handCount > 0) DdzFrameDump.dump("hand_null", frame, FULL_ROWS) // TEMP diagnostics; remove after.
         // 别家的牌还没读到:等它读稳,用满了就是漏了一手
         if (!tracker.ready()) {
             if (turn.humanSettling++ < HUMAN_SETTLE_POLLS && now() - turn.settleSince < HUMAN_SETTLE_MS) return Auto.Settling
             // 别家的这一手一直读不稳:不干等到游戏托管,和漏了一手一样按简单规则打完这一局
             tracker.fail(DdzSessionReason.MISSED_PLAY)
+            DdzFrameDump.dump("fail_missed_play_settle", frame, FULL_ROWS) // TEMP diagnostics; remove after.
             return fallback(ctx, turn, tracker, frame, view)
         }
         // 自己的手牌一时认不出:上一手是 DouZero 出的、张数又对得上,就按该剩下的牌接着问 DouZero
@@ -1682,11 +1688,13 @@ internal object PhoneDdzTurn : PhoneTool {
             if (turn.humanSettling++ < HUMAN_SETTLE_POLLS && now() - turn.settleSince < HUMAN_SETTLE_MS) return Auto.Settling
             // 别家的牌读到了、自己的手牌一直认不出:这一局交给简单规则,不记成漏了一手
             tracker.fail(DdzSessionReason.UNREAD_HAND)
+            DdzFrameDump.dump("fail_unread_hand", frame, FULL_ROWS) // TEMP diagnostics; remove after.
             return fallback(ctx, turn, tracker, frame, view)
         }
         turn.humanSettling = 0
         if (hand != null && turn.expectedHand?.sorted() != null && turn.expectedHand!!.sorted() != hand.sorted()) {
             println("DDZTRACE drift expected=${turn.expectedHand} read=$hand count=${view.handCount} lifted=${view.lifted} left=${view.handLeft} pitch=${view.pitch}") // TEMP diagnostics; remove after.
+            DdzFrameDump.dump("fail_hand_drift", frame, FULL_ROWS) // TEMP diagnostics; remove after.
             // 认到的牌和上一手该剩的不一样:这一局剩下的按简单规则打完,不停下把这一手交给托管
             tracker.fail(DdzSessionReason.HAND_DRIFT)
             return fallback(ctx, turn, tracker, frame, view)
@@ -1698,6 +1706,7 @@ internal object PhoneDdzTurn : PhoneTool {
         val cards = play.getOrElse {
             // DouZero 连不上、不认这段历史:这一局剩下的按简单规则打完,下一局再交给它
             tracker.fail(it.message ?: "douzero_unreachable")
+            DdzFrameDump.dump("douzero_${it.message}", frame, FULL_ROWS) // TEMP diagnostics; remove after.
             return fallback(ctx, turn, tracker, frame, view)
         }
         if (cards.any { it !in DdzCards.RANKS }) {
