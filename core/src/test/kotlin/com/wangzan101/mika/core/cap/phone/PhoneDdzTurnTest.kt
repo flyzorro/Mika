@@ -994,6 +994,34 @@ class PhoneDdzTurnTest {
         }
     }
 
+    @Test fun humanAutoStartLeavesTheResultScreenAndSitsDownAtTheNormalRoomAgain() = runTest {
+        // 2026-11-11: 一局打完在结算页调用 start(auto) 认不出结算,回了 unknown_popup;模型自己点「继续」进了商店。
+        // 现在工具自己点一次绿色「离开」(绝不点「换桌」「继续」),再从场次页点「普通场」进桌叫分。
+        val result = shot("human_result_leave_change_continue")
+        val rooms = shot("human_classic_rooms")
+        val call = full("call")
+        val leave = DdzCards.humanResultLeave(result)
+        assertTrue("绿色「离开」按钮正中: $leave", leave!!.first in 1010..1300 && leave.second in 785..882)
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(
+            result, result, rooms, call, call, call, lobbyFrame("vd_lobby"),
+        )))
+        val dispatcher = toolDispatcher(game)
+        val savedBid = PhoneDdzTurn.adviseBid
+        PhoneDdzTurn.adviseBid = { _, _ -> 0 }
+        try {
+            val started = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","auto":true,"advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
+            assertNull(started.toString(), started.text("error"))
+            // 结算页只点这一次「离开」,同一画面不再点;之后是场次页的「普通场」和进桌后的叫分
+            assertEquals(1, game.taps.count { it == leave })
+            assertEquals(listOf(leave, 872 to 400), game.taps.take(2))
+            assertEquals(DdzScreen.read(call).buttons[0].let { it.x to it.y }, game.taps[2])
+            // 结算页下半排的「换桌」「继续」一下都不点
+            assertTrue("绝不点换桌/继续: ${game.taps}", game.taps.none { (x, y) -> y == leave.second && x > 1400 })
+        } finally {
+            PhoneDdzTurn.adviseBid = savedBid
+        }
+    }
+
     @Test fun humanStartReportsTheSizeCompatWindowInsteadOfAGuess() = runTest {
         // 安卓的兼容小窗:游戏画面只占屏幕一角,截到的帧不是 2412×1080;认牌的坐标全不对
         for (auto in listOf(false, true)) {

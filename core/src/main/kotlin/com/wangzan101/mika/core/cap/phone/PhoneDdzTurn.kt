@@ -1216,6 +1216,7 @@ internal object PhoneDdzTurn : PhoneTool {
         var page: com.wangzan101.mika.core.uistate.RawFrame? = first
         var lobbyTapped = false
         var roomsTapped = false
+        var resultTapped = false
         var polls = 0
         var popupPolls = 0
         while (polls < START_TABLE_POLLS && popupPolls < POPUP_POLLS) {
@@ -1237,7 +1238,15 @@ internal object PhoneDdzTurn : PhoneTool {
                 page = ctx.screen.rawFrame(FULL_ROWS)
                 continue
             }
-            if (frame != null && DdzCards.humanMainLobby(frame)) {
+            // 真人场结算页(绿「离开」、蓝「换桌」、黄「继续」):只点一次绿色「离开」,绝不点「换桌」「继续」,
+            // 点完接着认场次页;同一画面之后不再点
+            if (frame != null && DdzCards.humanResult(frame)) {
+                if (!resultTapped) {
+                    val leave = DdzCards.humanResultLeave(frame) ?: return HumanEntry(null, DdzSessionReason.UNKNOWN_SCENE)
+                    if (!tapOnTheWay(ctx, turn, leave.first, leave.second)) return HumanEntry(null)
+                    resultTapped = true
+                }
+            } else if (frame != null && DdzCards.humanMainLobby(frame)) {
                 if (!lobbyTapped) {
                     if (!tapOnTheWay(ctx, turn, HUMAN_ENTRY_X, HUMAN_ENTRY_Y)) return HumanEntry(null)
                     lobbyTapped = true
