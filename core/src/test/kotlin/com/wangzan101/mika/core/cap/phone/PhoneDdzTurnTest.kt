@@ -126,6 +126,42 @@ class PhoneDdzTurnTest {
         assertTrue(game.taps.contains(view.cardX(14) to DdzScreen.CARD_Y))
     }
 
+    @Test fun cardsTheGameLiftedAsAHintAreNotPressedBackDown() = runTest {
+        // 实测 2026-11-11 13:38:48:轮到我先出,游戏自己把 Q Q Q 7 抬起一截;要出 Q Q Q 10,只该点 10(抬)和 7(按下去)
+        val hint = shot("human_hand_hint_raised_qqq107")
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(hint, hint, hint, fullBlank, fullBlank)))
+        run(game, """{"action":"play","hand":["BJ","SJ","K","Q","Q","Q","10","7"],"play":["Q","Q","Q","10"]}""")
+        val view = DdzScreen.read(hint)
+        val cards = game.taps.filter { it.second == DdzScreen.CARD_Y }.map { it.first }.toSet()
+        assertEquals(setOf(view.cardX(6), view.cardX(7)), cards)
+    }
+
+    @Test fun jokersTheGameLiftedAsAHintAreSeenAndPlayedWithoutTapping() = runTest {
+        // 13:39:04:手里 BJ SJ 7 要王炸,游戏先把两张王抬了一截,点下去反而按回(三张里两张抬着,原来还当成了闯关牌桌)。
+        // 用平放那一帧拼出来:两张王那一条往上挪 17 像素,7 接在后面,再往右是桌布。第二张王被 7 压住的那段露在 7 上方,
+        // 连同 7 牌顶的阴影,照抄提示那一帧里抬起的 Q 压着没抬的 10 那一块(同样抬高 17)
+        val image = ImageIO.read(javaClass.getResourceAsStream("/ddz/human_hand_jokers_flat.png")!!)
+        val hintImage = ImageIO.read(javaClass.getResourceAsStream("/ddz/human_hand_hint_raised_qqq107.png")!!)
+        val rows = (DdzScreen.ROWS + DdzCards.ROWS + DdzCards.LOBBY_ROWS + DdzPopups.ROWS).distinct()
+        val raised = RawFrame(image.width, image.height, rows.associateWith { y ->
+            IntArray(image.width) { x ->
+                when {
+                    y < 560 -> image.getRGB(x, y)
+                    x in 744 until 946 -> image.getRGB(x, minOf(y + 17, image.height - 1))
+                    x in 946 until 1067 && y < 644 -> hintImage.getRGB(x + 404, y)
+                    x in 946 until 1168 -> image.getRGB(x + 505, y)
+                    x >= 1168 -> image.getRGB(100 + (x - 1168) % 600, y)
+                    else -> image.getRGB(x, y)
+                }
+            }
+        })
+        assertEquals(setOf(0, 1), DdzScreen.read(raised).lifted)
+        assertEquals("BJ SJ 7".split(' '), DdzCards.hand(raised, DdzScreen.read(raised)))
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(raised, raised, raised, fullBlank, fullBlank)))
+        run(game, """{"action":"play","hand":["BJ","SJ","7"],"play":["BJ","SJ"]}""")
+        assertTrue(game.taps.toString(), game.taps.none { it.second == DdzScreen.CARD_Y })
+    }
+
     @Test fun againWaitsForTheResultScreenToLeave() = runTest {
         val result = frame("result")
         val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(result, result, result, blank, frame("call"))))
@@ -262,15 +298,16 @@ class PhoneDdzTurnTest {
         editedFrame(name) { base, rows, view ->
             val bar = DdzScreen.blackBar(base)
             val k = (base.width - bar) / 2292.0
-            // 抬牌检测行和牌顶先抹成牌面:炸弹火苗压在上面,会被当成这几张抬起了
+            // 牌顶以上抹成桌布、以下抹成牌面:炸弹火苗压在上面,会被当成这几张抬起了
             val handEnd = minOf(base.width, view.handLeft + ((view.handCount - 1) * view.pitch).roundToInt() + 222)
-            for ((y, px) in rows) if (y in 600..680) for (x in view.handLeft until handEnd) px[x] = -1
+            val flatTop = if (bar > 0) 669 else 644
+            for ((y, px) in rows) if (y in 600..680) for (x in view.handLeft until handEnd) px[x] = if (y < flatTop) 0xFF0B2B4A.toInt() else -1
             // 第一张牌的点数抹平:整手认牌返回 null(牌面还是白的,张数不变)
-            for ((y, px) in rows) if (y in 560..716) for (x in view.handLeft until view.handLeft + 80) px[x] = -1
+            for ((y, px) in rows) if (y in flatTop..716) for (x in view.handLeft until view.handLeft + 80) px[x] = -1
             if (liftIndex != null) {
-                val x = view.handLeft + (liftIndex * view.pitch).roundToInt() + 8
-                // 各种间距下的抬牌行都点一下(牌面上有字就算抬起);只涂十来像素,别把手牌那一行断开
-                for (y in listOf(618, 650, 676)) rows[y]?.let { px -> for (i in x until x + 12) px[i] = 0xFF0B2B4A.toInt() }
+                val x = view.handLeft + (liftIndex * view.pitch).roundToInt()
+                // 这一张露出来的那一条往上多出 20 像素牌面:牌顶高出平放的就算抬起
+                for ((y, px) in rows) if (y in flatTop - 20 until flatTop) for (i in x until x + view.pitch.toInt()) px[i] = -1
             }
             if (noPlays) {
                 val spans = listOf(
