@@ -38,6 +38,9 @@ internal object PhoneDdzTurn : PhoneTool {
     private const val HUMAN_SCENE_RETRY_POLLS = 12
     /** start(auto) 刚点完快速开始/继续:真人场匹配的倒计时就有 30 秒,最多等约 45 秒牌桌出来。 */
     private const val START_TABLE_POLLS = 300
+    /** 弹窗(含约 30 秒的激励视频)最多处理这么多轮;每轮至少 [POLL_MS]。 */
+    private const val POPUP_POLLS = 800
+    private const val POPUP_TAP_MS = 1000L
     /** 再来一局几秒就发牌;过了这么久还没有多半是弹窗,交给模型看。 */
     private const val AGAIN_POLLS = 60
     /** Mika 屏上大厅右下角的快速开始(单机经典场,每局押金币)。 */
@@ -253,7 +256,7 @@ internal object PhoneDdzTurn : PhoneTool {
         }
         var initialView = DdzScreen.read(frame)
         if (turn.mode == DdzMode.Human && !DdzCards.classicHumanTable(frame)) {
-            val next = if (humanHandoff(frame) == null) recoverHumanScene(ctx) else frame
+            val next = if (humanHandoff(frame) != DdzSessionReason.LOBBY_RETURN) recoverHumanScene(ctx, turn) else frame
             if (next == null || !DdzCards.classicHumanTable(next)) {
                 turn.state = DdzSessionState.Paused
                 turn.reason = next?.let(::humanHandoff) ?: DdzSessionReason.UNKNOWN_SCENE
@@ -860,6 +863,7 @@ internal object PhoneDdzTurn : PhoneTool {
         var budget = polls
         var humanPhase: DdzPhase? = null
         var humanSceneMisses = 0
+        var popupBudget = POPUP_POLLS
         turn.humanActionSeen = false
         // 一直看不到手牌就不是在牌桌上(大厅、选关页、弹窗),干等等不来:发牌用不了这么久
         var empty = 0
@@ -875,6 +879,12 @@ internal object PhoneDdzTurn : PhoneTool {
                     if (DdzCards.humanResult(frame)) return view.copy(phase = DdzPhase.Result)
                     if (!DdzCards.classicHumanTable(frame)) {
                         val handoff = humanHandoff(frame)
+                        // 牌桌上盖了广告(进桌、结算时):工具自己关,不停下
+                        if (handoff != DdzSessionReason.LOBBY_RETURN && (handoff != null || humanSceneMisses >= 2) && popupBudget-- > 0 && clearPopup(ctx, turn, frame)) {
+                            humanSceneMisses = 0
+                            waitOrSteer { delay(POLL_MS) } ?: return last
+                            continue
+                        }
                         if (handoff != null) {
                             turn.humanEligible = false
                             turn.state = DdzSessionState.Paused
@@ -1196,36 +1206,49 @@ internal object PhoneDdzTurn : PhoneTool {
     private class HumanEntry(val frame: com.wangzan101.mika.core.uistate.RawFrame?, val error: String? = null)
 
     /**
-     * 从游戏主大厅点中间的「真人对战」、在真人场次页点「普通场」,然后等匹配和牌桌;单机的经典场次页和弹窗都不点。
-     * 最多等约 45 秒(真人场匹配的倒计时就有 30 秒)。只认 Mika 的屏,认不出的画面一律不点。
+     * 从游戏主大厅点中间的「真人对战」、在真人场次页点「普通场」,然后等匹配和牌桌;单机的经典场次页不点。
+     * 路上的救济金、看视频领取、广告由 [clearPopup] 收拾;领完回到场次页再点一次普通场。
+     * 最多等约 45 秒(真人场匹配的倒计时就有 30 秒),弹窗另算。只认 Mika 的屏,认不出的画面一律不点。
      */
     private suspend fun awaitHumanEntry(
         ctx: ToolContext, turn: Turn, first: com.wangzan101.mika.core.uistate.RawFrame,
     ): HumanEntry {
-        var page = first
+        var page: com.wangzan101.mika.core.uistate.RawFrame? = first
         var lobbyTapped = false
         var roomsTapped = false
-        repeat(START_TABLE_POLLS) {
+        var polls = 0
+        var popupPolls = 0
+        while (polls < START_TABLE_POLLS && popupPolls < POPUP_POLLS) {
             if (turn.stopped) return HumanEntry(null)
-            if (DdzCards.classicHumanTable(page)) return HumanEntry(page)
+            val frame = page
+            if (frame != null && DdzCards.classicHumanTable(frame)) return HumanEntry(frame)
             // 单机的「经典模式」场次页:不是真人场,绝不点
-            if (DdzCards.singleClassicRooms(page)) return HumanEntry(null, "single_player_rooms")
-            if (DdzCards.humanMainLobby(page)) {
+            if (frame != null && DdzCards.singleClassicRooms(frame)) return HumanEntry(null, "single_player_rooms")
+            if (frame != null && DdzCards.humanMainLobby(frame)) {
                 if (!lobbyTapped) {
                     if (!tapOnTheWay(ctx, turn, HUMAN_ENTRY_X, HUMAN_ENTRY_Y)) return HumanEntry(null)
                     lobbyTapped = true
                 }
-            } else if (DdzCards.humanClassicRooms(page)) {
+            } else if (frame != null && DdzCards.humanClassicRooms(frame)) {
                 if (!roomsTapped) {
                     if (!tapOnTheWay(ctx, turn, HUMAN_NORMAL_ROOM_X, HUMAN_NORMAL_ROOM_Y)) return HumanEntry(null)
                     roomsTapped = true
                 }
-            } else if (DdzCards.unknownPopup(page)) {
-                // 领金豆之类的弹窗:不点,立刻交还模型
+            } else if (clearPopup(ctx, turn, frame)) {
+                // 救济金、看视频领取、广告:工具自己点完(模型一步十几秒,倒计时还会被浮层卡住);领完回场次页要再点普通场
+                popupPolls++
+                polls = 0
+                roomsTapped = false
+                waitOrSteer { delay(POLL_MS) } ?: return HumanEntry(null)
+                page = ctx.screen.rawFrame(FULL_ROWS)
+                continue
+            } else if (frame != null && DdzCards.unknownPopup(frame)) {
+                // 认不出的弹窗:不点,立刻交还模型
                 return HumanEntry(null, DdzSessionReason.UNKNOWN_POPUP)
             }
+            polls++
             waitOrSteer { delay(POLL_MS) } ?: return HumanEntry(null)
-            page = ctx.screen.rawFrame(FULL_ROWS) ?: return@repeat
+            page = ctx.screen.rawFrame(FULL_ROWS)
         }
         return HumanEntry(null)
     }
@@ -1235,6 +1258,26 @@ internal object PhoneDdzTurn : PhoneTool {
         turn.humanEligible = true
         return tap(ctx, turn, x, y)
     }
+
+    /** 工具认得的弹窗:点一下,或者视频还在倒计时就等着;处理了为 true,调用方接着等。 */
+    private suspend fun clearPopup(ctx: ToolContext, turn: Turn, frame: com.wangzan101.mika.core.uistate.RawFrame?): Boolean {
+        val screen = ctx.screen.peek()
+        if (screen.packageName != PACKAGE) return false
+        // 广告是原生控件,看无障碍树就够;游戏里画的弹窗才要 OCR
+        val native = screen.elements.any { it.role != "SurfaceView" }
+        val texts = if (native) null else ctx.screen.readVisibleText()
+        return when (val step = DdzPopups.next(screen, texts, frame)) {
+            null -> false
+            DdzPopups.Step.Wait -> true
+            is DdzPopups.Step.Tap -> {
+                if (turn.stopped || ctx.screen.peek().packageName != PACKAGE) return false
+                ctx.screen.quickTap(step.x, step.y)
+                delay(POPUP_TAP_MS)
+                true
+            }
+        }
+    }
+
 
     /**
      * Tracker failures where this hand's history is lost but the table is fine: the tool plays the rest of the hand by rules.
@@ -1255,15 +1298,23 @@ internal object PhoneDdzTurn : PhoneTool {
 
     /** Wait out one short transition before calling a human-table scene unknown. Returns the first
      * readable table frame, the first lobby/popup frame (nothing left to wait for), or null. */
-    private suspend fun recoverHumanScene(ctx: ToolContext): com.wangzan101.mika.core.uistate.RawFrame? {
-        repeat(HUMAN_SCENE_RETRY_POLLS) {
+    private suspend fun recoverHumanScene(ctx: ToolContext, turn: Turn): com.wangzan101.mika.core.uistate.RawFrame? {
+        var misses = 0
+        var popupPolls = 0
+        while (misses < HUMAN_SCENE_RETRY_POLLS && popupPolls < POPUP_POLLS) {
             waitOrSteer { delay(POLL_MS) } ?: return null
-            val frame = ctx.screen.rawFrame(FULL_ROWS) ?: return@repeat
-            if (DdzCards.classicHumanTable(frame)) {
+            val frame = ctx.screen.rawFrame(FULL_ROWS)
+            if (frame != null && DdzCards.classicHumanTable(frame)) {
                 if (DdzScreen.read(frame).phase != DdzPhase.Other) return frame
-            } else if (humanHandoff(frame) != null) {
+            } else if (frame != null && humanHandoff(frame) != DdzSessionReason.LOBBY_RETURN && clearPopup(ctx, turn, frame)) {
+                // 牌桌上盖着的广告:工具自己关掉再接着认
+                popupPolls++
+                misses = 0
+                continue
+            } else if (frame != null && humanHandoff(frame) != null) {
                 return frame
             }
+            misses++
         }
         return null
     }
@@ -1372,7 +1423,7 @@ internal object PhoneDdzTurn : PhoneTool {
     }
 
     /** 单机局里每一帧都要认牌,一次把这些行读全。 */
-    private val FULL_ROWS = (DdzScreen.ROWS + DdzCards.ROWS + DdzCards.LOBBY_ROWS).distinct()
+    private val FULL_ROWS = (DdzScreen.ROWS + DdzCards.ROWS + DdzCards.LOBBY_ROWS + DdzPopups.ROWS).distinct()
     private val TRANSIENT_ADVISOR_ERRORS = setOf("douzero_unreachable", "douzero_bad_reply")
     private val SNAPSHOT_PHASES = setOf("call", "double", "lead", "follow")
     private val SNAPSHOT_SEATS = setOf("landlord", "landlord_up", "landlord_down")

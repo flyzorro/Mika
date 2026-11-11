@@ -9,6 +9,9 @@ import com.wangzan101.mika.core.tool.ToolExecution
 import com.wangzan101.mika.core.uistate.RawFrame
 import com.wangzan101.mika.core.uistate.ScreenPort
 import com.wangzan101.mika.core.uistate.ScreenSnapshot
+import com.wangzan101.mika.core.uistate.UiElement
+import com.wangzan101.mika.core.uistate.VisibleTextLine
+import com.wangzan101.mika.core.uistate.toPx
 import kotlinx.coroutines.async
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -227,16 +230,16 @@ class PhoneDdzTurnTest {
 
     private fun full(name: String): RawFrame {
         val image = ImageIO.read((javaClass.getResourceAsStream("/ddz/$name.jpg") ?: javaClass.getResourceAsStream("/ddz/$name.png"))!!)
-        return RawFrame(image.width, image.height, (DdzScreen.ROWS + DdzCards.ROWS + DdzCards.LOBBY_ROWS).distinct().associateWith { image.getRGB(0, it, image.width, 1, null, 0, image.width) })
+        return RawFrame(image.width, image.height, (DdzScreen.ROWS + DdzCards.ROWS + DdzCards.LOBBY_ROWS + DdzPopups.ROWS).distinct().associateWith { image.getRGB(0, it, image.width, 1, null, 0, image.width) })
     }
 
     /** 无损 .png 的新截图(主大厅、场次页、匹配、弹窗);玩家认色和字形要用准色。 */
     private fun shot(name: String): RawFrame {
         val image = ImageIO.read((javaClass.getResourceAsStream("/ddz/$name.png") ?: javaClass.getResourceAsStream("/ddz/$name.jpg"))!!)
-        return RawFrame(image.width, image.height, (DdzScreen.ROWS + DdzCards.ROWS + DdzCards.LOBBY_ROWS).distinct().associateWith { image.getRGB(0, it, image.width, 1, null, 0, image.width) })
+        return RawFrame(image.width, image.height, (DdzScreen.ROWS + DdzCards.ROWS + DdzCards.LOBBY_ROWS + DdzPopups.ROWS).distinct().associateWith { image.getRGB(0, it, image.width, 1, null, 0, image.width) })
     }
 
-    private val fullBlank = RawFrame(2412, 1080, (DdzScreen.ROWS + DdzCards.ROWS + DdzCards.LOBBY_ROWS).distinct().associateWith { IntArray(2412) })
+    private val fullBlank = RawFrame(2412, 1080, (DdzScreen.ROWS + DdzCards.ROWS + DdzCards.LOBBY_ROWS + DdzPopups.ROWS).distinct().associateWith { IntArray(2412) })
 
     /** hand_t1 这一手,从大到小;上一手 DouZero 出完后手里该剩的牌。 */
     private val handT1 = "SJ 2 2 2 A A A A Q J 10 9 9 8 7 3 3".split(' ')
@@ -1324,6 +1327,90 @@ class PhoneDdzTurnTest {
         }
     }
 
+    /** One screen: what the frame, the accessibility tree and OCR show. A tap moves to the next scene; [reads] > 0 moves on by itself. */
+    private class Scene(val frames: List<RawFrame>, val els: List<UiElement> = emptyList(), val ocr: List<VisibleTextLine>? = null, val reads: Int = 0, val frameReads: Int = 0)
+
+    private class Scenes(val scenes: List<Scene>) : Game(PhoneDdzTurn.PACKAGE, ArrayDeque()) {
+        var at = 0
+        var seen = 0
+        val scene get() = scenes[at]
+        override suspend fun peek(): ScreenSnapshot {
+            if (scene.reads > 0 && ++seen >= scene.reads && at < scenes.lastIndex) { at++; seen = 0 }
+            return ScreenSnapshot("p", app, scene.els, 2412, 1080)
+        }
+        override suspend fun readVisibleText() = scene.ocr
+        private val queue = ArrayDeque<RawFrame>()
+        private var queued = -1
+        private var framesSeen = 0
+        override suspend fun rawFrame(rows: List<Int>): RawFrame? {
+            if (scene.frameReads > 0 && ++framesSeen > scene.frameReads && at < scenes.lastIndex) { at++; seen = 0; framesSeen = 1 }
+            if (queued != at) { queue.clear(); queue.addAll(scene.frames); queued = at }
+            last = queue.removeFirstOrNull() ?: last
+            return last
+        }
+        override suspend fun quickTap(x: Int, y: Int): Boolean {
+            taps += x to y
+            if (scenes[at].frames.none { DdzCards.classicHumanTable(it) } && at < scenes.lastIndex) { at++; seen = 0 }
+            return true
+        }
+    }
+
+    private fun el(name: String, role: String, l: Int, t: Int, r: Int, b: Int) =
+        UiElement("@e", role, name, toPx((l + r) / 2, 2412), toPx((t + b) / 2, 1080), listOf(l, t, r, b), null, false, false, false)
+
+    private val videoBar = listOf(
+        el("看27s/打开应用/查看详情可立即获得奖励", "TextView", 35, 56, 356, 111),
+        el("", "TextView", 884, 56, 909, 111),
+        el("", "ImageView", 930, 56, 955, 111),
+        el("立刻打开", "TextView", 614, 824, 709, 903),
+    )
+
+    @Test fun humanAutoStartClaimsReliefThroughTheRewardVideoAndSitsDown() = runTest {
+        // Live 2026-11-11: out of coins, entering a room pops the relief; only the video claim is left. The model took 4 minutes.
+        val game = Scenes(listOf(
+            Scene(listOf(full("popup_relief_video_only")), ocr = listOf(VisibleTextLine("|系统送钱啦!", listOf(380, 300, 500, 330)))),
+            Scene(listOf(fullBlank), listOf(el("获得加速机会！", "TextView", 421, 163, 578, 221), el("我要直接拿奖励", "TextView", 429, 665, 571, 727)) + videoBar),
+            Scene(listOf(fullBlank), listOf(el("前往“淘宝”浏览15秒可立即领取奖励。确认放弃直接拿奖励吗？", "TextView", 326, 483, 674, 711),
+                el("放弃", "TextView", 296, 775, 499, 842), el("直接拿奖励", "TextView", 501, 775, 704, 842))),
+            Scene(listOf(fullBlank), videoBar, reads = 5),
+            Scene(listOf(fullBlank), listOf(el("", "ImageView", 960, 50, 985, 100), el("立刻打开", "TextView", 614, 824, 709, 903))),
+            Scene(listOf(fullBlank), ocr = listOf(VisibleTextLine("点击任意空白区域多展", listOf(400, 800, 600, 830)))),
+            Scene(listOf(shot("human_classic_rooms"))),
+            Scene(listOf(full("call"), full("call"), full("call"), full("double"), full("double"), full("lead"))),
+        ))
+        val savedBid = PhoneDdzTurn.adviseBid
+        PhoneDdzTurn.adviseBid = { _, _ -> 3 }
+        try {
+            val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","auto":true,"advisor":"http://mac:3426"}""").jsonObject), toolDispatcher(game).ctx)
+            assertEquals(result.content.toString(), "lead", result.text("phase"))
+            assertEquals(listOf(
+                toPx(508, 2412) to toPx(787, 1080), // 双倍领取
+                toPx(942, 2412) to toPx(83, 1080), // the boost offer's ✕, not 我要直接拿奖励
+                toPx(397, 2412) to toPx(808, 1080), // 放弃
+                toPx(972, 2412) to toPx(75, 1080), // the end card's ✕, not 立刻打开
+                toPx(400, 2412) to toPx(300, 1080), // a blank spot on the reward screen
+                872 to 400, // back into 普通场 on the human room list
+            ), game.taps.take(6))
+        } finally {
+            PhoneDdzTurn.adviseBid = savedBid
+        }
+    }
+
+    @Test fun humanWaitClosesAnAdEndCardAtTheTableAndPlaysOn() = runTest {
+        // Live 2026-11-11 (run 23): a Taobao end card covered the table and the tool paused with unknown_popup
+        val others = full("human_right_landlord_joker")
+        val game = Scenes(listOf(
+            Scene(listOf(others), frameReads = 3),
+            Scene(listOf(fullBlank), listOf(el("", "ImageView", 960, 50, 985, 100), el("立刻打开", "TextView", 614, 824, 709, 903))),
+            Scene(List(6) { others } + full("human_follow_left8_right2")),
+        ))
+        val dispatcher = toolDispatcher(game)
+        PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
+        val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"wait"}""").jsonObject), dispatcher.ctx)
+        assertNotEquals(result.content.toString(), "unknown_popup", result.text("reason"))
+        assertTrue(game.taps.toString(), (toPx(972, 2412) to toPx(75, 1080)) in game.taps)
+    }
+
     @Test fun humanAutoStartKeepsTheWholeDecisionLoopInsideTheToolAndUsesDouZeroBid() = runTest {
         val call = full("call")
         val double = full("double")
@@ -1775,6 +1862,8 @@ class PhoneDdzTurnTest {
     @Test fun classicHumanEligibilityRequiresThePositiveClassicTableMarker() {
         assertTrue(DdzCards.classicHumanTable(full("call")))
         assertFalse(DdzCards.classicHumanTable(blank))
+        // Live 2026-11-11: the 经典模式 room list's white room cards read as two cards in hand and the blue 中级场 card as a button
+        assertFalse(DdzCards.classicHumanTable(full("popup_classic_lobby")))
     }
 
     @Test fun classicHumanEligibilityAcceptsTheKnownAutoplayOverlay() {

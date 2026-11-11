@@ -226,7 +226,7 @@ internal object DdzCards {
         // 轮到别家时自己没有按钮(phase 是 Other):手牌还在就还是在牌桌上等(下面照样要水印)。
         // 不看闹钟:三家同时加倍时没有闹钟,闹钟也常读不出
         val waiting = view.phase == DdzPhase.Other && view.handCount > 0
-        if ((view.phase == DdzPhase.Other && !waiting) || singleStageTable(frame) || singleLobby(frame) || singleStage(frame)) return false
+        if ((view.phase == DdzPhase.Other && !waiting) || singleStageTable(frame) || singleLobby(frame) || singleStage(frame) || classicLobby(frame)) return false
         // The game's "取消托管" overlay covers the table watermark. Its dedicated blue
         // button is a stronger positive signal than the obscured marker, and the caller
         // already handles AutoPlay by tapping that button before reading the table again.
@@ -279,6 +279,31 @@ internal object DdzCards {
     private const val HUMAN_RESULT_MIN_RUN = 60
 
     /** A dimmed centered overlay, such as the relief popup, blocks the table. */
+    /**
+     * 经典模式的场次列表:左边一列选中的「经典模式」是一条金色的签。白色的场次卡会被读成手牌、蓝色的中级场读成按钮,
+     * 不先排除就会当成轮到自己跟牌。牌桌这一块最多 6% 是金色,场次列表约 69%。
+     */
+    fun classicLobby(frame: RawFrame): Boolean {
+        if (frame.width != 2412 || frame.height != 1080) return false
+        var gold = 0
+        var pixels = 0
+        for (y in LOBBY_TAB_Y0 until LOBBY_TAB_Y1 step 2) for (x in LOBBY_TAB_X0 until LOBBY_TAB_X1 step 3) {
+            val p = frame.pixel(x, y)
+            val r = p shr 16 and 0xff
+            val g = p shr 8 and 0xff
+            val b = p and 0xff
+            if (r > 190 && g > 140 && b < 110 && r - b > 100) gold++
+            pixels++
+        }
+        return gold.toDouble() / pixels >= LOBBY_TAB_DENSITY
+    }
+
+    private const val LOBBY_TAB_X0 = 20
+    private const val LOBBY_TAB_X1 = 380
+    private const val LOBBY_TAB_Y0 = 250
+    private const val LOBBY_TAB_Y1 = 310
+    private const val LOBBY_TAB_DENSITY = 0.4
+
     fun unknownPopup(frame: RawFrame): Boolean {
         if (frame.width != 2412 || frame.height != 1080) return false
         var dark = 0
