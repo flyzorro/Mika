@@ -14,6 +14,7 @@ import com.wangzan101.mika.core.uistate.VisibleTextLine
 import com.wangzan101.mika.core.uistate.toPx
 import kotlinx.coroutines.async
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withContext
@@ -1093,6 +1094,23 @@ class PhoneDdzTurnTest {
         val dispatcher = toolDispatcher(game)
         val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","auto":true,"advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
         assertEquals("not_human_game", result.text("error"))
+        assertTrue(game.taps.isEmpty())
+    }
+
+    @Test fun humanAutoStartDoesNotLetSlowOcrStretchTheWaitForTheTable() = runTest {
+        // 2026-11-11 16:13:认不出的静态页(商店金豆页)上 clearPopup 每一轮都整屏 OCR(手机上 ~0.8 秒),
+        // 300 轮把承诺的 ~45 秒拖成 294 秒。画面没变就不再 OCR,等待也按真实时间算,慢轮拉不长它。
+        var ocr = 0
+        val game = object : Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(fullBlank))) {
+            override suspend fun readVisibleText(): List<VisibleTextLine>? { ocr++; delay(800); return null }
+        }
+        val dispatcher = toolDispatcher(game)
+        val started = testScheduler.currentTime
+        val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","auto":true,"advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
+        val elapsed = testScheduler.currentTime - started
+        assertEquals("not_human_game", result.text("error"))
+        assertTrue("start took ${elapsed}ms, wanted ~45s", elapsed in 45_000..50_000)
+        assertEquals("unchanged frame is OCR'd once, not once a poll: $ocr", 1, ocr)
         assertTrue(game.taps.isEmpty())
     }
 

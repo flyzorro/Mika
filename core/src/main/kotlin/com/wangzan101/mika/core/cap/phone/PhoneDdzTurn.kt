@@ -38,6 +38,8 @@ internal object PhoneDdzTurn : PhoneTool {
     private const val HUMAN_SCENE_RETRY_POLLS = 12
     /** start(auto) 刚点完快速开始/继续:真人场匹配的倒计时就有 30 秒,最多等约 45 秒牌桌出来。 */
     private const val START_TABLE_POLLS = 300
+    /** 同样的约 45 秒也按真实时间算一遍:一轮里的整屏 OCR 在手机上要 ~0.8 秒,只数轮数会被慢轮拖长(2026-11-11 商店页拖到 294 秒)。 */
+    private const val START_TABLE_MS = START_TABLE_POLLS * POLL_MS
     /** 弹窗(含约 30 秒的激励视频)最多处理这么多轮;每轮至少 [POLL_MS]。 */
     private const val POPUP_POLLS = 800
     private const val POPUP_TAP_MS = 1000L
@@ -1263,7 +1265,9 @@ internal object PhoneDdzTurn : PhoneTool {
         var shopTapped = 0
         var polls = 0
         var popupPolls = 0
-        while (polls < START_TABLE_POLLS && popupPolls < POPUP_POLLS) {
+        // 等牌桌按轮数和真实时间双算:轮数兜虚拟时钟(测试里真实时间不走),时间兜真机上的慢轮
+        var tableSince = now()
+        while (polls < START_TABLE_POLLS && now() - tableSince < START_TABLE_MS && popupPolls < POPUP_POLLS) {
             if (turn.stopped) return HumanEntry(null)
             val frame = page
             if (frame != null && DdzCards.classicHumanTable(frame)) return HumanEntry(frame)
@@ -1294,6 +1298,7 @@ internal object PhoneDdzTurn : PhoneTool {
                 delay(POPUP_TAP_MS)
                 popupPolls++
                 polls = 0
+                tableSince = now()
                 roomsTapped = false
                 waitOrSteer { delay(POLL_MS) } ?: return HumanEntry(null)
                 page = ctx.screen.rawFrame(FULL_ROWS)
@@ -1321,6 +1326,7 @@ internal object PhoneDdzTurn : PhoneTool {
                 // 救济金、看视频领取、广告:工具自己点完(模型一步十几秒,倒计时还会被浮层卡住);领完回场次页要再点普通场
                 popupPolls++
                 polls = 0
+                tableSince = now()
                 roomsTapped = false
                 waitOrSteer { delay(POLL_MS) } ?: return HumanEntry(null)
                 page = ctx.screen.rawFrame(FULL_ROWS)
@@ -1342,17 +1348,27 @@ internal object PhoneDdzTurn : PhoneTool {
         return tap(ctx, turn, x, y)
     }
 
+    /** 上次整屏 OCR 一无所获的那一帧的指纹:画面没变就不再 OCR,别让慢轮把等待拉长(见 [clearPopup])。 */
+    private var popupFrameKey: Int? = null
+
     /** 工具认得的弹窗:点一下,或者视频还在倒计时就等着;处理了为 true,调用方接着等。 */
     private suspend fun clearPopup(ctx: ToolContext, turn: Turn, frame: com.wangzan101.mika.core.uistate.RawFrame?): Boolean {
         val screen = ctx.screen.peek()
         if (screen.packageName != PACKAGE) return false
         // 广告是原生控件,看无障碍树就够;游戏里画的弹窗才要 OCR
         val native = screen.elements.any { it.role != "SurfaceView" }
+        // 画面没变、上一轮 OCR 又什么都没认出来:直接跳过(认不出的静态页一停就是几百轮 OCR,start 被拖到 294 秒);
+        // 有点击/倒计时的轮次不记指纹,画面在动(动画、视频倒计时)时每轮照旧 OCR
+        if (!native && frame != null && popupFrameKey == frame.contentHash()) return false
         val texts = if (native) null else ctx.screen.readVisibleText()
         return when (val step = DdzPopups.next(screen, texts, frame)) {
-            null -> false
+            null -> {
+                if (!native) popupFrameKey = frame?.contentHash()
+                false
+            }
             DdzPopups.Step.Wait -> true
             is DdzPopups.Step.Tap -> {
+                popupFrameKey = null
                 if (turn.stopped || ctx.screen.peek().packageName != PACKAGE) return false
                 ctx.screen.quickTap(step.x, step.y)
                 delay(POPUP_TAP_MS)
