@@ -405,6 +405,49 @@ class PhoneDdzTurnTest {
         }
     }
 
+    @Test fun aNewDealAfterTheHigherRoomPopupAsksDouZeroAgain() = runTest {
+        val asked = mutableListOf<String>()
+        val saved = PhoneDdzTurn.advise
+        PhoneDdzTurn.advise = { _, body -> asked += body; """{"play":[]}""" }
+        try {
+            // 实测 2026-11-11 21:18:一手本来记得好好的,结算上弹出「当前金币可前往更高级场次」以后,
+            // 两家出牌区一直认不准,这一手就记成了 unsure_first_play;新的一手叫分时必须从头记
+            val popup = full("single_more_coins_popup")
+            val follow = full("hand_t1")
+            val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(List(20) { popup }))
+            val dispatcher = toolDispatcher(game)
+            PhoneDdzTurn.markSingle(dispatcher.ctx, "http://mac:3426")
+            PhoneDdzTurn.useTracker(dispatcher.ctx, DdzTracker())
+            val during = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"wait"}""").jsonObject), dispatcher.ctx)
+            assertNull("结算弹窗不该把这一手的出牌历史记坏: ${during.content}", during.text("douzeroOff"))
+            // 下一手:叫分,然后轮到我;上一手作废的历史不能留到这一手
+            game.frames.addAll(listOf(full("call"), follow, follow, follow) + List(70) { fullBlank })
+            val next = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"wait"}""").jsonObject), dispatcher.ctx)
+            assertTrue("新的一手要再问 DouZero: ${next.content}", asked.isNotEmpty())
+            assertNull("上一手的 douzeroOff 不能带到这一手: ${next.content}", next.text("douzeroOff"))
+        } finally {
+            PhoneDdzTurn.advise = saved
+        }
+    }
+
+    @Test fun theHigherRoomPopupIsClosedByTheToolSoTheNextHandIsDealt() = runTest {
+        val popup = full("single_more_coins_popup")
+        val result = full("result")
+        val call = full("call")
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(lobbyFrame("vd_lobby"), popup, popup, result, call)))
+        val out = run(game, """{"action":"start","advisor":"http://mac:3426","hands":2}""")
+        val ok = DdzCards.singleMoreCoinsPopup(popup)!!
+        val again = DdzScreen.read(result).buttons[0].let { it.x to it.y }
+        assertEquals("call", out.text("phase"))
+        assertNull(out.toString(), out.text("error"))
+        assertEquals("1", out.text("handsPlayed"))
+        // 弹窗上只点确定,别的一个都不点;关掉以后照常点结算上的再来一局
+        val onPopup = game.taps.filter { (x, y) -> x in 1041..1384 && y in 722..808 }
+        assertTrue("弹窗的确定要自己点: ${game.taps}", onPopup.isNotEmpty())
+        assertTrue("弹窗上只点确定: ${game.taps}", onPopup.all { it == ok })
+        assertTrue("关掉弹窗后点再来一局: ${game.taps}", game.taps.contains(again))
+    }
+
     @Test fun whenDouZeroRefusesTheHistoryTheModelTakesOverThisVeryTurn() = runTest {
         val saved = PhoneDdzTurn.advise
         PhoneDdzTurn.advise = { _, _ -> """{"error":"history_mismatch"}""" }

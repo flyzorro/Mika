@@ -458,6 +458,44 @@ internal object DdzCards {
         return BEANS_CLOSE_X to BEANS_CLOSE_Y
     }
 
+    /**
+     * 单机经典场一手打完,结算上弹的「当前金币可前往更高级场次」:正中一大块米色底板(从 y≈330 起),
+     * 底下一个黄色「确定」,没有右上角的叉。返回「确定」的中点;认不准为 null。
+     * 和 [humanBeansTooMany] 一样固定区域比颜色:豆豆太多弹窗的底板位置相同,但它的按钮不在这一行,
+     * 结算页、牌桌也没有这么大一块米色。只认 2412×1080 的 Mika 屏。
+     */
+    fun singleMoreCoinsPopup(frame: RawFrame): Pair<Int, Int>? {
+        if (frame.width != 2412 || frame.height != 1080) return null
+        var creamy = 0
+        var pixels = 0
+        for (y in MORE_COINS_PANEL_Y0 until MORE_COINS_PANEL_Y1 step 3) for (x in MORE_COINS_PANEL_X0 until MORE_COINS_PANEL_X1 step 3) {
+            if (cream(frame.pixel(x, y))) creamy++
+            pixels++
+        }
+        if (creamy.toDouble() / pixels < MORE_COINS_PANEL_DENSITY) return null
+        // 「确定」上下两行都是一整条金黄(中间被白字切开),正中够宽的那一条才是它
+        var cx = 0
+        for (y in listOf(MORE_COINS_OK_TOP_Y, MORE_COINS_OK_BOTTOM_Y)) {
+            val run = DdzScreen.runs(frame.width, gap = 30, minWidth = 300) { x ->
+                frame.pixel(x, y).let { p -> (p shr 16 and 0xff) > 200 && (p shr 8 and 0xff) in 121..230 && (p and 0xff) < 110 }
+            }.singleOrNull() ?: return null
+            if (run.first !in MORE_COINS_OK_LEFT || run.last !in MORE_COINS_OK_RIGHT) return null
+            cx = (run.first + run.last) / 2
+        }
+        return cx to MORE_COINS_OK_Y
+    }
+
+    private const val MORE_COINS_PANEL_X0 = 800
+    private const val MORE_COINS_PANEL_X1 = 1600
+    private const val MORE_COINS_PANEL_Y0 = 340
+    private const val MORE_COINS_PANEL_Y1 = 410
+    private const val MORE_COINS_PANEL_DENSITY = 0.9
+    private const val MORE_COINS_OK_TOP_Y = 730
+    private const val MORE_COINS_OK_BOTTOM_Y = 805
+    private val MORE_COINS_OK_LEFT = 1000..1100
+    private val MORE_COINS_OK_RIGHT = 1300..1420
+    private const val MORE_COINS_OK_Y = 765
+
     private const val BEANS_PANEL_X0 = 740
     private const val BEANS_PANEL_X1 = 1680
     private const val BEANS_PANEL_Y0 = 345
