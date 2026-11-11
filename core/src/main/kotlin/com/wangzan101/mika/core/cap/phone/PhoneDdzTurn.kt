@@ -937,10 +937,6 @@ internal object PhoneDdzTurn : PhoneTool {
                 if (view.phase != DdzPhase.Double) turn.declined = false
                 dealt(turn, view)
                 if (turn.single || turn.mode == DdzMode.Human) track(turn, frame, view)
-                if (turn.mode == DdzMode.Human && turn.tracker?.broken == DdzSessionReason.JOINED_MID_GAME) {
-                    humanPause(turn, DdzSessionReason.JOINED_MID_GAME)
-                    return view
-                }
                 when (view.phase) {
                     // 单机局叫分按牌力定,不等模型(叫分只有十来秒);灰的分数点不了,按不叫算
                     DdzPhase.Call -> when {
@@ -1240,9 +1236,13 @@ internal object PhoneDdzTurn : PhoneTool {
         return tap(ctx, turn, x, y)
     }
 
-    /** Tracker failures where this hand's history is lost but the table is fine: the model plays the rest of the hand. */
+    /**
+     * Tracker failures where this hand's history is lost but the table is fine: the tool plays the rest of the hand by rules.
+     * A hand joined mid-way too: the game keeps 托管 on into the next deal, so sitting it out never ends.
+     */
     private fun handedToModel(broken: String?) = broken != null &&
         (broken == DdzSessionReason.MISSED_PLAY || broken == DdzSessionReason.UNREAD_HAND ||
+            broken == DdzSessionReason.JOINED_MID_GAME ||
             broken.startsWith("unread_") || broken.startsWith("unsure_"))
 
     /** Known non-table scenes that end automatic human play; null when the scene is just unrecognised. */
