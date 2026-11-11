@@ -49,6 +49,11 @@ internal object PhoneDdzTurn : PhoneTool {
     /** Mika 屏上游戏主大厅中间橙色「真人对战」卡片的中心。 */
     private const val HUMAN_ENTRY_X = 1285
     private const val HUMAN_ENTRY_Y = 560
+    /** Mika 屏上商店页左上角的返回箭头:金豆输光时冷启动会开在这一页,别处点哪儿都要花钻石,只点它。 */
+    private const val HUMAN_SHOP_BACK_X = 127
+    private const val HUMAN_SHOP_BACK_Y = 82
+    /** 连点几次返回还停在商店页就交还模型,不再点。 */
+    private const val HUMAN_SHOP_BACK_TAPS = 3
     /** Mika 屏上真人场次页绿色「普通场」卡片的中心(5 万-200 万金豆)。 */
     private const val HUMAN_NORMAL_ROOM_X = 872
     private const val HUMAN_NORMAL_ROOM_Y = 400
@@ -1231,6 +1236,7 @@ internal object PhoneDdzTurn : PhoneTool {
         var lobbyTapped = false
         var roomsTapped = false
         var resultTapped = false
+        var shopTapped = 0
         var polls = 0
         var popupPolls = 0
         while (polls < START_TABLE_POLLS && popupPolls < POPUP_POLLS) {
@@ -1245,6 +1251,17 @@ internal object PhoneDdzTurn : PhoneTool {
                 tapOnTheWay(ctx, turn, tooMany.first, tooMany.second)
                 return HumanEntry(null, DdzSessionReason.BEANS_TOO_MANY)
             }
+            // 金豆输光后冷启动开在商店的金豆页:这页只有左上角的返回箭头不花钱,只点它,别的一概不点;
+            // 连点几次还在这页就交还模型
+            if (frame != null && DdzCards.humanShop(frame)) {
+                if (shopTapped++ >= HUMAN_SHOP_BACK_TAPS) return HumanEntry(null)
+                if (!tapOnTheWay(ctx, turn, HUMAN_SHOP_BACK_X, HUMAN_SHOP_BACK_Y)) return HumanEntry(null)
+                polls++
+                waitOrSteer { delay(POLL_MS) } ?: return HumanEntry(null)
+                page = ctx.screen.rawFrame(FULL_ROWS)
+                continue
+            }
+            shopTapped = 0
             // 真人场金豆不够:弹窗点「领取」,「恭喜获得」页点「普通领取」(绝不点带视频图标的「双倍领取」);
             // 弹窗盖在场次页上,要先于场次页认。领完回到场次页再点一次普通场
             val relief = frame?.let { DdzCards.humanReliefPopup(it) ?: DdzCards.humanReliefClaimed(it) }

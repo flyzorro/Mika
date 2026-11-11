@@ -154,6 +154,30 @@ internal object DdzCards {
     }
 
     /**
+     * 金豆输光后冷启动,游戏会开在商店的金豆页:4×2 张米色礼包卡,每张顶上都是一整条平整的米色边。
+     * 大厅、场次页、牌桌、结算、弹窗、广告都没有这样八个位置同时是米色的。只认 Mika 的屏。
+     * 这一页上除了左上角的返回箭头,点哪儿都要花钻石,所以认出来只回它的返回箭头,别的一概不点。
+     */
+    fun humanShop(frame: RawFrame): Boolean {
+        if (frame.width != 2412 || frame.height != 1080 || DdzScreen.blackBar(frame) != 0) return false
+        fun pale(x0: Int, x1: Int, y0: Int, y1: Int): Boolean {
+            var creamy = 0
+            var pixels = 0
+            for (y in y0 until y1 step 3) for (x in x0 until x1 step 3) {
+                if (cream(frame.pixel(x, y))) creamy++
+                pixels++
+            }
+            return creamy.toDouble() / pixels >= SHOP_PALE_DENSITY
+        }
+        return SHOP_COLUMNS.all { (x0, x1) -> SHOP_CARDS.all { (y0, y1) -> pale(x0, x1, y0, y1) } }
+    }
+
+    /** 八张礼包卡的横坐标(卡面左右留一点边)和上下两排卡片顶上的米色边。 */
+    private val SHOP_COLUMNS = listOf(600 to 910, 1007 to 1316, 1413 to 1722, 1820 to 2129)
+    private val SHOP_CARDS = listOf(180 to 200, 612 to 632)
+    private const val SHOP_PALE_DENSITY = 0.9
+
+    /**
      * 真人经典场次页:左边绿色的「普通场」,右边青色的「精英场」、蓝色的「土豪场」(金豆场次)。
      * 单机的场次页是 M 币、左边写着「经典模式」、上方 S11 赛季,颜色对不上。只认 Mika 的屏。
      */
