@@ -30,7 +30,7 @@ class DdzCardsTest {
     }
 
     private fun frame(name: String): RawFrame {
-        val image = ImageIO.read(javaClass.getResourceAsStream("/ddz/$name.jpg")!!)
+        val image = ImageIO.read((javaClass.getResourceAsStream("/ddz/$name.png") ?: javaClass.getResourceAsStream("/ddz/$name.jpg"))!!)
         return RawFrame(image.width, image.height, (DdzScreen.ROWS + DdzCards.ROWS).distinct().associateWith { image.getRGB(0, it, image.width, 1, null, 0, image.width) })
     }
 
@@ -57,6 +57,10 @@ class DdzCardsTest {
         assertRibbonPlay("5 5", DdzCards.play(frame("table_left55"), DdzSide.Left))
         assertEquals(DdzSeen.Cards(listOf("K", "K")), DdzCards.play(frame("table_rightKK"), DdzSide.Right))
         assertEquals(DdzSeen.Cards(listOf("3", "3")), DdzCards.play(frame("table_66_33"), DdzSide.Right))
+    }
+
+    @Test fun readsTenCardHumanRightPlayWithDroppedRibbonCard() {
+        assertRibbonPlay("10 10 10 9 9 9 7 7 5 5", DdzCards.play(frame("human_right_landlord_10cards"), DdzSide.Right))
     }
 
     /** 绶带那张要么认准,要么留成 ? 交给 DouZero 服务按牌规补;别的牌必须认准。 */
