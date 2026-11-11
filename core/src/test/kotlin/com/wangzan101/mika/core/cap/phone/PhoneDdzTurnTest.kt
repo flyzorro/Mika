@@ -335,8 +335,27 @@ class PhoneDdzTurnTest {
         rows[DdzScreen.HAND_ROW]?.let { px -> for (x in view.handLeft until view.handLeft + gap) px[x] = 0xFF0B2B4A.toInt() }
     }
 
+    /** 最后一张(最小)抬起来:出最小的一张时选牌对得上。 */
+    private fun liftedLastCard(name: String = "lead"): RawFrame = editedFrame(name) { base, rows, view ->
+        val flatTop = if (DdzScreen.blackBar(base) > 0) 669 else 644
+        val x = view.handLeft + ((view.handCount - 1) * view.pitch).roundToInt()
+        for ((y, px) in rows) if (y in flatTop - 20 until flatTop) for (i in x until x + view.pitch.toInt()) px[i] = -1
+    }
+
+    /** 同一帧上最后一张(最小)没了:手牌少一张,用来核对出了最小的一张。 */
+    private fun withoutLastCard(name: String = "lead"): RawFrame = editedFrame(name) { _, rows, view ->
+        val end = view.handLeft + ((view.handCount - 1) * view.pitch).roundToInt() + DdzScreen.CARD_WIDTH
+        val from = end - view.pitch.roundToInt()
+        for ((_, px) in rows) for (i in from until minOf(px.size, end + 4)) px[i] = 0xFF0B2B4A.toInt()
+    }
+
     private fun readyFollowTracker() = DdzTracker(DdzSettlingPolicy.HUMAN).apply {
         restore(DdzSeat.Left, listOf("J", "7", "4"), listOf(listOf("10", "10", "9", "9", "8", "8")), current = DdzSeat.Me)
+    }
+
+    /** 左家是队友、右家是地主,轮到我跟:简单规则跟牌时就是不出。 */
+    private fun teammateFollowTracker() = DdzTracker(DdzSettlingPolicy.HUMAN).apply {
+        restore(DdzSeat.Right, listOf("J", "7", "4"), emptyList(), current = DdzSeat.Me)
     }
 
     @Test fun aSingleGameLetsDouZeroPlayAndKeepsGoing() = runTest {
@@ -1199,6 +1218,19 @@ class PhoneDdzTurnTest {
         }
     }
 
+    @Test fun humanAutoStartClosesTheBeansTooManyPopupAndHandsBackTheRoom() = runTest {
+        // 普通场只收 200 万:点了弹「您的豆豆足够到高级的房间游戏啦」。工具自己点叉关掉(绝不点「立即前往」),
+        // 报 beans_too_many;换不换精英场由用户决定
+        val rooms = shot("human_classic_rooms")
+        val tooMany = shot("human_room_beans_too_many")
+        val close = DdzCards.humanBeansTooMany(tooMany)!!
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(rooms, tooMany, tooMany, tooMany)))
+        val result = run(game, """{"action":"start","mode":"human","auto":true,"advisor":"http://mac:3426"}""")
+        assertEquals("beans_too_many", result.text("error"))
+        assertEquals(listOf(872 to 400, close), game.taps)
+        assertTrue("绝不点「立即前往」: ${game.taps}", game.taps.none { (x, y) -> x in 1000..1420 && y in 690..800 })
+    }
+
     @Test fun humanStartTapsOnlyTheFreeClaimsOnTheReliefScreens() = runTest {
         // 领金豆弹窗只点「领取」,恭喜获得页只点「普通领取」,带视频图标的「双倍领取」一下都不点
         val popup = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(shot("human_relief_popup"))))
@@ -1773,24 +1805,25 @@ class PhoneDdzTurnTest {
         assertEquals(2, game.taps.size)
     }
 
-    @Test fun humanHistoryMismatchPausesWithoutTapping() = runTest {
+    @Test fun humanHistoryMismatchFinishesTheHandByRules() = runTest {
         val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(full("hand_t1"))))
         val dispatcher = toolDispatcher(game)
         PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
-        PhoneDdzTurn.useTracker(dispatcher.ctx, DdzTracker(DdzSettlingPolicy.HUMAN).apply { fail("douzero_history_mismatch") })
+        PhoneDdzTurn.useTracker(dispatcher.ctx, teammateFollowTracker().apply { fail("douzero_history_mismatch") })
         val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"wait"}""").jsonObject), dispatcher.ctx)
-        assertEquals("paused", result.text("state"))
-        assertEquals("history_mismatch", result.text("reason"))
-        assertTrue(game.taps.isEmpty())
+        assertEquals(result.content.toString() + game.taps, "douzero_history_mismatch", result.text("douzeroOff"))
+        assertNotEquals(result.content.toString() + game.taps, "paused", result.text("state"))
+        assertTrue("the rules answer the follow: ${game.taps}", game.taps.isNotEmpty())
     }
 
     @Test fun humanPausePointsTheModelToSnapshotResume() = runTest {
         val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(full("hand_t1"))))
         val dispatcher = toolDispatcher(game)
         PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
-        PhoneDdzTurn.useTracker(dispatcher.ctx, DdzTracker(DdzSettlingPolicy.HUMAN).apply { fail("douzero_history_mismatch") })
+        PhoneDdzTurn.useTracker(dispatcher.ctx, DdzTracker(DdzSettlingPolicy.HUMAN).apply { fail("not_my_turn") })
 
         val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"wait"}""").jsonObject), dispatcher.ctx)
+        assertEquals("paused", result.text("state"))
         val recovery = result.content["recovery"]!!.jsonObject
 
         assertEquals("resume", recovery["action"]!!.jsonPrimitive.content)
@@ -1873,35 +1906,115 @@ class PhoneDdzTurnTest {
         }
     }
 
-    @Test fun humanHandDriftPausesBeforeAskingTheAdvisor() = runTest {
+    @Test fun humanHandDriftFinishesTheHandByRules() = runTest {
+        // 认到的牌和上一手该剩的不一样:不停下把这一手交给托管,这一局剩下的按简单规则打完
         val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(full("hand_t1"))))
         val dispatcher = toolDispatcher(game)
         PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
-        PhoneDdzTurn.useTracker(dispatcher.ctx, leftLedPairs(), expectedHand = listOf("3"))
+        PhoneDdzTurn.useTracker(dispatcher.ctx, teammateFollowTracker(), expectedHand = listOf("3"))
         val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"wait"}""").jsonObject), dispatcher.ctx)
-        assertEquals("paused", result.text("state"))
-        assertEquals("hand_drift", result.text("reason"))
-        assertTrue(game.taps.isEmpty())
+        assertEquals(result.content.toString() + game.taps, "hand_drift", result.text("douzeroOff"))
+        assertNotEquals(result.content.toString() + game.taps, "paused", result.text("state"))
+        assertTrue("the rules answer the follow: ${game.taps}", game.taps.isNotEmpty())
     }
 
-    @Test fun humanAdvisorFailurePausesWithServiceUnavailable() = runTest {
+    @Test fun humanAdvisorFailureFinishesTheHandByRules() = runTest {
         val saved = PhoneDdzTurn.advise
         PhoneDdzTurn.advise = { _, _ -> null }
         try {
             val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(full("hand_t1"))))
             val dispatcher = toolDispatcher(game)
             PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
-            PhoneDdzTurn.useTracker(dispatcher.ctx, leftLedPairs())
+            PhoneDdzTurn.useTracker(dispatcher.ctx, teammateFollowTracker())
             val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"wait"}""").jsonObject), dispatcher.ctx)
-            assertEquals("paused", result.text("state"))
-            assertEquals("service_unavailable", result.text("reason"))
-            assertTrue(game.taps.isEmpty())
+            assertEquals("douzero_unreachable", result.text("douzeroOff"))
+            assertNotEquals(result.content.toString() + game.taps, "paused", result.text("state"))
+            assertTrue("the rules answer the follow: ${game.taps}", game.taps.isNotEmpty())
         } finally {
             PhoneDdzTurn.advise = saved
         }
     }
 
-    @Test fun humanHandCountMismatchPausesForSnapshotResume() = runTest {
+    @Test fun humanAdvisorThrowingFinishesTheHandByRules() = runTest {
+        // 给 advisor 的接口抛异常(比如序列化坏了)和连不上一样处理,不能把整次调用炸掉
+        val saved = PhoneDdzTurn.advise
+        PhoneDdzTurn.advise = { _, _ -> error("advisor down") }
+        try {
+            val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(full("hand_t1"))))
+            val dispatcher = toolDispatcher(game)
+            PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
+            PhoneDdzTurn.useTracker(dispatcher.ctx, teammateFollowTracker())
+            val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"wait"}""").jsonObject), dispatcher.ctx)
+            assertEquals("douzero_unreachable", result.text("douzeroOff"))
+            assertNotEquals(result.content.toString() + game.taps, "paused", result.text("state"))
+            assertTrue("the rules answer the follow: ${game.taps}", game.taps.isNotEmpty())
+        } finally {
+            PhoneDdzTurn.advise = saved
+        }
+    }
+
+    @Test fun humanBadAdvisorReplyFinishesTheHandByRules() = runTest {
+        val saved = PhoneDdzTurn.advise
+        PhoneDdzTurn.advise = { _, _ -> """{"play":3}""" }
+        try {
+            val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(full("hand_t1"))))
+            val dispatcher = toolDispatcher(game)
+            PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
+            PhoneDdzTurn.useTracker(dispatcher.ctx, teammateFollowTracker())
+            val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"wait"}""").jsonObject), dispatcher.ctx)
+            assertEquals("douzero_bad_reply", result.text("douzeroOff"))
+            assertNotEquals(result.content.toString() + game.taps, "paused", result.text("state"))
+            assertTrue("the rules answer the follow: ${game.taps}", game.taps.isNotEmpty())
+        } finally {
+            PhoneDdzTurn.advise = saved
+        }
+    }
+
+    @Test fun humanSelectFailureFinishesTheHandByRules() = runTest {
+        // DouZero 要的牌抬不起来(SelectFailed):这一手按简单规则出,而不是暂停交给托管
+        val saved = PhoneDdzTurn.advise
+        PhoneDdzTurn.advise = { _, _ -> """{"play":["3"]}""" }
+        try {
+            val follow = full("hand_t1")
+            val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(List(20) { follow }))
+            val dispatcher = toolDispatcher(game)
+            PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
+            // 左家是队友、右家是地主:简单规则跟牌时就是不出
+            PhoneDdzTurn.useTracker(dispatcher.ctx, DdzTracker(DdzSettlingPolicy.HUMAN).apply {
+                restore(DdzSeat.Right, listOf("J", "7", "4"), emptyList(), current = DdzSeat.Me)
+            })
+            val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"wait"}""").jsonObject), dispatcher.ctx)
+            assertEquals(result.content.toString() + game.taps, "select_failed", result.text("douzeroOff"))
+            assertNotEquals(result.content.toString() + game.taps, "paused", result.text("state"))
+            assertEquals("pass on the teammate's play", DdzScreen.read(follow).buttons[0].let { it.x to it.y }, game.taps.last())
+        } finally {
+            PhoneDdzTurn.advise = saved
+        }
+    }
+
+    @Test fun aHandBrokenMidHandKeepsUsingTheRulesOnLaterTurns() = runTest {
+        // 同一局后面的每一手也不再问 DouZero、不暂停,直到下一局叫分
+        val saved = PhoneDdzTurn.advise
+        PhoneDdzTurn.advise = { _, _ -> error("DouZero must not be asked again this hand") }
+        try {
+            val follow = full("hand_t1")
+            val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(List(20) { follow }))
+            val dispatcher = toolDispatcher(game)
+            PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
+            PhoneDdzTurn.useTracker(dispatcher.ctx, DdzTracker(DdzSettlingPolicy.HUMAN).apply {
+                restore(DdzSeat.Right, listOf("J", "7", "4"), emptyList(), current = DdzSeat.Me)
+                fail("douzero_bad_reply")
+            })
+            val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"wait"}""").jsonObject), dispatcher.ctx)
+            assertEquals("douzero_bad_reply", result.text("douzeroOff"))
+            assertNotEquals(result.content.toString() + game.taps, "paused", result.text("state"))
+            assertEquals("pass on the teammate's play", DdzScreen.read(follow).buttons[0].let { it.x to it.y }, game.taps.first())
+        } finally {
+            PhoneDdzTurn.advise = saved
+        }
+    }
+
+    @Test fun humanHandCountMismatchFinishesTheHandByRules() = runTest {
         var calls = 0
         val saved = PhoneDdzTurn.advise
         PhoneDdzTurn.advise = { _, _ -> calls++; """{"error":"hand_count_mismatch"}""" }
@@ -1909,13 +2022,13 @@ class PhoneDdzTurnTest {
             val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(full("hand_t1"))))
             val dispatcher = toolDispatcher(game)
             PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
-            PhoneDdzTurn.useTracker(dispatcher.ctx, leftLedPairs())
+            PhoneDdzTurn.useTracker(dispatcher.ctx, teammateFollowTracker())
             val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"wait"}""").jsonObject), dispatcher.ctx)
-            assertEquals("paused", result.text("state"))
-            assertEquals("history_mismatch", result.text("reason"))
-            assertEquals("resume", result.content["recovery"]!!.jsonObject["action"]!!.jsonPrimitive.content)
+            assertEquals("douzero_hand_count_mismatch", result.text("douzeroOff"))
+            assertNotEquals(result.content.toString() + game.taps, "paused", result.text("state"))
+            assertNull("no snapshot resume once the hand plays on", result.content["recovery"])
             assertEquals("a deterministic mismatch is not retried", 1, calls)
-            assertTrue(game.taps.isEmpty())
+            assertTrue("the rules answer the follow: ${game.taps}", game.taps.isNotEmpty())
         } finally {
             PhoneDdzTurn.advise = saved
         }
@@ -1974,20 +2087,27 @@ class PhoneDdzTurnTest {
         assertTrue(game.taps.isEmpty())
     }
 
-    @Test fun humanLeadDoesNotGuessWhenTheAdvisorReturnsAnEmptyPlay() = runTest {
+    @Test fun humanLeadWithAnEmptyAdvisorPlayFallsBackToTheSmallestCard() = runTest {
+        // 先出时 DouZero 没给明确的牌:猜一张可能出成别的牌,这一局剩下的按简单规则打(出最小的)
         val saved = PhoneDdzTurn.advise
         PhoneDdzTurn.advise = { _, _ -> """{"play":[]}""" }
         try {
-            val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(List(12) { full("lead") }))
+            val lifted = liftedLastCard("lead")
+            val after = withoutLastCard("lead")
+            var played = false
+            val game = object : Game(PhoneDdzTurn.PACKAGE, ArrayDeque(List(8) { lifted })) {
+                override suspend fun rawFrame(rows: List<Int>): RawFrame? = if (played) after else super.rawFrame(rows)
+                override suspend fun quickTap(x: Int, y: Int): Boolean { taps += x to y; played = true; return true }
+            }
             val dispatcher = toolDispatcher(game)
             PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
             PhoneDdzTurn.useTracker(dispatcher.ctx, DdzTracker(DdzSettlingPolicy.HUMAN).apply {
                 observe(DdzSeat.Me, { DdzSeen.Empty }, { listOf("3", "4", "5") }, leadingWith20 = true, leading = true)
             })
             val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"wait"}""").jsonObject), dispatcher.ctx)
-            assertEquals("paused", result.text("state"))
-            assertEquals("invalid_advisor_play", result.text("reason"))
-            assertTrue(game.taps.isEmpty())
+            assertEquals(result.content.toString() + game.taps, "invalid_advisor_play", result.text("douzeroOff"))
+            assertNotEquals(result.content.toString() + game.taps, "paused", result.text("state"))
+            assertEquals("the smallest card was played", DdzScreen.read(lifted).buttons[0].let { it.x to it.y }, game.taps.single())
         } finally {
             PhoneDdzTurn.advise = saved
         }
