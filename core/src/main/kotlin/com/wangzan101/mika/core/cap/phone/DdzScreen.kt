@@ -81,10 +81,11 @@ internal object DdzScreen {
         STAGE_HAND_PROBE, HAND_ROW + STAGE_HAND_DY, STAGE_LIFT_ROW) +
         (FLAT_TOP - LIFT_MIN until FLAT_TOP) + (FLAT_TOP_FULL_WIDTH - LIFT_MIN until FLAT_TOP_FULL_WIDTH)
 
-    fun read(frame: RawFrame): DdzView {
+    /** [classic] 为真的是经典牌桌(真人局只在这里):不判闯关。整手牌被点高到 614 时 620 行大半是牌面,会被误判成牌顶 612 的闯关牌桌。 */
+    fun read(frame: RawFrame, classic: Boolean = false): DdzView {
         if (frame.height != FRAME_HEIGHT) return DdzView(DdzPhase.Other, emptyList(), 0, 0.0, 0, emptySet())
         val pitch = pitch(frame)
-        val dy = if (pitch > BASE_PITCH && stageHand(frame)) STAGE_HAND_DY else 0
+        val dy = if (!classic && pitch > BASE_PITCH && stageHand(frame)) STAGE_HAND_DY else 0
         val flatTop = if (pitch > BASE_PITCH) FLAT_TOP_FULL_WIDTH else FLAT_TOP
         val (handLeft, handCount, step) = hand(frame, pitch, HAND_ROW + dy)
         // 闯关的牌没抬时牌顶在 612、点数字从 611-629 起(看点数),原来那一行会碰到没抬的 K 这类字的顶:改看 608 这一行有没有字,

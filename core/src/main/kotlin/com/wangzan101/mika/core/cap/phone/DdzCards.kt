@@ -224,7 +224,8 @@ internal object DdzCards {
      */
     fun classicHumanTable(frame: RawFrame): Boolean {
         if (frame.width != 2412 || frame.height != 1080) return false
-        val view = DdzScreen.read(frame)
+        // 闯关牌桌下面单独拒绝,这里按经典牌桌读:整手牌被点高时不会被误判成闯关
+        val view = DdzScreen.read(frame, classic = true)
         // 轮到别家时自己没有按钮(phase 是 Other):手牌还在就还是在牌桌上等(下面照样要水印)。
         // 不看闹钟:三家同时加倍时没有闹钟,闹钟也常读不出
         // 广告视频大半是黑的(水印那一块也算「暗」)、左边一张白卡片会读成手牌:轮到别家的牌桌中间上方都是蓝色桌布,广告最多一成

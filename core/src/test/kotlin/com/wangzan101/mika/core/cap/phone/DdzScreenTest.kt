@@ -100,6 +100,20 @@ class DdzScreenTest {
         assertEquals(DdzScreen.HAND_ROW, hint.handRow)
     }
 
+    @Test fun wholeClassicHandLiftedByOurTapIsNotTakenForTheStageTable() {
+        // 整手牌被我们点高 30 像素(最后一对、最后一手顺子):牌顶 614,620 行大半是牌面,和闯关牌桌的 612 分不开
+        val image = ImageIO.read(javaClass.getResourceAsStream("/ddz/human_hand_jokers_flat.png")!!)
+        val all = RawFrame(image.width, image.height, DdzScreen.ROWS.associateWith { y ->
+            IntArray(image.width) { x -> if (y >= 560 && x in 744..1673) image.getRGB(x, y + 30) else image.getRGB(x, y) }
+        })
+        // 默认读法把它当成闯关牌桌:手牌行错位、抬起的牌读成空
+        assertEquals(emptySet<Int>(), DdzScreen.read(all).lifted)
+        // 真人局永远是经典牌桌,不看闯关
+        val classic = DdzScreen.read(all, classic = true)
+        assertEquals((0 until 8).toSet(), classic.lifted)
+        assertEquals(DdzScreen.HAND_ROW, classic.handRow)
+    }
+
     @Test fun playButtonIsLastInFollowAndOnlyOneInLead() {
         val follow = DdzScreen.read(frame("follow_lifted"))
         assertEquals(3, follow.buttons.size)
