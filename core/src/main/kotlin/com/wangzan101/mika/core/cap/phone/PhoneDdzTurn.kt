@@ -138,8 +138,13 @@ internal object PhoneDdzTurn : PhoneTool {
         var humanEligible = false
         var advisor: String? = null
         var tracker: DdzTracker? = null
+        /** 这一轮已经结算的各局停用 DouZero 的原因;报过就清空。 */
+        val offs = mutableListOf<DouzeroOff>()
         val decisions = mutableListOf<Long>()
     }
+
+    /** 这一轮某一局结算时 DouZero 停用的原因:[hand] 是这一轮的第几局(从 1 数),[reason] 是当时的 [DdzTracker.broken]。 */
+    private class DouzeroOff(val hand: Int, val reason: String)
 
     /** 记下这是单机局、DouZero 在哪;回到大厅或换了 App 由调用方清掉。 */
     internal fun markSingle(ctx: ToolContext, advisor: String) {
@@ -364,6 +369,7 @@ internal object PhoneDdzTurn : PhoneTool {
             if (turn.lost > 0) put("handsLost", turn.lost)
             if (turn.played > 0) put("handsPlayed", turn.played)
             putAutoPlayed(turn)
+            putDouzeroOffs(turn)
             turn.tracker?.let { t ->
                 t.broken?.let { put("douzeroOff", it); put("douzeroTrace", t.trace.joinToString(" ")) }
                 if (turn.mode == DdzMode.Human) put("historyCount", t.history.size)
@@ -380,6 +386,25 @@ internal object PhoneDdzTurn : PhoneTool {
         put("autoPlayed", turn.decisions.size)
         put("autoMs", JsonArray(turn.decisions.map(::JsonPrimitive)))
         turn.decisions.clear()
+    }
+
+    /** 这次调用里已经结算的各局停用 DouZero 的原因;报完就清空,下一次调用不重复报。 */
+    private fun JsonObjectBuilder.putDouzeroOffs(turn: Turn) {
+        if (turn.offs.isEmpty()) return
+        put("douzeroOffs", JsonArray(turn.offs.map { off ->
+            buildJsonObject { put("hand", off.hand); put("reason", off.reason) }
+        }))
+        turn.offs.clear()
+    }
+
+    /**
+     * 这一局结算了(tracker 置 null 之前):如果这一局 DouZero 已经停了,记下是这一轮的第几局、为什么。
+     * 同一局只记一次(和 [Turn.counted] 一样,停在结算页上再等不算新的一局)。
+     */
+    private fun recordOff(turn: Turn) {
+        val broken = turn.tracker?.broken ?: return
+        if (turn.counted) return
+        turn.offs += DouzeroOff(turn.played + turn.won + turn.lost + 1, broken)
     }
 
     private class Move(val moved: Boolean, val error: String? = null, val note: String? = null)
@@ -465,6 +490,7 @@ internal object PhoneDdzTurn : PhoneTool {
             put("phase", next.phase.name.lowercase())
             put("handCount", next.handCount)
             putAutoPlayed(turn)
+            putDouzeroOffs(turn)
             turn.tracker?.let { tracker ->
                 tracker.broken?.let { put("douzeroOff", it) }
                 put("historyCount", tracker.history.size)
@@ -516,6 +542,7 @@ internal object PhoneDdzTurn : PhoneTool {
         turn.won = 0
         turn.lost = 0
         turn.played = 0
+        turn.offs.clear()
         turn.counted = false
         turn.stage = seated || result != null
         turn.atTable = seated
@@ -538,6 +565,7 @@ internal object PhoneDdzTurn : PhoneTool {
             if (turn.lost > 0) put("handsLost", turn.lost)
             if (turn.played > 0) put("handsPlayed", turn.played)
             putAutoPlayed(turn)
+            putDouzeroOffs(turn)
             turn.tracker?.let { t -> t.broken?.let { put("douzeroOff", it); put("douzeroTrace", t.trace.joinToString(" ")) } }
         }, image = if (ctx.config.visionEnabled) ctx.screen.quickShot() else null, changed = true)
     }
@@ -1047,6 +1075,7 @@ internal object PhoneDdzTurn : PhoneTool {
                 // 刚点过结算上的继续/再来一局:那页还留着就不算新的一手,等它退掉再清标记
                 if (view.phase != DdzPhase.Result) turn.leaving = false
                 if (settled) {
+                    recordOff(turn)
                     turn.tracker = null
                     turn.expectedHand = null
                     // 同一手只算一次:停在这张结算页上再等,不能又算一手
@@ -1154,6 +1183,7 @@ internal object PhoneDdzTurn : PhoneTool {
                     }
                     DdzPhase.Other -> left = true
                     DdzPhase.Result -> {
+                        recordOff(turn)
                         turn.tracker = null
                         turn.expectedHand = null
                         // 刚在结算上点过继续/再来一局,这一页还没退:别连着再点一次

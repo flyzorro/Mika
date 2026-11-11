@@ -796,6 +796,76 @@ class PhoneDdzTurnTest {
         }
     }
 
+    @Test fun aBrokenSingleClassicHandIsReportedInDouzeroOffsAfterTheSecondHand() = runTest {
+        // 实测 2026-11-11 23:53:一次 start 连打两局,第 1 局中途 DouZero 停了(hand_drift),第 2 局正常打完;
+        // 结算时 tracker 被清掉,停用原因不能跟着丢,要按这一轮第几局报回来
+        val saved = PhoneDdzTurn.advise
+        PhoneDdzTurn.advise = { _, _ -> """{"play":[]}""" }
+        try {
+            val follow = full("hand_t1")
+            val result = full("result")
+            val call = full("call")
+            val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(lobbyFrame("vd_lobby")) + List(70) { fullBlank }))
+            val dispatcher = toolDispatcher(game)
+            fun args(json: String) = Args(PhoneDdzTurn.def, Json.parseToJsonElement(json).jsonObject)
+            assertEquals(
+                "true",
+                PhoneDdzTurn.execute(args("""{"action":"start","advisor":"http://mac:3426","hands":2}"""), dispatcher.ctx).text("ok"),
+            )
+            PhoneDdzTurn.useTracker(dispatcher.ctx, brokenSingleTracker(DdzSeat.Right, "hand_drift"))
+            game.frames.clear()
+            game.frames.addAll(listOf(follow, follow, follow, follow, result, call, follow, result))
+            val out = PhoneDdzTurn.execute(args("""{"action":"wait"}"""), dispatcher.ctx)
+            assertEquals("两局都结算了: ${out.content}", "2", out.text("handsPlayed"))
+            val offs = out.content["douzeroOffs"]!!.jsonArray
+            assertEquals("只有第 1 局停过: ${out.content}", 1, offs.size)
+            assertEquals("1", offs[0].jsonObject["hand"]!!.jsonPrimitive.content)
+            assertEquals("hand_drift", offs[0].jsonObject["reason"]!!.jsonPrimitive.content)
+        } finally {
+            PhoneDdzTurn.advise = saved
+        }
+    }
+
+    @Test fun aSettledBrokenHandIsReportedOnceAndNotAgainOnTheSameResult() = runTest {
+        // 报过的下次调用不再带,也不能因为停在结算页上又 wait 把同一局记两次
+        val saved = PhoneDdzTurn.advise
+        PhoneDdzTurn.advise = { _, _ -> error("DouZero must not be asked once the hand is broken") }
+        try {
+            val follow = full("hand_t1")
+            val result = full("result")
+            val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(lobbyFrame("vd_lobby")) + List(70) { fullBlank }))
+            val dispatcher = toolDispatcher(game)
+            fun args(json: String) = Args(PhoneDdzTurn.def, Json.parseToJsonElement(json).jsonObject)
+            PhoneDdzTurn.execute(args("""{"action":"start","advisor":"http://mac:3426","hands":1}"""), dispatcher.ctx)
+            PhoneDdzTurn.useTracker(dispatcher.ctx, brokenSingleTracker(DdzSeat.Right))
+            game.frames.clear()
+            game.frames.addAll(listOf(follow, follow, result) + List(3) { result })
+            val out = PhoneDdzTurn.execute(args("""{"action":"wait"}"""), dispatcher.ctx)
+            assertEquals("1", out.text("handsPlayed"))
+            val offs = out.content["douzeroOffs"]!!.jsonArray
+            assertEquals("1", offs.single().jsonObject["hand"]!!.jsonPrimitive.content)
+            assertEquals("unsure_left", offs.single().jsonObject["reason"]!!.jsonPrimitive.content)
+            val again = PhoneDdzTurn.execute(args("""{"action":"wait"}"""), dispatcher.ctx)
+            assertNull("报过就清了,不能重复报: ${again.content}", again.content["douzeroOffs"])
+            assertEquals("同一张结算页不能又算一局", "1", again.text("handsPlayed"))
+        } finally {
+            PhoneDdzTurn.advise = saved
+        }
+    }
+
+    @Test fun aQuietMultiHandSingleGameReportsNoDouzeroOffs() = runTest {
+        // 这一轮 DouZero 一次都没停:不带 douzeroOffs 字段
+        val bust = lobbyFrame("vd_result_bust")
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(lobbyFrame("vd_lobby"), bust, full("call"), bust)))
+        val dispatcher = toolDispatcher(game)
+        val out = PhoneDdzTurn.execute(
+            Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","advisor":"http://mac:3426","hands":2}""").jsonObject),
+            dispatcher.ctx,
+        )
+        assertEquals("2", out.text("handsPlayed"))
+        assertNull("没有停过就不带 douzeroOffs: ${out.content}", out.content["douzeroOffs"])
+    }
+
     @Test fun startOnTheSingleClassicResultScreenTapsAgainInsteadOfRefusing() = runTest {
         // 实测 2026-11-11 22:21:这局停在单机经典场的结算页,start mode=single 被拒 not_single_player_lobby。
         val result = full("result")
@@ -1155,6 +1225,31 @@ class PhoneDdzTurnTest {
         assertEquals("1", result.text("handsLost"))
         assertEquals(listOf(DdzCards.stageContinue(loss)!!), game.taps)
         assertTrue(game.taps.single().first in 1292..1659)
+    }
+
+    @Test fun aBrokenStageHandIsReportedInDouzeroOffsWithItsHandNumber() = runTest {
+        // 闯关多局也一样:第 1 局 DouZero 停了,点继续打第 2 局;结算时把第 1 局的原因报回来
+        val saved = PhoneDdzTurn.advise
+        PhoneDdzTurn.advise = { _, _ -> error("DouZero must not be asked once the hand is broken") }
+        try {
+            val win = full("vd_stage_win_leave_continue")
+            val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(lobbyFrame("vd_stage")) + List(70) { fullBlank }))
+            val dispatcher = toolDispatcher(game)
+            fun args(json: String) = Args(PhoneDdzTurn.def, Json.parseToJsonElement(json).jsonObject)
+            PhoneDdzTurn.execute(args("""{"action":"start","advisor":"http://mac:3426","hands":2}"""), dispatcher.ctx)
+            PhoneDdzTurn.useTracker(dispatcher.ctx, brokenSingleTracker(DdzSeat.Right, "hand_drift"))
+            game.frames.clear()
+            // 结算页会被读成托管(phase=autoplay):先垫一帧空白,别让 execute 开头那一下把它当托管取消、顺带吃掉下一帧
+            game.frames.addAll(listOf(fullBlank, win, full("vd_stage_call"), full("vd_stage_right_clock"), win))
+            val out = PhoneDdzTurn.execute(args("""{"action":"wait"}"""), dispatcher.ctx)
+            assertEquals("两局都赢了: ${out.content}", "2", out.text("handsWon"))
+            val offs = out.content["douzeroOffs"]!!.jsonArray
+            assertEquals("只有第 1 局停过: ${out.content}", 1, offs.size)
+            assertEquals("1", offs[0].jsonObject["hand"]!!.jsonPrimitive.content)
+            assertEquals("hand_drift", offs[0].jsonObject["reason"]!!.jsonPrimitive.content)
+        } finally {
+            PhoneDdzTurn.advise = saved
+        }
     }
 
     @Test fun startOnAResultScreenPressesContinue() = runTest {
