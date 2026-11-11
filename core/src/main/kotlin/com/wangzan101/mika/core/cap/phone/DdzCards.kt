@@ -53,6 +53,7 @@ internal object DdzCards {
     private const val STAGE_LEFT_EDGE = 460
     private const val STAGE_RIGHT_EDGE = 1990
     private const val CONTENT_WIDTH = 2292.0
+    private const val MIKA_PLAY_PITCH = 51.5
 
     private val handGlyphs by lazy { load("/ddz/hand.txt", HAND_W * HAND_H) }
     private val tableGlyphs by lazy { load("/ddz/table.txt", TABLE_W * TABLE_H) }
@@ -92,7 +93,8 @@ internal object DdzCards {
         } else {
             val (x0, x1) = if (side == DdzSide.Left) bar + (280 * k).toInt() to bar + (880 * k).toInt()
             else bar + (1360 * k).toInt() to bar + (1990 * k).toInt()
-            strip(frame, x0, x1, 220, 420, pitch = 53 * k, width = 103 * k, glyphRows = 60, glyphWidth = (44 * k).toInt(), k = k)
+            // 出的牌间距:主屏 53;Mika 的屏(没黑边)只有 51.5,不跟着横向放大,按 53 × 1.05 算六七张就错位
+            strip(frame, x0, x1, 220, 420, pitch = if (bar == 0) MIKA_PLAY_PITCH else 53 * k, width = 103 * k, glyphRows = 60, glyphWidth = (44 * k).toInt(), k = k)
         }
         if (cards == null) return if (passed(frame, side, bar, k, stage)) DdzSeen.Pass else DdzSeen.Empty
         val ranks = cards.map { it.rank }.toMutableList()

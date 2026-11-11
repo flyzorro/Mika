@@ -75,6 +75,13 @@ class DdzCardsTest {
         assertRibbonPlay("9 9 9 8 8", DdzCards.play(frame("vd_right_99988"), DdzSide.Right))
     }
 
+    @Test fun readsLongPlaysOnMikasScreen() {
+        // Live 2026-11-11: played cards sit 51.5 px apart on Mika's screen (53 on the phone's own); 53 × 1.05 drifted off by card 5
+        assertEquals(DdzSeen.Cards("A K Q J 10 9 8".split(' ')), DdzCards.play(frame("human_right_straight_A_to_8"), DdzSide.Right))
+        assertEquals(DdzSeen.Cards("8 7 6 5 4 3".split(' ')), DdzCards.play(frame("human_right_straight_8_to_3"), DdzSide.Right))
+        assertEquals(DdzSeen.Cards("5 5 4 4 3 3".split(' ')), DdzCards.play(frame("human_left_pairs_554433"), DdzSide.Left))
+    }
+
     @Test fun aSingleRibbonCardItCannotReadIsLeftForTheRulesWithGuesses() {
         val frame = frame("table_left10_right8")
         // 单张什么都说得通,只能靠猜:最像的就是 10
