@@ -1160,7 +1160,8 @@ internal object PhoneDdzTurn : PhoneTool {
 
     /** 把抬起的牌改成 [want];点完看画面,没到位再补一次。 */
     private suspend fun select(want: Set<Int>, ctx: ToolContext, turn: Turn? = null): DdzView? {
-        repeat(2) {
+        repeat(2) { attempt ->
+            if (attempt == 1) println("DDZTRACE select_retry want=$want") // TEMP
             val view = decisionView(ctx, turn) ?: return null.also { println("DDZTRACE select_failed no_decision_view want=$want") } // TEMP
             val toggle = (want - view.lifted) + (view.lifted - want)
             println("DDZTRACE select want=$want lifted=${view.lifted} phase=${view.phase} count=${view.handCount} left=${view.handLeft} pitch=${view.pitch} toggle=$toggle x=${toggle.map { view.cardX(it) }}") // TEMP
