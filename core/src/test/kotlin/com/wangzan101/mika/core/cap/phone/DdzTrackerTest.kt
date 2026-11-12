@@ -90,6 +90,66 @@ class DdzTrackerTest {
         assertTrue(tracker.ready())
     }
 
+    @Test fun playsBehindTheFrontAreRememberedAndSettledWhenTheClockMovesOn() {
+        // Live 2026-11-12 12:50 (single-player classic): Right's SJ was recorded late; Left's 不出 then
+        // showed for only two frames while Right's new 554433 sat behind it in the queue. When the clock
+        // passed Left again, advance() saw it still unrecorded and failed missed_play.
+        tracker.restore(
+            DdzSeat.Left, bottom,
+            listOf(listOf("3"), emptyList(), emptyList(), listOf("2"), emptyList()),
+            DdzSeat.Right,
+        )
+        right = DdzSeen.Cards(listOf("SJ"))
+        repeat(3) { see(DdzSeat.Left) }
+        assertEquals(listOf("SJ"), tracker.history.last())
+        // 左家「不出」只亮两帧(不够 steady);右家的新一手排在队尾,左家还在队头
+        left = DdzSeen.Pass
+        right = DdzSeen.Empty
+        see(DdzSeat.Right)
+        see(DdzSeat.Right)
+        left = DdzSeen.Empty
+        right = DdzSeen.Cards(listOf("5", "5", "4", "4", "3", "3"))
+        see(DdzSeat.Left)
+        // 两家都过了、闹钟回到右家:以前这里直接 missed_play,右家的 554433 根本没读过
+        right = DdzSeen.Empty
+        see(DdzSeat.Right)
+        assertNull(tracker.broken)
+        assertEquals(
+            listOf(
+                listOf("3"), emptyList(), emptyList(), listOf("2"), emptyList(), listOf("SJ"),
+                emptyList(), emptyList(), listOf("5", "5", "4", "4", "3", "3"),
+            ),
+            tracker.history,
+        )
+    }
+
+    @Test fun aSeatBehindTheFrontWithNothingUsableStillFails() {
+        // Same live hand: Left's 不出 settles, but Right's new lead was only ever the stacked ?Q,6,8.
+        // Recording a made-up play would be worse than dropping the hand, so this must still fail.
+        tracker.restore(
+            DdzSeat.Left, bottom,
+            listOf(listOf("3"), emptyList(), emptyList(), listOf("2"), emptyList()),
+            DdzSeat.Right,
+        )
+        right = DdzSeen.Cards(listOf("SJ"))
+        repeat(3) { see(DdzSeat.Left) }
+        left = DdzSeen.Pass
+        right = DdzSeen.Empty
+        see(DdzSeat.Right)
+        see(DdzSeat.Right)
+        left = DdzSeen.Empty
+        right = DdzSeen.Cards(listOf("?Q,6,8"))
+        see(DdzSeat.Left)
+        right = DdzSeen.Empty
+        see(DdzSeat.Right)
+        // 左家的「不出」先记下;右家这一手只有认不准的读数,不能拿它顶上
+        assertNull(tracker.broken)
+        assertEquals(listOf(listOf("SJ"), emptyList(), emptyList()), tracker.history.takeLast(3))
+        see(DdzSeat.Left)
+        assertEquals("missed_play", tracker.broken)
+        assertFalse(tracker.history.any { it.size == 6 })
+    }
+
     @Test fun theLandlordsRibbonCardIsSteadyEvenWhenItsGuessesChange() {
         // Live 2026-11-10 runs 13/16: the guesses behind "?" changed from frame to frame, so three equal
         // reads never happened and the landlord's play was never recorded.
