@@ -150,6 +150,31 @@ class DdzTrackerTest {
         assertFalse(tracker.history.any { it.size == 6 })
     }
 
+    @Test fun aGuessBehindTheFrontIsNotFilledAgainstAStaleLead() {
+        // Behind the front, history still lacks Left's and our passes, so the lead looks like Right's 5.
+        // Against 5 only the 9 in ?9,3 fits, but Right is leading a new trick where 3 fits too: don't fill.
+        tracker.restore(
+            DdzSeat.Left, bottom,
+            listOf(listOf("3"), emptyList(), emptyList(), listOf("4"), emptyList()),
+            DdzSeat.Right,
+        )
+        right = DdzSeen.Cards(listOf("5"))
+        repeat(3) { see(DdzSeat.Left) }
+        assertEquals(listOf("5"), tracker.history.last())
+        left = DdzSeen.Pass
+        right = DdzSeen.Empty
+        see(DdzSeat.Right)
+        see(DdzSeat.Right)
+        left = DdzSeen.Empty
+        right = DdzSeen.Cards(listOf("?9,3"))
+        see(DdzSeat.Left)
+        right = DdzSeen.Empty
+        see(DdzSeat.Right)
+        see(DdzSeat.Left)
+        assertFalse(tracker.history.any { it == listOf("9") })
+        assertEquals("missed_play", tracker.broken)
+    }
+
     @Test fun theLandlordsRibbonCardIsSteadyEvenWhenItsGuessesChange() {
         // Live 2026-11-10 runs 13/16: the guesses behind "?" changed from frame to frame, so three equal
         // reads never happened and the landlord's play was never recorded.

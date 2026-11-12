@@ -322,8 +322,8 @@ internal class DdzTracker(private val settling: DdzSettlingPolicy = DdzSettlingP
         // 队头还没读稳,后面几家却已经出过了:先记住他们的读数,等排到队头再记(见下面的 seen_then_cleared)
         for ((seat, _) in waiting.drop(1)) {
             if (seat == DdzSeat.Me) continue
-            val raw = read(if (seat == DdzSeat.Left) DdzSide.Left else DdzSide.Right)
-            val seen = if (raw is DdzSeen.Cards) filledUnknown(raw.ranks) ?: raw else raw
+            // 不补 ?:前面几家还没记,[trickLead] 是旧的那一手,拿它筛补法会把几种都行的错当成只有一种
+            val seen = read(if (seat == DdzSeat.Left) DdzSide.Left else DdzSide.Right)
             val guessed = seen is DdzSeen.Cards && seat != landlord && seen.ranks.any { it.startsWith(DdzCards.UNKNOWN) }
             // 出牌区还摆着他自己上一手:那是「不出」,不是又出了一手
             val oldPlay = seen is DdzSeen.Cards && seen.ranks == lastPlay[seat]
