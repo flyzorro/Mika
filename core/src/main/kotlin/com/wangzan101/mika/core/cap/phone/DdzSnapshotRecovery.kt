@@ -117,10 +117,10 @@ internal object DdzSnapshotRecovery {
         return Replay(active, actor, actors)
     }
 
-    private enum class Kind { Pass, Single, Pair, Triple, Straight, PairSequence, Plane, PlaneSingles, PlanePairs, FourSingles, FourPairs, Bomb, Rocket }
-    private data class Move(val kind: Kind, val length: Int, val main: Int)
+    internal enum class Kind { Pass, Single, Pair, Triple, TripleSingle, Straight, PairSequence, Plane, PlaneSingles, PlanePairs, FourSingles, FourPairs, Bomb, Rocket }
+    internal data class Move(val kind: Kind, val length: Int, val main: Int)
 
-    private fun classify(cards: List<String>): Move? {
+    internal fun classify(cards: List<String>): Move? {
         if (cards.isEmpty()) return Move(Kind.Pass, 0, -1)
         if (cards.any { it !in ranks }) return null
         val counts = cards.groupingBy { it }.eachCount()
@@ -135,6 +135,10 @@ internal object DdzSnapshotRecovery {
                 4 -> Move(Kind.Bomb, 4, rank)
                 else -> null
             }
+        }
+        // 三带一:三张同点 + 一张单牌,比三张的点数。牌桌上常见,认不出就会被当成坏牌
+        if (cards.size == 4 && counts.size == 2 && counts.any { it.value == 3 }) {
+            return Move(Kind.TripleSingle, 4, order.getValue(counts.entries.first { it.value == 3 }.key))
         }
         if (cards.size >= 5 && counts.values.all { it == 1 } && consecutive(sorted) && sorted.last() < order.getValue("2")) {
             return Move(Kind.Straight, cards.size, sorted.last())
@@ -191,7 +195,7 @@ internal object DdzSnapshotRecovery {
         return runs
     }
 
-    private fun beats(previous: Move, current: Move): Boolean = when {
+    internal fun beats(previous: Move, current: Move): Boolean = when {
         current.kind == Kind.Rocket -> true
         previous.kind == Kind.Rocket -> false
         current.kind == Kind.Bomb && previous.kind != Kind.Bomb -> true

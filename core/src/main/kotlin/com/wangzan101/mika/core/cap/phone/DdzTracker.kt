@@ -25,6 +25,8 @@ internal class DdzTracker(private val settling: DdzSettlingPolicy = DdzSettlingP
 
     private var active: DdzSeat? = null
     private var firstUnsure = 0
+    /** 地主的第一手连着几帧不合牌规:和「认不准」一样,读稳之前先等。 */
+    private var firstIllegal = 0
     /** 自己出完以后见过不是自己的回合了没有:刚按下出牌,按钮还会在画面上留几帧,那不是又轮到自己。 */
     private var leftMe = true
     /** 第几帧;同一帧里 resolve 会调两次,「不出」要按帧数。 */
@@ -88,6 +90,7 @@ internal class DdzTracker(private val settling: DdzSettlingPolicy = DdzSettlingP
                 // 地主的第一手认不准:可能还在飞,等几帧;一直认不准就停,不能跳过去等下一家,否则会把下一家当成地主。
                 // 只数连着的:叫分、抢地主的特效零星几帧认不准,从发牌一路攒到上限就一手没出也停了
                 if (seen == DdzSeen.Unsure) {
+                    firstIllegal = 0
                     if (++firstUnsure >= settling.maxUnconfirmedFrames) fail("unsure_first_play")
                     return
                 }
@@ -96,6 +99,13 @@ internal class DdzTracker(private val settling: DdzSettlingPolicy = DdzSettlingP
                 // 地主出第一手前是 20 张:剩的张数对不上出的张数(还叠成一摞,或者这家是 17 张的农民)就不算
                 val left = count[seat]
                 if (left != null && seen.ranks.size != FIRST - left) continue
+                // 这一手不合牌规(比如把王炸认成了单张):多半还在落,和「认不准」一样先等;
+                // 连着这么多帧都这样就是认错了,这一段历史不能再用
+                if (illegal(seen.ranks)) {
+                    if (++firstIllegal >= settling.maxUnconfirmedFrames) fail("illegal_${side.name.lowercase()}")
+                    return
+                }
+                firstIllegal = 0
                 // 读到了认得准的牌:连着的「认不准」重新数
                 firstUnsure = 0
                 // 张数对得上就不是叠着的一摞,两帧一样就够(别人出得快,等不起:接手时这手牌两三帧后就被收走了);
@@ -107,8 +117,9 @@ internal class DdzTracker(private val settling: DdzSettlingPolicy = DdzSettlingP
                 active = seat.next
                 return
             }
-            // 这一帧没有哪边认不准:连着的「认不准」重新数
+            // 这一帧没有哪边认不准:连着的「认不准」「不合牌规」都重新数
             firstUnsure = 0
+            firstIllegal = 0
             return
         }
         // 轮到自己先出,说明上一轮最后出牌的是自己、后面两家都没要;闯关的牌桌一轮结束就清桌,连「不出」都不留
@@ -284,7 +295,21 @@ internal class DdzTracker(private val settling: DdzSettlingPolicy = DdzSettlingP
             // 剩的张数说这家出了几张:读到的张数对不上(还叠着、还没落下)、或者明明出了牌却像「不出」,都再等等
             val played = unplayed(seat)
             if (seen == DdzSeen.Pass || (seen is DdzSeen.Cards && !guessed)) lastSeen[seat] = seen
+            // 读到的这一手不合牌规(单张压三带一之类,多半是认错了):不记,和「认不准」一样再等几帧
+            val lastCards = (lastSeen[seat] as? DdzSeen.Cards)?.ranks
+            val breaksRules = when {
+                // 出牌区还摆着他自己上一手:是「不出」,不是又出了一手(下面按张数算)
+                seen is DdzSeen.Cards && !guessed && seen.ranks != lastPlay[seat] -> illegal(seen.ranks)
+                seen == DdzSeen.Empty && lastCards != null && lastCards != lastPlay[seat] &&
+                    (played == null || played == lastCards.size) -> illegal(lastCards)
+                else -> false
+            }
             when {
+                breaksRules -> {
+                    if (tries <= 1) return fail("illegal_${seat.name.lowercase()}")
+                    waiting[0] = seat to tries - 1
+                    return
+                }
                 seen is DdzSeen.Cards && !guessed && (played == null || played == seen.ranks.size) -> {
                     // 地主最后一张的 ? 后面猜的点数一帧一个样:比稳不稳时只看 ?,不看猜的
                     val key = DdzSeen.Cards(seen.ranks.map { if (it.startsWith(DdzCards.UNKNOWN)) DdzCards.UNKNOWN else it })
@@ -332,6 +357,31 @@ internal class DdzTracker(private val settling: DdzSettlingPolicy = DdzSettlingP
         if (steadyFrames < frames) return false
         steadyKey = null
         return true
+    }
+
+    /** 这一手读到的牌合不合牌规:不是牌型,或者跟牌压不过这一轮还没人管的那手。带 ? 的没认准,不判。 */
+    private fun illegal(cards: List<String>): Boolean {
+        if (cards.isEmpty() || cards.any { it.startsWith(DdzCards.UNKNOWN) }) return false
+        val move = DdzSnapshotRecovery.classify(cards) ?: return true
+        val lead = trickLead() ?: return false
+        return !DdzSnapshotRecovery.beats(lead, move)
+    }
+
+    /** 这一轮还没人管的那手牌;两次「不出」之后、或者历史里有认不准的牌(判不了)都为 null。 */
+    private fun trickLead(): DdzSnapshotRecovery.Move? {
+        var active: DdzSnapshotRecovery.Move? = null
+        var passes = 0
+        for (cards in history) {
+            val move = DdzSnapshotRecovery.classify(cards) ?: return null
+            if (move.kind == DdzSnapshotRecovery.Kind.Pass) {
+                if (active != null) passes++
+                if (passes == 2) { active = null; passes = 0 }
+            } else {
+                active = move
+                passes = 0
+            }
+        }
+        return active
     }
 
     private fun seatOf(side: DdzSide) = if (side == DdzSide.Left) DdzSeat.Left else DdzSeat.Right

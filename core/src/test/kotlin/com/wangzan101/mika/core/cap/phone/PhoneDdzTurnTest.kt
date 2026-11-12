@@ -693,6 +693,30 @@ class PhoneDdzTurnTest {
         }
     }
 
+    @Test fun anIllegalReadFinishesTheSingleClassicHandByRules() = runTest {
+        // 2026-11-12 实测:出牌区读出的牌不合牌规(单张压三带一),这一局的历史不能再用;
+        // 单机经典场没有暂停的语义,剩下的按简单规则打完
+        val saved = PhoneDdzTurn.advise
+        PhoneDdzTurn.advise = { _, _ -> error("DouZero must not be asked once the read is illegal") }
+        try {
+            val follow = full("hand_t1")
+            val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(List(6) { follow } + List(3) { fullBlank }))
+            val dispatcher = toolDispatcher(game)
+            PhoneDdzTurn.markSingle(dispatcher.ctx, "http://mac:3426")
+            PhoneDdzTurn.useTracker(dispatcher.ctx, brokenSingleTracker(DdzSeat.Right, "illegal_right"))
+            val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"wait"}""").jsonObject), dispatcher.ctx)
+            assertEquals(result.toString() + game.taps, "illegal_right", result.text("douzeroOff"))
+            assertNotEquals(result.toString() + game.taps, "paused", result.text("state"))
+            assertEquals(
+                "the rules pass on the teammate's pairs",
+                DdzScreen.read(follow).buttons[0].let { it.x to it.y },
+                game.taps.first(),
+            )
+        } finally {
+            PhoneDdzTurn.advise = saved
+        }
+    }
+
     @Test fun aBrokenSingleClassicHandUsesTheGamesHintAgainstTheLandlord() = runTest {
         val saved = PhoneDdzTurn.advise
         PhoneDdzTurn.advise = { _, _ -> error("DouZero must not be asked once the hand is broken") }
@@ -2492,6 +2516,18 @@ class PhoneDdzTurnTest {
         PhoneDdzTurn.useTracker(dispatcher.ctx, teammateFollowTracker().apply { fail("douzero_history_mismatch") })
         val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"wait"}""").jsonObject), dispatcher.ctx)
         assertEquals(result.content.toString() + game.taps, "douzero_history_mismatch", result.text("douzeroOff"))
+        assertNotEquals(result.content.toString() + game.taps, "paused", result.text("state"))
+        assertTrue("the rules answer the follow: ${game.taps}", game.taps.isNotEmpty())
+    }
+
+    @Test fun humanIllegalReadFinishesTheHandByRules() = runTest {
+        // 读到的牌不合牌规和「读不准」一样:这一局剩下的按简单规则打完,不停下把这一手交给托管
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(full("hand_t1"))))
+        val dispatcher = toolDispatcher(game)
+        PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
+        PhoneDdzTurn.useTracker(dispatcher.ctx, teammateFollowTracker().apply { fail("illegal_right") })
+        val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"wait"}""").jsonObject), dispatcher.ctx)
+        assertEquals(result.content.toString() + game.taps, "illegal_right", result.text("douzeroOff"))
         assertNotEquals(result.content.toString() + game.taps, "paused", result.text("state"))
         assertTrue("the rules answer the follow: ${game.taps}", game.taps.isNotEmpty())
     }
