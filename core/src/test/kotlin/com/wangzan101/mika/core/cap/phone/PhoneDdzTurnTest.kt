@@ -2031,13 +2031,37 @@ class PhoneDdzTurnTest {
         assertFalse("the shifted rooms page is not the table", DdzCards.classicHumanTable(shifted))
     }
 
-    /** 场次卡点击坐标在新图上仍落在各自卡片里(这次不改坐标,只验证)。 */
-    @Test fun theRoomTapPointsLandInsideTheShiftedCards() {
+    /** 真机场次页上,工具对每个 room 实际点下去的那一列,在卡片顶部色带上是那张卡自己的颜色。 */
+    @Test fun eachRoomTapLandsOnItsOwnCardOnTheShiftedPage() = runTest {
         val shifted = shot("human_classic_rooms_shifted")
-        // 普通场约 711–1134、精英场约 1197–1625、土豪场约 1685–2114
-        assertTrue("普通场 872 落在卡片里", 872 in 711..1134)
-        assertTrue("精英场 1360 落在卡片里", 1360 in 1197..1625)
-        assertTrue("土豪场 1847 落在卡片里", 1847 in 1685..2114)
+        val call = full("call")
+        fun rgb(x: Int) = shifted.pixel(x, 262).let { Triple(it shr 16 and 0xff, it shr 8 and 0xff, it and 0xff) }
+        val colours = mapOf<String, (Triple<Int, Int, Int>) -> Boolean>(
+            "normal" to { (r, g, b) -> r < 120 && g > 165 && b > 100 && g - r > 60 },
+            "elite" to { (r, g, b) -> r < 80 && g > 170 && b > 160 },
+            "tuhao" to { (r, g, b) -> b > 200 && r < 135 && g > 135 },
+        )
+        for ((room, isCard) in colours) {
+            val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(shifted, call) + List(6) { call } + List(2) { lobbyFrame("vd_lobby") }))
+            val dispatcher = toolDispatcher(game)
+            PhoneDdzTurn.adviseBid = { _, _ -> 0 }
+            PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","auto":true,"room":"$room","advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
+            val (x, _) = game.taps.first()
+            assertTrue("$room tapped x=$x on ${rgb(x)}", isCard(rgb(x)))
+        }
+    }
+
+    /** 场次卡整体左右平移 80 px(真机和老图已经差了约 50 px)仍认得出场次页,也仍不算牌桌。 */
+    @Test fun theRoomsPageIsRecognisedWhenTheCardsShiftEightyPixels() {
+        val image = ImageIO.read(javaClass.getResourceAsStream("/ddz/human_classic_rooms.png")!!)
+        val rows = (DdzScreen.ROWS + DdzCards.ROWS + DdzCards.LOBBY_ROWS + DdzPopups.ROWS).distinct()
+        for (dx in listOf(-80, 80)) {
+            val frame = RawFrame(image.width, image.height, rows.associateWith { y ->
+                IntArray(image.width) { x -> image.getRGB((x - dx).coerceIn(0, image.width - 1), y) }
+            })
+            assertTrue("shifted $dx", DdzCards.humanClassicRooms(frame))
+            assertFalse("shifted $dx is not the table", DdzCards.classicHumanTable(frame))
+        }
     }
 
     /** 扫一遍 ddz/ 下所有图:只有两张场次页被认成场次页,别的都不行。 */
