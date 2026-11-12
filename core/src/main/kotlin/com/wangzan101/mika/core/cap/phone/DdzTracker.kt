@@ -85,7 +85,10 @@ internal class DdzTracker(private val settling: DdzSettlingPolicy = DdzSettlingP
                 active = DdzSeat.Me
                 return
             }
-            for (side in DdzSide.entries) {
+            // 两家都摆着牌:地主先出、下一家压上。出牌顺序右 → 左,没轮到左家就先看右家,
+            // 否则左家这一手先读稳,就把压牌的农民当成了地主(右家第一手还没读稳时左家就压上了)
+            val order = if (turn == DdzSeat.Left) listOf(DdzSide.Left, DdzSide.Right) else listOf(DdzSide.Right, DdzSide.Left)
+            for (side in order) {
                 val seen = read(side)
                 // 地主的第一手认不准:可能还在飞,等几帧;一直认不准就停,不能跳过去等下一家,否则会把下一家当成地主。
                 // 只数连着的:叫分、抢地主的特效零星几帧认不准,从发牌一路攒到上限就一手没出也停了
