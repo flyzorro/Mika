@@ -357,6 +357,20 @@ else:
             result, body = self.invoke("doctor", server=server)
             self.assertIn("[redacted]", body["error"]["message"])
 
+    def test_text_cut_through_a_surrogate_pair_still_prints_one_json_document(self):
+        # A phone-side string truncated mid surrogate pair arrives as \ud800, which has no UTF-8
+        # form. The result is still JSON, so it is escaped rather than crashing on an empty stdout.
+        # Raw bytes: the wire carries the ASCII escape, which is what the phone actually sends.
+        payload = json.dumps({**SNAPSHOT, "goal": "cut \ud800"}).encode()
+        with api(lambda method, path, body: (200, payload, {}) if path.endswith("/t1") else None) as server:
+            command = [sys.executable, str(SCRIPT), "--json", "task", "status", "t1",
+                       "--url", "http://127.0.0.1:" + str(server.server_port), "--token-file", str(self.token_file)]
+            result = subprocess.run(command, text=True, encoding="utf-8", capture_output=True,
+                                    cwd=self.directory, env={**os.environ, "PYTHONUTF8": "1"}, timeout=15)
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertEqual("cut \ud800", json.loads(result.stdout)["goal"])
+            self.assertNotIn(TOKEN, result.stdout + result.stderr)
+
     def test_adb_connect_owns_only_its_temporary_forward(self):
         with api() as server:
             adb, env, _, calls = self.fake_adb(server)
@@ -365,7 +379,53 @@ else:
             self.assertEqual("phone-a", body["device"])
             self.assertIn(["-s", "phone-a", "forward", "tcp:0", "tcp:8765"], calls())
             self.assertEqual(["-s", "phone-a", "forward", "--remove", "tcp:" + str(server.server_port)], calls()[-1])
-            self.assertTrue(any(c[2:4] == ["shell", "sh"] for c in calls()))
+            root = "/sdcard/Android/data/com.wangzan101.mika/files"
+            self.assertIn(["-s", "phone-a", "shell", "sh", root + "/connect-computer.sh"], calls())
+            self.assertIn(["-s", "phone-a", "shell", "cat", root + "/mcp-usb.json"], calls())
+
+    def test_adb_targets_the_selected_mika_package(self):
+        package = "com.wangzan101.mika.dev"
+        root = f"/sdcard/Android/data/{package}/files"
+        with api() as server:
+            adb, env, _, calls = self.fake_adb(
+                server, info={"api_version": 1, "token": TOKEN, "port": 8766, "boot": "17"}
+            )
+            result, body = self.invoke("connect", "--package", package, "--adb", str(adb), env=env)
+            self.assertEqual(0, result.returncode, body)
+            result, body = self.invoke("--package", package, "task", "status", "t1", "--adb", str(adb), env=env)
+            self.assertEqual(0, result.returncode, body)
+            package_calls = [call[2:] for call in calls() if call[2:4] in (["shell", "sh"], ["shell", "cat"])]
+            self.assertEqual([
+                ["shell", "sh", root + "/connect-computer.sh"],
+                ["shell", "cat", root + "/mcp-usb.json"],
+                ["shell", "cat", root + "/mcp-usb.json"],
+            ], package_calls)
+            self.assertEqual(2, calls().count(["-s", "phone-a", "forward", "tcp:0", "tcp:8766"]))
+
+    def test_adb_rejects_invalid_mika_packages_before_starting_adb(self):
+        with api() as server:
+            adb, env, _, calls = self.fake_adb(server)
+            for package in ("", "android", "com.1mika", "../mika", "com.mika;id"):
+                with self.subTest(package=package):
+                    result, body = self.invoke("connect", "--package", package, "--adb", str(adb), env=env)
+                    self.assertEqual(2, result.returncode, body)
+                    self.assertEqual("arguments", body["error"]["code"])
+                    self.assertIn("Android application ID", body["error"]["message"])
+            self.assertEqual([], calls())
+
+    def test_mika_package_cannot_be_used_with_direct_http(self):
+        with api() as server:
+            result, body = self.invoke("doctor", "--package", "com.wangzan101.mika.dev", server=server)
+            self.assertEqual(2, result.returncode, body)
+            self.assertEqual("arguments", body["error"]["code"])
+            self.assertIn("cannot be used with --url", body["error"]["message"])
+            self.assertEqual([], server.calls)
+
+    def test_notification_doctor_package_still_targets_the_app_to_inspect(self):
+        cli = load_cli()
+        args = cli.parser().parse_args(["notification-doctor", "--package", "android"])
+        self.assertEqual("android", args.package)
+        self.assertFalse(hasattr(args, "mika_package"))
 
     def test_package_flag_reads_that_apps_files(self):
         dev = "/sdcard/Android/data/com.wangzan101.mika.dev/files/"

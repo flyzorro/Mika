@@ -17,6 +17,16 @@
     <string name="about_feedback_sheet_sub">Нашли ошибку или есть идея? Напишите автору так, как вам удобно.</string>
     <string name="about_feedback_github">Создать issue на GitHub</string>
     <string name="about_feedback_github_sub">Сообщайте об ошибках, предлагайте функции и следите за ходом работ</string>
+    <string name="about_group">Связаться с автором</string>
+    <string name="about_group_sub">WeChat</string>
+    <string name="about_group_sheet_title">Связаться с автором</string>
+    <string name="about_group_sheet_sub">Обсудите, как пользоваться приложением, или поделитесь идеями. Добавляясь в WeChat, упомяните Mika в заявке</string>
+    <string name="about_group_hint">Нажмите и удерживайте, чтобы сохранить · или отсканируйте в WeChat</string>
+    <string name="about_save_qr">Сохранить QR-код</string>
+    <string name="about_qr_saved">QR-код сохранён в галерею</string>
+    <string name="about_qr_save_failed">Не удалось сохранить. Сделайте снимок экрана.</string>
+    <string name="about_follow">Следить за автором</string>
+    <string name="about_follow_sub">X %1$s: первыми узнавайте о новых функциях</string>
     <string name="about_repo">Исходный код</string>
     <string name="about_repo_sub">%1$s · звёзды приветствуются</string>
     <string name="about_guide">Руководство и как помочь проекту</string>
@@ -59,4 +69,11 @@
     <string name="diagnostics_share">Поделиться</string>
     <string name="diagnostics_copied">Скопировано</string>
     <string name="diagnostics_loading">Сбор данных…</string>
+    <string name="about_auto_update">Автообновление</string>
+    <string name="about_auto_update_detail">Скачивать новые версии в фоне только по Wi-Fi и запрашивать подтверждение перед установкой</string>
+    <string name="about_auto_update_disable">Выключить автообновление</string>
+    <string name="about_auto_update_ready">Mika %1$s загружен</string>
+    <string name="about_auto_update_confirm_title">Новая версия Mika готова</string>
+    <string name="about_auto_update_confirm_detail">Установите %1$s сейчас или отключите автообновление и проверяйте обновления в настройках.</string>
+    <string name="about_auto_update_now">Обновить сейчас</string>
 </resources>

@@ -2,6 +2,7 @@ package com.wangzan101.mika.core.knowledge
 
 import com.wangzan101.mika.core.skills.PersonalSkills
 import com.wangzan101.mika.core.skills.SkillStatus
+import com.wangzan101.mika.core.teach.TeachSkill
 
 /** 内置的 App 知识(kind `app`)、站点知识(`site`)、技能(`skill`),或用户的个人技能(`personal`);[files] 是可读的文件(主文件在前,其余是附件)。 */
 data class GuideInfo(
@@ -92,6 +93,8 @@ class GuideCatalog private constructor(
         return tokens.map { t ->
             when {
                 names.any { it == t } -> 100
+                // 单个 ASCII 字符做子串会命中几乎所有英文名与描述,只有完全相等才算数
+                t.length == 1 && t[0].code < 128 -> 0
                 // 中文目标通常不带空格,整句是一个词:名字出现在句子里也算部分对上
                 names.any { it.contains(t) || (it.length >= 2 && t.contains(it)) } -> 60
                 terms.any { it == t } -> 50
@@ -219,14 +222,19 @@ class GuideCatalog private constructor(
             fun one(k: String) = meta[k] as? String
             fun many(k: String) = (meta[k] as? List<*>)?.filterIsInstance<String>() ?: listOfNotNull(one(k)?.takeIf { it.isNotEmpty() })
             val valid = one("name") == s.name && body.isNotBlank()
+            val demonstrated = TeachSkill.isDemonstrated(s)
+            val trialNote = if (s.status == SkillStatus.trial) "[Unverified personal skill draft: use it only as a trial; the result must be checked.]\n" else ""
+            val demoNote = if (demonstrated) TeachSkill.USE_NOTE + "\n" else ""
             PersonalEntry(
                 GuideInfo(
                     kind = PERSONAL_KIND, name = s.name, display = one("display")?.takeIf { it.isNotEmpty() } ?: s.name,
-                    description = (if (s.status == SkillStatus.trial) "[unverified: check the result when trying it] " else "") + (one("description") ?: ""), aliases = many("aliases"),
+                    description = (if (s.status == SkillStatus.trial) "[unverified: check the result when trying it] " else "") +
+                        (if (demonstrated) TeachSkill.INDEX_NOTE else "") + (one("description") ?: ""),
+                    aliases = many("aliases"),
                     terms = many("apps") + many("domains"), files = listOf(SKILL_FILE),
                     apps = many("apps"), sites = many("sites") + many("domains"),
                 ),
-                body.takeIf { valid }?.let { if (s.status == SkillStatus.trial) "[Unverified personal skill draft: use it only as a trial; the result must be checked.]\n$it" else it },
+                body.takeIf { valid }?.let { demoNote + trialNote + it },
             )
         }
 

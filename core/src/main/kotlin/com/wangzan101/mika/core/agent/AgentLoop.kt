@@ -35,6 +35,7 @@ import com.wangzan101.mika.core.memory.MemoryStore
 import com.wangzan101.mika.core.knowledge.toolsNote
 import com.wangzan101.mika.core.model.ChatModel
 import com.wangzan101.mika.core.model.Message
+import com.wangzan101.mika.core.model.ModelError
 import com.wangzan101.mika.core.model.ModelReply
 import com.wangzan101.mika.core.model.Part
 import com.wangzan101.mika.core.model.Role
@@ -51,9 +52,11 @@ import com.wangzan101.mika.core.run.RunOrigin
 import com.wangzan101.mika.core.run.Interaction
 import com.wangzan101.mika.core.run.LocalInteraction
 import com.wangzan101.mika.core.run.Delivery
+import com.wangzan101.mika.core.usage.RunUsageTally
 import com.wangzan101.mika.core.tool.HandBack
 import com.wangzan101.mika.core.tool.HandBackOutcome
 import com.wangzan101.mika.core.tool.Outcome
+import com.wangzan101.mika.core.tool.AskPort
 import com.wangzan101.mika.core.tool.ToolDispatcher
 import com.wangzan101.mika.core.tool.ToolExecution
 import com.wangzan101.mika.core.tool.Verb
@@ -65,10 +68,12 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.selects.select
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -215,6 +220,11 @@ class AgentLoop(
     private val utterances get() = tools.utterances
 
     private val user = UserExchange(tools, confirmations, confirmTimeoutMs, inputTimeoutMs, { utterances }, { _state.value = it }, ::emit, ::now)
+    /** 自身工具的当次同意:复用等用户回答的那条路,同一次工具调用里等,不分成两步。 */
+    private val askPort = object : AskPort {
+        override suspend fun awaitAnswer(prompt: String, options: List<String>?) = user.awaitAnswer(prompt, options)
+    }
+    init { tools.ctx.ask = askPort }
     private val replay = routes?.let { RouteReplay(it, tools, ::awaitGate, { r -> gateState = r; _state.value = r }, ::emit, clock) }
 
     @Volatile private var job: Job? = null
@@ -236,11 +246,20 @@ class AgentLoop(
     val activeAsk: Delivery.Ask? get() = user.activeAsk
 
     /** 新入口:同一对话里的插话和控制经 [inbox] 进入;旧入口继续使用相同的执行路径。 */
-    suspend fun run(spec: RunSpec, inbox: RunInbox): TaskState = runInternal(spec.goal, spec.priorTurns, inbox, spec.provenance, spec.threadId)
+    suspend fun run(spec: RunSpec, inbox: RunInbox): TaskState {
+        suspend fun start() = runInternal(spec.goal, spec.priorTurns, inbox, spec.provenance, spec.threadId, spec.tokenBudget)
+        // App 在整个运行外层装好共享 tally,子任务也沿用;直接走核心入口时由这里保证 RunSpec 的预算生效。
+        if (spec.tokenBudget == null || currentCoroutineContext()[RunUsageTally] != null) return start()
+        return withContext(RunUsageTally(spec.tokenBudget)) { start() }
+    }
 
-    suspend fun run(task: String, priorTurns: List<Turn> = emptyList()): TaskState = runInternal(task, priorTurns, null, RunProvenance(), "local")
+    suspend fun run(task: String, priorTurns: List<Turn> = emptyList()): TaskState =
+        runInternal(task, priorTurns, null, RunProvenance(), "local")
 
-    private suspend fun runInternal(task: String, priorTurns: List<Turn>, inbox: RunInbox?, runProvenance: RunProvenance, threadId: String): TaskState {
+    private suspend fun runInternal(
+        task: String, priorTurns: List<Turn>, inbox: RunInbox?, runProvenance: RunProvenance, threadId: String,
+        tokenBudget: Long? = null,
+    ): TaskState {
         cancelRequested = false
         provenance = runProvenance
         user.begin(threadId, runProvenance, interaction)
@@ -256,7 +275,7 @@ class AgentLoop(
         utterances?.clear()
         emit(RunEvent.TaskStarted(now(), Redactor.text(task), model.name,
             origin = runProvenance.origin.takeIf { it != RunOrigin.Ui }?.name?.lowercase(),
-            stepLimit = maxSteps.takeIf { it != Int.MAX_VALUE }))
+            stepLimit = maxSteps.takeIf { it != Int.MAX_VALUE }, tokenBudget = tokenBudget))
         var end: TaskState? = null
         replay?.reset()
         lastEnd = null
@@ -998,6 +1017,10 @@ class AgentLoop(
                 caller.ask(history, TurnPolicy.finalTools(specs, tools::verb), step, onText = previewFor(step))
             } catch (e: CancellationException) {
                 throw e
+            } catch (e: ModelError.TaskBudgetExceeded) {
+                return StopRules.modelFailed(e)
+            } catch (e: ModelError.DailyBudgetExceeded) {
+                return StopRules.modelFailed(e)
             } catch (e: Exception) {
                 return StopRules.closeoutFailed(closeout, maxSteps)
             }
