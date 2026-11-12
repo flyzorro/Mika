@@ -289,7 +289,8 @@ internal class DdzTracker(private val settling: DdzSettlingPolicy = DdzSettlingP
         while (waiting.isNotEmpty()) {
             val (seat, tries) = waiting.first()
             if (seat == DdzSeat.Me) { record(seat, emptyList()); waiting.removeFirst(); continue }
-            val seen = read(if (seat == DdzSeat.Left) DdzSide.Left else DdzSide.Right)
+            val raw = read(if (seat == DdzSeat.Left) DdzSide.Left else DdzSide.Right)
+            val seen = if (raw is DdzSeen.Cards) filledUnknown(raw.ranks) ?: raw else raw
             // 只有地主的牌压着绶带;农民的牌带着猜的那一张就是没认准
             val guessed = seen is DdzSeen.Cards && seat != landlord && seen.ranks.any { it.startsWith(DdzCards.UNKNOWN) }
             // 剩的张数说这家出了几张:读到的张数对不上(还叠着、还没落下)、或者明明出了牌却像「不出」,都再等等
@@ -311,8 +312,8 @@ internal class DdzTracker(private val settling: DdzSettlingPolicy = DdzSettlingP
                     return
                 }
                 seen is DdzSeen.Cards && !guessed && (played == null || played == seen.ranks.size) -> {
-                    // 地主最后一张的 ? 后面猜的点数一帧一个样:比稳不稳时只看 ?,不看猜的
-                    val key = DdzSeen.Cards(seen.ranks.map { if (it.startsWith(DdzCards.UNKNOWN)) DdzCards.UNKNOWN else it })
+                    // 地主最后一张的 ? 后面猜的点数一帧一个样:比稳不稳时只看 ?,不看猜的;照着猜的补出来的也不算
+                    val key = DdzSeen.Cards((raw as? DdzSeen.Cards)?.ranks?.map { if (it.startsWith(DdzCards.UNKNOWN)) DdzCards.UNKNOWN else it } ?: seen.ranks)
                     if (!steady(seat to key, if (played == null) settling.steadyFrames else settling.countedFrames)) return
                     record(seat, seen.ranks)
                 }
@@ -345,6 +346,34 @@ internal class DdzTracker(private val settling: DdzSettlingPolicy = DdzSettlingP
             waiting.removeFirst()
             lastSeen -= seat
         }
+    }
+
+    /**
+     * 一手只带一张 ?:把手机猜的点数挨个换上去,只有一种换法既合牌规、又压得住这一轮时才认这一手。
+     * 农民出的牌没有绶带,以前带着 ? 只能干等到 unsure_* 停掉整局;可猜的几个点数常常只有一个凑得成牌型
+     * (如 [2, ?2,5,3] 只有 2 是一对)。几种都说得通就仍走原来的路:农民接着等,地主的 ? 交给 DouZero 补。
+     * 只试手机猜的点数,不自造;已经记下的出牌里这个点数用满了的也不补。[classify] 和 [beats] 就是 #40 那道判罚。
+     */
+    private fun filledUnknown(ranks: List<String>): DdzSeen.Cards? {
+        val unknown = ranks.indices.filter { ranks[it].startsWith(DdzCards.UNKNOWN) }
+        if (unknown.size != 1) return null
+        val at = unknown.single()
+        val guesses = ranks[at].removePrefix(DdzCards.UNKNOWN).split(",").filter { it in DdzCards.RANKS }.distinct()
+        val lead = trickLead()
+        val options = guesses.mapNotNull { guess ->
+            val filled = ranks.toMutableList().also { it[at] = guess }
+            val move = DdzSnapshotRecovery.classify(filled) ?: return@mapNotNull null
+            if (lead != null && !DdzSnapshotRecovery.beats(lead, move)) return@mapNotNull null
+            filled.takeIf { copiesLeft(it, at) }
+        }
+        return options.singleOrNull()?.let { DdzSeen.Cards(it) }
+    }
+
+    /** 这一手加上已经记下的出牌,这个点数没超过一副牌里的张数(王只有一张);手牌不在 tracker 里,不细算。 */
+    private fun copiesLeft(filled: List<String>, at: Int): Boolean {
+        val rank = filled[at]
+        val used = filled.count { it == rank } + history.sumOf { move -> move.count { it == rank } }
+        return used <= if (rank == "SJ" || rank == "BJ") 1 else 4
     }
 
     /**
