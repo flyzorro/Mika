@@ -47,6 +47,19 @@ class DdzTrackerTest {
         assertEquals(3, tracker.history.size)
     }
 
+    @Test fun whenBothSidesShowCardsBeforeTheLandlordIsKnownRightPlayedFirst() {
+        // Live 2026-11-12 11:45 (single-player classic): the landlord (Right) led the straight 5..K and
+        // Left beat it with 6..A before Right's read settled. Left was checked first, so Left became the
+        // landlord; Right's later single (with the ribbon) read as ?2 and the hand failed missed_play.
+        right = DdzSeen.Cards(listOf("K", "Q", "J", "10", "9", "8", "7", "6", "5"))
+        see(DdzSeat.Left)
+        left = DdzSeen.Cards(listOf("A", "K", "Q", "J", "10", "9", "8", "7", "6"))
+        see(null)
+        repeat(4) { see(DdzSeat.Me) }
+        assertEquals(DdzSeat.Right, tracker.landlord)
+        assertEquals(listOf(right, left).map { (it as DdzSeen.Cards).ranks }, tracker.history)
+    }
+
     @Test fun aPassShownForOneFrameThenClearedIsStillAPass() {
         // Live 2026-11-09 run 10 (human table): Right's 不出 was visible for one frame and cleared
         // the next; the tracker waited on Right until the turn clock ran out (unread_right).
