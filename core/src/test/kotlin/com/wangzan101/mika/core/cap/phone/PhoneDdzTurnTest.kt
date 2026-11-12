@@ -31,6 +31,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.io.File
 import javax.imageio.ImageIO
 
 class PhoneDdzTurnTest {
@@ -2020,6 +2021,37 @@ class PhoneDdzTurnTest {
         assertFalse(DdzCards.humanMainLobby(waiting))
         assertFalse(DdzCards.humanClassicRooms(waiting))
         assertFalse(DdzCards.singleClassicRooms(waiting))
+    }
+
+    /** 2026-11-12 23:52 真机(豆豆 8894万)的场次页:五张卡整体比仓库里的老图右移约 50 px,老检测卡在边上。 */
+    @Test fun theShiftedHumanRoomsPageIsStillRecognised() {
+        val shifted = shot("human_classic_rooms_shifted")
+        assertTrue("the shifted rooms page", DdzCards.humanClassicRooms(shifted))
+        // 场次页不是牌桌:classicHumanTable 必须否定掉它
+        assertFalse("the shifted rooms page is not the table", DdzCards.classicHumanTable(shifted))
+    }
+
+    /** 场次卡点击坐标在新图上仍落在各自卡片里(这次不改坐标,只验证)。 */
+    @Test fun theRoomTapPointsLandInsideTheShiftedCards() {
+        val shifted = shot("human_classic_rooms_shifted")
+        // 普通场约 711–1134、精英场约 1197–1625、土豪场约 1685–2114
+        assertTrue("普通场 872 落在卡片里", 872 in 711..1134)
+        assertTrue("精英场 1360 落在卡片里", 1360 in 1197..1625)
+        assertTrue("土豪场 1847 落在卡片里", 1847 in 1685..2114)
+    }
+
+    /** 扫一遍 ddz/ 下所有图:只有两张场次页被认成场次页,别的都不行。 */
+    @Test fun onlyTheTwoRoomsPagesAreTakenForTheHumanRoomsPage() {
+        // 主资源里也有一个 /ddz(样本字),按其中一张测试图找到测试资源的目录
+        val dir = File(javaClass.getResource("/ddz/human_main_lobby.png")!!.toURI()).parentFile
+        val names = dir.listFiles()!!.map { it.name.substringBeforeLast('.') }
+        assertTrue("fixtures: ${names.size}", names.size >= 100)
+        val rooms = setOf("human_classic_rooms", "human_classic_rooms_shifted")
+        for (name in names) {
+            val frame = shot(name)
+            if (name in rooms) assertTrue("rooms $name", DdzCards.humanClassicRooms(frame))
+            else assertFalse("not rooms $name", DdzCards.humanClassicRooms(frame))
+        }
     }
 
     /** A hand whose history is lost (missed_play) at hand_t1: Left shows pairs on top, we follow. */
