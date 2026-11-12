@@ -304,7 +304,8 @@ internal object PhoneDdzTurn : PhoneTool {
         // 这一帧一下都不点,直接交还模型去关弹窗;闯关牌桌这时才发现也照旧记上,不算离开牌桌。
         // 「当前金币可前往更高级场次」弹窗照旧交给下面的等待循环点头确定
         if (turn.mode != DdzMode.Human && turn.single && DdzCards.singleStageTable(frame)) turn.stage = true
-        if (turn.mode != DdzMode.Human && turn.single && !turn.stage &&
+        // 只管已经坐过牌桌的:刚从闯关页报名、闯关牌桌还没出来时(turn.stage 要见到闯关牌桌才记上),过渡帧不算离开牌桌
+        if (turn.mode != DdzMode.Human && turn.single && !turn.stage && turn.atTable &&
             !DdzCards.classicHumanTable(frame) && DdzCards.singleMoreCoinsPopup(frame) == null
         ) {
             turn.phase = DdzPhase.Other

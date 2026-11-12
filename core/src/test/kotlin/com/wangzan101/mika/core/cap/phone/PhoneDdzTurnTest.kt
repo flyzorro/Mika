@@ -1239,8 +1239,9 @@ class PhoneDdzTurnTest {
             PhoneDdzTurn.execute(args("""{"action":"start","advisor":"http://mac:3426","hands":2}"""), dispatcher.ctx)
             PhoneDdzTurn.useTracker(dispatcher.ctx, brokenSingleTracker(DdzSeat.Right, "hand_drift"))
             game.frames.clear()
-            // 结算页会被读成托管(phase=autoplay):先垫一帧空白,别让 execute 开头那一下把它当托管取消、顺带吃掉下一帧
-            game.frames.addAll(listOf(fullBlank, win, full("vd_stage_call"), full("vd_stage_right_clock"), win))
+            // 结算页会被读成托管(phase=autoplay):先垫一帧空白,别让 execute 开头那一下把它当托管取消、顺带吃掉下一帧。
+            // 第 1 局的结算之前先有一帧它的闯关牌桌(轮到右家):真机上第 1 局是在闯关牌桌上打的,见到它才认作闯关、记输赢
+            game.frames.addAll(listOf(fullBlank, full("vd_stage_right_clock"), win, full("vd_stage_call"), full("vd_stage_right_clock"), win))
             val out = PhoneDdzTurn.execute(args("""{"action":"wait"}"""), dispatcher.ctx)
             assertEquals("两局都赢了: ${out.content}", "2", out.text("handsWon"))
             val offs = out.content["douzeroOffs"]!!.jsonArray
