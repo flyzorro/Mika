@@ -1929,6 +1929,18 @@ class PhoneDdzTurnTest {
         assertEquals(listOf(1360 to 400), game.taps.take(1))
     }
 
+    @Test fun humanStartWalksIntoTheTuhaoRoomWhenAsked() = runTest {
+        // 豆豆约 8894 万:普通场、精英场的上限都过了,土豪场(1000 万-3 亿)是还能进的底分最低的场。
+        // room=tuhao 由工具自己点第一排第三张土豪场卡,一下都不点牌
+        val rooms = shot("human_classic_rooms")
+        val call = full("call")
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(rooms, call) + List(6) { call } + List(2) { lobbyFrame("vd_lobby") }))
+        val dispatcher = toolDispatcher(game)
+        PhoneDdzTurn.adviseBid = { _, _ -> 0 }
+        PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","auto":true,"room":"tuhao","advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
+        assertEquals(listOf(1847 to 400), game.taps.take(1))
+    }
+
     @Test fun humanStartRefusesAnUnknownRoomWithoutTapping() = runTest {
         val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(shot("human_classic_rooms"))))
         val dispatcher = toolDispatcher(game)
