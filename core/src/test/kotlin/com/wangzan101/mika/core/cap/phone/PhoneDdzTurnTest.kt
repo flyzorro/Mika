@@ -31,6 +31,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.io.File
 import javax.imageio.ImageIO
 
 class PhoneDdzTurnTest {
@@ -2020,6 +2021,61 @@ class PhoneDdzTurnTest {
         assertFalse(DdzCards.humanMainLobby(waiting))
         assertFalse(DdzCards.humanClassicRooms(waiting))
         assertFalse(DdzCards.singleClassicRooms(waiting))
+    }
+
+    /** 2026-11-12 23:52 真机(豆豆 8894万)的场次页:五张卡整体比仓库里的老图右移约 50 px,老检测卡在边上。 */
+    @Test fun theShiftedHumanRoomsPageIsStillRecognised() {
+        val shifted = shot("human_classic_rooms_shifted")
+        assertTrue("the shifted rooms page", DdzCards.humanClassicRooms(shifted))
+        // 场次页不是牌桌:classicHumanTable 必须否定掉它
+        assertFalse("the shifted rooms page is not the table", DdzCards.classicHumanTable(shifted))
+    }
+
+    /** 真机场次页上,工具对每个 room 实际点下去的那一列,在卡片顶部色带上是那张卡自己的颜色。 */
+    @Test fun eachRoomTapLandsOnItsOwnCardOnTheShiftedPage() = runTest {
+        val shifted = shot("human_classic_rooms_shifted")
+        val call = full("call")
+        fun rgb(x: Int) = shifted.pixel(x, 262).let { Triple(it shr 16 and 0xff, it shr 8 and 0xff, it and 0xff) }
+        val colours = mapOf<String, (Triple<Int, Int, Int>) -> Boolean>(
+            "normal" to { (r, g, b) -> r < 120 && g > 165 && b > 100 && g - r > 60 },
+            "elite" to { (r, g, b) -> r < 80 && g > 170 && b > 160 },
+            "tuhao" to { (r, g, b) -> b > 200 && r < 135 && g > 135 },
+        )
+        for ((room, isCard) in colours) {
+            val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(shifted, call) + List(6) { call } + List(2) { lobbyFrame("vd_lobby") }))
+            val dispatcher = toolDispatcher(game)
+            PhoneDdzTurn.adviseBid = { _, _ -> 0 }
+            PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","auto":true,"room":"$room","advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
+            val (x, _) = game.taps.first()
+            assertTrue("$room tapped x=$x on ${rgb(x)}", isCard(rgb(x)))
+        }
+    }
+
+    /** 场次卡整体左右平移 80 px(真机和老图已经差了约 50 px)仍认得出场次页,也仍不算牌桌。 */
+    @Test fun theRoomsPageIsRecognisedWhenTheCardsShiftEightyPixels() {
+        val image = ImageIO.read(javaClass.getResourceAsStream("/ddz/human_classic_rooms.png")!!)
+        val rows = (DdzScreen.ROWS + DdzCards.ROWS + DdzCards.LOBBY_ROWS + DdzPopups.ROWS).distinct()
+        for (dx in listOf(-80, 80)) {
+            val frame = RawFrame(image.width, image.height, rows.associateWith { y ->
+                IntArray(image.width) { x -> image.getRGB((x - dx).coerceIn(0, image.width - 1), y) }
+            })
+            assertTrue("shifted $dx", DdzCards.humanClassicRooms(frame))
+            assertFalse("shifted $dx is not the table", DdzCards.classicHumanTable(frame))
+        }
+    }
+
+    /** 扫一遍 ddz/ 下所有图:只有两张场次页被认成场次页,别的都不行。 */
+    @Test fun onlyTheTwoRoomsPagesAreTakenForTheHumanRoomsPage() {
+        // 主资源里也有一个 /ddz(样本字),按其中一张测试图找到测试资源的目录
+        val dir = File(javaClass.getResource("/ddz/human_main_lobby.png")!!.toURI()).parentFile
+        val names = dir.listFiles()!!.map { it.name.substringBeforeLast('.') }
+        assertTrue("fixtures: ${names.size}", names.size >= 100)
+        val rooms = setOf("human_classic_rooms", "human_classic_rooms_shifted")
+        for (name in names) {
+            val frame = shot(name)
+            if (name in rooms) assertTrue("rooms $name", DdzCards.humanClassicRooms(frame))
+            else assertFalse("not rooms $name", DdzCards.humanClassicRooms(frame))
+        }
     }
 
     /** A hand whose history is lost (missed_play) at hand_t1: Left shows pairs on top, we follow. */

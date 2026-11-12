@@ -184,6 +184,10 @@ internal object DdzCards {
     /**
      * 真人经典场次页:左边绿色的「普通场」,右边青色的「精英场」、蓝色的「土豪场」(金豆场次)。
      * 单机的场次页是 M 币、左边写着「经典模式」、上方 S11 赛季,颜色对不上。只认 Mika 的屏。
+     *
+     * 卡片会整体左右平移(2026-11-12 真机上比仓库里的老图右移约 50 px),所以不按死点 x 认:
+     * 在卡片顶部那几行里找绿、青、蓝三段连续的色块,要求从左到右排列、每段宽度约一张卡(400 px)、
+     * 段与段之间隔着卡片间隙。这样横移 ±80 px 都还在。
      */
     fun humanClassicRooms(frame: RawFrame): Boolean {
         if (frame.width != 2412 || frame.height != 1080 || DdzScreen.blackBar(frame) != 0) return false
@@ -191,11 +195,27 @@ internal object DdzCards {
         fun green(x: Int, y: Int) = rgb(x, y).let { (r, g, b) -> r < 120 && g > 165 && b > 100 && g - r > 60 }
         fun cyan(x: Int, y: Int) = rgb(x, y).let { (r, g, b) -> r < 80 && g > 170 && b > 160 }
         fun blue(x: Int, y: Int) = rgb(x, y).let { (r, g, b) -> b > 200 && r < 135 && g > 135 }
-        val normal = listOf(700 to 300, 800 to 300, 950 to 300, 1020 to 300).count { (x, y) -> green(x, y) }
-        val elite = listOf(1200 to 300, 1300 to 300).count { (x, y) -> cyan(x, y) }
-        val rich = listOf(1700 to 300, 1900 to 300).count { (x, y) -> blue(x, y) }
-        return normal >= 3 && elite >= 1 && rich >= 1
+        // 卡片顶部纯色带:老图在 253-272,新图在 252-272,取中间那几行最稳
+        for (y in ROOMS_BAND_ROWS) {
+            val g = DdzScreen.runs(frame.width, gap = 30, minWidth = ROOMS_CARD_MIN_W) { green(it, y) }
+            val c = DdzScreen.runs(frame.width, gap = 30, minWidth = ROOMS_CARD_MIN_W) { cyan(it, y) }
+            val b = DdzScreen.runs(frame.width, gap = 30, minWidth = ROOMS_CARD_MIN_W) { blue(it, y) }
+            val normal = g.firstOrNull() ?: continue
+            val elite = c.firstOrNull { it.first > normal.last } ?: continue
+            val rich = b.firstOrNull { it.first > elite.last } ?: continue
+            if (normal.last - normal.first > ROOMS_CARD_MAX_W) continue
+            if (elite.last - elite.first > ROOMS_CARD_MAX_W) continue
+            if (rich.last - rich.first > ROOMS_CARD_MAX_W) continue
+            return true
+        }
+        return false
     }
+
+    /** 场次卡顶部色带所在的行:老图 253 起、新图 252 起,取 255-270 这几行都干净。 */
+    private val ROOMS_BAND_ROWS = 255..270
+    /** 一张场次卡约 400 px 宽;色块至少这么宽才算一张卡,再宽就不像了。 */
+    private const val ROOMS_CARD_MIN_W = 300
+    private const val ROOMS_CARD_MAX_W = 470
 
     /**
      * 单机模式的「经典模式」场次页(左上角「经典模式」、上方 S11 赛季、场次用 M 币):不是真人场,绝不能点。
