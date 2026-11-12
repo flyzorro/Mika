@@ -566,14 +566,22 @@ internal object DdzCards {
     }
 
     /**
-     * 闯关牌桌上左右两家手里还剩几张:头像边上牌背小框里的金色数字。框被挡住、字形不像就是 null。
-     * 地主的框在帽子下面,比农民的低一截,所以先按牌背的浅蓝找框。
+     * 左右两家手里还剩几张:头像边上牌背小框里的金色数字。框被挡住、字形不像就是 null。
+     * 闯关牌桌的框在帽子下面、比农民的低一截;经典牌桌的框贴在头像下边、更靠边,数字字形一样。
+     * 两种都先按牌背的浅蓝找框。
      */
-    fun counts(frame: RawFrame): Map<DdzSide, Int?> =
-        mapOf(DdzSide.Left to count(frame, COUNT_LEFT), DdzSide.Right to count(frame, COUNT_RIGHT))
+    fun counts(frame: RawFrame): Map<DdzSide, Int?> {
+        val stage = singleStageTable(frame)
+        val left = if (stage) COUNT_LEFT else CLASSIC_COUNT_LEFT
+        val right = if (stage) COUNT_RIGHT else CLASSIC_COUNT_RIGHT
+        val band = if (stage) COUNT_BAND else CLASSIC_COUNT_BAND
+        val y0 = if (stage) COUNT_Y0 else CLASSIC_COUNT_Y0
+        val y1 = if (stage) COUNT_Y1 else CLASSIC_COUNT_Y1
+        return mapOf(DdzSide.Left to count(frame, left, band, y0, y1), DdzSide.Right to count(frame, right, band, y0, y1))
+    }
 
-    private fun count(frame: RawFrame, x0: Int): Int? {
-        val x1 = x0 + COUNT_BAND
+    private fun count(frame: RawFrame, x0: Int, band: Int = COUNT_BAND, y0: Int = COUNT_Y0, y1: Int = COUNT_Y1): Int? {
+        val x1 = x0 + band
         fun face(p: Int): Boolean {
             val r = p shr 16 and 0xff
             val g = p shr 8 and 0xff
@@ -582,7 +590,7 @@ internal object DdzCards {
         }
         fun gold(p: Int) = (p shr 16 and 0xff) > 200 && (p shr 8 and 0xff) > 110 && (p and 0xff) < 130
         // 数字所在那几行牌背只剩两边一点,门槛放低;两位数宽,中间会断开十几行,断开不超过 20 行算同一个框
-        val rows = (COUNT_Y0 until COUNT_Y1).filter { y -> (x0 until x1).count { face(frame.pixel(it, y)) } >= 10 }
+        val rows = (y0 until y1).filter { y -> (x0 until x1).count { face(frame.pixel(it, y)) } >= 10 }
         var best: IntRange? = null
         var start = -1
         var last = -1
@@ -615,6 +623,12 @@ internal object DdzCards {
     private const val COUNT_BAND = 80
     private const val COUNT_Y0 = 130
     private const val COUNT_Y1 = 330
+    /** 经典牌桌的框(实测):左框 230-279、右框 2134-2183,数字在 364-395 行。 */
+    private const val CLASSIC_COUNT_LEFT = 226
+    private const val CLASSIC_COUNT_RIGHT = 2130
+    private const val CLASSIC_COUNT_BAND = 62
+    private const val CLASSIC_COUNT_Y0 = 330
+    private const val CLASSIC_COUNT_Y1 = 420
     private const val COUNT_SURE = 0.15
     private const val COUNT_MARGIN = 0.04
 

@@ -1490,6 +1490,28 @@ class PhoneDdzTurnTest {
         assertEquals(setOf(4, 5, 6, 7), PhoneDdzTurn.leadGroup("8 8 8 8 5 5 5 5".split(' ')))
     }
 
+    @Test fun leadKeepsTheHandFromAOneCardLandlord() {
+        // 实测 2026-11-12:先出单张 4 被地主最后一张压死;有对子就先出最小的对子
+        val hand = "BJ 2 2 K K J J 5 5 4".split(' ')
+        assertEquals(setOf(7, 8), PhoneDdzTurn.leadGroup(hand, mapOf(DdzSide.Left to 1, DdzSide.Right to 4), DdzSeat.Left))
+    }
+
+    @Test fun leadPlaysTheBiggestSingleWhenAOneCardOpponentFacesOnlySingles() {
+        assertEquals(setOf(0), PhoneDdzTurn.leadGroup("A 9 4".split(' '), mapOf(DdzSide.Left to 1), DdzSeat.Left))
+    }
+
+    @Test fun leadTreatsAnyOneCardSideAsAnOpponentWhenTheLandlordIsUnknown() {
+        assertEquals(setOf(0), PhoneDdzTurn.leadGroup("A 9 4".split(' '), mapOf(DdzSide.Right to 1)))
+    }
+
+    @Test fun leadIgnoresTheOneCardTeammateOfAFarmer() {
+        assertEquals(setOf(2), PhoneDdzTurn.leadGroup("A 9 4".split(' '), mapOf(DdzSide.Right to 1), DdzSeat.Left))
+    }
+
+    @Test fun leadStaysTheSmallestWithoutCounts() {
+        assertEquals(setOf(2), PhoneDdzTurn.leadGroup("A 9 4".split(' ')))
+    }
+
     @Test fun humanStartReportsAnExplicitModeAndDoesNotTapTheTable() = runTest {
         val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(full("call"))))
         val result = run(game, """{"action":"start","mode":"human","advisor":"http://mac:3426"}""")
