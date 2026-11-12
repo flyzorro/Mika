@@ -244,15 +244,14 @@ class PhoneDdzTurnTest {
         assertEquals(setOf(8, 12, 13, 14).map { view.cardX(it) }.toSet(), cards)
     }
 
-    @Test fun leadingWithAnUnreadableHandStillPlaysTheLastCard() = runTest {
-        // 第一帧认出轮到我;smallest 再读一帧时手牌认不出,退回出最右边一张,而不是去拆整组
+    @Test fun leadingWithAnUnreadableHandDoesNotPlayAnyCard() = runTest {
+        // 第一帧认出轮到我;smallest 再读一帧时手牌认不出,一下都不点,不退回出最右边一张
         val lead = frame("lead")
         val unreadable = unreadableHand("lead")
         val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(lead, unreadable, lead, lead)))
-        run(game, """{"action":"hint"}""")
-        val view = DdzScreen.read(lead)
-        val cards = game.taps.filter { it.second == DdzScreen.CARD_Y }.map { it.first }.toSet()
-        assertEquals(game.taps.toString(), setOf(view.cardX(view.handCount - 1)), cards)
+        val result = run(game, """{"action":"hint"}""")
+        assertEquals("hand_unreadable", result.text("error"))
+        assertTrue("unreadable hand must not tap: ${game.taps}", game.taps.isEmpty())
     }
 
     @Test fun pressesPlayAgainWhenTheFirstPressWasIgnored() = runTest {
@@ -1742,7 +1741,7 @@ class PhoneDdzTurnTest {
         // (start used to refuse the matching screen) and missed bidding.
         val matching = fullBlank
         val call = full("call")
-        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(List(5) { matching } + listOf(call, call, lobbyFrame("vd_lobby"))))
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(List(5) { matching } + listOf(call, call, call, lobbyFrame("vd_lobby"))))
         val dispatcher = toolDispatcher(game)
         PhoneDdzTurn.adviseBid = { _, _ -> 0 }
         val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","auto":true,"advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
@@ -1844,7 +1843,7 @@ class PhoneDdzTurnTest {
         // 真人场匹配的倒计时就有 30 秒:原来的约 20 秒上限会让牌桌还没出来就放弃
         val matching = fullBlank
         val call = full("call")
-        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(List(250) { matching } + listOf(call, call, lobbyFrame("vd_lobby"))))
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(List(250) { matching } + listOf(call, call, call, lobbyFrame("vd_lobby"))))
         val dispatcher = toolDispatcher(game)
         PhoneDdzTurn.adviseBid = { _, _ -> 0 }
         val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","auto":true,"advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
@@ -1904,6 +1903,18 @@ class PhoneDdzTurnTest {
         PhoneDdzTurn.adviseBid = { _, _ -> 0 }
         PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","auto":true,"advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
         assertEquals(listOf(872 to 400), game.taps.take(1))
+    }
+
+    @Test fun theHumanRoomsPageIsNeverTappedAsACard() = runTest {
+        // 真人场次页的场次卡会被 DdzScreen.read 读成 Lead、手牌 1 张,但 classicHumanTable 不是牌桌:
+        // 进场途中只点普通场,一下都不点牌。
+        val rooms = shot("human_classic_rooms")
+        assertFalse("construction: the rooms page is not the classic table", DdzCards.classicHumanTable(rooms))
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(rooms)))
+        val result = run(game, """{"action":"start","mode":"human","auto":true,"advisor":"http://mac:3426"}""")
+        assertEquals("not_human_game", result.text("error"))
+        assertEquals("只点普通场: ${game.taps}", listOf(872 to 400), game.taps)
+        assertTrue("一下都不点牌: ${game.taps}", game.taps.none { it.second == DdzScreen.CARD_Y })
     }
 
     @Test fun humanStartWalksIntoTheEliteRoomWhenAsked() = runTest {
@@ -2593,7 +2604,7 @@ class PhoneDdzTurnTest {
         }
     }
 
-    @Test fun anUnreadableHandWithoutTheExpectedCardsFallsBackAsUnreadHand() = runTest {
+    @Test fun anUnreadableHandWithoutTheExpectedCardsPausesWithoutTapping() = runTest {
         val saved = PhoneDdzTurn.advise
         PhoneDdzTurn.advise = { _, _ -> error("DouZero is not asked when the hand is unknown") }
         try {
@@ -2602,22 +2613,20 @@ class PhoneDdzTurnTest {
             assertEquals(17, DdzScreen.read(unreadable).handCount)
             assertTrue(DdzCards.classicHumanTable(unreadable))
             var reads = 0
-            var firstTapReads = -1
             val game = object : Game(
                 PhoneDdzTurn.PACKAGE, ArrayDeque(List(60) { unreadable } + List(3) { lobbyFrame("vd_lobby") }),
             ) {
                 override suspend fun rawFrame(rows: List<Int>): RawFrame? { reads++; return super.rawFrame(rows) }
-                override suspend fun quickTap(x: Int, y: Int): Boolean {
-                    if (firstTapReads < 0) firstTapReads = reads
-                    return super.quickTap(x, y)
-                }
             }
             val dispatcher = toolDispatcher(game)
             PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
             PhoneDdzTurn.useTracker(dispatcher.ctx, readyFollowTracker())
             val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"wait"}""").jsonObject), dispatcher.ctx)
-            assertEquals("reads=$reads firstTap=$firstTapReads ${result.content}", "unread_hand", result.text("douzeroOff"))
-            assertTrue("waited the settling window: $firstTapReads", firstTapReads > 40)
+            assertEquals("reads=$reads ${result.content}", "unread_hand", result.text("douzeroOff"))
+            assertEquals("paused", result.text("state"))
+            assertEquals("unreadable_hand", result.text("reason"))
+            assertTrue("waited the settling window: $reads", reads > 40)
+            assertTrue("unreadable hand must not tap: ${game.taps}", game.taps.isEmpty())
         } finally {
             PhoneDdzTurn.advise = saved
         }
