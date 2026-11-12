@@ -758,6 +758,7 @@ internal object PhoneDdzTurn : PhoneTool {
         "douzero_history_mismatch", "douzero_hand_count_mismatch", "douzero_card_count_mismatch",
         "douzero_ambiguous_card", "history_not_ready" -> DdzSessionReason.HISTORY_MISMATCH
         "douzero_unreachable", "douzero_bad_reply" -> DdzSessionReason.SERVICE_UNAVAILABLE
+        "hand_unreadable" -> DdzSessionReason.UNREADABLE_HAND
         "rejected", "select_failed", "confirm_failed", "douzero_move_failed_pick" -> DdzSessionReason.REJECTED_ACTION
         else -> DdzSessionReason.UNKNOWN_SCENE
     }
@@ -814,6 +815,8 @@ internal object PhoneDdzTurn : PhoneTool {
     }
 
     private suspend fun hint(view: DdzView, ctx: ToolContext, turn: Turn): Move {
+        // 手牌没认全:一下都不点,按认不出的画面处理,不拿认不出的牌去选。
+        if (readableHand(ctx, view) == null) return Move(false, "hand_unreadable")
         if (DdzScreen.onlyPass(view)) return press(view.buttons[0], ctx, turn)
         if (!tap(ctx, turn, view.buttons[1].x, view.buttons[1].y)) return Move(false, "tap_failed")
         delay(SETTLE_MS)
@@ -828,14 +831,22 @@ internal object PhoneDdzTurn : PhoneTool {
         }
     }
 
+    /** 手牌整手都认得出、张数对得上才算可读;认不全或没有手牌为 null。 */
+    private suspend fun readableHand(ctx: ToolContext, view: DdzView): List<String>? {
+        if (view.handCount == 0) return null
+        val frame = ctx.screen.rawFrame(FULL_ROWS) ?: return null
+        return DdzCards.hand(frame, view)?.takeIf { it.size == view.handCount }
+    }
+
     private suspend fun smallest(
         view: DdzView, ctx: ToolContext, turn: Turn,
         counts: Map<DdzSide, Int?> = emptyMap(), landlord: DdzSeat? = null,
     ): Move {
-        val hand = ctx.screen.rawFrame(FULL_ROWS)?.let { DdzCards.hand(it, view) }
-        // 读不出手牌就还是出最右边一张;读得出来就出点数最小的一整组,别把三张、对子拆着出。
-        // 对手只剩一张时由 leadGroup 改出对子或最大的单张;别的入口没给张数,照旧
-        val want = if (hand != null && hand.size == view.handCount) leadGroup(hand, counts, landlord) else setOf(view.handCount - 1)
+        val hand = readableHand(ctx, view)
+        // 手牌没认全:一下都不点,按认不出的画面处理,不拿认不出的牌去选。
+        if (hand == null) return Move(false, "hand_unreadable")
+        // 出点数最小的一整组,别把三张、对子拆着出;对手只剩一张时由 leadGroup 改出对子或最大的单张
+        val want = leadGroup(hand, counts, landlord)
         return when (submit(want, view, ctx, turn)) {
             Sent.Played -> Move(true)
             Sent.SelectFailed -> Move(false, "select_failed")
@@ -1447,10 +1458,34 @@ internal object PhoneDdzTurn : PhoneTool {
         var popupPolls = 0
         // 等牌桌按轮数和真实时间双算:轮数兜虚拟时钟(测试里真实时间不走),时间兜真机上的慢轮
         var tableSince = now()
+        var confirmedTableFrames = 0
+        var lastTablePhase: DdzPhase? = null
+        var lastTableCount = -1
         while (polls < START_TABLE_POLLS && now() - tableSince < START_TABLE_MS && popupPolls < POPUP_POLLS) {
             if (turn.stopped) return HumanEntry(null)
             val frame = page
-            if (frame != null && DdzCards.classicHumanTable(frame)) return HumanEntry(frame)
+            if (frame != null && DdzCards.classicHumanTable(frame)) {
+                // 认到牌桌后,还要连着两帧同一个 phase 和张数、而且手牌都认得出,才当已坐上牌桌往下走;
+                // 过渡帧(匹配、场次卡)可能被读成一两张手牌,不能点。
+                val view = DdzScreen.read(frame, classic = true)
+                val readable = view.handCount > 0 && DdzCards.hand(frame, view) != null
+                if (readable && view.phase == lastTablePhase && view.handCount == lastTableCount) {
+                    confirmedTableFrames++
+                } else if (readable) {
+                    confirmedTableFrames = 1
+                    lastTablePhase = view.phase
+                    lastTableCount = view.handCount
+                } else {
+                    confirmedTableFrames = 0
+                    lastTablePhase = null
+                    lastTableCount = -1
+                }
+                if (confirmedTableFrames >= 2) return HumanEntry(frame)
+                polls++
+                waitOrSteer { delay(POLL_MS) } ?: return HumanEntry(null)
+                page = ctx.screen.rawFrame(FULL_ROWS)
+                continue
+            }
             // 单机的「经典模式」场次页:不是真人场,绝不点
             if (frame != null && DdzCards.singleClassicRooms(frame)) return HumanEntry(null, "single_player_rooms")
             // 豆豆太多点了低级场:只点右上角的叉关弹窗(绝不点「立即前往」),然后交还模型换更高的场

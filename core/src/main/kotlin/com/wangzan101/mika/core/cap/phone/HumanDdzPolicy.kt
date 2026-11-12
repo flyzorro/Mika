@@ -28,6 +28,8 @@ internal object DdzSessionReason {
     const val MISSED_PLAY = "missed_play"
     /** 别家的牌读到了,自己的手牌一直认不出:这一局剩下的按简单规则打完。 */
     const val UNREAD_HAND = "unread_hand"
+    /** 手牌没认全(有认不出的牌或张数为 0):一下都不点,按认不出的画面处理。 */
+    const val UNREADABLE_HAND = "unreadable_hand"
     const val REJECTED_ACTION = "rejected_action"
     const val HISTORY_MISMATCH = "history_mismatch"
     const val HAND_DRIFT = "hand_drift"

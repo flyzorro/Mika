@@ -71,6 +71,13 @@ class DdzCardsTest {
         }
     }
 
+    /** 真人场次页的场次卡会被读成 Lead、手牌 1 张,但它不是经典牌桌。 */
+    @Test fun theHumanRoomsPageIsNotTakenForTheClassicTable() {
+        val rooms = fullFrame("human_classic_rooms")
+        assertFalse(DdzCards.classicHumanTable(rooms))
+        assertEquals(DdzPhase.Lead, DdzScreen.read(rooms, classic = true).phase)
+    }
+
     /** 2026-11-11 21:16 单机经典场:结算上弹「当前金币可前往更高级场次」,只有一个黄色的确定。 */
     @Test fun theHigherRoomPopupIsClosedWithItsOkButton() {
         val ok = DdzCards.singleMoreCoinsPopup(fullFrame("single_more_coins_popup"))

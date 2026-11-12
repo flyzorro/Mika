@@ -258,7 +258,8 @@ internal object DdzCards {
         // 不看闹钟:三家同时加倍时没有闹钟,闹钟也常读不出
         // 广告视频大半是黑的(水印那一块也算「暗」)、左边一张白卡片会读成手牌:轮到别家的牌桌中间上方都是蓝色桌布,广告最多一成
         val waiting = view.phase == DdzPhase.Other && view.handCount > 0 && felt(frame) >= FELT_DENSITY
-        if ((view.phase == DdzPhase.Other && !waiting) || singleStageTable(frame) || singleLobby(frame) || singleStage(frame) || classicLobby(frame)) return false
+        // 真人场次页的场次卡会被读成一两张手牌,绝不能当牌桌;先按页面本身否定掉
+        if ((view.phase == DdzPhase.Other && !waiting) || singleStageTable(frame) || singleLobby(frame) || singleStage(frame) || classicLobby(frame) || humanClassicRooms(frame)) return false
         // The game's "取消托管" overlay covers the table watermark. Its dedicated blue
         // button is a stronger positive signal than the obscured marker, and the caller
         // already handles AutoPlay by tapping that button before reading the table again.
