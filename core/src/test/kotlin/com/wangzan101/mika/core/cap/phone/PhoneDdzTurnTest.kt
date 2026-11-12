@@ -1942,6 +1942,19 @@ class PhoneDdzTurnTest {
         assertEquals(listOf(1847 to 400), game.taps.take(1))
     }
 
+    @Test fun humanStartWalksIntoTheMasterRoomWhenAsked() = runTest {
+        // 豆豆 3.21 亿:普通、精英、土豪场都超上限,大师场(2000 万-6 亿)是第二排第一张紫色卡。
+        // room=master 由工具自己点那一张,一下都不点牌
+        val rooms = shot("human_classic_rooms")
+        val call = full("call")
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(rooms, call) + List(6) { call } + List(2) { lobbyFrame("vd_lobby") }))
+        val dispatcher = toolDispatcher(game)
+        PhoneDdzTurn.adviseBid = { _, _ -> 0 }
+        PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","auto":true,"room":"master","advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
+        assertEquals(listOf(872 to 723), game.taps.take(1))
+        assertTrue("一下都不点牌: ${game.taps}", game.taps.none { it.second == DdzScreen.CARD_Y })
+    }
+
     @Test fun humanStartRefusesAnUnknownRoomWithoutTapping() = runTest {
         val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(shot("human_classic_rooms"))))
         val dispatcher = toolDispatcher(game)
@@ -2035,19 +2048,22 @@ class PhoneDdzTurnTest {
     @Test fun eachRoomTapLandsOnItsOwnCardOnTheShiftedPage() = runTest {
         val shifted = shot("human_classic_rooms_shifted")
         val call = full("call")
-        fun rgb(x: Int) = shifted.pixel(x, 262).let { Triple(it shr 16 and 0xff, it shr 8 and 0xff, it and 0xff) }
-        val colours = mapOf<String, (Triple<Int, Int, Int>) -> Boolean>(
-            "normal" to { (r, g, b) -> r < 120 && g > 165 && b > 100 && g - r > 60 },
-            "elite" to { (r, g, b) -> r < 80 && g > 170 && b > 160 },
-            "tuhao" to { (r, g, b) -> b > 200 && r < 135 && g > 135 },
+        fun rgb(x: Int, y: Int) = shifted.pixel(x, y).let { Triple(it shr 16 and 0xff, it shr 8 and 0xff, it and 0xff) }
+        val colours = mapOf<String, Pair<Int, (Triple<Int, Int, Int>) -> Boolean>>(
+            "normal" to (262 to { (r, g, b) -> r < 120 && g > 165 && b > 100 && g - r > 60 }),
+            "elite" to (262 to { (r, g, b) -> r < 80 && g > 170 && b > 160 }),
+            "tuhao" to (262 to { (r, g, b) -> b > 200 && r < 135 && g > 135 }),
+            // 大师场在第二排:看它自己那一排的紫色色带
+            "master" to (600 to { (r, g, b) -> b > 200 && b - r > 50 && b - g > 40 }),
         )
-        for ((room, isCard) in colours) {
+        for ((room, probe) in colours) {
+            val (y, isCard) = probe
             val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(shifted, call) + List(6) { call } + List(2) { lobbyFrame("vd_lobby") }))
             val dispatcher = toolDispatcher(game)
             PhoneDdzTurn.adviseBid = { _, _ -> 0 }
             PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","auto":true,"room":"$room","advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
             val (x, _) = game.taps.first()
-            assertTrue("$room tapped x=$x on ${rgb(x)}", isCard(rgb(x)))
+            assertTrue("$room tapped x=$x on ${rgb(x, y)}", isCard(rgb(x, y)))
         }
     }
 
