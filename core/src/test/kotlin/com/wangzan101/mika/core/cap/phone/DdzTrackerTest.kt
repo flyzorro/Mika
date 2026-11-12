@@ -456,6 +456,47 @@ class DdzTrackerTest {
         assertEquals("unsure_left", tracker.broken)
     }
 
+    /** 我是地主先出一对 4,两家都还没出:右家那一手从第一帧起就是我们要读的。 */
+    private fun iLeadAPairOfFours() {
+        tracker.observe(DdzSeat.Me, { DdzSeen.Empty }, { bottom }, leadingWith20 = true, leading = true)
+        tracker.mine(listOf("4", "4"))
+    }
+
+    @Test fun aFarmerPairWithOneUnsureCardIsFilledWhenOnlyOneGuessFits() {
+        // Live 2026-11-12 11:14: 右家压一对 2 读成 [2, ?2,5,3]。猜的 5、3 都成不了牌型,只有 2 是一对。
+        iLeadAPairOfFours()
+        right = DdzSeen.Cards(listOf("2", "?2,5,3"))
+        repeat(4) { see(DdzSeat.Left) }
+        assertNull(tracker.broken)
+        assertEquals(listOf(listOf("4", "4"), listOf("2", "2")), tracker.history)
+    }
+
+    @Test fun aFarmerPairOfTensWithOneUnsureCardIsFilled() {
+        // 同一局的下一手: [10, ?10,K,9],只有 10 补得成一对
+        iLeadAPairOfFours()
+        right = DdzSeen.Cards(listOf("10", "?10,K,9"))
+        repeat(4) { see(DdzSeat.Left) }
+        assertNull(tracker.broken)
+        assertEquals(listOf("10", "10"), tracker.history.last())
+    }
+
+    @Test fun aFourWithTwoWhereEveryGuessFitsStaysUnresolved() {
+        // 左家的 3333+2+黑 10 读成 [3,3,3,3,2, ?K,7,J]:K、7、J 都是四带二,认不出是哪张,不能替它定
+        iLeadAPairOfFours()
+        right = DdzSeen.Cards(listOf("3", "3", "3", "3", "2", "?K,7,J"))
+        repeat(20) { see(DdzSeat.Left) }
+        assertEquals("unsure_right", tracker.broken)
+        assertFalse(tracker.history.any { it.size > 2 })
+    }
+
+    @Test fun anAmbiguousLandlordCardStillGoesToDouZero() {
+        // 地主(右家)先出,那条绶带压着的牌换成 7、4、J 都是三带一:几种都说得通,还是把 ? 交给 DouZero
+        right = DdzSeen.Cards(listOf("5", "5", "5", "?7,4,J"))
+        repeat(3) { see(DdzSeat.Left) }
+        assertEquals(DdzSeat.Right, tracker.landlord)
+        assertEquals(listOf(listOf("5", "5", "5", "?7,4,J")), tracker.history)
+    }
+
     @Test fun whenILeadAgainTheClearedTableMeansBothPassed() {
         // 地主是我,先出的顺子没人要;闯关的牌桌清了桌,两家的「不出」都没留下
         tracker.observe(DdzSeat.Me, { DdzSeen.Empty }, { bottom }, leadingWith20 = true, leading = true)
