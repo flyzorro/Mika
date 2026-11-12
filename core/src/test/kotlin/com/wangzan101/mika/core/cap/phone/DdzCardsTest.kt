@@ -152,6 +152,17 @@ class DdzCardsTest {
         assertEquals(DdzSeen.Cards("A K Q J 10 9 8".split(' ')), DdzCards.play(frame("single_left_straight_A_to_8_black_10"), DdzSide.Left))
     }
 
+    @Test fun readsTheLastBlackTenOnMikasScreen() {
+        // Live 2026-11-12 10:48 single classic 中级场: the left farmer's four-with-two ended in a black 10.
+        // The last card's wide window was trimmed to 47 (wideLast 50 minus a 3px margin meant for the
+        // next card's shadow), but this 10's 「0」 reaches column 49; 47 kept only the 「1」, which read
+        // K,7,J — the tracker failed unread_left and DouZero sat out. Cap the last card's wide window
+        // at pitch (50, no next card) and the full 10 matches the existing sample at 0.17.
+        assertEquals(DdzSeen.Cards("3 3 3 3 2 10".split(' ')), DdzCards.play(frame("human_left_3333_2_black10"), DdzSide.Left))
+        assertEquals(DdzSeen.Cards("3 3 3 3 2 10".split(' ')), DdzCards.play(frame("human_left_3333_2_black10_f1"), DdzSide.Left))
+        assertEquals(DdzSeen.Cards("3 3 3 3 2 10".split(' ')), DdzCards.play(frame("human_left_3333_2_black10_f2"), DdzSide.Left))
+    }
+
     @Test fun readsSettledRedTenPairOnMikasScreen() {
         assertEquals(DdzSeen.Cards(listOf("10", "10")), DdzCards.play(frame("human_left_pair_10_red"), DdzSide.Left))
     }
