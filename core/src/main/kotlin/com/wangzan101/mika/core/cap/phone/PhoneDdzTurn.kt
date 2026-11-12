@@ -64,6 +64,9 @@ internal object PhoneDdzTurn : PhoneTool {
     private const val HUMAN_ELITE_ROOM_X = 1360
     /** 同一排蓝色「土豪场」卡片的中心(1000 万-3 亿金豆):豆豆过了精英场上限,土豪场是还能进的底分最低的场。 */
     private const val HUMAN_TUHAO_ROOM_X = 1847
+    /** 第二排紫色「大师场」卡片的中心(2000 万-6 亿金豆):和普通场同一列,y 是第二排。 */
+    private const val HUMAN_MASTER_ROOM_X = 872
+    private const val HUMAN_MASTER_ROOM_Y = 723
     /** Mika 屏上闯关页的报名。 */
     private const val STAGE_BUTTON_Y = 920
     private const val AUTO_CANCEL_MS = 600L
@@ -198,8 +201,8 @@ internal object PhoneDdzTurn : PhoneTool {
         "advisor" to buildJsonObject { put("type", "string"); put("description", "start: DouZero service URL, required for both modes.") },
         "room" to buildJsonObject {
             put("type", "string")
-            put("enum", JsonArray(listOf("normal", "elite", "tuhao").map(::JsonPrimitive)))
-            put("description", "start human mode with auto=true: which classic room to sit down in, normal (普通场, 5万-200万, default), elite (精英场, 200万-6000万) or tuhao (土豪场, 1000万-3亿, much higher stakes).")
+            put("enum", JsonArray(listOf("normal", "elite", "tuhao", "master").map(::JsonPrimitive)))
+            put("description", "start human mode with auto=true: which classic room to sit down in, normal (普通场, 5万-200万, default), elite (精英场, 200万-6000万), tuhao (土豪场, 1000万-3亿) or master (大师场, 2000万-6亿, the highest stakes).")
         },
         "hand" to ranks("play: your whole hand; resume: the complete current hand."),
         "play" to ranks("The cards to play."),
@@ -438,16 +441,17 @@ internal object PhoneDdzTurn : PhoneTool {
         // single-player lobby share the same button colors, so the explicit markers are a
         // required eligibility gate before any human-mode state is installed.
         // 选场先校验,认不得的场次一下都不点
-        val roomX = when (a.str("room")?.trim()?.lowercase() ?: "normal") {
-            "normal" -> HUMAN_NORMAL_ROOM_X
-            "elite" -> HUMAN_ELITE_ROOM_X
-            "tuhao" -> HUMAN_TUHAO_ROOM_X
-            else -> throw ArgError("room", "must be normal, elite or tuhao")
+        val (roomX, roomY) = when (a.str("room")?.trim()?.lowercase() ?: "normal") {
+            "normal" -> HUMAN_NORMAL_ROOM_X to HUMAN_NORMAL_ROOM_Y
+            "elite" -> HUMAN_ELITE_ROOM_X to HUMAN_NORMAL_ROOM_Y
+            "tuhao" -> HUMAN_TUHAO_ROOM_X to HUMAN_NORMAL_ROOM_Y
+            "master" -> HUMAN_MASTER_ROOM_X to HUMAN_MASTER_ROOM_Y
+            else -> throw ArgError("room", "must be normal, elite, tuhao or master")
         }
         if (!DdzCards.classicHumanTable(page)) {
             if (!a.bool("auto", false)) return refused("not_human_game")
             // 在主大厅点「真人对战」、在真人场次页点选的场次(默认普通场),再等匹配和牌桌出来
-            val entry = awaitHumanEntry(ctx, turn, page, roomX)
+            val entry = awaitHumanEntry(ctx, turn, page, roomX, roomY)
             page = entry.frame ?: return refused(entry.error ?: "not_human_game")
         }
         val view = DdzScreen.read(page, classic = true)
@@ -1445,12 +1449,12 @@ internal object PhoneDdzTurn : PhoneTool {
     private class HumanEntry(val frame: com.wangzan101.mika.core.uistate.RawFrame?, val error: String? = null)
 
     /**
-     * 从游戏主大厅点中间的「真人对战」、在真人场次页点横坐标 [roomX] 的场次卡(普通场、精英场或土豪场),然后等匹配和牌桌;单机的经典场次页不点。
+     * 从游戏主大厅点中间的「真人对战」、在真人场次页点([roomX], [roomY]) 的场次卡(普通场、精英场、土豪场或大师场),然后等匹配和牌桌;单机的经典场次页不点。
      * 路上真人场的领金豆弹窗自己领(只点免费的),单机救济金、看视频领取、广告由 [clearPopup] 收拾;领完回到场次页再点一次同一个场次。
      * 最多等约 45 秒(真人场匹配的倒计时就有 30 秒),弹窗另算。只认 Mika 的屏,认不出的画面一律不点。
      */
     private suspend fun awaitHumanEntry(
-        ctx: ToolContext, turn: Turn, first: com.wangzan101.mika.core.uistate.RawFrame, roomX: Int,
+        ctx: ToolContext, turn: Turn, first: com.wangzan101.mika.core.uistate.RawFrame, roomX: Int, roomY: Int,
     ): HumanEntry {
         var page: com.wangzan101.mika.core.uistate.RawFrame? = first
         var lobbyTapped = false
@@ -1537,7 +1541,7 @@ internal object PhoneDdzTurn : PhoneTool {
                 }
             } else if (frame != null && DdzCards.humanClassicRooms(frame)) {
                 if (!roomsTapped) {
-                    if (!tapOnTheWay(ctx, turn, roomX, HUMAN_NORMAL_ROOM_Y)) return HumanEntry(null)
+                    if (!tapOnTheWay(ctx, turn, roomX, roomY)) return HumanEntry(null)
                     roomsTapped = true
                 }
             } else if (clearPopup(ctx, turn, frame)) {
