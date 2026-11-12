@@ -1553,7 +1553,7 @@ internal object PhoneDdzTurn : PhoneTool {
             broken == DdzSessionReason.INVALID_ADVISOR_PLAY ||
             // 单机 byDouZero 自己的失败也是这一局记不下去了(手牌/历史/地主对不上),同样按规则打完这一局
             broken == "history_not_ready" || broken == "hand_unreadable" || broken == "landlord_mismatch" ||
-            broken.startsWith("unread_") || broken.startsWith("unsure_") ||
+            broken.startsWith("unread_") || broken.startsWith("unsure_") || broken.startsWith("illegal_") ||
             broken.startsWith("douzero_") ||
             broken == "select_failed" || broken == "confirm_failed" || broken == "tap_failed")
 

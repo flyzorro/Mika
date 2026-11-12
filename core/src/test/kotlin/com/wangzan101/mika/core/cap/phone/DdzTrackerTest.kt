@@ -306,14 +306,15 @@ class DdzTrackerTest {
 
     @Test fun aPassSeenForOneFrameIsNotYetAPass() {
         tracker.observe(DdzSeat.Me, { DdzSeen.Empty }, { bottom }, leadingWith20 = true, leading = true)
-        tracker.mine(listOf("6"))
+        // 真正的跟牌必须压得过:同是顺子,大的一手才跟得上
+        tracker.mine("7 6 5 4 3".split(' '))
         see(DdzSeat.Right)
         // 右家出的牌刚飞出来,缩在头像边上,那一帧像「不出」
         right = DdzSeen.Pass
         see(DdzSeat.Left)
-        right = DdzSeen.Cards("7 6 5 4 3".split(' '))
+        right = DdzSeen.Cards("8 7 6 5 4".split(' '))
         repeat(3) { see(DdzSeat.Left) }
-        assertEquals(listOf("7", "6", "5", "4", "3"), tracker.history[1])
+        assertEquals(listOf("8", "7", "6", "5", "4"), tracker.history[1])
     }
 
     @Test fun cardsStackedWhileFlyingInAreNotTakenForTheWholePlay() {
@@ -346,17 +347,17 @@ class DdzTrackerTest {
     }
 
     @Test fun aPlayClearedBeforeTheClockMovesIsCaughtByTheCount() {
-        // 左家地主先出 3(20 张剩 19)
-        counts = mapOf(DdzSide.Left to 19, DdzSide.Right to 17)
-        left = DdzSeen.Cards(listOf("3"))
+        // 左家地主先出对 3(20 张剩 18);对 4 才跟得上,地主再用对 A 压
+        counts = mapOf(DdzSide.Left to 18, DdzSide.Right to 17)
+        left = DdzSeen.Cards(listOf("3", "3"))
         repeat(4) { seeCounted(DdzSeat.Me) }
-        tracker.mine(listOf("4"))
+        tracker.mine(listOf("4", "4"))
         // 右家不要、地主马上出对 A:闹钟一直没看到,两家的牌都摆着
         right = DdzSeen.Pass
         left = DdzSeen.Cards(listOf("A", "A"))
-        counts = mapOf(DdzSide.Left to 17, DdzSide.Right to 17)
+        counts = mapOf(DdzSide.Left to 16, DdzSide.Right to 17)
         repeat(6) { seeCounted(null) }
-        assertEquals(listOf(listOf("3"), listOf("4"), emptyList(), listOf("A", "A")), tracker.history)
+        assertEquals(listOf(listOf("3", "3"), listOf("4", "4"), emptyList(), listOf("A", "A")), tracker.history)
         assertTrue(tracker.ready())
     }
 
@@ -465,6 +466,50 @@ class DdzTrackerTest {
         assertNull(tracker.broken)
         assertTrue(tracker.ready())
         assertEquals(listOf(listOf("5", "6", "7", "8", "9"), emptyList(), emptyList()), tracker.history)
+    }
+
+    /**
+     * 2026-11-12 实测:右家(地主)先出 4445,左家 5556 压过,我不要;之后右家的出牌区一直读成 [BJ]。
+     * 真正出的是王炸 SJ+BJ,单张压不过三带一,这手 [BJ] 不能记进历史。
+     */
+    private fun liveTrickBeforeTheIllegalRead() {
+        right = DdzSeen.Cards("4 4 4 5".split(' '))
+        repeat(3) { see(DdzSeat.Left) }
+        left = DdzSeen.Cards("5 5 5 6".split(' '))
+        repeat(4) { see(DdzSeat.Me) }
+        tracker.mine(emptyList())
+        assertEquals(
+            listOf(listOf("4", "4", "4", "5"), listOf("5", "5", "5", "6"), emptyList()),
+            tracker.history,
+        )
+    }
+
+    @Test fun anIllegalFollowIsNeverRecordedAndFailsAsIllegalRight() {
+        liveTrickBeforeTheIllegalRead()
+        right = DdzSeen.Cards(listOf("BJ"))
+        see(DdzSeat.Left)
+        assertNull(tracker.broken)
+        repeat(DdzSettlingPolicy.SINGLE.maxUnconfirmedFrames - 1) { see(DdzSeat.Left) }
+        assertEquals("illegal_right", tracker.broken)
+        assertFalse(tracker.history.contains(listOf("BJ")))
+        assertEquals(3, tracker.history.size)
+        assertFalse(tracker.ready())
+    }
+
+    @Test fun aLegalFollowThatBeatsTheTrickIsStillRecorded() {
+        liveTrickBeforeTheIllegalRead()
+        right = DdzSeen.Cards(listOf("SJ", "BJ"))
+        repeat(DdzSettlingPolicy.SINGLE.steadyFrames) { see(DdzSeat.Left) }
+        assertNull(tracker.broken)
+        assertEquals(listOf("SJ", "BJ"), tracker.history.last())
+    }
+
+    @Test fun aReadWithAnUnknownCardIsNotRejected() {
+        liveTrickBeforeTheIllegalRead()
+        right = DdzSeen.Cards(listOf("?9"))
+        repeat(DdzSettlingPolicy.SINGLE.steadyFrames) { see(DdzSeat.Left) }
+        assertNull(tracker.broken)
+        assertEquals(listOf("?9"), tracker.history.last())
     }
 
     @Test fun humanTrackerKeepsAnUnsettledOpponentPlayLongerThanSinglePlayer() {
