@@ -239,6 +239,14 @@ class DdzCardsTest {
         assertEquals(mapOf(DdzSide.Left to 17, DdzSide.Right to 17), DdzCards.counts(frame("vd_stage_bottom_Q410")))
     }
 
+    @Test fun readsHowManyCardsTheOthersHaveLeftOnTheClassicTable() {
+        // 经典牌桌的头像边上也有牌背小框:地主的帽子在左边或右边,框的位置都不变
+        assertEquals(mapOf(DdzSide.Left to 1, DdzSide.Right to 4), DdzCards.counts(frame("counts_L1_R4")))
+        assertEquals(mapOf(DdzSide.Left to 16, DdzSide.Right to 17), DdzCards.counts(frame("counts_L16_R17")))
+        assertEquals(mapOf(DdzSide.Left to 4, DdzSide.Right to 8), DdzCards.counts(frame("counts_L4_R8")))
+        assertEquals(mapOf(DdzSide.Left to 4, DdzSide.Right to 17), DdzCards.counts(frame("counts_L4_R17")))
+    }
+
     @Test fun readsAPlayThatWrapsOntoASecondRow() {
         // 地主出了十张(101010 999 66 33):第一排九张,最后一张带绶带的 3 摆在第二排
         val wrap = DdzCards.play(frame("vd_stage_left_wrap10"), DdzSide.Left)
