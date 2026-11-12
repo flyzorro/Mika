@@ -7,6 +7,7 @@
     <string name="tool_set_timer">ضبط مؤقّت</string>
     <string name="tool_show_alarms">عرض المنبّهات</string>
     <string name="tool_add_calendar_event">إضافة حدث إلى التقويم</string>
+    <string name="tool_calendar_bulk_insert">إضافة أحداث إلى التقويم دفعة واحدة</string>
     <string name="tool_set_wheel">تدوير عجلة الاختيار</string>
     <string name="tool_scroll_find">التمرير للعثور على عنصر</string>
     <string name="tool_wait_condition">انتظار تحقق شرط على الشاشة</string>
@@ -61,4 +62,16 @@
     <string name="tool_tap">نقر</string>
     <string name="tool_type">كتابة نص</string>
     <string name="tool_clear">مسح الحقل</string>
+    <string name="tool_mika_status">عرض حالة Mika</string>
+    <string name="tool_mika_open_screen">فتح صفحة Mika</string>
+    <string name="tool_mika_open_file">فتح ملف</string>
+    <string name="tool_mika_notify">إرسال إشعار</string>
+    <string name="tool_mika_copy">نسخ النص</string>
+    <string name="tool_mika_open_in_browser">فتح في متصفحك</string>
+    <string name="tool_mika_search_in_browser">البحث في متصفحك</string>
+    <string name="tool_mika_sites">التحقق من تسجيل الدخول</string>
+    <string name="tool_mika_user_page">التحقق من الصفحة المعروضة</string>
+    <string name="tool_mika_login_site">تسجيل الدخول إلى موقع</string>
+    <string name="tool_mika_confirm_login">تأكيد تسجيل الدخول</string>
+    <string name="tool_mika_favorites">المواقع المتكررة</string>
 </resources>
