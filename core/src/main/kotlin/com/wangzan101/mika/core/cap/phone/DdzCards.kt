@@ -95,8 +95,12 @@ internal object DdzCards {
             else bar + (1360 * k).toInt() to bar + (1990 * k).toInt()
             // 出的牌间距:主屏 53;Mika 的屏(没黑边)只有 51.5,不跟着横向放大,按 53 × 1.05 算六七张就错位
             // 真人右家十张牌排满后,地主绶带那张会在最后一张下面错开一格
+            // 经典牌桌上一排摆满九张后,第十张也从同一个左边接着摆第二排:牌顶比第一排低 [CLASSIC_WRAP_DY],
+            // 第一排的牌面下沿以下 [CLASSIC_WRAP_BELOW] 那一行探它
             strip(frame, x0, x1, 220, 420, pitch = if (bar == 0) MIKA_PLAY_PITCH else 53 * k, width = 103 * k, glyphRows = 60, glyphWidth = (44 * k).toInt(),
-                k = k, wideLast = (48 * k).toInt(), tailDy = if (side == DdzSide.Right) HUMAN_RIBBON_DY else null)
+                k = k, wideLast = (48 * k).toInt(), tailDy = if (side == DdzSide.Right) HUMAN_RIBBON_DY else null,
+                probeTop = CLASSIC_PROBE_TOP, wrapDy = CLASSIC_WRAP_DY, wrapBelow = CLASSIC_WRAP_BELOW,
+                wrapFull = true, wrapWhite = CLASSIC_WRAP_WHITE)
         }
         if (cards == null) return if (passed(frame, side, bar, k, stage)) DdzSeen.Pass else DdzSeen.Empty
         val ranks = cards.map { it.rank }.toMutableList()
@@ -669,7 +673,8 @@ internal object DdzCards {
     private fun strip(
         frame: RawFrame, x0: Int, x1: Int, y0: Int, y1: Int, pitch: Double, width: Double, glyphRows: Int, glyphWidth: Int,
         k: Double, minRows: Int = 100, sure: Double = SURE, margin: Double = MARGIN, probeNearBottom: Boolean = false,
-        wideLast: Int? = null, wrapDy: Int? = null, tailDy: Int? = null,
+        wideLast: Int? = null, wrapDy: Int? = null, tailDy: Int? = null, wrapBelow: Int = WRAP_BELOW,
+        wrapFull: Boolean = false, wrapWhite: Int = 100, probeTop: Int? = null,
     ): List<Read>? {
         val right = minOf(x1, frame.width)
         fun white(x: Int, y: Int) = frame.pixel(x, y).let { p -> min(p) > 190 && spread(p) < 45 }
@@ -687,7 +692,7 @@ internal object DdzCards {
         // 真人桌地主出的王下半张是地主的图案,只在下面量会量短(算成 0 张):牌顶下面一点也量,取最宽的
         // 真人牌点字在顶下十几行会把白牌切开,多探一行找完整牌面
         val probes = if (probeNearBottom) listOf(top + 5, bottom - 10, bottom - 30)
-        else listOf(top + 10, top + 20, minOf(top + minRows, y1 - 1))
+        else listOfNotNull(top + 10, top + 20, minOf(top + minRows, y1 - 1), probeTop?.let { top + it })
         val span = probes.mapNotNull { probe ->
             DdzScreen.runs(right - x0, gap = 12, minWidth = 40) { white(x0 + it, probe) }.maxByOrNull { it.last - it.first }
         }.maxByOrNull { it.last - it.first } ?: return null
@@ -711,11 +716,14 @@ internal object DdzCards {
         // 闯关里一手出得多(十张的飞机带对子),一排摆满九张后接着从同一个左边摆第二排,比第一排低 [WRAP_DY]、压在它下面。
         // 第一排牌面下沿以下还有白色牌面就是有第二排;宽度只在第一排下面量
         if (wrapDy == null) return first
-        val below = top + WRAP_BELOW
-        if (below >= y1 || (x0 until right).count { white(it, below) } < 100) return first
+        val below = top + wrapBelow
+        if (below >= y1 || (x0 until right).count { white(it, below) } < wrapWhite) return first
         val span2 = DdzScreen.runs(right - x0, gap = 12, minWidth = 40) { white(x0 + it, below) }.maxByOrNull { it.last - it.first } ?: return first
         val n2 = ((span2.last - span2.first + 1 - width) / pitch).roundToInt() + 1
         if (n2 !in 1..20) return first
+        // 经典牌桌的牌更矮(高 148):第一排九张摆满,第二排的牌顶比第一排低 [wrapDy],正好探在第二排的牌面上;
+        // 第二排还是从第一排那个左边起摆。九张没摆满不会有第二排,也别把真人右家掉下去那张绶带牌(在右边)当成第二排
+        if (wrapFull && (n != 9 || span2.first !in span.first - 6..span.first + 12)) return first
         return first + row(frame, x0 + span2.first, top + wrapDy, n2, pitch, glyphRows, glyphWidth, k, sure, margin, wideLast)
     }
 
@@ -758,6 +766,15 @@ internal object DdzCards {
     private const val HUMAN_RIBBON_DY = 70
     /** 第一排牌顶往下这么多已经出了第一排的牌面(闯关的牌高约 188),还是白的就是第二排。 */
     private const val WRAP_BELOW = 215
+    /**
+     * 经典牌桌的牌矮得多(高约 148):第一排九张摆满后,第十张从同一个左边摆第二排,牌顶比第一排低 68;
+     * 第一排的牌面只盖到 392,往下 170 那一行已经是第二排整张的牌面。
+     */
+    private const val CLASSIC_PROBE_TOP = 5
+    private const val CLASSIC_WRAP_DY = 68
+    private const val CLASSIC_WRAP_BELOW = 170
+    /** 第二排那行至少要有半张牌的白:单张牌下面桌布上的白点(张数框、闹钟)不够。 */
+    private const val CLASSIC_WRAP_WHITE = 60
     private const val RIBBON_COL = 40
     private const val RIBBON_SLOPE = 0.85
 

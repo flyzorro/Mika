@@ -163,6 +163,38 @@ class DdzCardsTest {
         assertEquals(DdzSeen.Cards("3 3 3 3 2 10".split(' ')), DdzCards.play(frame("human_left_3333_2_black10_f2"), DdzSide.Left))
     }
 
+    @Test fun readsTheClassicStraightThatWrapsOntoASecondRow() {
+        // Live 2026-11-12 11:32 single classic: the landlord led 5 6 7 8 9 10 J Q K A; nine cards sat in
+        // one row and the tenth (5♠ with the 地主 ribbon) wrapped onto a second row, so the play read Unsure
+        // and the hand failed missed_play. Order is the first row left to right, then the second row.
+        assertEquals(DdzSeen.Cards("A K Q J 10 9 8 7 6 5".split(' ')),
+            DdzCards.play(frame("single_left_straight_A_to_5_wrapped"), DdzSide.Left))
+    }
+
+    @Test fun readsTheRightHandWrappedPlayToo() {
+        // 帧里只有左家出过这一手;把左家的出牌区平移到右家(牌形不变,不镜像),右边的第二排也该读出来
+        val image = ImageIO.read(javaClass.getResourceAsStream("/ddz/single_left_straight_A_to_5_wrapped.png")!!)
+        val shift = 1137
+        val rows = (DdzScreen.ROWS + DdzCards.ROWS).distinct().associateWith { y ->
+            IntArray(image.width) { x ->
+                val from = x - shift
+                if (y in 220..419 && from in 280..926) image.getRGB(from, y) else image.getRGB(x, y)
+            }
+        }
+        assertEquals(DdzSeen.Cards("A K Q J 10 9 8 7 6 5".split(' ')),
+            DdzCards.play(RawFrame(image.width, image.height, rows), DdzSide.Right))
+    }
+
+    @Test fun aRowThatIsNotFullDoesNotGrowASecondRow() {
+        // 八张一排、下面再画一块白的(像第二排):九张摆满之前不会换排,不能凭空多读一张
+        val image = ImageIO.read(javaClass.getResourceAsStream("/ddz/single_left_straight_A_to_8_black_10.png")!!)
+        val rows = (DdzScreen.ROWS + DdzCards.ROWS).distinct().associateWith { y ->
+            IntArray(image.width) { x -> if (y in 405..419 && x in 340..460) -1 else image.getRGB(x, y) }
+        }
+        assertEquals(DdzSeen.Cards("A K Q J 10 9 8".split(' ')),
+            DdzCards.play(RawFrame(image.width, image.height, rows), DdzSide.Left))
+    }
+
     @Test fun readsSettledRedTenPairOnMikasScreen() {
         assertEquals(DdzSeen.Cards(listOf("10", "10")), DdzCards.play(frame("human_left_pair_10_red"), DdzSide.Left))
     }
