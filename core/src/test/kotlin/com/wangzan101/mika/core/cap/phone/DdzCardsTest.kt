@@ -156,6 +156,15 @@ class DdzCardsTest {
         assertEquals(DdzSeen.Cards(listOf("10", "10")), DdzCards.play(frame("human_left_pair_10_red"), DdzSide.Left))
     }
 
+    @Test fun readsTheRedEightInTheLandlordsStraight() {
+        // Live 2026-11-11 21:43 single classic: the red 8 in the landlord's 10-9-8-7-6 sat only 0.069
+        // from 3 (margin is 0.08), so every frame read Unsure and the tracker failed (unsure_right);
+        // a null in the middle of a play spoils the whole hand, unlike the ribbon's trailing ?
+        for (name in listOf("single_right_straight_10_to_6_red8_first", "single_right_straight_10_to_6_red8", "single_right_straight_10_to_6_red8_fail")) {
+            assertEquals(name, DdzSeen.Cards("10 9 8 7 6".split(' ')), DdzCards.play(frame(name), DdzSide.Right))
+        }
+    }
+
     @Test fun doesNotInventRankWhileRedTenPairIsLanding() {
         val seen = DdzCards.play(frame("human_left_pair_10_red_landing"), DdzSide.Left)
         assertTrue("$seen", seen == DdzSeen.Unsure ||
