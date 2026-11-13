@@ -115,21 +115,17 @@ class DdzPopupsTest {
     /** 2026-11-13:Mika 屏上的「段位降至白银 1 星」只有一个橙色「确定」(结算页和场次页各一张)。 */
     @Test fun aRankDropPopupIsConfirmedAtOneButton() {
         for (name in listOf("rank_down_on_result", "rank_down_on_rooms", "rank_protect_on_result")) {
-            val step = DdzPopups.next(game, null, frame(name)) as Step.Tap
-            assertEquals(name, DdzPopups.RANK_CONFIRM, step.what)
-            assertEquals(name, 1205, step.x)
-            assertEquals(name, 852, step.y)
+            assertEquals(name, 1205 to 852, DdzCards.rankPopup(frame(name)))
         }
     }
 
     /** 段位提升时左边多了绿色「炫耀一下」,橙色「确定」移到右边:只点确定,绝不点分享。 */
     @Test fun aRankUpPopupConfirmsTheRightButtonNeverShares() {
         for (name in listOf("rank_up_on_result", "rank_up_on_rooms")) {
-            val step = DdzPopups.next(game, null, frame(name)) as Step.Tap
-            assertEquals(name, DdzPopups.RANK_CONFIRM, step.what)
-            assertEquals(name, 852, step.y)
-            assertTrue("$name: 橙色「确定」在右边: ${step.x}", step.x in 1440..1475)
-            assertTrue("$name: 绝不点绿色「炫耀一下」: ${step.x}", step.x !in 760..1140)
+            val (x, y) = DdzCards.rankPopup(frame(name))!!
+            assertEquals(name, 852, y)
+            assertTrue("$name: 橙色「确定」在右边: $x", x in 1440..1475)
+            assertTrue("$name: 绝不点绿色「炫耀一下」: $x", x !in 760..1140)
         }
     }
 
@@ -139,7 +135,7 @@ class DdzPopupsTest {
             "human_result_leave_change_continue", "human_classic_rooms", "popup_relief_two_buttons",
             "popup_relief_video_only", "popup_classic_lobby",
         )) {
-            assertNull(name, DdzPopups.next(game, null, frame(name)))
+            assertNull(name, DdzCards.rankPopup(frame(name)))
         }
     }
 }
