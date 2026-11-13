@@ -1386,16 +1386,29 @@ internal object PhoneDdzTurn : PhoneTool {
             if (!fresh) turn.tracker = DdzTracker().apply { fail(DdzSessionReason.JOINED_MID_GAME) }
         }
         val tracker = turn.tracker ?: DdzTracker(if (turn.mode == DdzMode.Human) DdzSettlingPolicy.HUMAN else DdzSettlingPolicy.SINGLE).also { turn.tracker = it }
-        val mine = view.phase == DdzPhase.Follow || view.phase == DdzPhase.Lead
-        val seat = if (mine) DdzSeat.Me else when (DdzCards.clock(frame)) {
-            DdzSide.Left -> DdzSeat.Left
-            DdzSide.Right -> DdzSeat.Right
-            null -> null
-        }
-        tracker.observe(seat, { DdzCards.play(frame, it) }, { DdzCards.bottom(frame) }, view.phase == DdzPhase.Lead && view.handCount == 20, view.phase == DdzPhase.Lead) {
+        val clock = DdzCards.clock(frame)
+        tracker.observe(
+            trackedSeat(view.phase, clock), { DdzCards.play(frame, it) }, { DdzCards.bottom(frame) },
+            view.phase == DdzPhase.Lead && view.handCount == 20, trackedLeading(view.phase, clock),
+        ) {
             if (DdzCards.singleStageTable(frame)) DdzCards.counts(frame) else emptyMap()
         }
     }
+
+    /**
+     * 这一帧该记成谁在出牌。轮到自己出牌时闹钟是藏起来的;按钮还留在画面上那几帧,闹钟可能已经到别家了
+     * (别家真的动过),那不是又轮到我——不按闹钟认,中间的「不出」和别家压上的一手都会被当成我的回合丢掉。
+     */
+    internal fun trackedSeat(phase: DdzPhase, clock: DdzSide?): DdzSeat? = when {
+        (phase == DdzPhase.Follow || phase == DdzPhase.Lead) && clock == null -> DdzSeat.Me
+        clock == DdzSide.Left -> DdzSeat.Left
+        clock == DdzSide.Right -> DdzSeat.Right
+        else -> null
+    }
+
+    /** 这一帧算不算轮到我先出:画面还停在旧按钮上、闹钟却在别家时不算。 */
+    internal fun trackedLeading(phase: DdzPhase, clock: DdzSide?): Boolean =
+        phase == DdzPhase.Lead && clock == null
 
     private enum class Auto { Played, Settling, Off }
 

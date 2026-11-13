@@ -723,4 +723,49 @@ class DdzTrackerTest {
         assertEquals("missed_play", tracker.broken)
         assertEquals(listOf(straight), tracker.history)
     }
+
+    @Test fun thePlayAndPassBehindMyLingeringButtonsAreStillRecorded() {
+        // 2026-11-13 14:37:52 土豪场:我出 5678910 后按钮还留在画面上,右家过、左家压 KQJ1098,游戏又替我秒过。
+        // 闹钟已经到别家,再按「轮到我」喂进来,这几帧以前全被丢掉:右家的「不出」和左家的 KQJ1098 都没记,
+        // 后来把左家的 Q 当成压 5678910 的一手,DouZero 回放对不上(还因为前面有个 ? 报成 ambiguous_card)。
+        tracker.restore(
+            DdzSeat.Left, bottom,
+            listOf(listOf("6", "?5,6,8"), listOf("K", "K"), emptyList(), emptyList()),
+            DdzSeat.Me,
+        )
+        tracker.mine(listOf("5", "6", "7", "8", "9", "10"))
+        // 按画面认:先出/跟牌时闹钟藏起来才是我的回合;按钮还留着、闹钟在别家时,这几帧记的是别家
+        fun feed(phase: DdzPhase, clock: DdzSide?, l: DdzSeen, r: DdzSeen) {
+            left = l
+            right = r
+            tracker.observe(
+                PhoneDdzTurn.trackedSeat(phase, clock),
+                { if (it == DdzSide.Left) left else right },
+                { bottom },
+                leading = PhoneDdzTurn.trackedLeading(phase, clock),
+            )
+        }
+        // 我的按钮还留着,闹钟已经在左家:右家先亮「不出」
+        repeat(3) { feed(DdzPhase.Lead, DdzSide.Left, DdzSeen.Empty, DdzSeen.Pass) }
+        // 轮到我看到左家的牌(游戏还没替我出):认准后记下 KQJ1098
+        repeat(2) { feed(DdzPhase.Follow, null, DdzSeen.Unsure, DdzSeen.Empty) }
+        repeat(3) { feed(DdzPhase.Follow, null, DdzSeen.Cards("K Q J 10 9 8".split(' ')), DdzSeen.Empty) }
+        // 游戏替我秒过,闹钟到右家;右家再亮「不出」
+        repeat(3) { feed(DdzPhase.Other, DdzSide.Right, DdzSeen.Cards("K Q J 10 9 8".split(' ')), DdzSeen.Empty) }
+        repeat(3) { feed(DdzPhase.Other, DdzSide.Left, DdzSeen.Empty, DdzSeen.Pass) }
+        // 左家接着领出 Q
+        repeat(2) { feed(DdzPhase.Follow, null, DdzSeen.Empty, DdzSeen.Empty) }
+        repeat(3) { feed(DdzPhase.Follow, null, DdzSeen.Cards(listOf("Q")), DdzSeen.Empty) }
+        assertNull(tracker.broken)
+        assertEquals(
+            listOf(
+                listOf("6", "?5,6,8"), listOf("K", "K"), emptyList(), emptyList(), listOf("5", "6", "7", "8", "9", "10"),
+                // 右家过、左家的 KQJ1098、我自动不出、右家再过
+                emptyList(), listOf("K", "Q", "J", "10", "9", "8"), emptyList(), emptyList(),
+                // 左家领出 Q
+                listOf("Q"),
+            ),
+            tracker.history,
+        )
+    }
 }

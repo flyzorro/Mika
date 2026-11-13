@@ -1578,6 +1578,17 @@ class PhoneDdzTurnTest {
         )
     }
 
+    @Test fun myLingeringButtonsDoNotHideAnOpponentsTurn() {
+        // 我出完按钮还留在画面上,闹钟已经在别家:这几帧要按别家的回合记,不然中间的「不出」和压牌都会丢
+        assertEquals(DdzSeat.Left, PhoneDdzTurn.trackedSeat(DdzPhase.Lead, DdzSide.Left))
+        assertEquals(DdzSeat.Right, PhoneDdzTurn.trackedSeat(DdzPhase.Follow, DdzSide.Right))
+        assertFalse("lingering lead is not my lead", PhoneDdzTurn.trackedLeading(DdzPhase.Lead, DdzSide.Left))
+        // 轮到自己出牌时闹钟是空的
+        assertEquals(DdzSeat.Me, PhoneDdzTurn.trackedSeat(DdzPhase.Lead, null))
+        assertEquals(DdzSeat.Me, PhoneDdzTurn.trackedSeat(DdzPhase.Follow, null))
+        assertTrue(PhoneDdzTurn.trackedLeading(DdzPhase.Lead, null))
+    }
+
     @Test fun humanStartReportsAnExplicitModeAndDoesNotTapTheTable() = runTest {
         val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(full("call"))))
         val result = run(game, """{"action":"start","mode":"human","advisor":"http://mac:3426"}""")
