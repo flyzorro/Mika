@@ -396,6 +396,18 @@ class PhoneDdzTurnTest {
         }
     }
 
+    /**
+     * 真人牌桌上地主报单的一帧:human_follow_left8_right2 里左家(队友)出了单张 6、右家是地主,
+     * 把右家的张数从 2 改成 1(复制 counts_L1_R4 左框里那个「1」)。
+     */
+    private fun baodanFollowFrame(): RawFrame {
+        val source = ImageIO.read(javaClass.getResourceAsStream("/ddz/counts_L1_R4.png")!!)
+        val image = ImageIO.read(javaClass.getResourceAsStream("/ddz/human_follow_left8_right2.jpg")!!)
+        for (y in 330 until 420) for (i in 0 until 62) image.setRGB(2130 + i, y, source.getRGB(226 + i, y))
+        val rows = (DdzScreen.ROWS + DdzCards.ROWS + DdzCards.LOBBY_ROWS + DdzPopups.ROWS).distinct()
+        return RawFrame(image.width, image.height, rows.associateWith { image.getRGB(0, it, image.width, 1, null, 0, image.width) })
+    }
+
     /** 出掉 [remove] 这几张之后的手牌:剩下的牌按原来的顺序挪到前面,张数跟着少。 */
     private fun withoutCards(name: String, remove: Set<Int>): RawFrame = editedFrame(name) { _, rows, view ->
         val kept = (0 until view.handCount).filter { it !in remove }
@@ -1533,6 +1545,50 @@ class PhoneDdzTurnTest {
         assertEquals(setOf(2), PhoneDdzTurn.leadGroup("A 9 4".split(' ')))
     }
 
+    @Test fun beatTheBaodanLandlordWithTheBiggestSingle() {
+        // 地主只剩一张,桌上单张 6:用手里最大的 2 顶住,不出最小的 8
+        val hand = "2 A 8".split(' ')
+        assertEquals("biggest single that beats 6", 0, PhoneDdzTurn.biggestSingle(hand, "6"))
+        assertEquals("A is the only single above 10", 0, PhoneDdzTurn.biggestSingle("A 9 4".split(' '), "10"))
+    }
+
+    @Test fun noSingleCanBeatTheLead() {
+        assertNull(PhoneDdzTurn.biggestSingle("8 5 3".split(' '), "A"))
+        assertNull(PhoneDdzTurn.biggestSingle("A 9 4".split(' '), "2"))
+    }
+
+    @Test fun leadAgainstATwoCardLandlordAvoidsTheSmallSingle() {
+        // 地主只剩两张:出单张也出最大的 2,不出最小的 8(以前出最小的单张)
+        assertEquals(
+            setOf(0),
+            PhoneDdzTurn.leadGroup("2 A 8".split(' '), mapOf(DdzSide.Right to 2), DdzSeat.Right, landlordLeft = 2),
+        )
+        // 有对子也有单张:不出可能被他压死的对子,出最大的单张 A
+        assertEquals(
+            setOf(0),
+            PhoneDdzTurn.leadGroup("A 9 7 7".split(' '), mapOf(DdzSide.Right to 2), DdzSeat.Right, landlordLeft = 2),
+        )
+    }
+
+    @Test fun leadAgainstAOneCardLandlordPlaysTheBiggestSingle() {
+        // 地主只剩一张、手里全是单张:出最大的 2
+        assertEquals(
+            setOf(0),
+            PhoneDdzTurn.leadGroup("2 A 8".split(' '), mapOf(DdzSide.Right to 1), DdzSeat.Right, landlordLeft = 1),
+        )
+    }
+
+    @Test fun myLingeringButtonsDoNotHideAnOpponentsTurn() {
+        // 我出完按钮还留在画面上,闹钟已经在别家:这几帧要按别家的回合记,不然中间的「不出」和压牌都会丢
+        assertEquals(DdzSeat.Left, PhoneDdzTurn.trackedSeat(DdzPhase.Lead, DdzSide.Left))
+        assertEquals(DdzSeat.Right, PhoneDdzTurn.trackedSeat(DdzPhase.Follow, DdzSide.Right))
+        assertFalse("lingering lead is not my lead", PhoneDdzTurn.trackedLeading(DdzPhase.Lead, DdzSide.Left))
+        // 轮到自己出牌时闹钟是空的
+        assertEquals(DdzSeat.Me, PhoneDdzTurn.trackedSeat(DdzPhase.Lead, null))
+        assertEquals(DdzSeat.Me, PhoneDdzTurn.trackedSeat(DdzPhase.Follow, null))
+        assertTrue(PhoneDdzTurn.trackedLeading(DdzPhase.Lead, null))
+    }
+
     @Test fun humanStartReportsAnExplicitModeAndDoesNotTapTheTable() = runTest {
         val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(full("call"))))
         val result = run(game, """{"action":"start","mode":"human","advisor":"http://mac:3426"}""")
@@ -2226,6 +2282,36 @@ class PhoneDdzTurnTest {
             val hint = DdzScreen.read(full("hand_t1")).buttons[1].let { it.x to it.y }
             assertEquals("提示 against the landlord's pairs", hint, game.taps.first())
             assertTrue(asked.isEmpty())
+        } finally {
+            PhoneDdzTurn.advise = saved
+        }
+    }
+
+    @Test fun aBaodanLandlordIsBlockedWithTheBiggestSingleEvenOnATeammatesPlay() = runTest {
+        // 2026-11-13 08:39:55 大师场第 1 局结尾:地主(右家)只剩 1 张,队友左家出单张 6,我手里 2 A 8;
+        // 以前「队友的牌不压」就不出,地主最后一张压死我们。现在用最大的单张顶住。
+        val saved = PhoneDdzTurn.advise
+        PhoneDdzTurn.advise = { _, _ -> error("DouZero must not be asked once the hand is broken") }
+        try {
+            val base = baodanFollowFrame()
+            val view = DdzScreen.read(base, classic = true)
+            val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(List(16) { base }))
+            val dispatcher = toolDispatcher(game)
+            PhoneDdzTurn.execute(
+                Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","advisor":"http://mac:3426"}""").jsonObject),
+                dispatcher.ctx,
+            )
+            PhoneDdzTurn.useTracker(dispatcher.ctx, DdzTracker(DdzSettlingPolicy.HUMAN).apply {
+                restore(DdzSeat.Right, listOf("J", "7", "4"), emptyList(), current = DdzSeat.Me)
+                fail(DdzSessionReason.MISSED_PLAY)
+            })
+            PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"wait"}""").jsonObject), dispatcher.ctx)
+            assertTrue(game.taps.toString(), game.taps.isNotEmpty())
+            // 不是按「不出」,而是去点手里的一张牌
+            assertEquals("does not pass on the teammate's single", DdzScreen.CARD_Y, game.taps.first().second)
+            // 点的是手里最大、又能压过 6 的那张:两张王里的大王
+            val hand = DdzCards.hand(base, view)!!
+            assertEquals("BJ", hand[PhoneDdzTurn.biggestSingle(hand, "6")!!])
         } finally {
             PhoneDdzTurn.advise = saved
         }
