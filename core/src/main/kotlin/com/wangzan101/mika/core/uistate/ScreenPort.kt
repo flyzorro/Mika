@@ -21,6 +21,9 @@ const val DEFAULT_SWIPE_MS = 400L
 class RawFrame(val width: Int, val height: Int, private val rows: Map<Int, IntArray>) {
     fun pixel(x: Int, y: Int): Int = rows.getValue(y)[x]
 
+    /** 这一行截到没有;没截到为 null(只截了部分行的帧上做识别时先问一声,[pixel] 缺行会直接抛)。 */
+    fun row(y: Int): IntArray? = rows[y]
+
     /**
      * 整帧的指纹:按行号和每行的像素内容算,同一画面两次截到的一模一样,画面动过就不一样。
      * 不能用 rows.hashCode():IntArray 的 hashCode 只看数组身份,每次截图都是新数组,永远对不上。
