@@ -26,18 +26,16 @@ internal object DdzSnapshotRecovery {
 
     fun recover(snapshot: DdzSnapshot): DdzRecoveryResult {
         val hand = snapshot.hand
-        val bottom = snapshot.bottom
+        // 叫分时底牌还扣着,谁也看不见:模型给了什么(空的、或者编的三张)都不算数,不拿来核对张数
+        val call = snapshot.phase == "call"
+        val bottom = if (call) emptyList() else snapshot.bottom
         val history = snapshot.history
 
         if (snapshot.phase !in setOf("call", "double", "lead", "follow")) return invalid("phase")
         if (snapshot.seat !in setOf("landlord", "landlord_up", "landlord_down")) return invalid("seat")
         // 叫分时还没有地主,自己一定是 17 张;加倍时地主已经定了,地主 20 张、农民 17 张。
-        val call = snapshot.phase == "call"
         val initial = if (call || snapshot.seat != "landlord") FARMER_HAND else LANDLORD_HAND
-        // 叫分时底牌还扣着:可以不带,也可以带看见的 3 张;别的阶段必须 3 张。
-        if (call) {
-            if (bottom.size != 0 && bottom.size != 3) return invalid("bottom_count")
-        } else if (bottom.size != 3) return invalid("bottom_count")
+        if (!call && bottom.size != 3) return invalid("bottom_count")
         if (hand.isEmpty() || hand.size > LANDLORD_HAND) return invalid("hand_count")
         if (snapshot.phase == "call" || snapshot.phase == "double") {
             if (history.isNotEmpty()) return invalid("history_phase")
@@ -78,7 +76,7 @@ internal object DdzSnapshotRecovery {
             }
         }
         val tracker = DdzTracker(DdzSettlingPolicy.HUMAN).also { it.restore(landlord, bottom, history, replay.actor) }
-        return DdzRecoveryResult.Valid(DdzRecoveredSnapshot(snapshot, tracker))
+        return DdzRecoveryResult.Valid(DdzRecoveredSnapshot(snapshot.copy(bottom = bottom), tracker))
     }
 
     private fun copies(rank: String) = if (rank == "SJ" || rank == "BJ") 1 else 4
