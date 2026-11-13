@@ -1561,12 +1561,12 @@ class PhoneDdzTurnTest {
         // 地主只剩两张:出单张也出最大的 2,不出最小的 8(以前出最小的单张)
         assertEquals(
             setOf(0),
-            PhoneDdzTurn.leadGroup("2 A 8".split(' '), mapOf(DdzSide.Right to 2), DdzSeat.Right, landlordLeft = 2),
+            PhoneDdzTurn.leadGroup("2 A 8".split(' '), mapOf(DdzSide.Right to 2), DdzSeat.Right),
         )
         // 有对子也有单张:不出可能被他压死的对子,出最大的单张 A
         assertEquals(
             setOf(0),
-            PhoneDdzTurn.leadGroup("A 9 7 7".split(' '), mapOf(DdzSide.Right to 2), DdzSeat.Right, landlordLeft = 2),
+            PhoneDdzTurn.leadGroup("A 9 7 7".split(' '), mapOf(DdzSide.Right to 2), DdzSeat.Right),
         )
     }
 
@@ -1574,33 +1574,33 @@ class PhoneDdzTurnTest {
         // 地主只剩一张、手里全是单张:出最大的 2
         assertEquals(
             setOf(0),
-            PhoneDdzTurn.leadGroup("2 A 8".split(' '), mapOf(DdzSide.Right to 1), DdzSeat.Right, landlordLeft = 1),
+            PhoneDdzTurn.leadGroup("2 A 8".split(' '), mapOf(DdzSide.Right to 1), DdzSeat.Right),
         )
     }
 
     @Test fun myLingeringButtonsDoNotHideAnOpponentsTurn() {
         // 我出完按钮还留在画面上,闹钟已经在别家:这几帧要按别家的回合记,不然中间的「不出」和压牌都会丢
-        assertEquals(DdzSeat.Left, PhoneDdzTurn.trackedSeat(DdzPhase.Lead, DdzSide.Left))
-        assertEquals(DdzSeat.Right, PhoneDdzTurn.trackedSeat(DdzPhase.Follow, DdzSide.Right))
-        assertFalse("lingering lead is not my lead", PhoneDdzTurn.trackedLeading(DdzPhase.Lead, DdzSide.Left))
+        assertEquals(DdzSeat.Left, PhoneDdzTurn.rawSeat(DdzPhase.Lead, DdzSide.Left))
+        assertEquals(DdzSeat.Right, PhoneDdzTurn.rawSeat(DdzPhase.Follow, DdzSide.Right))
+        assertFalse("lingering lead is not my lead", PhoneDdzTurn.trackedLeading(DdzPhase.Lead, DdzSeat.Left))
         // 轮到自己出牌时闹钟是空的
-        assertEquals(DdzSeat.Me, PhoneDdzTurn.trackedSeat(DdzPhase.Lead, null))
-        assertEquals(DdzSeat.Me, PhoneDdzTurn.trackedSeat(DdzPhase.Follow, null))
-        assertTrue(PhoneDdzTurn.trackedLeading(DdzPhase.Lead, null))
+        assertEquals(DdzSeat.Me, PhoneDdzTurn.rawSeat(DdzPhase.Lead, null))
+        assertEquals(DdzSeat.Me, PhoneDdzTurn.rawSeat(DdzPhase.Follow, null))
+        assertTrue(PhoneDdzTurn.trackedLeading(DdzPhase.Lead, DdzSeat.Me))
     }
 
     @Test fun aSingleFrameClockFlickerWhileMyButtonsShowIsIgnored() {
         // 2026-11-13 15:30:37 土豪场:跟牌按钮还在,闹钟因为牌落下的动画闪到左家一帧:不能当左家的回合
-        val confirm = DdzClockConfirm()
-        assertEquals(DdzSeat.Me, confirm.seat(DdzPhase.Follow, DdzSide.Left))
-        assertEquals(DdzSeat.Me, confirm.seat(DdzPhase.Follow, null))          // 又回到我
-        assertEquals(DdzSeat.Me, confirm.seat(DdzPhase.Follow, DdzSide.Left))  // 重新数
+        val turn = PhoneDdzTurn.Turn()
+        assertEquals(DdzSeat.Me, PhoneDdzTurn.trackedSeat(turn, DdzPhase.Follow, DdzSide.Left))
+        assertEquals(DdzSeat.Me, PhoneDdzTurn.trackedSeat(turn, DdzPhase.Follow, null))          // 又回到我
+        assertEquals(DdzSeat.Me, PhoneDdzTurn.trackedSeat(turn, DdzPhase.Follow, DdzSide.Left))  // 重新数
         // 连着两帧都指左家才算
-        assertEquals(DdzSeat.Left, confirm.seat(DdzPhase.Follow, DdzSide.Left))
-        assertEquals(DdzSeat.Left, confirm.seat(DdzPhase.Follow, DdzSide.Left))
+        assertEquals(DdzSeat.Left, PhoneDdzTurn.trackedSeat(turn, DdzPhase.Follow, DdzSide.Left))
+        assertEquals(DdzSeat.Left, PhoneDdzTurn.trackedSeat(turn, DdzPhase.Follow, DdzSide.Left))
         // 不是我的回合时,闹钟指谁就是谁,不用等第二帧
-        assertEquals(DdzSeat.Right, confirm.seat(DdzPhase.Other, DdzSide.Right))
-        assertEquals(DdzSeat.Me, confirm.seat(DdzPhase.Lead, null))
+        assertEquals(DdzSeat.Right, PhoneDdzTurn.trackedSeat(turn, DdzPhase.Other, DdzSide.Right))
+        assertEquals(DdzSeat.Me, PhoneDdzTurn.trackedSeat(turn, DdzPhase.Lead, null))
     }
 
     @Test fun humanStartReportsAnExplicitModeAndDoesNotTapTheTable() = runTest {
@@ -2369,6 +2369,27 @@ class PhoneDdzTurnTest {
         } finally {
             PhoneDdzTurn.advise = saved
         }
+    }
+
+    @Test fun anUnreadableLandlordCountOnALeadComesFromTheTracker() = runTest {
+        // 屏上读不出地主张数(左家的框没认出来)、tracker 记着 1 张:和跟牌顶牌一样按这一份算,
+        // 先出不能出最小的单张 9(会被地主最后一张压死),有对子就先出对子
+        val lead = full("lead_small")
+        val view = DdzScreen.read(lead, classic = true)
+        assertNull("the screen does not show the landlord's count", DdzCards.counts(lead)[DdzSide.Left])
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(List(6) { lead }))
+        val dispatcher = toolDispatcher(game)
+        PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
+        PhoneDdzTurn.useTracker(dispatcher.ctx, DdzTracker(DdzSettlingPolicy.HUMAN).apply {
+            restore(DdzSeat.Left, listOf("J", "7", "4"), emptyList(), current = DdzSeat.Me)
+            // 屏上读不出来时 tracker 记的那一份
+            repeat(2) { observe(DdzSeat.Me, { DdzSeen.Empty }, { null }, counts = { mapOf(DdzSide.Left to 1) }) }
+            fail(DdzSessionReason.MISSED_PLAY)
+        })
+        PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"wait"}""").jsonObject), dispatcher.ctx)
+        val tapped = game.taps.filter { it.second == DdzScreen.CARD_Y }.map { it.first }.toSet()
+        // 三个 2(下标 2、3、4)带最小的单牌 9(下标 8),不是单张 9
+        assertEquals(setOf(2, 3, 4, 8).map { view.cardX(it) }.toSet(), tapped)
     }
 
     @Test fun aLateModelMoveAfterAMissedPlayDoesNotPauseTheHand() = runTest {

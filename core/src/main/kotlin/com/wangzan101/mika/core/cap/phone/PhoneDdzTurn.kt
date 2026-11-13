@@ -21,27 +21,6 @@ import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.put
 
 /**
- * 我的出牌/跟牌按钮还留在画面上时,闹钟偶尔会闪到别家一帧(牌落下的动画)。只有同一家连着两帧都指着他,
- * 才算真的轮到他;单帧闪烁仍按我的回合记。不是我的回合时,闹钟指谁就是谁,不用等第二帧。
- */
-internal class DdzClockConfirm {
-    private var pending: DdzSeat? = null
-    private var frames = 0
-
-    fun seat(phase: DdzPhase, clock: DdzSide?): DdzSeat? {
-        val raw = PhoneDdzTurn.trackedSeat(phase, clock)
-        val mine = phase == DdzPhase.Follow || phase == DdzPhase.Lead
-        if (!mine || raw == null || raw == DdzSeat.Me) {
-            pending = null
-            frames = 0
-            return raw
-        }
-        if (pending == raw) frames++ else { pending = raw; frames = 1 }
-        return if (frames >= 2) raw else DdzSeat.Me
-    }
-}
-
-/**
  * 斗地主的快速路径:一次调用走完这一手,再在手机上等到下一个要决定的时刻,一手只花一次模型调用。
  * 普通点击每下都等界面、核实效果,一手牌要几十秒,赶不上 15 秒的倒计时;这里跳过这些,改由自己看画面判断。
  * 所以只认这一款游戏:别的 App 一律不动,认不出的画面也不点。
@@ -117,7 +96,7 @@ internal object PhoneDdzTurn : PhoneTool {
      * [single]:这一局是确认过的单机局(见 [markSingle]),只有它为真才让 DouZero 出牌,真人局不用。
      * [advisor]:DouZero 服务地址。[tracker]:这一局的出牌历史;记不下去了这一局剩下的交还模型,单机经典场除外(由工具按简单规则打完)。
      */
-    private class Turn {
+    internal class Turn {
         /** start human auto 时要的场次(normal/elite/tuhao/master);别的情形为 null。 */
         var requestedRoom: String? = null
         /** 底部读到的场次名和 [requestedRoom] 对不上时,读到的那个名字(如「至尊场」)。 */
@@ -170,15 +149,16 @@ internal object PhoneDdzTurn : PhoneTool {
         var humanEligible = false
         var advisor: String? = null
         var tracker: DdzTracker? = null
-        /** 我的出牌/跟牌按钮还亮着时,闹钟指到别家的读数要连着两帧一样才认;单帧闪烁不算。 */
-        val clockConfirm = DdzClockConfirm()
+        /** 我的出牌/跟牌按钮还亮着时,闹钟指到别家的读数要连着两帧一样才认:上一帧那个座位,和连着几帧了。 */
+        var clockPending: DdzSeat? = null
+        var clockFrames = 0
         /** 这一轮已经结算的各局停用 DouZero 的原因;报过就清空。 */
         val offs = mutableListOf<DouzeroOff>()
         val decisions = mutableListOf<Long>()
     }
 
     /** 这一轮某一局结算时 DouZero 停用的原因:[hand] 是这一轮的第几局(从 1 数),[reason] 是当时的 [DdzTracker.broken]。 */
-    private class DouzeroOff(val hand: Int, val reason: String)
+    internal class DouzeroOff(val hand: Int, val reason: String)
 
     /** 记下这是单机局、DouZero 在哪;回到大厅或换了 App 由调用方清掉。 */
     internal fun markSingle(ctx: ToolContext, advisor: String) {
@@ -939,13 +919,13 @@ internal object PhoneDdzTurn : PhoneTool {
 
     private suspend fun smallest(
         view: DdzView, ctx: ToolContext, turn: Turn,
-        counts: Map<DdzSide, Int?> = emptyMap(), landlord: DdzSeat? = null, landlordLeft: Int? = null,
+        counts: Map<DdzSide, Int?> = emptyMap(), landlord: DdzSeat? = null,
     ): Move {
         val hand = readableHand(ctx, view)
         // 手牌没认全:一下都不点,按认不出的画面处理,不拿认不出的牌去选。
         if (hand == null) return Move(false, "hand_unreadable")
         // 出点数最小的一整组,别把三张、对子拆着出;对手只剩一张时由 leadGroup 改出对子或最大的单张
-        val want = leadGroup(hand, counts, landlord, landlordLeft)
+        val want = leadGroup(hand, counts, landlord)
         return when (submit(want, view, ctx, turn)) {
             Sent.Played -> Move(true)
             Sent.SelectFailed -> Move(false, "select_failed")
@@ -958,12 +938,11 @@ internal object PhoneDdzTurn : PhoneTool {
      * 先出时从手牌里挑点数最小的一整组:单张、对子,或三张带一张最小的单牌(不带 2、不带王)。
      * 4 张同点的炸弹、两张王凑成的王炸都留在后面;只剩炸弹就出最小的炸弹,只剩王炸就出两张王。
      * 对手只剩一张时([counts] 里对手是 1)单张会被他最后一张压死:先出最小的对子或三张,只剩单张就出最大的一张。
-     * 地主只剩两张时([landlordLeft] 是 2)先出对子可能被他的对子一把压死:能出单张就先出最大的单张。
+     * 地主只剩两张时(同一个 [counts] 里地主是 2)先出对子可能被他的对子一把压死:能出单张就先出最大的单张。
      * [hand] 是从大到小的一手牌(见 [DdzCards.hand]),返回要出的下标。
      */
     internal fun leadGroup(
         hand: List<String>, counts: Map<DdzSide, Int?> = emptyMap(), landlord: DdzSeat? = null,
-        landlordLeft: Int? = null,
     ): Set<Int> {
         val jokerBomb = "BJ" in hand && "SJ" in hand
         val groups = hand.withIndex()
@@ -978,8 +957,9 @@ internal object PhoneDdzTurn : PhoneTool {
             DdzSeat.Right -> side == DdzSide.Right
             null -> true
         }
+        val landlordLeft = landlord?.takeIf { it != DdzSeat.Me }?.let { counts[sideOf(it)] }
         // 我是农民、地主只剩两张:别出对子(可能被他手里的对子压死),有单张就出最大的那张单牌
-        if (landlordLeft == 2 && landlord != null && landlord != DdzSeat.Me) {
+        if (landlordLeft == 2) {
             candidates.filter { it.second.size == 1 }
                 .maxByOrNull { DdzCards.ORDER[it.first] ?: Int.MAX_VALUE }
                 ?.let { return it.second.toSet() }
@@ -1418,28 +1398,44 @@ internal object PhoneDdzTurn : PhoneTool {
         }
         val tracker = turn.tracker ?: DdzTracker(if (turn.mode == DdzMode.Human) DdzSettlingPolicy.HUMAN else DdzSettlingPolicy.SINGLE).also { turn.tracker = it }
         val clock = DdzCards.clock(frame)
+        val seat = trackedSeat(turn, view.phase, clock)
         tracker.observe(
-            turn.clockConfirm.seat(view.phase, clock), { DdzCards.play(frame, it) }, { DdzCards.bottom(frame) },
-            view.phase == DdzPhase.Lead && view.handCount == 20, trackedLeading(view.phase, clock),
+            seat, { DdzCards.play(frame, it) }, { DdzCards.bottom(frame) },
+            view.phase == DdzPhase.Lead && view.handCount == 20, trackedLeading(view.phase, seat),
         ) {
             if (DdzCards.singleStageTable(frame)) DdzCards.counts(frame) else emptyMap()
         }
     }
 
-    /**
-     * 这一帧该记成谁在出牌。轮到自己出牌时闹钟是藏起来的;按钮还留在画面上那几帧,闹钟可能已经到别家了
-     * (别家真的动过),那不是又轮到我——不按闹钟认,中间的「不出」和别家压上的一手都会被当成我的回合丢掉。
-     */
-    internal fun trackedSeat(phase: DdzPhase, clock: DdzSide?): DdzSeat? = when {
+    /** 闹钟/按钮直接对应的座位,不含单帧闪烁的确认:轮到自己出牌时闹钟是藏起来的。 */
+    internal fun rawSeat(phase: DdzPhase, clock: DdzSide?): DdzSeat? = when {
         (phase == DdzPhase.Follow || phase == DdzPhase.Lead) && clock == null -> DdzSeat.Me
         clock == DdzSide.Left -> DdzSeat.Left
         clock == DdzSide.Right -> DdzSeat.Right
         else -> null
     }
 
-    /** 这一帧算不算轮到我先出:画面还停在旧按钮上、闹钟却在别家时不算。 */
-    internal fun trackedLeading(phase: DdzPhase, clock: DdzSide?): Boolean =
-        phase == DdzPhase.Lead && clock == null
+    /**
+     * 这一帧该记成谁在出牌。轮到自己出牌时闹钟是藏起来的;按钮还留在画面上那几帧,闹钟可能已经到别家了
+     * (别家真的动过),那不是又轮到我——不按闹钟认,中间的「不出」和别家压上的一手都会被当成我的回合丢掉。
+     * 我的按钮还亮着时,闹钟偶尔会闪到别家一帧(牌落下的动画):只有同一家连着两帧都指着他,才算真的轮到他,
+     * 单帧闪烁仍按我的回合记。不是我的回合时,闹钟指谁就是谁,不用等第二帧。
+     */
+    internal fun trackedSeat(turn: Turn, phase: DdzPhase, clock: DdzSide?): DdzSeat? {
+        val raw = rawSeat(phase, clock)
+        val mine = phase == DdzPhase.Follow || phase == DdzPhase.Lead
+        if (!mine || raw == null || raw == DdzSeat.Me) {
+            turn.clockPending = null
+            turn.clockFrames = 0
+            return raw
+        }
+        if (turn.clockPending == raw) turn.clockFrames++ else { turn.clockPending = raw; turn.clockFrames = 1 }
+        return if (turn.clockFrames >= 2) raw else DdzSeat.Me
+    }
+
+    /** 这一帧算不算轮到我先出:按确认后的座位,和 [trackedSeat] 一致。 */
+    internal fun trackedLeading(phase: DdzPhase, seat: DdzSeat?): Boolean =
+        phase == DdzPhase.Lead && seat == DdzSeat.Me
 
     private enum class Auto { Played, Settling, Off }
 
@@ -1540,21 +1536,17 @@ internal object PhoneDdzTurn : PhoneTool {
      * 这一局的历史记不全、DouZero 用不上时的出法:跟牌时桌上最大的是队友的就不出,是对手的就按游戏的「提示」
      * (压不了就不出);先出就出点数最小的一整组([smallest]),对手只剩一张时改出对子或最大的单张。出牌照样走 [submit] 核对:真人局出不去就暂停等模型接快照,
      * 单机经典场没有暂停的语义,交还模型接着打。
-     * 地主只剩一张时([landlordLeft] 是 1)跟单张要顶牌:桌上是谁的单张(含队友出的)都用能压过它的最大单张,压不住才不出。
+     * 地主只剩一张时(和先出用同一份张数)跟单张要顶牌:桌上是谁的单张(含队友出的)都用能压过它的最大单张,压不住才不出。
      */
     private suspend fun fallback(
         ctx: ToolContext, turn: Turn, tracker: DdzTracker, frame: com.wangzan101.mika.core.uistate.RawFrame, view: DdzView,
     ): Auto {
-        val counts = DdzCards.counts(frame)
         val lord = tracker.landlord
-        // 地主还剩几张:优先用屏上的读数,读不出按 tracker 记的;都没有就照旧规则
-        val landlordLeft = when (lord) {
-            DdzSeat.Left -> counts[DdzSide.Left] ?: tracker.seatCount(lord)
-            DdzSeat.Right -> counts[DdzSide.Right] ?: tracker.seatCount(lord)
-            else -> null
-        }
+        // 地主还剩几张:优先用屏上的读数,读不出按 tracker 记的;先出和跟牌顶牌都按这一份,只算一次
+        val counts = DdzCards.counts(frame).toMutableMap()
+        if (lord != null && lord != DdzSeat.Me && counts[sideOf(lord)] == null) counts[sideOf(lord)] = tracker.seatCount(lord)
         val move = when (view.phase) {
-            DdzPhase.Lead -> smallest(view, ctx, turn, counts, lord, landlordLeft)
+            DdzPhase.Lead -> smallest(view, ctx, turn, counts, lord)
             DdzPhase.Follow -> {
                 // 轮到我跟:左家出了牌,桌上最大的就是他的;左家不出,就是右家的
                 val top = when (DdzCards.play(frame, DdzSide.Left)) {
@@ -1563,6 +1555,7 @@ internal object PhoneDdzTurn : PhoneTool {
                 }
                 val leadSingle = (DdzCards.play(frame, top) as? DdzSeen.Cards)?.ranks?.singleOrNull()
                 val teammate = lord != null && lord != DdzSeat.Me && top != sideOf(lord)
+                val landlordLeft = lord?.takeIf { it != DdzSeat.Me }?.let { counts[sideOf(it)] }
                 // 地主只剩最后一张:桌上的单张(队友出的也一样)要顶住,不然他最后一张就把这一手压死
                 if (landlordLeft == 1 && leadSingle != null) blockSingle(view, ctx, turn, leadSingle)
                 else if (teammate) press(view.buttons[0], ctx, turn) else hint(view, ctx, turn)
@@ -1590,8 +1583,6 @@ internal object PhoneDdzTurn : PhoneTool {
             Sent.Rejected -> press(view.buttons[0], ctx, turn)
         }
     }
-
-    private fun sideOf(seat: DdzSeat) = if (seat == DdzSeat.Left) DdzSide.Left else DdzSide.Right
 
     private fun humanPause(turn: Turn, reason: String) {
         turn.state = DdzSessionState.Paused

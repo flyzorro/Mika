@@ -743,15 +743,16 @@ class DdzTrackerTest {
         )
         tracker.mine(listOf("5", "6", "7", "8", "9", "10"))
         // 按画面认:先出/跟牌时闹钟藏起来才是我的回合;按钮还留着、闹钟在别家时,连着两帧都指着别家才算
-        val confirm = DdzClockConfirm()
+        val turn = PhoneDdzTurn.Turn()
         fun feed(phase: DdzPhase, clock: DdzSide?, l: DdzSeen, r: DdzSeen) {
             left = l
             right = r
+            val seat = PhoneDdzTurn.trackedSeat(turn, phase, clock)
             tracker.observe(
-                confirm.seat(phase, clock),
+                seat,
                 { if (it == DdzSide.Left) left else right },
                 { bottom },
-                leading = PhoneDdzTurn.trackedLeading(phase, clock),
+                leading = PhoneDdzTurn.trackedLeading(phase, seat),
             )
         }
         // 我的按钮还留着,闹钟已经在左家(停了很多帧):右家先亮「不出」
@@ -790,11 +791,12 @@ class DdzTrackerTest {
         fun feed(phase: DdzPhase, clock: DdzSide?, l: DdzSeen, r: DdzSeen) {
             left = l
             right = r
+            val seat = PhoneDdzTurn.rawSeat(phase, clock)
             tracker.observe(
-                PhoneDdzTurn.trackedSeat(phase, clock),
+                seat,
                 { if (it == DdzSide.Left) left else right },
                 { bottom },
-                leading = PhoneDdzTurn.trackedLeading(phase, clock),
+                leading = PhoneDdzTurn.trackedLeading(phase, seat),
             )
         }
         // 闹钟到左家,右家的牌还在飞(一时读成空,一时只有一个认不准的 ?)
@@ -824,11 +826,12 @@ class DdzTrackerTest {
         fun feed(phase: DdzPhase, clock: DdzSide?, l: DdzSeen, r: DdzSeen) {
             left = l
             right = r
+            val seat = PhoneDdzTurn.rawSeat(phase, clock)
             tracker.observe(
-                PhoneDdzTurn.trackedSeat(phase, clock),
+                seat,
                 { if (it == DdzSide.Left) left else right },
                 { bottom },
-                leading = PhoneDdzTurn.trackedLeading(phase, clock),
+                leading = PhoneDdzTurn.trackedLeading(phase, seat),
             )
         }
         // 闹钟到左家,右家的炸弹还在飞
@@ -849,21 +852,22 @@ class DdzTrackerTest {
     @Test fun aSingleFrameClockFlickerDoesNotReplayTheSamePlays() {
         // 2026-11-13 15:30:37 土豪场:左家(地主)出 SJ 压右家的 2,轮到我。牌落下时闹钟闪到左家一帧,
         // 以前(#53 按闹钟认)会当成左家的回合、整整绕一圈,把右家的旧 2 和左家的 SJ 又各记一遍,
-        // 历史里两个 SJ,DouZero 报 more_cards_than_exist。单帧闪烁要走 [DdzClockConfirm] 才不算。
+        // 历史里两个 SJ,DouZero 报 more_cards_than_exist。单帧闪烁要走 [PhoneDdzTurn.trackedSeat] 才不算。
         tracker.restore(
             DdzSeat.Left, bottom,
             listOf(listOf("K"), emptyList(), listOf("2")),
             DdzSeat.Left,
         )
-        val confirm = DdzClockConfirm()
+        val turn = PhoneDdzTurn.Turn()
         fun feed(phase: DdzPhase, clock: DdzSide?, l: DdzSeen, r: DdzSeen) {
             left = l
             right = r
+            val seat = PhoneDdzTurn.trackedSeat(turn, phase, clock)
             tracker.observe(
-                confirm.seat(phase, clock),
+                seat,
                 { if (it == DdzSide.Left) left else right },
                 { bottom },
-                leading = PhoneDdzTurn.trackedLeading(phase, clock),
+                leading = PhoneDdzTurn.trackedLeading(phase, seat),
             )
         }
         // 左家压 SJ(牌还在飞,一时读成 ?10,9,4);我这边的闹钟同时闪到左家一帧
