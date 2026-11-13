@@ -216,25 +216,22 @@ internal class DdzTracker(private val settling: DdzSettlingPolicy = DdzSettlingP
     /**
      * 闹钟回到刚出过牌、还没记下的那一家(队头):另外两家都不出。先按这一轮读到过的读数补记他这一手,
      * 再给后面等着的那两家各补一个「不出」——等闹钟再走开才记,这两个「不出」就丢了。
-     * 只补读到过完整、合规的一手:认不准、没读到过、这一帧还看得见(交给 [steady])、张数对不上都不补,
-     * 仍按原路判漏。返回是否补记了。
+     * 只补读到过完整、合规的一手,而且后面那两家这一帧确实像不出(见 [passedSince]);
+     * 认不准、没读到过、这一帧还看得见(交给 [steady])、张数对不上、中间那家摆着牌都不补,仍按原路判漏。
+     * 返回是否补记了。
      */
     private fun recordReturnedLeader(turn: DdzSeat?, read: (DdzSide) -> DdzSeen): Boolean {
         if (turn == null || turn == DdzSeat.Me) return false
         if (waiting.firstOrNull()?.first != turn) return false
         if (!sawUnrecordedPlay(turn)) return false
         val cards = (lastSeen[turn] as? DdzSeen.Cards)?.ranks ?: return false
-        // 带 ? 的是没认准的那一张:不替它定
+        // 带 ? 的是没认准的那一张:[settle] 会照记、交给 DouZero 服务补;这里是推断出来的补记,再叠一层猜测就不补
         if (cards.isEmpty() || cards.any { it.startsWith(DdzCards.UNKNOWN) }) return false
-        // 出牌区还摆着他自己上一手:不是新出的一手
-        if (cards == lastPlay[turn]) return false
-        // 不合牌规(单张压三带一之类):多半是认错了
-        if (illegal(cards)) return false
-        // 张数对不上:还没落稳
-        val played = unplayed(turn)
-        if (played != null && played != cards.size) return false
+        if (!usablePlay(turn, cards)) return false
         // 这一帧还看得见这一手:走 steady,不在这里抢着记
         if (read(sideOf(turn)) == lastSeen[turn]) return false
+        // 后面那两家里有一家像是出了牌(还摆着、读到过、张数少了):不是两家都不出,别补
+        if (!waiting.drop(1).all { (seat, _) -> seat == DdzSeat.Me || passedSince(seat, read) }) return false
         record(turn, cards)
         waiting.removeFirst()
         lastSeen -= turn
@@ -244,6 +241,21 @@ internal class DdzTracker(private val settling: DdzSettlingPolicy = DdzSettlingP
             lastSeen -= seat
         }
         return true
+    }
+
+    /** [seat] 这一轮像是没出牌:这一帧空着或写着「不出」,没读到过牌,剩的张数也没少。 */
+    private fun passedSince(seat: DdzSeat, read: (DdzSide) -> DdzSeen): Boolean {
+        val now = read(sideOf(seat))
+        val seen = lastSeen[seat]
+        return (now == DdzSeen.Empty || now == DdzSeen.Pass) &&
+            (seen == null || seen == DdzSeen.Empty || seen == DdzSeen.Pass) &&
+            (unplayed(seat) ?: 0) == 0
+    }
+
+    /** [seat] 读到的这一手能记:不是出牌区还摆着的他自己上一手、合牌规、张数对得上(对不上就是还没落稳)。 */
+    private fun usablePlay(seat: DdzSeat, cards: List<String>): Boolean {
+        val played = unplayed(seat)
+        return cards != lastPlay[seat] && !illegal(cards) && (played == null || played == cards.size)
     }
 
     /** [leader] 前面等着的那几家这一帧的读数。 */
@@ -332,9 +344,7 @@ internal class DdzTracker(private val settling: DdzSettlingPolicy = DdzSettlingP
             val played = unplayed(seat)
             val cards = (seen as? DdzSeen.Cards)?.ranks
             val usable = when {
-                // 出牌区还摆着他自己上一手:不是新出的一手;张数对不上就是还没落稳
-                cards != null -> cards != lastPlay[seat] && !illegal(cards) &&
-                    (played == null || played == cards.size)
+                cards != null -> usablePlay(seat, cards)
                 seen == DdzSeen.Pass -> played == null || played == 0
                 else -> false
             }

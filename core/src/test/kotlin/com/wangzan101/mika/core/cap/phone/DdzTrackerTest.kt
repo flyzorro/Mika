@@ -793,6 +793,24 @@ class DdzTrackerTest {
         )
     }
 
+    @Test fun aMiddleSeatStillShowingCardsIsNotBackfilledAsAPass() {
+        // 同一个漏帧,但这回左家其实压了一对 Q(还摆在桌上),我被游戏自动不出,闹钟回到右家。
+        // 不能把左家补成「不出」——那是悄悄记错的历史,比判漏还糟;照旧判漏
+        tracker.restore(
+            DdzSeat.Me, bottom,
+            listOf(listOf("8", "8"), listOf("3", "3", "3", "3"), emptyList(), emptyList()),
+            DdzSeat.Right,
+        )
+        right = DdzSeen.Cards(listOf("J", "10", "9", "8", "7", "6"))
+        see(DdzSeat.Left)          // 只读到这一帧
+        right = DdzSeen.Empty
+        left = DdzSeen.Cards(listOf("Q", "Q"))
+        see(DdzSeat.Right)         // 闹钟回到右家,左家的对 Q 还在
+        // 顺子之后左家那一手:要么还没记,要么记成对 Q,绝不能是「不出」
+        val after = tracker.history.drop(4)
+        assertTrue("${tracker.history}", after.size < 2 || after[1] == listOf("Q", "Q"))
+    }
+
     @Test fun aLeaderWhosePlayWasOnlyEverUnsureIsNotBackfilledAsPasses() {
         // 闹钟回到刚出过牌的那一家,可这一手一直只读到 Unsure:不能当成「另外两家不出」补记,
         // 照旧按现有规则判漏,这一局交给简单规则。
