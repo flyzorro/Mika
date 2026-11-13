@@ -97,6 +97,10 @@ internal object PhoneDdzTurn : PhoneTool {
      * [advisor]:DouZero 服务地址。[tracker]:这一局的出牌历史;记不下去了这一局剩下的交还模型,单机经典场除外(由工具按简单规则打完)。
      */
     private class Turn {
+        /** start human auto 时要的场次(normal/elite/tuhao/master);别的情形为 null。 */
+        var requestedRoom: String? = null
+        /** 底部读到的场次名和 [requestedRoom] 对不上时,读到的那个名字(如「至尊场」)。 */
+        var roomLabel: String? = null
         var seenAt: Long? = null
         var rejected = 0
         var single = false
@@ -275,6 +279,8 @@ internal object PhoneDdzTurn : PhoneTool {
             return refused("wrong_app")
         }
         if (turn.stopped && action != "start") return stopped(turn)
+        // 场次对不上已经停下:除了 stop/start 什么都不做,更不能再叫分、出牌或 resume
+        if (action != "start" && turn.reason == DdzSessionReason.ROOM_MISMATCH) return roomMismatchResult(turn)
         // 模型在两次调用之间自己点过屏幕(关弹窗,也可能回大厅进了真人场):这里看不到它去过哪,单机标记作废,要再 start
         if (turn.single && ctx.evidence.actions != turn.actionsSeen) turn.single = false
         if (action == "start") return start(a, ctx, turn).also { turn.actionsSeen = ctx.evidence.actions }
@@ -302,6 +308,9 @@ internal object PhoneDdzTurn : PhoneTool {
             frame = next
             initialView = DdzScreen.read(next, classic = true)
         }
+        // 到了牌桌先看底部场次:对不上就一下都不点(不叫分、不出牌),停下让模型原样报告。
+        // 结算页写的是刚打完那一局,不是这一局要进的场,不算。
+        if (turn.mode == DdzMode.Human && !DdzCards.humanResult(frame) && roomMismatch(frame, turn)) return roomMismatchResult(turn)
         if (turn.mode == DdzMode.Human) turn.humanEligible = true
         // 回大厅了(和在等待循环里一样):单机标记作废,下一局可能进的是真人场
         if (turn.single && turn.atTable && initialView.phase == DdzPhase.Other && DdzCards.singleLobby(frame)) turn.single = false
@@ -355,6 +364,8 @@ internal object PhoneDdzTurn : PhoneTool {
             turn.state = DdzSessionState.Playing
             turn.reason = null
         } else settle(turn, next)
+        // 等待循环里读到场次不符:不等模型再问一次,当场报 room_mismatch
+        if (turn.reason == DdzSessionReason.ROOM_MISMATCH) return roomMismatchResult(turn)
         val shotStart = now()
         val needsLook = next.phase !in setOf(DdzPhase.Result, DdzPhase.AutoPlay) && ctx.config.visionEnabled
         val shot = if (needsLook) ctx.screen.quickShot() else null
@@ -441,19 +452,29 @@ internal object PhoneDdzTurn : PhoneTool {
         // single-player lobby share the same button colors, so the explicit markers are a
         // required eligibility gate before any human-mode state is installed.
         // 选场先校验,认不得的场次一下都不点
-        val (roomX, roomY) = when (a.str("room")?.trim()?.lowercase() ?: "normal") {
+        val auto = a.bool("auto", false)
+        val explicitRoom = a.str("room")?.trim()?.lowercase()
+        val room = explicitRoom ?: "normal"
+        val (roomX, roomY) = when (room) {
             "normal" -> HUMAN_NORMAL_ROOM_X to HUMAN_NORMAL_ROOM_Y
             "elite" -> HUMAN_ELITE_ROOM_X to HUMAN_NORMAL_ROOM_Y
             "tuhao" -> HUMAN_TUHAO_ROOM_X to HUMAN_NORMAL_ROOM_Y
             "master" -> HUMAN_MASTER_ROOM_X to HUMAN_MASTER_ROOM_Y
             else -> throw ArgError("room", "must be normal, elite, tuhao or master")
         }
+        // auto 进新场时按 room(默认普通场)校验;不带 auto 接手现有牌桌时,只有模型明确给了 room 才校验
+        turn.requestedRoom = if (auto) room else explicitRoom
+        turn.roomLabel = null
         if (!DdzCards.classicHumanTable(page)) {
-            if (!a.bool("auto", false)) return refused("not_human_game")
+            if (!auto) return refused("not_human_game")
             // 在主大厅点「真人对战」、在真人场次页点选的场次(默认普通场),再等匹配和牌桌出来
             val entry = awaitHumanEntry(ctx, turn, page, roomX, roomY)
+            if (entry.error == DdzSessionReason.ROOM_MISMATCH) return roomMismatchResult(turn)
             page = entry.frame ?: return refused(entry.error ?: "not_human_game")
         }
+        // 到了匹配画面或牌桌,场次和 room 对不上:一下都不点,停下让模型原样报告。
+        // 结算页写的是上一局,不算。
+        if (!DdzCards.humanResult(page) && roomMismatch(page, turn)) return roomMismatchResult(turn)
         val view = DdzScreen.read(page, classic = true)
         // 同一局里重复 start 才保留历史:上一局已结算、或历史已作废(含中途接手)都按新接手处理
         val recoveringSameGame = turn.mode == DdzMode.Human && turn.atTable && turn.advisor == advisor &&
@@ -488,6 +509,7 @@ internal object PhoneDdzTurn : PhoneTool {
         // double, and DouZero play decisions.
         val next = awaitDecision(ctx, turn, DdzPhase.Other, moved = true, polls = MAX_POLLS)
         settle(turn, next)
+        if (turn.reason == DdzSessionReason.ROOM_MISMATCH) return roomMismatchResult(turn)
         turn.seenAt = now()
         return ToolExecution(buildJsonObject {
             put("ok", true)
@@ -609,14 +631,57 @@ internal object PhoneDdzTurn : PhoneTool {
         put("reason", turn.reason ?: DdzSessionReason.USER_STOP)
     })
 
-    private fun paused(turn: Turn) = ToolExecution(buildJsonObject {
+    private fun paused(turn: Turn): ToolExecution {
+        if (turn.reason == DdzSessionReason.ROOM_MISMATCH) return roomMismatchResult(turn)
+        return ToolExecution(buildJsonObject {
+            put("ok", false)
+            put("error", "paused")
+            put("recoverable", true)
+            turn.mode?.let { put("mode", it.wire) }
+            put("state", DdzSessionState.Paused.wire)
+            turn.reason?.let { put("reason", it) }
+            recoveryHint(turn)?.let { put("recovery", it) }
+        })
+    }
+
+    /**
+     * 牌桌/匹配画面底部写的场次和要的 room 对不上:记下读到的名字、停下,返回 false 表示能对上或读不出。
+     * 读不出(大师场、精英场、弹窗挡住)不算不符——调用方照旧往下打。
+     */
+    private fun roomMismatch(frame: com.wangzan101.mika.core.uistate.RawFrame, turn: Turn): Boolean {
+        val requested = turn.requestedRoom ?: return false
+        val expected = expectedRoomLabel(requested) ?: return false
+        val label = DdzRoomLabel.read(frame) ?: return false
+        if (label == expected) return false
+        turn.roomLabel = label
+        turn.humanEligible = false
+        turn.state = DdzSessionState.Paused
+        turn.reason = DdzSessionReason.ROOM_MISMATCH
+        println("DDZTRACE room_mismatch requested=$requested expected=$expected read=$label")
+        return true
+    }
+
+    private fun expectedRoomLabel(room: String) = when (room) {
+        "normal" -> "普通场"
+        "elite" -> "精英场"
+        "tuhao" -> "土豪场"
+        "master" -> "大师场"
+        else -> null
+    }
+
+    /** 场次对不上的结果:带读到的场次名,不可恢复——模型要停下、原样报告,别换场重试。 */
+    private fun roomMismatchResult(turn: Turn) = ToolExecution(buildJsonObject {
         put("ok", false)
-        put("error", "paused")
-        put("recoverable", true)
+        put("error", DdzSessionReason.ROOM_MISMATCH)
+        put("recoverable", false)
         turn.mode?.let { put("mode", it.wire) }
         put("state", DdzSessionState.Paused.wire)
-        turn.reason?.let { put("reason", it) }
-        recoveryHint(turn)?.let { put("recovery", it) }
+        put("reason", DdzSessionReason.ROOM_MISMATCH)
+        turn.requestedRoom?.let { requested ->
+            put("requested", requested)
+            expectedRoomLabel(requested)?.let { put("expected", it) }
+        }
+        turn.roomLabel?.let { put("room", it) }
     })
 
     /** After the wait loop: keep a pause the loop set (and its reason); otherwise report the phase it reached. */
@@ -1081,6 +1146,8 @@ internal object PhoneDdzTurn : PhoneTool {
                     }
                     humanSceneMisses = 0
                     turn.humanEligible = true
+                    // 底部场次和 room 对不上:一下都不点(不叫分、不出牌),设好暂停后交给调用方报 room_mismatch
+                    if (frame != null && roomMismatch(frame, turn)) return view
                     // 牌桌上的 Other 是别家在叫分、出牌(一家最多 15 秒):不停,照常往下记历史、接着等,总时长由 polls 管
                     if (humanPhase != view.phase) {
                         humanPhase = view.phase
@@ -1468,14 +1535,25 @@ internal object PhoneDdzTurn : PhoneTool {
         var confirmedTableFrames = 0
         var lastTablePhase: DdzPhase? = null
         var lastTableCount = -1
+        // 刚点完场次卡:再留几帧(和点之前的几帧一起)写到 ddzdump,用来看点完之后画面怎么变的
+        var roomTapDump = 0
         while (polls < START_TABLE_POLLS && now() - tableSince < START_TABLE_MS && popupPolls < POPUP_POLLS) {
             if (turn.stopped) return HumanEntry(null)
             val frame = page
+            if (frame != null) {
+                DdzFrameDump.seen(frame)
+                if (roomTapDump > 0 && --roomTapDump == 0) DdzFrameDump.dump("room_tap", frame, FULL_ROWS)
+            }
             if (frame != null && DdzCards.classicHumanTable(frame)) {
                 // 认到牌桌后,还要连着两帧同一个 phase 和张数、而且手牌都认得出,才当已坐上牌桌往下走;
                 // 过渡帧(匹配、场次卡)可能被读成一两张手牌,不能点。
                 val view = DdzScreen.read(frame, classic = true)
                 val readable = view.handCount > 0 && DdzCards.hand(frame, view) != null
+                // 坐上牌桌先对场次:对不上就不确认、不点,停下让模型原样报告
+                if (readable && roomMismatch(frame, turn)) {
+                    if (roomsTapped) DdzFrameDump.dump("room_tap", frame, FULL_ROWS)
+                    return HumanEntry(null, DdzSessionReason.ROOM_MISMATCH)
+                }
                 if (readable && view.phase == lastTablePhase && view.handCount == lastTableCount) {
                     confirmedTableFrames++
                 } else if (readable) {
@@ -1541,9 +1619,16 @@ internal object PhoneDdzTurn : PhoneTool {
                 }
             } else if (frame != null && DdzCards.humanClassicRooms(frame)) {
                 if (!roomsTapped) {
+                    // 点场次的诊断:哪天又进错了场,日志里能直接看到点的是哪个 room、哪个坐标
+                    println("DDZTRACE room_tap room=${turn.requestedRoom ?: "normal"} x=$roomX y=$roomY")
                     if (!tapOnTheWay(ctx, turn, roomX, roomY)) return HumanEntry(null)
                     roomsTapped = true
+                    roomTapDump = 3
                 }
+            } else if (frame != null && roomMismatch(frame, turn)) {
+                // 匹配画面上已经写出了实际场次,和 room 对不上:不等牌桌,立刻停下
+                if (roomsTapped) DdzFrameDump.dump("room_tap", frame, FULL_ROWS)
+                return HumanEntry(null, DdzSessionReason.ROOM_MISMATCH)
             } else if (clearPopup(ctx, turn, frame)) {
                 // 救济金、看视频领取、广告:工具自己点完(模型一步十几秒,倒计时还会被浮层卡住);领完回场次页要再点普通场
                 popupPolls++
@@ -1781,7 +1866,7 @@ internal object PhoneDdzTurn : PhoneTool {
     }
 
     /** 单机局里每一帧都要认牌,一次把这些行读全。 */
-    private val FULL_ROWS = (DdzScreen.ROWS + DdzCards.ROWS + DdzCards.LOBBY_ROWS + DdzPopups.ROWS).distinct()
+    private val FULL_ROWS = (DdzScreen.ROWS + DdzCards.ROWS + DdzCards.LOBBY_ROWS + DdzPopups.ROWS + DdzRoomLabel.ROWS).distinct()
     private val TRANSIENT_ADVISOR_ERRORS = setOf("douzero_unreachable", "douzero_bad_reply")
     private val SNAPSHOT_PHASES = setOf("call", "double", "lead", "follow")
     private val SNAPSHOT_SEATS = setOf("landlord", "landlord_up", "landlord_down")

@@ -309,6 +309,27 @@ class PhoneDdzTurnTest {
         return RawFrame(image.width, image.height, (DdzScreen.ROWS + DdzCards.ROWS + DdzCards.LOBBY_ROWS + DdzPopups.ROWS).distinct().associateWith { image.getRGB(0, it, image.width, 1, null, 0, image.width) })
     }
 
+    private val roomRows = (DdzScreen.ROWS + DdzCards.ROWS + DdzCards.LOBBY_ROWS + DdzPopups.ROWS + DdzRoomLabel.ROWS).distinct()
+
+    /** 带底部场次标签的牌桌/匹配帧。 */
+    private fun roomFrame(name: String): RawFrame {
+        val image = ImageIO.read(javaClass.getResourceAsStream("/ddz/$name.png")!!)
+        return RawFrame(image.width, image.height, roomRows.associateWith { y ->
+            image.getRGB(0, y, image.width, 1, null, 0, image.width)
+        })
+    }
+
+    /** 同上,但底部场次标签被一块暗色遮住:认不出场次,不能报 room_mismatch。 */
+    private fun blockedRoomFrame(name: String): RawFrame {
+        val image = ImageIO.read(javaClass.getResourceAsStream("/ddz/$name.png")!!)
+        return RawFrame(image.width, image.height, roomRows.associateWith { y ->
+            IntArray(image.width) { x ->
+                if (x in 1050..1370 && y >= DdzRoomLabel.ROWS.first() && y <= DdzRoomLabel.ROWS.last()) 0xFF202020.toInt()
+                else image.getRGB(x, y)
+            }
+        })
+    }
+
     /** 把 Mika 屏上手牌那段整体点高 30 像素(和 DdzScreenTest 一样):620 行大半是牌面,默认读法会认成闯关牌桌。 */
     private fun classicHandLifted(name: String): RawFrame {
         val image = ImageIO.read(javaClass.getResourceAsStream("/ddz/$name.png")!!)
@@ -1953,6 +1974,63 @@ class PhoneDdzTurnTest {
         PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","auto":true,"room":"master","advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
         assertEquals(listOf(872 to 723), game.taps.take(1))
         assertTrue("一下都不点牌: ${game.taps}", game.taps.none { it.second == DdzScreen.CARD_Y })
+    }
+
+    @Test fun masterRoomOnAZhizunTableStopsBeforeBiddingOrPlaying() = runTest {
+        // 2026-11-13:room=master 点的 872,723 是紫色大师场,进桌后底部却写「经典至尊场」。
+        // 认出来就地停下:不叫分、不出牌,报 room_mismatch 和读到的场次名。
+        val table = roomFrame("master_zhizun_table")
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(List(4) { table }))
+        val dispatcher = toolDispatcher(game)
+        val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","auto":true,"room":"master","advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
+        assertEquals(result.toString(), "room_mismatch", result.text("error"))
+        assertEquals("至尊场", result.text("room"))
+        assertEquals("master", result.text("requested"))
+        assertEquals("大师场", result.text("expected"))
+        assertTrue("一下都不点(更不点牌): ${game.taps}", game.taps.isEmpty())
+    }
+
+    @Test fun masterRoomStopsAtTheMatchingScreenWhenItSaysZhizun() = runTest {
+        // 匹配画面底部已经写出「经典至尊场」:不等牌桌,点完场次卡就停下,一下都不点牌。
+        val rooms = shot("human_classic_rooms")
+        val matching = roomFrame("master_zhizun_matching")
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(rooms, matching) + List(4) { matching }))
+        val dispatcher = toolDispatcher(game)
+        val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","auto":true,"room":"master","advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
+        assertEquals(result.toString(), "room_mismatch", result.text("error"))
+        assertEquals(listOf(872 to 723), game.taps)
+        assertTrue("一下都不点牌: ${game.taps}", game.taps.none { it.second == DdzScreen.CARD_Y })
+    }
+
+    @Test fun tuhaoRoomOnATuhaoTableKeepsPlaying() = runTest {
+        // 同一张土豪场牌桌,room=tuhao 对得上:照常往下打,不报 room_mismatch。
+        val table = roomFrame("tuhao_table")
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(table) + List(8) { table } + List(2) { lobbyFrame("vd_lobby") }))
+        val dispatcher = toolDispatcher(game)
+        val savedBid = PhoneDdzTurn.adviseBid
+        PhoneDdzTurn.adviseBid = { _, _ -> 0 }
+        try {
+            val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","auto":true,"room":"tuhao","advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
+            assertNotEquals(result.toString(), "room_mismatch", result.text("error"))
+            assertTrue("照常往下打: ${game.taps}", game.taps.isNotEmpty())
+        } finally {
+            PhoneDdzTurn.adviseBid = savedBid
+        }
+    }
+
+    @Test fun aCoveredRoomLabelDoesNotStopTheGame() = runTest {
+        // 场次标签被挡住时认不出,不算场次不符:照旧往下打。
+        val table = blockedRoomFrame("master_zhizun_table")
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(table) + List(6) { table } + List(2) { lobbyFrame("vd_lobby") }))
+        val dispatcher = toolDispatcher(game)
+        val savedBid = PhoneDdzTurn.adviseBid
+        PhoneDdzTurn.adviseBid = { _, _ -> 0 }
+        try {
+            val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","auto":true,"room":"master","advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
+            assertNotEquals(result.toString(), "room_mismatch", result.text("error"))
+        } finally {
+            PhoneDdzTurn.adviseBid = savedBid
+        }
     }
 
     @Test fun humanStartRefusesAnUnknownRoomWithoutTapping() = runTest {
