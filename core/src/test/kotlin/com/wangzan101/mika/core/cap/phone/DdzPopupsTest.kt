@@ -8,7 +8,6 @@ import com.wangzan101.mika.core.uistate.VisibleTextLine
 import com.wangzan101.mika.core.uistate.toPx
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
-import org.junit.Assert.assertTrue
 import org.junit.Test
 import javax.imageio.ImageIO
 
@@ -119,13 +118,10 @@ class DdzPopupsTest {
         }
     }
 
-    /** 段位提升时左边多了绿色「炫耀一下」,橙色「确定」移到右边:只点确定,绝不点分享。 */
+    /** 段位提升时左边多了绿色「炫耀一下」,橙色「确定」移到右边(1458):只点确定,绝不点分享。 */
     @Test fun aRankUpPopupConfirmsTheRightButtonNeverShares() {
         for (name in listOf("rank_up_on_result", "rank_up_on_rooms")) {
-            val (x, y) = DdzCards.rankPopup(frame(name))!!
-            assertEquals(name, 852, y)
-            assertTrue("$name: 橙色「确定」在右边: $x", x in 1440..1475)
-            assertTrue("$name: 绝不点绿色「炫耀一下」: $x", x !in 760..1140)
+            assertEquals(name, 1458 to 852, DdzCards.rankPopup(frame(name)))
         }
     }
 
