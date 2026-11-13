@@ -162,6 +162,8 @@ internal object PhoneDdzTurn : PhoneTool {
         var bid = false
         /** 这一轮已经点了不加倍。 */
         var declined = false
+        /** 连着一帧帧认出段位弹窗的次数:两帧都对上才点「确定」,过渡动画的一帧不算。 */
+        var rankSightings = 0
         /** Human mode has acted on the currently visible decision; prevents repeated taps while it settles. */
         var humanActionSeen = false
         /** The latest human frame passed the positive classic-table gate and may be tapped once. */
@@ -281,6 +283,7 @@ internal object PhoneDdzTurn : PhoneTool {
         val turn = ctx[STATE] ?: Turn().also { ctx[STATE] = it }
         // 「这一帧 OCR 过、没东西」只在这一次调用里算数:上一次调用、上一个会话留下的同样画面不能把这次第一回的 OCR 也省掉
         popupFrameKey = null
+        turn.rankSightings = 0
         val action = a.str("action") ?: throw ArgError("action", "required")
         // stop is deliberately usable even after the app was switched: it must prevent a delayed
         // polling continuation from tapping when the user takes control.
@@ -1145,6 +1148,11 @@ internal object PhoneDdzTurn : PhoneTool {
             if (turn.stopped) return last
             if (turn.mode == DdzMode.Human && turn.state == DdzSessionState.Paused) return last
             val frame = ctx.screen.rawFrame(if (turn.single || turn.mode == DdzMode.Human) FULL_ROWS else DdzScreen.ROWS)
+            // 牌桌上、结算页上盖了段位弹窗:只点橙色「确定」(两帧确认),别拿弹窗上的假按钮出牌,也别因此停下
+            if (turn.mode == DdzMode.Human && frame != null && tapRankPopup(ctx, turn, frame)) {
+                waitOrSteer { delay(POLL_MS) } ?: return last
+                continue
+            }
             // 经典牌桌按经典读:游戏轮到我时把提示的牌(如王炸)抬起,不按经典读会把这手牌当成闯关的高一截来数,少数一张
             // 闯关刚开的第一帧 turn.stage 还没记上:这一帧本身是闯关牌桌就不按经典读
             val view = frame?.let { DdzScreen.read(it, classic = classicTable(turn) && !(turn.single && DdzCards.singleStageTable(it))) }
@@ -1622,6 +1630,17 @@ internal object PhoneDdzTurn : PhoneTool {
                 DdzFrameDump.seen(frame)
                 if (roomTapDump > 0 && --roomTapDump == 0) DdzFrameDump.dump("room_tap", frame, FULL_ROWS)
             }
+            // 段位弹窗压在结算页或场次页上:先点它的「确定」(两帧确认),再照常认下面的离开/场次页
+            if (frame != null && tapRankPopup(ctx, turn, frame)) {
+                if (turn.stopped) return HumanEntry(null)
+                popupPolls++
+                polls = 0
+                tableSince = now()
+                roomsTapped = false
+                waitOrSteer { delay(POLL_MS) } ?: return HumanEntry(null)
+                page = ctx.screen.rawFrame(FULL_ROWS)
+                continue
+            }
             if (frame != null && DdzCards.classicHumanTable(frame)) {
                 // 认到牌桌后,还要连着两帧同一个 phase 和张数、而且手牌都认得出,才当已坐上牌桌往下走;
                 // 过渡帧(匹配、场次卡)可能被读成一两张手牌,不能点。
@@ -1736,10 +1755,32 @@ internal object PhoneDdzTurn : PhoneTool {
     /** 上次整屏 OCR 一无所获的那一帧的指纹:画面没变就不再 OCR,别让慢轮把等待拉长(见 [clearPopup])。 */
     private var popupFrameKey: Int? = null
 
+    /**
+     * 段位弹窗(结算页、真人场次页、牌桌上)连着两帧都认出来才点,别把过渡动画的一帧当成弹窗。
+     * 只点橙色「确定」,绝不点绿色「炫耀一下」。处理了(这一帧先等着,或已经点下去)为 true。
+     */
+    private suspend fun tapRankPopup(ctx: ToolContext, turn: Turn, frame: com.wangzan101.mika.core.uistate.RawFrame?): Boolean {
+        val confirm = frame?.let { DdzCards.rankPopup(it) }
+        if (confirm == null) {
+            turn.rankSightings = 0
+            return false
+        }
+        if (turn.rankSightings++ == 0) {
+            popupFrameKey = null
+            return true
+        }
+        turn.rankSightings = 0
+        if (turn.stopped || ctx.screen.peek().packageName != PACKAGE) return true
+        ctx.screen.quickTap(confirm.first, confirm.second)
+        delay(POPUP_TAP_MS)
+        return true
+    }
+
     /** 工具认得的弹窗:点一下,或者视频还在倒计时就等着;处理了为 true,调用方接着等。 */
     private suspend fun clearPopup(ctx: ToolContext, turn: Turn, frame: com.wangzan101.mika.core.uistate.RawFrame?): Boolean {
         val screen = ctx.screen.peek()
         if (screen.packageName != PACKAGE) return false
+        if (tapRankPopup(ctx, turn, frame)) return true
         // 广告是原生控件,看无障碍树就够;游戏里画的弹窗才要 OCR
         val native = screen.elements.any { it.role != "SurfaceView" }
         // 画面没变、上一轮 OCR 又什么都没认出来:直接跳过(认不出的静态页一停就是几百轮 OCR,start 被拖到 294 秒);
@@ -1944,7 +1985,7 @@ internal object PhoneDdzTurn : PhoneTool {
     }
 
     /** 单机局里每一帧都要认牌,一次把这些行读全。 */
-    private val FULL_ROWS = (DdzScreen.ROWS + DdzCards.ROWS + DdzCards.LOBBY_ROWS + DdzPopups.ROWS + DdzRoomLabel.ROWS).distinct()
+    private val FULL_ROWS = (DdzScreen.ROWS + DdzCards.ROWS + DdzCards.LOBBY_ROWS + DdzPopups.SCAN_ROWS + DdzRoomLabel.ROWS).distinct()
     private val TRANSIENT_ADVISOR_ERRORS = setOf("douzero_unreachable", "douzero_bad_reply")
     private val SNAPSHOT_PHASES = setOf("call", "double", "lead", "follow")
     private val SNAPSHOT_SEATS = setOf("landlord", "landlord_up", "landlord_down")

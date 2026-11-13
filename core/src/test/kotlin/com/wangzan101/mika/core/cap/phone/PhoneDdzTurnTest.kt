@@ -144,7 +144,7 @@ class PhoneDdzTurnTest {
         // 连同 7 牌顶的阴影,照抄提示那一帧里抬起的 Q 压着没抬的 10 那一块(同样抬高 17)
         val image = ImageIO.read(javaClass.getResourceAsStream("/ddz/human_hand_jokers_flat.png")!!)
         val hintImage = ImageIO.read(javaClass.getResourceAsStream("/ddz/human_hand_hint_raised_qqq107.png")!!)
-        val rows = (DdzScreen.ROWS + DdzCards.ROWS + DdzCards.LOBBY_ROWS + DdzPopups.ROWS).distinct()
+        val rows = (DdzScreen.ROWS + DdzCards.ROWS + DdzCards.LOBBY_ROWS + DdzPopups.SCAN_ROWS).distinct()
         val raised = RawFrame(image.width, image.height, rows.associateWith { y ->
             IntArray(image.width) { x ->
                 when {
@@ -300,16 +300,16 @@ class PhoneDdzTurnTest {
 
     private fun full(name: String): RawFrame {
         val image = ImageIO.read((javaClass.getResourceAsStream("/ddz/$name.jpg") ?: javaClass.getResourceAsStream("/ddz/$name.png"))!!)
-        return RawFrame(image.width, image.height, (DdzScreen.ROWS + DdzCards.ROWS + DdzCards.LOBBY_ROWS + DdzPopups.ROWS).distinct().associateWith { image.getRGB(0, it, image.width, 1, null, 0, image.width) })
+        return RawFrame(image.width, image.height, (DdzScreen.ROWS + DdzCards.ROWS + DdzCards.LOBBY_ROWS + DdzPopups.SCAN_ROWS).distinct().associateWith { image.getRGB(0, it, image.width, 1, null, 0, image.width) })
     }
 
     /** 无损 .png 的新截图(主大厅、场次页、匹配、弹窗);玩家认色和字形要用准色。 */
     private fun shot(name: String): RawFrame {
         val image = ImageIO.read((javaClass.getResourceAsStream("/ddz/$name.png") ?: javaClass.getResourceAsStream("/ddz/$name.jpg"))!!)
-        return RawFrame(image.width, image.height, (DdzScreen.ROWS + DdzCards.ROWS + DdzCards.LOBBY_ROWS + DdzPopups.ROWS).distinct().associateWith { image.getRGB(0, it, image.width, 1, null, 0, image.width) })
+        return RawFrame(image.width, image.height, (DdzScreen.ROWS + DdzCards.ROWS + DdzCards.LOBBY_ROWS + DdzPopups.SCAN_ROWS).distinct().associateWith { image.getRGB(0, it, image.width, 1, null, 0, image.width) })
     }
 
-    private val roomRows = (DdzScreen.ROWS + DdzCards.ROWS + DdzCards.LOBBY_ROWS + DdzPopups.ROWS + DdzRoomLabel.ROWS).distinct()
+    private val roomRows = (DdzScreen.ROWS + DdzCards.ROWS + DdzCards.LOBBY_ROWS + DdzPopups.SCAN_ROWS + DdzRoomLabel.ROWS).distinct()
 
     /** 带底部场次标签的牌桌/匹配帧。 */
     private fun roomFrame(name: String): RawFrame {
@@ -333,12 +333,12 @@ class PhoneDdzTurnTest {
     /** 把 Mika 屏上手牌那段整体点高 30 像素(和 DdzScreenTest 一样):620 行大半是牌面,默认读法会认成闯关牌桌。 */
     private fun classicHandLifted(name: String): RawFrame {
         val image = ImageIO.read(javaClass.getResourceAsStream("/ddz/$name.png")!!)
-        return RawFrame(image.width, image.height, (DdzScreen.ROWS + DdzCards.ROWS + DdzCards.LOBBY_ROWS + DdzPopups.ROWS).distinct().associateWith { y ->
+        return RawFrame(image.width, image.height, (DdzScreen.ROWS + DdzCards.ROWS + DdzCards.LOBBY_ROWS + DdzPopups.SCAN_ROWS).distinct().associateWith { y ->
             IntArray(image.width) { x -> if (y >= 560 && x in 744..1673) image.getRGB(x, y + 30) else image.getRGB(x, y) }
         })
     }
 
-    private val fullBlank = RawFrame(2412, 1080, (DdzScreen.ROWS + DdzCards.ROWS + DdzCards.LOBBY_ROWS + DdzPopups.ROWS).distinct().associateWith { IntArray(2412) })
+    private val fullBlank = RawFrame(2412, 1080, (DdzScreen.ROWS + DdzCards.ROWS + DdzCards.LOBBY_ROWS + DdzPopups.SCAN_ROWS).distinct().associateWith { IntArray(2412) })
 
     /** hand_t1 这一手,从大到小;上一手 DouZero 出完后手里该剩的牌。 */
     private val handT1 = "SJ 2 2 2 A A A A Q J 10 9 9 8 7 3 3".split(' ')
@@ -404,7 +404,7 @@ class PhoneDdzTurnTest {
         val source = ImageIO.read(javaClass.getResourceAsStream("/ddz/counts_L1_R4.png")!!)
         val image = ImageIO.read(javaClass.getResourceAsStream("/ddz/human_follow_left8_right2.jpg")!!)
         for (y in 330 until 420) for (i in 0 until 62) image.setRGB(2130 + i, y, source.getRGB(226 + i, y))
-        val rows = (DdzScreen.ROWS + DdzCards.ROWS + DdzCards.LOBBY_ROWS + DdzPopups.ROWS).distinct()
+        val rows = (DdzScreen.ROWS + DdzCards.ROWS + DdzCards.LOBBY_ROWS + DdzPopups.SCAN_ROWS).distinct()
         return RawFrame(image.width, image.height, rows.associateWith { image.getRGB(0, it, image.width, 1, null, 0, image.width) })
     }
 
@@ -1919,6 +1919,46 @@ class PhoneDdzTurnTest {
         }
     }
 
+    @Test fun theRankPopupIsNeverMistakenForATable() {
+        // 弹窗压在结算页、场次页上:认成段位弹窗,但绝不是牌桌,start 会先点它的「确定」再看下面那一页。
+        for (name in listOf(
+            "rank_down_on_result", "rank_down_on_rooms", "rank_protect_on_result", "rank_up_on_result", "rank_up_on_rooms",
+        )) {
+            val frame = shot(name)
+            assertTrue("$name: 段位弹窗", DdzCards.rankPopup(frame) != null)
+            assertFalse("$name: 不是牌桌", DdzCards.classicHumanTable(frame))
+        }
+    }
+
+    @Test fun humanAutoStartClearsTheRankPopupThenLeavesTheResultScreen() = runTest {
+        // 2026-11-13 15:31:结算页上盖着「段位降至白银 1 星」,start 只回了 unknown_popup,一轮只打了一局。
+        // 现在先点橙色「确定」(绝不点「炫耀一下」),再照原来的流程点绿色「离开」、场次页点普通场。
+        val rank = shot("rank_down_on_result")
+        val result = shot("human_result_leave_change_continue")
+        val rooms = shot("human_classic_rooms")
+        val call = full("call")
+        val confirm = DdzCards.rankPopup(rank)
+        val leave = DdzCards.humanResultLeave(result)
+        assertTrue("橙色「确定」: $confirm", confirm!!.first in 1190..1220 && confirm.second == 852)
+        assertTrue("绿色「离开」: $leave", leave!!.first in 1010..1300 && leave.second in 785..882)
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(
+            rank, rank, result, result, rooms, call, call, call, lobbyFrame("vd_lobby"),
+        )))
+        val dispatcher = toolDispatcher(game)
+        val savedBid = PhoneDdzTurn.adviseBid
+        PhoneDdzTurn.adviseBid = { _, _ -> 0 }
+        try {
+            val started = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","auto":true,"advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
+            assertNull(started.toString(), started.text("error"))
+            // 两帧确认后只点一次「确定」,然后离开 → 场次页 → 普通场
+            assertEquals(listOf(confirm, leave, 872 to 400), game.taps.take(3))
+            assertEquals("「确定」只点一下", 1, game.taps.count { it == confirm })
+            assertTrue("一下都不点绿色「炫耀一下」: ${game.taps}", game.taps.none { (x, y) -> y in 790..910 && x in 760..1140 })
+        } finally {
+            PhoneDdzTurn.adviseBid = savedBid
+        }
+    }
+
     @Test fun humanStartReportsTheSizeCompatWindowInsteadOfAGuess() = runTest {
         // 安卓的兼容小窗:游戏画面只占屏幕一角,截到的帧不是 2412×1080;认牌的坐标全不对
         for (auto in listOf(false, true)) {
@@ -2235,7 +2275,7 @@ class PhoneDdzTurnTest {
     /** 场次卡整体左右平移 80 px(真机和老图已经差了约 50 px)仍认得出场次页,也仍不算牌桌。 */
     @Test fun theRoomsPageIsRecognisedWhenTheCardsShiftEightyPixels() {
         val image = ImageIO.read(javaClass.getResourceAsStream("/ddz/human_classic_rooms.png")!!)
-        val rows = (DdzScreen.ROWS + DdzCards.ROWS + DdzCards.LOBBY_ROWS + DdzPopups.ROWS).distinct()
+        val rows = (DdzScreen.ROWS + DdzCards.ROWS + DdzCards.LOBBY_ROWS + DdzPopups.SCAN_ROWS).distinct()
         for (dx in listOf(-80, 80)) {
             val frame = RawFrame(image.width, image.height, rows.associateWith { y ->
                 IntArray(image.width) { x -> image.getRGB((x - dx).coerceIn(0, image.width - 1), y) }

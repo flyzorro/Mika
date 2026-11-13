@@ -8,6 +8,7 @@ import com.wangzan101.mika.core.uistate.VisibleTextLine
 import com.wangzan101.mika.core.uistate.toPx
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import javax.imageio.ImageIO
 
@@ -28,8 +29,8 @@ class DdzPopupsTest {
     )
 
     private fun frame(name: String): RawFrame {
-        val image = ImageIO.read(javaClass.getResourceAsStream("/ddz/$name.jpg")!!)
-        return RawFrame(image.width, image.height, DdzPopups.ROWS.associateWith { image.getRGB(0, it, image.width, 1, null, 0, image.width) })
+        val image = ImageIO.read((javaClass.getResourceAsStream("/ddz/$name.jpg") ?: javaClass.getResourceAsStream("/ddz/$name.png"))!!)
+        return RawFrame(image.width, image.height, DdzPopups.SCAN_ROWS.associateWith { image.getRGB(0, it, image.width, 1, null, 0, image.width) })
     }
 
     private fun tapped(step: Step?) = (step as Step.Tap).what
@@ -109,5 +110,36 @@ class DdzPopupsTest {
 
     @Test fun theLobbyIsNotAPopup() {
         assertNull(DdzPopups.next(game, ocr("经典模式", "新手场", "快速开始", "|新手场"), frame("popup_classic_lobby")))
+    }
+
+    /** 2026-11-13:Mika 屏上的「段位降至白银 1 星」只有一个橙色「确定」(结算页和场次页各一张)。 */
+    @Test fun aRankDropPopupIsConfirmedAtOneButton() {
+        for (name in listOf("rank_down_on_result", "rank_down_on_rooms", "rank_protect_on_result")) {
+            val step = DdzPopups.next(game, null, frame(name)) as Step.Tap
+            assertEquals(name, DdzPopups.RANK_CONFIRM, step.what)
+            assertEquals(name, 1205, step.x)
+            assertEquals(name, 852, step.y)
+        }
+    }
+
+    /** 段位提升时左边多了绿色「炫耀一下」,橙色「确定」移到右边:只点确定,绝不点分享。 */
+    @Test fun aRankUpPopupConfirmsTheRightButtonNeverShares() {
+        for (name in listOf("rank_up_on_result", "rank_up_on_rooms")) {
+            val step = DdzPopups.next(game, null, frame(name)) as Step.Tap
+            assertEquals(name, DdzPopups.RANK_CONFIRM, step.what)
+            assertEquals(name, 852, step.y)
+            assertTrue("$name: 橙色「确定」在右边: ${step.x}", step.x in 1440..1475)
+            assertTrue("$name: 绝不点绿色「炫耀一下」: ${step.x}", step.x !in 760..1140)
+        }
+    }
+
+    /** 结算页、真人场次页、救济金、大厅本身都不是段位弹窗。 */
+    @Test fun plainScreensAreNeverRankPopups() {
+        for (name in listOf(
+            "human_result_leave_change_continue", "human_classic_rooms", "popup_relief_two_buttons",
+            "popup_relief_video_only", "popup_classic_lobby",
+        )) {
+            assertNull(name, DdzPopups.next(game, null, frame(name)))
+        }
     }
 }
