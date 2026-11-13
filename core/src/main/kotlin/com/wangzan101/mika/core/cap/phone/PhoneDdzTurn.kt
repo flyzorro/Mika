@@ -21,6 +21,27 @@ import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.put
 
 /**
+ * 我的出牌/跟牌按钮还留在画面上时,闹钟偶尔会闪到别家一帧(牌落下的动画)。只有同一家连着两帧都指着他,
+ * 才算真的轮到他;单帧闪烁仍按我的回合记。不是我的回合时,闹钟指谁就是谁,不用等第二帧。
+ */
+internal class DdzClockConfirm {
+    private var pending: DdzSeat? = null
+    private var frames = 0
+
+    fun seat(phase: DdzPhase, clock: DdzSide?): DdzSeat? {
+        val raw = PhoneDdzTurn.trackedSeat(phase, clock)
+        val mine = phase == DdzPhase.Follow || phase == DdzPhase.Lead
+        if (!mine || raw == null || raw == DdzSeat.Me) {
+            pending = null
+            frames = 0
+            return raw
+        }
+        if (pending == raw) frames++ else { pending = raw; frames = 1 }
+        return if (frames >= 2) raw else DdzSeat.Me
+    }
+}
+
+/**
  * 斗地主的快速路径:一次调用走完这一手,再在手机上等到下一个要决定的时刻,一手只花一次模型调用。
  * 普通点击每下都等界面、核实效果,一手牌要几十秒,赶不上 15 秒的倒计时;这里跳过这些,改由自己看画面判断。
  * 所以只认这一款游戏:别的 App 一律不动,认不出的画面也不点。
@@ -147,6 +168,8 @@ internal object PhoneDdzTurn : PhoneTool {
         var humanEligible = false
         var advisor: String? = null
         var tracker: DdzTracker? = null
+        /** 我的出牌/跟牌按钮还亮着时,闹钟指到别家的读数要连着两帧一样才认;单帧闪烁不算。 */
+        val clockConfirm = DdzClockConfirm()
         /** 这一轮已经结算的各局停用 DouZero 的原因;报过就清空。 */
         val offs = mutableListOf<DouzeroOff>()
         val decisions = mutableListOf<Long>()
@@ -1388,7 +1411,7 @@ internal object PhoneDdzTurn : PhoneTool {
         val tracker = turn.tracker ?: DdzTracker(if (turn.mode == DdzMode.Human) DdzSettlingPolicy.HUMAN else DdzSettlingPolicy.SINGLE).also { turn.tracker = it }
         val clock = DdzCards.clock(frame)
         tracker.observe(
-            trackedSeat(view.phase, clock), { DdzCards.play(frame, it) }, { DdzCards.bottom(frame) },
+            turn.clockConfirm.seat(view.phase, clock), { DdzCards.play(frame, it) }, { DdzCards.bottom(frame) },
             view.phase == DdzPhase.Lead && view.handCount == 20, trackedLeading(view.phase, clock),
         ) {
             if (DdzCards.singleStageTable(frame)) DdzCards.counts(frame) else emptyMap()
