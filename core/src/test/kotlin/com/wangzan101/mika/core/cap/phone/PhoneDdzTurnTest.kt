@@ -2018,6 +2018,23 @@ class PhoneDdzTurnTest {
         }
     }
 
+    @Test fun autoStartWithoutRoomOnATuhaoTableKeepsPlaying() = runTest {
+        // 2026-11-13 14:33:结算页上再 start(auto)不带 room,第二局还在土豪场。
+        // 没点名 room 就不校验场次:不能把默认的普通场拿去和土豪场比,误报 room_mismatch。
+        val table = roomFrame("tuhao_table")
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(table) + List(8) { table } + List(2) { lobbyFrame("vd_lobby") }))
+        val dispatcher = toolDispatcher(game)
+        val savedBid = PhoneDdzTurn.adviseBid
+        PhoneDdzTurn.adviseBid = { _, _ -> 0 }
+        try {
+            val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","auto":true,"advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
+            assertNotEquals(result.toString(), "room_mismatch", result.text("error"))
+            assertTrue("照常往下打: ${game.taps}", game.taps.isNotEmpty())
+        } finally {
+            PhoneDdzTurn.adviseBid = savedBid
+        }
+    }
+
     @Test fun aCoveredRoomLabelDoesNotStopTheGame() = runTest {
         // 场次标签被挡住时认不出,不算场次不符:照旧往下打。
         val table = blockedRoomFrame("master_zhizun_table")

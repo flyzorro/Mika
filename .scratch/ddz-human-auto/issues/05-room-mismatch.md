@@ -43,12 +43,15 @@ new room check turns the outcome into a visible `room_mismatch` instead of a sil
   middle two to 20×20 and compares them with embedded exemplars from the real frames: 普通场,
   至尊场, 土豪场. Anything else (大师场, 精英场, a covered label, rows not read) returns null, which
   is treated as "cannot tell", never as a mismatch.
-- `PhoneDdzTurn.startHuman` records the requested `room` for `auto=true` and checks the label when
-  the matching screen or table appears, before installing the session; the check also runs at the
-  top of every human `execute`, inside `awaitDecision` before any bid/play, and on the entry loop.
-  On mismatch it sets `paused`, taps nothing, and returns error `room_mismatch` with `room` (the
-  label read), `requested` and `expected`; every later call except `start`/`stop` repeats that error,
-  so `resume`/`play` cannot continue.
+- `PhoneDdzTurn.startHuman` checks the label only when this `start` call names `room` explicitly
+  (for `auto` and non-`auto` alike; the tap still defaults to 普通场 when `room` is omitted). The
+  check runs when the matching screen or table appears, before installing the session; it also runs
+  at the top of every human `execute`, inside `awaitDecision` before any bid/play, and on the entry
+  loop. On mismatch it sets `paused`, taps nothing, and returns error `room_mismatch` with `room`
+  (the label read), `requested` and `expected`; every later call except `start`/`stop` repeats that
+  error, so `resume`/`play` cannot continue. With no explicit `room`, an auto `start` deliberately
+  does not compare against the old default: 2026-11-13 14:33 the model restarted from the result
+  screen without `room`, stayed in 经典土豪场, and must keep playing.
 - Diagnostics: when the room card is tapped it prints
   `DDZTRACE room_tap room=<room> x=<x> y=<y>` (same `println("DDZTRACE …")` convention as the
   existing debug branches) and leaves the next frames in `DdzFrameDump` under tag `room_tap`
@@ -63,6 +66,8 @@ new room check turns the outcome into a visible `room_mismatch` instead of a sil
 - `masterRoomStopsAtTheMatchingScreenWhenItSaysZhizun`: tap only the 大师 card (872,723), then stop on
   the matching label; no card taps.
 - `tuhaoRoomOnATuhaoTableKeepsPlaying`: 土豪 table + `room=tuhao` → no mismatch, play continues.
+- `autoStartWithoutRoomOnATuhaoTableKeepsPlaying`: 土豪 table + auto start with no `room` → no mismatch,
+  play continues (2026-11-13 14:33 restart from the result screen).
 - `aCoveredRoomLabelDoesNotStopTheGame`: covered label → no `room_mismatch`.
 - `DdzRoomLabelTest`: reads 至尊场 (table + matching), 土豪场, 普通场; returns null for an unknown page,
   a covered label, and a frame that did not read the label rows.
@@ -74,3 +79,6 @@ new room check turns the outcome into a visible `room_mismatch` instead of a sil
 
 - 2026-11-13: Implemented on `flyzorro/ddz-room-mismatch`; no changes to #48/#50 entry guards or room
   recognition, and no changes to play, tracker, or simple rules.
+- 2026-11-13 14:33 live run: a restart from the result screen with `auto` but no `room` still sat in
+  经典土豪场; comparing that against the default 普通场 was a false mismatch, so the check now runs
+  only when this `start` call passes `room` explicitly. The tap default remains 普通场.

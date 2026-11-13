@@ -462,8 +462,9 @@ internal object PhoneDdzTurn : PhoneTool {
             "master" -> HUMAN_MASTER_ROOM_X to HUMAN_MASTER_ROOM_Y
             else -> throw ArgError("room", "must be normal, elite, tuhao or master")
         }
-        // auto 进新场时按 room(默认普通场)校验;不带 auto 接手现有牌桌时,只有模型明确给了 room 才校验
-        turn.requestedRoom = if (auto) room else explicitRoom
+        // 只有这次调用明确给了 room 才校验场次:auto 不传 room 时只是沿用点普通场的老行为
+        // (2026-11-13 14:33:结算页再 start 不带 room,第二局还在土豪场,不能因此误报 room_mismatch)。
+        turn.requestedRoom = explicitRoom
         turn.roomLabel = null
         if (!DdzCards.classicHumanTable(page)) {
             if (!auto) return refused("not_human_game")
