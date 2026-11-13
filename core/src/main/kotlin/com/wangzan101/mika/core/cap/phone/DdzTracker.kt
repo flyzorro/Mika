@@ -47,6 +47,11 @@ internal class DdzTracker(private val settling: DdzSettlingPolicy = DdzSettlingP
     private val count = mutableMapOf<DdzSeat, Int?>()
     /** 每家最近出的一手:管不了时游戏替他不出,桌上还摆着这一手。 */
     private val lastPlay = mutableMapOf<DdzSeat, List<String>>()
+    /** 这是第几轮:两家接着不出就换一轮。同一轮里同一家不会出两次一样的一手。 */
+    private var trick = 0
+    private var passesInTrick = 0
+    /** 每家最近一手是哪一轮出的;出牌区还摆着那一手时,同样的读数不能再记成新的一手。 */
+    private val playedTrick = mutableMapOf<DdzSeat, Int>()
     /**
      * 闹钟刚走到这一轮最后出牌的那家:先别推中间各家不出。三家时最后一个等着的人后面总是领出的人,
      * 「闹钟到了他那里」并不说明最后那个人是过了还是出了牌(牌可能还在飞)。等这家的下一步动作——闹钟走开、
@@ -86,6 +91,9 @@ internal class DdzTracker(private val settling: DdzSettlingPolicy = DdzSettlingP
             confirmedSeats.clear()
             waiting.clear()
             lastSeen.clear()
+            trick = 0
+            passesInTrick = 0
+            playedTrick.clear()
             awaitLeader = null
             awaitSawPlay = false
         }
@@ -335,6 +343,8 @@ internal class DdzTracker(private val settling: DdzSettlingPolicy = DdzSettlingP
         history += moves.map { it.toList() }
         active = landlord
         lastPlay.clear()
+        playedTrick.clear()
+        var trickNo = 0
         var actor = landlord
         var leader: DdzSeat? = null
         var passes = 0
@@ -348,14 +358,19 @@ internal class DdzTracker(private val settling: DdzSettlingPolicy = DdzSettlingP
                     leader = null
                     passes = 0
                     lastPlay.clear()
+                    playedTrick.clear()
+                    trickNo++
                 }
             } else {
                 lastPlay[actor] = move.toList()
+                playedTrick[actor] = trickNo
                 leader = actor
                 actor = actor.next
                 passes = 0
             }
         }
+        trick = trickNo
+        passesInTrick = passes
         active = current
         waiting.clear()
         lastSeen.clear()
@@ -391,9 +406,21 @@ internal class DdzTracker(private val settling: DdzSettlingPolicy = DdzSettlingP
     private fun record(seat: DdzSeat, cards: List<String>) {
         history += cards.toList()
         confirmedSeats += seat
-        if (cards.isNotEmpty()) lastPlay[seat] = cards.toList()
+        if (cards.isNotEmpty()) {
+            lastPlay[seat] = cards.toList()
+            playedTrick[seat] = trick
+            passesInTrick = 0
+        } else if (lastPlay.isNotEmpty() && ++passesInTrick == 2) {
+            // 两家接着不出:这一轮结束,下一手是新的一轮
+            trick++
+            passesInTrick = 0
+        }
         note("${seat.name}=${cards.joinToString("")}")
     }
+
+    /** 这一手就是这家这一轮已经出过、还摆在桌上的那一手:不能当成又出了一手。 */
+    private fun samePlayAgain(seat: DdzSeat, cards: List<String>): Boolean =
+        cards.isNotEmpty() && cards == lastPlay[seat] && playedTrick[seat] == trick
 
     private fun lastNonEmptyWasMine(): Boolean {
         val index = history.indexOfLast { it.isNotEmpty() }
@@ -451,10 +478,16 @@ internal class DdzTracker(private val settling: DdzSettlingPolicy = DdzSettlingP
                     return
                 }
                 seen is DdzSeen.Cards && !guessed && (played == null || played == seen.ranks.size) -> {
-                    // 地主最后一张的 ? 后面猜的点数一帧一个样:比稳不稳时只看 ?,不看猜的;照着猜的补出来的也不算
-                    val key = DdzSeen.Cards((raw as? DdzSeen.Cards)?.ranks?.map { if (it.startsWith(DdzCards.UNKNOWN)) DdzCards.UNKNOWN else it } ?: seen.ranks)
-                    if (!steady(seat to key, if (played == null) settling.steadyFrames else settling.countedFrames)) return
-                    record(seat, seen.ranks)
+                    if (samePlayAgain(seat, seen.ranks)) {
+                        // 出牌区还摆着他这一轮已经出过的那一手:不是又出了一手,是「不出」
+                        if (!steady(seat to "old_play")) return
+                        record(seat, emptyList())
+                    } else {
+                        // 地主最后一张的 ? 后面猜的点数一帧一个样:比稳不稳时只看 ?,不看猜的;照着猜的补出来的也不算
+                        val key = DdzSeen.Cards((raw as? DdzSeen.Cards)?.ranks?.map { if (it.startsWith(DdzCards.UNKNOWN)) DdzCards.UNKNOWN else it } ?: seen.ranks)
+                        if (!steady(seat to key, if (played == null) settling.steadyFrames else settling.countedFrames)) return
+                        record(seat, seen.ranks)
+                    }
                 }
                 // 「不出」也一样:飞过来的牌缩在头像边上那一下,也会落在「不出」那一条里
                 seen == DdzSeen.Pass && (played == null || played == 0) -> {
@@ -466,7 +499,9 @@ internal class DdzTracker(private val settling: DdzSettlingPolicy = DdzSettlingP
                 seen == DdzSeen.Empty && lastSeen[seat] != null &&
                     (played == null || played == ((lastSeen[seat] as? DdzSeen.Cards)?.ranks?.size ?: 0)) -> {
                     if (!steady(seat to "seen_then_cleared")) return
-                    record(seat, (lastSeen[seat] as? DdzSeen.Cards)?.ranks ?: emptyList())
+                    val cards = (lastSeen[seat] as? DdzSeen.Cards)?.ranks ?: emptyList()
+                    // 清掉的还是这一轮已经出过的那一手:不是新的一手,是「不出」
+                    record(seat, if (samePlayAgain(seat, cards)) emptyList() else cards)
                 }
                 // 张数没少、出牌区好一阵都空着或者还摆着他上一手:是「不出」。字被清桌(炸弹、新一轮)抹掉了,
                 // 或者管不了王时游戏替他不出,桌上留着他上一手

@@ -1589,6 +1589,20 @@ class PhoneDdzTurnTest {
         assertTrue(PhoneDdzTurn.trackedLeading(DdzPhase.Lead, null))
     }
 
+    @Test fun aSingleFrameClockFlickerWhileMyButtonsShowIsIgnored() {
+        // 2026-11-13 15:30:37 土豪场:跟牌按钮还在,闹钟因为牌落下的动画闪到左家一帧:不能当左家的回合
+        val confirm = DdzClockConfirm()
+        assertEquals(DdzSeat.Me, confirm.seat(DdzPhase.Follow, DdzSide.Left))
+        assertEquals(DdzSeat.Me, confirm.seat(DdzPhase.Follow, null))          // 又回到我
+        assertEquals(DdzSeat.Me, confirm.seat(DdzPhase.Follow, DdzSide.Left))  // 重新数
+        // 连着两帧都指左家才算
+        assertEquals(DdzSeat.Left, confirm.seat(DdzPhase.Follow, DdzSide.Left))
+        assertEquals(DdzSeat.Left, confirm.seat(DdzPhase.Follow, DdzSide.Left))
+        // 不是我的回合时,闹钟指谁就是谁,不用等第二帧
+        assertEquals(DdzSeat.Right, confirm.seat(DdzPhase.Other, DdzSide.Right))
+        assertEquals(DdzSeat.Me, confirm.seat(DdzPhase.Lead, null))
+    }
+
     @Test fun humanStartReportsAnExplicitModeAndDoesNotTapTheTable() = runTest {
         val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(full("call"))))
         val result = run(game, """{"action":"start","mode":"human","advisor":"http://mac:3426"}""")
