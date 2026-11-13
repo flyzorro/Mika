@@ -175,6 +175,8 @@ internal class DdzTracker(private val settling: DdzSettlingPolicy = DdzSettlingP
     private fun advanceLeaderAwait(turn: DdzSeat?, read: (DdzSide) -> DdzSeen): Boolean {
         val leader = awaitLeader
         if (leader == null) {
+            // 闹钟回到刚出过牌、还没记下的那一家:另外两家都不出,先补记这一手和两个「不出」
+            if (recordReturnedLeader(turn, read)) return true
             // 闹钟停在这一轮最后出牌的那家、中间各家都还空着:先记下,等他下一步动作再判
             if (turn == null || turn != trickLeaderSeat()) return false
             // 领出的人也还在等:他手上可能有一手没记下的新牌
@@ -209,6 +211,39 @@ internal class DdzTracker(private val settling: DdzSettlingPolicy = DdzSettlingP
             recorded = true
         }
         return recorded
+    }
+
+    /**
+     * 闹钟回到刚出过牌、还没记下的那一家(队头):另外两家都不出。先按这一轮读到过的读数补记他这一手,
+     * 再给后面等着的那两家各补一个「不出」——等闹钟再走开才记,这两个「不出」就丢了。
+     * 只补读到过完整、合规的一手:认不准、没读到过、这一帧还看得见(交给 [steady])、张数对不上都不补,
+     * 仍按原路判漏。返回是否补记了。
+     */
+    private fun recordReturnedLeader(turn: DdzSeat?, read: (DdzSide) -> DdzSeen): Boolean {
+        if (turn == null || turn == DdzSeat.Me) return false
+        if (waiting.firstOrNull()?.first != turn) return false
+        if (!sawUnrecordedPlay(turn)) return false
+        val cards = (lastSeen[turn] as? DdzSeen.Cards)?.ranks ?: return false
+        // 带 ? 的是没认准的那一张:不替它定
+        if (cards.isEmpty() || cards.any { it.startsWith(DdzCards.UNKNOWN) }) return false
+        // 出牌区还摆着他自己上一手:不是新出的一手
+        if (cards == lastPlay[turn]) return false
+        // 不合牌规(单张压三带一之类):多半是认错了
+        if (illegal(cards)) return false
+        // 张数对不上:还没落稳
+        val played = unplayed(turn)
+        if (played != null && played != cards.size) return false
+        // 这一帧还看得见这一手:走 steady,不在这里抢着记
+        if (read(sideOf(turn)) == lastSeen[turn]) return false
+        record(turn, cards)
+        waiting.removeFirst()
+        lastSeen -= turn
+        while (waiting.isNotEmpty()) {
+            val seat = waiting.removeFirst().first
+            record(seat, emptyList())
+            lastSeen -= seat
+        }
+        return true
     }
 
     /** [leader] 前面等着的那几家这一帧的读数。 */
