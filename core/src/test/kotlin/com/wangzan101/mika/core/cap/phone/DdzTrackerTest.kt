@@ -811,4 +811,37 @@ class DdzTrackerTest {
             tracker.history,
         )
     }
+
+    @Test fun aLateBombIsNotTakenForAPassJustBecauseTheClockReachedTheLeader() {
+        // 2026-11-13 15:11:43 同一场第 3 局:我是地主,左家出 A,我过,右家压炸弹 4444。闹钟已经到左家,
+        // 右家的牌还在飞,出牌区一时是空的;以前把右家记成不出,历史成了 [[A],[],[]],回放又对不上。
+        tracker.restore(
+            DdzSeat.Me, bottom,
+            listOf(listOf("Q"), listOf("6"), listOf("A"), emptyList()),
+            DdzSeat.Right,
+        )
+        fun feed(phase: DdzPhase, clock: DdzSide?, l: DdzSeen, r: DdzSeen) {
+            left = l
+            right = r
+            tracker.observe(
+                PhoneDdzTurn.trackedSeat(phase, clock),
+                { if (it == DdzSide.Left) left else right },
+                { bottom },
+                leading = PhoneDdzTurn.trackedLeading(phase, clock),
+            )
+        }
+        // 闹钟到左家,右家的炸弹还在飞
+        repeat(2) { feed(DdzPhase.Other, DdzSide.Left, DdzSeen.Empty, DdzSeen.Empty) }
+        // 炸弹亮出来,左家过、轮到我
+        repeat(6) { feed(DdzPhase.Follow, null, DdzSeen.Pass, DdzSeen.Cards(listOf("4", "4", "4", "4"))) }
+        assertNull(tracker.broken)
+        // 右家出的是炸弹,不是「不出」;之后才是左家的不出
+        assertEquals(
+            listOf(
+                listOf("Q"), listOf("6"), listOf("A"), emptyList(),
+                listOf("4", "4", "4", "4"), emptyList(),
+            ),
+            tracker.history,
+        )
+    }
 }
