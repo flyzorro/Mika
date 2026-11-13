@@ -772,8 +772,10 @@ internal object DdzCards {
         // 闯关的牌上会压着「顺子」「炸弹」这类特效,只量一行会量短:牌顶下面一点(点数还没开始)和下沿附近都量,取最宽的
         // 真人桌地主出的王下半张是地主的图案,只在下面量会量短(算成 0 张):牌顶下面一点也量,取最宽的
         // 真人牌点字在顶下十几行会把白牌切开,多探一行找完整牌面
+        // 真人地主的王炸:上面几行被绶带切开、中间是两张王的图案,只有牌的下沿那几行是整片白(两张宽),也探一行。
+        // 按牌高从牌顶往下数,不用 bottom:王炸的火光在出牌区左边连成一片白,bottom 会落到区域底边
         val probes = if (probeNearBottom) listOf(top + 5, bottom - 10, bottom - 30)
-        else listOfNotNull(top + 10, top + 20, minOf(top + minRows, y1 - 1), probeTop?.let { top + it })
+        else listOfNotNull(top + 10, top + 20, minOf(top + minRows, y1 - 1), probeTop?.let { top + it }, minOf(top + CARD_FOOT, y1 - 1))
         val span = probes.mapNotNull { probe ->
             DdzScreen.runs(right - x0, gap = 12, minWidth = 40) { white(x0 + it, probe) }.maxByOrNull { it.last - it.first }
         }.maxByOrNull { it.last - it.first } ?: return null
@@ -830,11 +832,19 @@ internal object DdzCards {
             val widths = if (i == n - 1) listOfNotNull(
                 (minOf(glyphWidth.toDouble(), pitch) - 3).toInt(),
                 wideLast?.let { minOf(it.toDouble(), pitch).toInt() },
-            ).distinct().let { if (ribbon) it.take(1) else it }
+            ).distinct()
             else listOf(minOf(pitch - 3, 48 * k).toInt())
+            // 真人牌桌的绶带更靠左:黑边在亮红左边 5 列(第 r 行约 39+r),落在上面那条斜线以内,和点数连成一块
+            // (AKQJ10 的 10 读成 ?K,A,7,王炸的小王读成 ?K,7,A)。每行再从亮红往左 [RIBBON_EDGE] 列擦掉;
+            // 点数的红最亮约 195,绶带 240,按 [RIBBON_RED] 分得开
+            val edge = if (!ribbon) null else IntArray(glyphRows) { r ->
+                (0 until RIBBON_SCAN).firstOrNull { c -> frame.pixel(cx + c, top + 4 + r).let { p ->
+                    (p shr 16 and 0xff) > RIBBON_RED && (p shr 8 and 0xff) < 110 && (p and 0xff) < 110
+                } }?.minus(RIBBON_EDGE) ?: Int.MAX_VALUE
+            }
             widths.mapNotNull { wide ->
                 val ink = Array(glyphRows) { r -> BooleanArray(wide) { c ->
-                    (!ribbon || c < RIBBON_COL + RIBBON_SLOPE * r) && textInk(frame.pixel(cx + c, top + 4 + r))
+                    (edge == null || (c < RIBBON_COL + RIBBON_SLOPE * r && c < edge[r])) && textInk(frame.pixel(cx + c, top + 4 + r))
                 } }
                 val box = rankBox(ink) ?: return@mapNotNull null
                 val red = share(frame, cx, top + 4, ink) { r, g, _ -> r - g > 50 } > 0.5
@@ -860,6 +870,11 @@ internal object DdzCards {
     private const val CLASSIC_WRAP_WHITE = 60
     private const val RIBBON_COL = 40
     private const val RIBBON_SLOPE = 0.85
+    private const val RIBBON_SCAN = 70
+    /** 经典 / 真人牌桌的牌高约 148:牌顶往下这么多是牌的下沿,王的图案到不了。 */
+    private const val CARD_FOOT = 140
+    private const val RIBBON_EDGE = 6
+    private const val RIBBON_RED = 215
 
     /**
      * 第二排接着第一排摆:贴着同一个左边(左家的牌从左边起摆),或者贴着同一个右边(右家的牌贴着右边摆,

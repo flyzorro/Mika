@@ -23,6 +23,23 @@ class DdzCardsTest {
         assertEquals(DdzSeen.Cards(listOf("BJ")), DdzCards.play(fullFrame("human_right_landlord_joker"), DdzSide.Right))
     }
 
+    @Test fun theLandlordsRocketIsTwoCards() {
+        // Live 2026-11-13 17:52 土豪场: the landlord's rocket (red JOKER, then black JOKER with the 地主 ribbon)
+        // read as one BJ: the ribbon cut the top probes and the joker art the middle one. A single BJ on a
+        // pair made the history illegal and DouZero gave up (douzero_ambiguous_card). Only the bottom edge
+        // is plain white across both cards.
+        for (name in listOf("human_right_landlord_rocket", "human_right_landlord_rocket_f1")) {
+            assertEquals(name, DdzSeen.Cards(listOf("BJ", "SJ")), DdzCards.play(fullFrame(name), DdzSide.Right))
+        }
+    }
+
+    @Test fun theRibbonEdgeIsNotPartOfTheRankOnTheHumanTable() {
+        // Live 2026-11-13 17:51: the landlord's A K Q J 10 read as A K Q J ?K,A,7: on the human table the ribbon's
+        // dark edge sits left of the 闯关 mask and joined the 10's glyph box
+        assertEquals(DdzSeen.Cards("A K Q J 10".split(' ')),
+            DdzCards.play(fullFrame("human_right_landlord_straight_A_to_10_ribbon"), DdzSide.Right))
+    }
+
     @Test fun theHumanResultScreenIsRecognised() {
         // Live 2026-11-09/10: the 普通场 result (离开 / 换桌 / 继续) was taken for an unknown popup.
         assertTrue(DdzCards.humanResult(fullFrame("human_result_leave_change_continue")))
@@ -232,8 +249,8 @@ class DdzCardsTest {
 
     @Test fun aSingleRibbonCardItCannotReadIsLeftForTheRulesWithGuesses() {
         val frame = frame("table_left10_right8")
-        // 单张什么都说得通,只能靠猜:最像的就是 10
-        assertEquals(DdzSeen.Cards(listOf("?10,K,9")), DdzCards.play(frame, DdzSide.Left))
+        // 擦掉绶带黑边、放宽窗口后整张 10 认得出;以前只能留成 ?10,K,9 靠猜
+        assertEquals(DdzSeen.Cards(listOf("10")), DdzCards.play(frame, DdzSide.Left))
         assertEquals(DdzSeen.Cards(listOf("8")), DdzCards.play(frame, DdzSide.Right))
     }
 
