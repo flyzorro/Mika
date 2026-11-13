@@ -19,9 +19,6 @@ internal object DdzPopups {
         data object Wait : Step
     }
 
-    /** 「确定」:段位弹窗唯一要点的按钮(绿色「炫耀一下」绝不点)。 */
-    const val RANK_CONFIRM = "确定"
-
     /** 判断救济金是两个按钮还是只有看视频那一个要读的行(左边按钮的高度)。 */
     val ROWS: List<Int> = (BUTTON_Y0 until BUTTON_Y1 step 3).toList()
 
@@ -33,8 +30,6 @@ internal object DdzPopups {
         fun el(text: String) = els.firstOrNull { it.name.trim() == text }
         fun has(text: String) = els.any { text in it.name } || texts.orEmpty().any { text in it.text }
         fun at(nx: Int, ny: Int, what: String) = Step.Tap(toPx(nx, snapshot.width), toPx(ny, snapshot.height), what)
-        // 段位弹窗(结算页、真人场次页):只点橙色「确定」,绝不点绿色「炫耀一下」
-        if (frame != null) DdzCards.rankPopup(frame)?.let { (x, y) -> return Step.Tap(x, y, RANK_CONFIRM) }
         // 关掉「直接拿奖励」的确认框:选放弃,回去接着看视频
         if (has("确认放弃直接拿奖励")) return el("放弃")?.let { Step.Tap(it.centerX, it.centerY, "放弃") }
         // 「获得加速机会」浮层盖着时倒计时不走:点右上角 ✕,会先问一句是否放弃

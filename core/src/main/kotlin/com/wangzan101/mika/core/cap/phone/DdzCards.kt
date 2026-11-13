@@ -802,9 +802,11 @@ internal object DdzCards {
         val span2 = DdzScreen.runs(right - x0, gap = 12, minWidth = 40) { white(x0 + it, below) }.maxByOrNull { it.last - it.first } ?: return first
         val n2 = ((span2.last - span2.first + 1 - width) / pitch).roundToInt() + 1
         if (n2 !in 1..20) return first
-        // 经典牌桌的牌更矮(高 148):第一排九张摆满,第二排的牌顶比第一排低 [wrapDy],正好探在第二排的牌面上;
-        // 第二排还是从第一排那个左边起摆。九张没摆满不会有第二排,也别把真人右家掉下去那张绶带牌(在右边)当成第二排
-        if (wrapFull && (n != 9 || span2.first !in span.first - 6..span.first + 12)) return first
+        // 经典牌桌的牌更矮(高 148):第一排九张摆满,第二排的牌顶比第一排低 [wrapDy],正好探在第二排的牌面上。
+        // 第二排接着第一排的哪一头摆,看这一家的牌往哪边排:左家的从同一个左边起(单机经典牌桌的十张顺子),
+        // 右家的贴着右边(2074),第二排接着从最后一张下面摆(真人右家的十张飞机带对子)。
+        // 九张没摆满不会有第二排,也别把真人右家掉下去那张绶带牌(在右边)当成第二排
+        if (wrapFull && (n != 9 || !wrapsUnder(span, span2))) return first
         return first + row(frame, x0 + span2.first, top + wrapDy, n2, pitch, glyphRows, glyphWidth, k, sure, margin, wideLast)
     }
 
@@ -858,6 +860,13 @@ internal object DdzCards {
     private const val CLASSIC_WRAP_WHITE = 60
     private const val RIBBON_COL = 40
     private const val RIBBON_SLOPE = 0.85
+
+    /**
+     * 第二排接着第一排摆:贴着同一个左边(左家的牌从左边起摆),或者贴着同一个右边(右家的牌贴着右边摆,
+     * 第二排从最后一张下面接着摆)。两头都留一点余量:第二排的边和第一排差几像素。
+     */
+    private fun wrapsUnder(first: IntRange, second: IntRange): Boolean =
+        second.first in first.first - 6..first.first + 12 || second.last in first.last - 12..first.last + 6
 
     private fun handGlyph(frame: RawFrame, x: Int, width: Int, from: Int): Pair<Array<BooleanArray>, Boolean>? {
         // 从牌面上往上走,走出牌面(桌布、炸弹的火苗)为止:上方自己刚出的牌和手牌之间隔着一道桌布
