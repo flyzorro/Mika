@@ -1,5 +1,6 @@
 package com.wangzan101.mika.core.cap.phone
 
+import kotlin.math.abs
 import com.wangzan101.mika.core.capability.CapabilityKey
 import com.wangzan101.mika.core.prompt.Prompts
 import com.wangzan101.mika.core.run.waitOrSteer
@@ -39,6 +40,8 @@ internal object PhoneDdzTurn : PhoneTool {
     private const val HUMAN_SCENE_RETRY_POLLS = 12
     /** 真人叫分时重新发牌,手牌一张张发出来:等它发完再叫,别把还在发牌的画面当成认不出的场景。 */
     private const val HUMAN_CALL_RETRY_POLLS = 24
+    /** 叫分画面上的手牌和上次叫分时至少差这么多张,才是重新发了一副牌(读错一两张不算)。 */
+    private const val REDEAL_MIN_CHANGED = 3
     /** start(auto) 刚点完快速开始/继续:真人场匹配的倒计时就有 30 秒,最多等约 45 秒牌桌出来。 */
     private const val START_TABLE_POLLS = 300
     /**
@@ -211,6 +214,16 @@ internal object PhoneDdzTurn : PhoneTool {
                 val level = (obj["level"] as? JsonPrimitive)?.contentOrNull?.toIntOrNull()?.takeIf { it in 0..3 }
                 if (level == null) null else BidAdvice(level, (obj["win"] as? JsonPrimitive)?.contentOrNull?.toDoubleOrNull())
             }
+    }
+
+    /**
+     * 叫分画面上的 [hand] 是不是新发的一副牌(还没叫过分也算)。重新发牌是另一副随机的 17 张,和上一副差一大截;
+     * 按完叫分后旧画面还留几帧,其中一帧读错一两张不能当成重新发牌再按一次:至少差 [REDEAL_MIN_CHANGED] 张才算。
+     */
+    private fun redealt(bidHand: List<String>?, hand: List<String>): Boolean {
+        if (bidHand == null) return true
+        val changed = (bidHand + hand).toSet().sumOf { r -> abs(bidHand.count { it == r } - hand.count { it == r }) } / 2
+        return changed >= REDEAL_MIN_CHANGED
     }
 
     /** 记下这一次叫分:手牌、来源、赢面、选的几分、实际按了哪个按钮(灰的改按不叫也写)。 */
@@ -1321,15 +1334,12 @@ internal object PhoneDdzTurn : PhoneTool {
                                 }
                                 else -> {
                                     turn.callMisses = 0
-                                    if (hand != turn.bidHand) {
-                                        // 手牌换了就是重新发牌:上一局的叫分状态作废,按新手牌再叫一次
+                                    if (redealt(turn.bidHand, hand)) {
+                                        // 手牌换了就是重新发牌:上一局的叫分状态作废,按新手牌再叫一次。
+                                        // tracker 等出牌状态不用在这里清:叫分画面上 [track] 每一帧都会清
                                         if (turn.bidHand != null) {
                                             turn.humanActionSeen = false
                                             turn.bid = false
-                                            turn.tracker = null
-                                            turn.expectedHand = null
-                                            turn.joining = false
-                                            turn.noHand = 0
                                         }
                                         val advice = turn.advisor?.let { url -> adviseBid(url, hand) }
                                         val level = advice?.level ?: bidLevel(hand)
