@@ -146,4 +146,61 @@ class DdzSnapshotRecoveryTest {
         }
         assertEquals(listOf(18), illegal)
     }
+
+    /** 叫分时的一副 17 张手牌;底牌还扣着,所以快照可以不带底牌。 */
+    private val callHand = listOf("BJ", "SJ", "2", "A", "K", "Q", "J", "J", "10", "10", "9", "8", "8", "8", "7", "5", "3")
+
+    @Test fun callSnapshotWithoutBottomCardsIsAccepted() {
+        val result = DdzSnapshotRecovery.recover(DdzSnapshot(callHand, emptyList(), emptyList(), "call", "landlord"))
+        assertTrue(result.toString(), result is DdzRecoveryResult.Valid)
+    }
+
+    @Test fun callSnapshotAcceptsAnySeat() {
+        for (seat in listOf("landlord", "landlord_up", "landlord_down")) {
+            val result = DdzSnapshotRecovery.recover(
+                DdzSnapshot(callHand, listOf("3", "4", "5"), emptyList(), "call", seat),
+            )
+            assertTrue("$seat: $result", result is DdzRecoveryResult.Valid)
+        }
+    }
+
+    @Test fun callSnapshotAcceptsThreeBottomCards() {
+        val result = DdzSnapshotRecovery.recover(
+            DdzSnapshot(callHand, listOf("3", "4", "5"), emptyList(), "call", "landlord"),
+        )
+        assertTrue(result.toString(), result is DdzRecoveryResult.Valid)
+    }
+
+    @Test fun callSnapshotWithTwentyCardsIsRejected() {
+        val hand = listOf(
+            "3", "3", "3", "3", "4", "4", "4", "4", "5", "5", "5", "5",
+            "6", "6", "6", "6", "7", "7", "7", "7",
+        )
+        val result = DdzSnapshotRecovery.recover(DdzSnapshot(hand, listOf("8", "9", "10"), emptyList(), "call", "landlord"))
+        assertTrue(result is DdzRecoveryResult.Invalid)
+        assertEquals("hand_count", (result as DdzRecoveryResult.Invalid).failure.reason)
+    }
+
+    @Test fun doubleSnapshotAcceptsAFarmer() {
+        val result = DdzSnapshotRecovery.recover(
+            DdzSnapshot(callHand, listOf("3", "4", "5"), emptyList(), "double", "landlord_up"),
+        )
+        assertTrue(result.toString(), result is DdzRecoveryResult.Valid)
+    }
+
+    @Test fun doubleSnapshotKeepsTheLandlordHandRules() {
+        val landlord = listOf(
+            "3", "3", "3", "3", "4", "4", "4", "4", "5", "5", "5", "5",
+            "6", "6", "6", "6", "7", "7", "7", "7",
+        )
+        val accepted = DdzSnapshotRecovery.recover(
+            DdzSnapshot(landlord, listOf("8", "9", "10"), emptyList(), "double", "landlord"),
+        )
+        assertTrue(accepted.toString(), accepted is DdzRecoveryResult.Valid)
+        val rejected = DdzSnapshotRecovery.recover(
+            DdzSnapshot(callHand, listOf("3", "4", "5"), emptyList(), "double", "landlord"),
+        )
+        assertTrue(rejected is DdzRecoveryResult.Invalid)
+        assertEquals("hand_count", (rejected as DdzRecoveryResult.Invalid).failure.reason)
+    }
 }

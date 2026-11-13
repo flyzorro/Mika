@@ -1676,6 +1676,80 @@ class PhoneDdzTurnTest {
         assertTrue(game.taps.isEmpty())
     }
 
+    @Test fun resumeAcceptsACallSnapshotWithoutBottomCardsAndBidsAgain() = runTest {
+        val call = full("call")
+        val hand = DdzCards.hand(call, DdzScreen.read(call, classic = true))!!
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(call, call)))
+        val dispatcher = toolDispatcher(game)
+        PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
+        val resumed = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""
+            {"action":"resume","hand":${hand.joinToString(",", "[", "]") { "\"$it\"" }},"bottom":[],"history":[],"phase":"call","seat":"landlord"}
+        """.trimIndent()).jsonObject), dispatcher.ctx)
+        assertEquals(resumed.content.toString(), "true", resumed.text("ok"))
+        assertEquals("calling", resumed.text("state"))
+        assertEquals("call", resumed.text("phase"))
+        assertEquals("17", resumed.text("handCount"))
+        assertTrue(game.taps.isEmpty())
+        val asked = mutableListOf<List<String>>()
+        val saved = PhoneDdzTurn.adviseBid
+        PhoneDdzTurn.adviseBid = { _, cards -> asked += cards; PhoneDdzTurn.BidAdvice(0) }
+        try {
+            val next = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"wait"}""").jsonObject), dispatcher.ctx)
+            assertEquals(next.content.toString(), "calling", next.text("state"))
+            assertNull(next.text("reason"))
+            assertEquals("resume 后要回到自动叫分", 1, asked.size)
+            assertEquals(DdzScreen.read(call).buttons[0].let { it.x to it.y }, game.taps.single())
+        } finally {
+            PhoneDdzTurn.adviseBid = saved
+        }
+    }
+
+    @Test fun resumeAcceptsACallSnapshotWithThreeBottomCards() = runTest {
+        val call = full("call")
+        val hand = DdzCards.hand(call, DdzScreen.read(call, classic = true))!!
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(call)))
+        val dispatcher = toolDispatcher(game)
+        PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
+        val resumed = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""
+            {"action":"resume","hand":${hand.joinToString(",", "[", "]") { "\"$it\"" }},"bottom":["5","9","10"],"history":[],"phase":"call","seat":"landlord_up"}
+        """.trimIndent()).jsonObject), dispatcher.ctx)
+        assertEquals(resumed.content.toString(), "true", resumed.text("ok"))
+        assertEquals("calling", resumed.text("state"))
+        assertEquals("call", resumed.text("phase"))
+        assertTrue(game.taps.isEmpty())
+    }
+
+    @Test fun resumeRejectsACallSnapshotWithTwentyCards() = runTest {
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(full("call"))))
+        val dispatcher = toolDispatcher(game)
+        PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
+        val hand = listOf(
+            "3", "3", "3", "3", "4", "4", "4", "4", "5", "5", "5", "5",
+            "6", "6", "6", "6", "7", "7", "7", "7",
+        )
+        val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""
+            {"action":"resume","hand":${hand.joinToString(",", "[", "]") { "\"$it\"" }},"bottom":["8","9","10"],"history":[],"phase":"call","seat":"landlord"}
+        """.trimIndent()).jsonObject), dispatcher.ctx)
+        assertEquals("invalid_snapshot", result.text("error"))
+        assertEquals("hand_count", result.text("reason"))
+        assertEquals("calling", result.text("state"))
+        assertTrue(game.taps.isEmpty())
+    }
+
+    @Test fun resumeAcceptsADoubleSnapshotAsAFarmer() = runTest {
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(full("double"))))
+        val dispatcher = toolDispatcher(game)
+        PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
+        val hand = listOf("BJ", "SJ", "2", "A", "K", "Q", "J", "J", "10", "10", "9", "8", "8", "8", "7", "5", "3")
+        val resumed = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""
+            {"action":"resume","hand":${hand.joinToString(",", "[", "]") { "\"$it\"" }},"bottom":["3","4","5"],"history":[],"phase":"double","seat":"landlord_up"}
+        """.trimIndent()).jsonObject), dispatcher.ctx)
+        assertEquals(resumed.content.toString(), "true", resumed.text("ok"))
+        assertEquals("doubling", resumed.text("state"))
+        assertEquals("double", resumed.text("phase"))
+        assertTrue(game.taps.isEmpty())
+    }
+
     @Test fun resumeAcceptsACompleteHumanSnapshotWithoutClicking() = runTest {
         val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(full("call"))))
         val dispatcher = toolDispatcher(game)
@@ -1798,7 +1872,7 @@ class PhoneDdzTurnTest {
             "missing seat" to ("""{"action":"resume",$farmer,"bottom":["5","6","7"],"history":[],"phase":"call"}""" to "invalid_snapshot"),
             "unknown phase" to ("""{"action":"resume",$farmer,"bottom":["5","6","7"],"history":[],"phase":"bid","seat":"landlord"}""" to "phase"),
             "two bottom cards" to ("""{"action":"resume",$farmer,"bottom":["5","6"],"history":[],"phase":"call","seat":"landlord"}""" to "bottom_count"),
-            "five threes" to ("""{"action":"resume","hand":["3","3","3","3","3","4","5","6","7","8","9","10","J","Q","K","A","2","SJ","BJ","4"],
+            "five threes" to ("""{"action":"resume","hand":["3","3","3","3","3","4","5","6","7","8","9","10","J","Q","K","A","2"],
                 "bottom":["5","6","7"],"history":[],"phase":"call","seat":"landlord"}""" to "duplicate_card"),
         )
         for ((name, case) in cases) {
@@ -3376,7 +3450,8 @@ class PhoneDdzTurnTest {
         val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(call, call)))
         val dispatcher = toolDispatcher(game)
         PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
-        val hand = listOf("3", "3", "3", "3", "4", "4", "4", "4", "5", "5", "5", "5", "6", "6", "6", "6", "7", "7", "7", "7")
+        // 叫分时自己一定是 17 张;20 张是地主拿了底牌之后的数。
+        val hand = listOf("3", "3", "3", "3", "4", "4", "4", "4", "5", "5", "5", "5", "6", "6", "6", "6", "7")
         val resumed = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""
             {"action":"resume","hand":${hand.joinToString(",", "[", "]") { "\"$it\"" }},"bottom":["8","9","10"],"history":[],"phase":"call","seat":"landlord"}
         """.trimIndent()).jsonObject), dispatcher.ctx)

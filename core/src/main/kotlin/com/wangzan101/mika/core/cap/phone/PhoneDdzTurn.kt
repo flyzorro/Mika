@@ -252,7 +252,7 @@ internal object PhoneDdzTurn : PhoneTool {
         },
         "hand" to ranks("play: your whole hand; resume: the complete current hand."),
         "play" to ranks("The cards to play."),
-        "bottom" to ranks("resume: the three visible bottom cards."),
+        "bottom" to ranks("resume: the three visible bottom cards; during call they are face-down, so an empty array is allowed."),
         "history" to buildJsonObject {
             put("type", "array")
             put("description", "resume: visible plays in order; an empty array is a pass.")
@@ -277,7 +277,7 @@ internal object PhoneDdzTurn : PhoneTool {
         put("required", JsonArray(listOf("hand", "bottom", "history", "phase", "seat").map(::JsonPrimitive)))
         put("properties", buildJsonObject {
             put("hand", snapshotRanks("complete current hand", 1, 20))
-            put("bottom", snapshotRanks("the three visible bottom cards", 3, 3))
+            put("bottom", snapshotRanks("the three visible bottom cards; during call they are face-down, so an empty array is allowed", 0, 3))
             put("history", buildJsonObject {
                 put("type", "array")
                 put("description", "visible plays in order; an empty entry is a pass")
@@ -849,7 +849,7 @@ internal object PhoneDdzTurn : PhoneTool {
             }
         }
         val hand = strings("hand", 1, 20)
-        val bottom = strings("bottom", 3, 3)
+        val bottom = strings("bottom", 0, 3)
         val historyValue = required("history") as? JsonArray ?: throw ArgError("history", "must be an array")
         val history = historyValue.mapIndexed { index, item ->
             val cards = item as? JsonArray ?: throw ArgError("history", "entry $index must be an array")
@@ -1977,7 +1977,8 @@ internal object PhoneDdzTurn : PhoneTool {
         if (view.phase != phaseOf(snapshot.phase)) return false
         val hand = DdzCards.hand(frame, view) ?: return false
         if (hand.sorted() != snapshot.hand.sorted() || hand.size != snapshot.hand.size) return false
-        if (DdzCards.bottom(frame) != snapshot.bottom) return false
+        // 叫分时底牌还扣着,快照里的底牌(空或猜的 3 张)在画面上验不了;等底牌翻开再比。
+        if (snapshot.phase != "call" && DdzCards.bottom(frame) != snapshot.bottom) return false
         val tracker = turn.tracker ?: return false
         if (tracker.seat() != snapshot.seat || tracker.history.map { it.toList() } != snapshot.history) return false
         if (!tracker.visibleHistoryMatches { side -> DdzCards.play(frame, side) }) return false

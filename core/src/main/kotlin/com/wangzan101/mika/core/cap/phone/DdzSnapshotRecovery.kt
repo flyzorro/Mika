@@ -28,11 +28,16 @@ internal object DdzSnapshotRecovery {
         val hand = snapshot.hand
         val bottom = snapshot.bottom
         val history = snapshot.history
-        val initial = if (snapshot.seat == "landlord") LANDLORD_HAND else FARMER_HAND
 
         if (snapshot.phase !in setOf("call", "double", "lead", "follow")) return invalid("phase")
         if (snapshot.seat !in setOf("landlord", "landlord_up", "landlord_down")) return invalid("seat")
-        if (bottom.size != 3) return invalid("bottom_count")
+        // 叫分时还没有地主,自己一定是 17 张;加倍时地主已经定了,地主 20 张、农民 17 张。
+        val call = snapshot.phase == "call"
+        val initial = if (call || snapshot.seat != "landlord") FARMER_HAND else LANDLORD_HAND
+        // 叫分时底牌还扣着:可以不带,也可以带看见的 3 张;别的阶段必须 3 张。
+        if (call) {
+            if (bottom.size != 0 && bottom.size != 3) return invalid("bottom_count")
+        } else if (bottom.size != 3) return invalid("bottom_count")
         if (hand.isEmpty() || hand.size > LANDLORD_HAND) return invalid("hand_count")
         if (snapshot.phase == "call" || snapshot.phase == "double") {
             if (history.isNotEmpty()) return invalid("history_phase")
@@ -62,7 +67,7 @@ internal object DdzSnapshotRecovery {
         // The phase and supplied seat must describe the actor reconstructed from the full
         // history. A runnable recovery must never install a state for a different player.
         when (snapshot.phase) {
-            "call", "double" -> if (history.isNotEmpty() || snapshot.seat != "landlord") return invalid("history_phase")
+            "call", "double" -> if (history.isNotEmpty()) return invalid("history_phase")
             "lead" -> {
                 if (replay.active != null) return invalid("history_phase")
                 if (replay.actor != ownSeat) return invalid("actor")
