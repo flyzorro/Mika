@@ -4,7 +4,7 @@ import unittest
 
 from douzero.env.game import GameEnv
 
-from server import DECK, NAMES, SEATS, Advisor, WEIGHTS, cards, resolve
+from server import DECK, NAMES, SEATS, Advisor, WEIGHTS, bid_level, cards, resolve
 
 ADVISOR = Advisor(WEIGHTS)
 
@@ -212,6 +212,11 @@ class RibbonMisreadTest(unittest.TestCase):
 
 
 class BidTest(unittest.TestCase):
+    def test_bid_level_threshold(self):
+        # 0.69 还不到门槛不叫,0.70 到了就叫三分(门槛 0.7)
+        self.assertEqual(0, bid_level(0.69))
+        self.assertEqual(3, bid_level(0.70))
+
     def test_a_strong_hand_is_worth_more_as_landlord_than_a_weak_one(self):
         strong = ["BJ", "SJ", "2", "2", "2", "A", "A", "K", "K", "Q", "Q", "J", "10", "9", "8", "7", "6"]
         weak = ["3", "3", "4", "5", "6", "6", "7", "8", "9", "9", "10", "J", "J", "Q", "4", "5", "8"]

@@ -31,7 +31,9 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.io.ByteArrayOutputStream
 import java.io.File
+import java.io.PrintStream
 import javax.imageio.ImageIO
 
 class PhoneDdzTurnTest {
@@ -1181,7 +1183,7 @@ class PhoneDdzTurnTest {
     @Test fun theBidFollowsWhatDouZeroSaysTheHandIsWorth() = runTest {
         // 牌力规则会叫三分的一手,DouZero 自己打了几十局说当地主赢不了:不叫(最左边的蓝色按钮)
         val asked = mutableListOf<List<String>>()
-        PhoneDdzTurn.adviseBid = { _, hand -> asked += hand; 0 }
+        PhoneDdzTurn.adviseBid = { _, hand -> asked += hand; PhoneDdzTurn.BidAdvice(0) }
         val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(lobbyFrame("vd_stage_call"), full("vd_stage_call"))))
         run(game, """{"action":"start","advisor":"http://mac:3426"}""")
         assertEquals(17, asked.single().size)
@@ -1844,7 +1846,7 @@ class PhoneDdzTurnTest {
         val call = full("call")
         val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(List(5) { matching } + listOf(call, call, call, lobbyFrame("vd_lobby"))))
         val dispatcher = toolDispatcher(game)
-        PhoneDdzTurn.adviseBid = { _, _ -> 0 }
+        PhoneDdzTurn.adviseBid = { _, _ -> PhoneDdzTurn.BidAdvice(0) }
         val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","auto":true,"advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
         assertNull(result.toString(), result.text("error"))
         assertEquals("bid at the deal after waiting for the table", 1, game.taps.size)
@@ -1886,7 +1888,7 @@ class PhoneDdzTurnTest {
         )))
         val dispatcher = toolDispatcher(game)
         val savedBid = PhoneDdzTurn.adviseBid
-        PhoneDdzTurn.adviseBid = { _, _ -> 0 }
+        PhoneDdzTurn.adviseBid = { _, _ -> PhoneDdzTurn.BidAdvice(0) }
         try {
             val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","auto":true,"advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
             assertNull(result.toString(), result.text("error"))
@@ -1913,7 +1915,7 @@ class PhoneDdzTurnTest {
         )))
         val dispatcher = toolDispatcher(game)
         val savedBid = PhoneDdzTurn.adviseBid
-        PhoneDdzTurn.adviseBid = { _, _ -> 0 }
+        PhoneDdzTurn.adviseBid = { _, _ -> PhoneDdzTurn.BidAdvice(0) }
         try {
             val started = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","auto":true,"advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
             assertNull(started.toString(), started.text("error"))
@@ -1955,7 +1957,7 @@ class PhoneDdzTurnTest {
         )))
         val dispatcher = toolDispatcher(game)
         val savedBid = PhoneDdzTurn.adviseBid
-        PhoneDdzTurn.adviseBid = { _, _ -> 0 }
+        PhoneDdzTurn.adviseBid = { _, _ -> PhoneDdzTurn.BidAdvice(0) }
         try {
             val started = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","auto":true,"advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
             assertNull(started.toString(), started.text("error"))
@@ -1986,7 +1988,7 @@ class PhoneDdzTurnTest {
         val call = full("call")
         val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(List(250) { matching } + listOf(call, call, call, lobbyFrame("vd_lobby"))))
         val dispatcher = toolDispatcher(game)
-        PhoneDdzTurn.adviseBid = { _, _ -> 0 }
+        PhoneDdzTurn.adviseBid = { _, _ -> PhoneDdzTurn.BidAdvice(0) }
         val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","auto":true,"advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
         assertNull(result.toString(), result.text("error"))
         assertEquals("bid at the deal after the long match", 1, game.taps.size)
@@ -2001,7 +2003,7 @@ class PhoneDdzTurnTest {
         val call = full("call")
         val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(lobby, rooms, matching, call) + List(6) { call } + List(2) { lobbyFrame("vd_lobby") }))
         val dispatcher = toolDispatcher(game)
-        PhoneDdzTurn.adviseBid = { _, _ -> 0 }
+        PhoneDdzTurn.adviseBid = { _, _ -> PhoneDdzTurn.BidAdvice(0) }
         val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","auto":true,"advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
         assertEquals(result.toString(), listOf(1285 to 560, 872 to 400), game.taps.take(2))
     }
@@ -2016,7 +2018,7 @@ class PhoneDdzTurnTest {
         val call = full("call")
         val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(shop, lobby, rooms, matching, call) + List(6) { call } + List(2) { lobbyFrame("vd_lobby") }))
         val dispatcher = toolDispatcher(game)
-        PhoneDdzTurn.adviseBid = { _, _ -> 0 }
+        PhoneDdzTurn.adviseBid = { _, _ -> PhoneDdzTurn.BidAdvice(0) }
         val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","auto":true,"advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
         assertEquals(result.toString(), listOf(127 to 82, 1285 to 560, 872 to 400), game.taps.take(3))
     }
@@ -2041,7 +2043,7 @@ class PhoneDdzTurnTest {
         val call = full("call")
         val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(rooms, call) + List(6) { call } + List(2) { lobbyFrame("vd_lobby") }))
         val dispatcher = toolDispatcher(game)
-        PhoneDdzTurn.adviseBid = { _, _ -> 0 }
+        PhoneDdzTurn.adviseBid = { _, _ -> PhoneDdzTurn.BidAdvice(0) }
         PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","auto":true,"advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
         assertEquals(listOf(872 to 400), game.taps.take(1))
     }
@@ -2065,7 +2067,7 @@ class PhoneDdzTurnTest {
         val call = full("call")
         val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(rooms, call) + List(6) { call } + List(2) { lobbyFrame("vd_lobby") }))
         val dispatcher = toolDispatcher(game)
-        PhoneDdzTurn.adviseBid = { _, _ -> 0 }
+        PhoneDdzTurn.adviseBid = { _, _ -> PhoneDdzTurn.BidAdvice(0) }
         PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","auto":true,"room":"elite","advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
         assertEquals(listOf(1360 to 400), game.taps.take(1))
     }
@@ -2077,7 +2079,7 @@ class PhoneDdzTurnTest {
         val call = full("call")
         val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(rooms, call) + List(6) { call } + List(2) { lobbyFrame("vd_lobby") }))
         val dispatcher = toolDispatcher(game)
-        PhoneDdzTurn.adviseBid = { _, _ -> 0 }
+        PhoneDdzTurn.adviseBid = { _, _ -> PhoneDdzTurn.BidAdvice(0) }
         PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","auto":true,"room":"tuhao","advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
         assertEquals(listOf(1847 to 400), game.taps.take(1))
     }
@@ -2089,7 +2091,7 @@ class PhoneDdzTurnTest {
         val call = full("call")
         val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(rooms, call) + List(6) { call } + List(2) { lobbyFrame("vd_lobby") }))
         val dispatcher = toolDispatcher(game)
-        PhoneDdzTurn.adviseBid = { _, _ -> 0 }
+        PhoneDdzTurn.adviseBid = { _, _ -> PhoneDdzTurn.BidAdvice(0) }
         PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","auto":true,"room":"master","advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
         assertEquals(listOf(872 to 723), game.taps.take(1))
         assertTrue("一下都不点牌: ${game.taps}", game.taps.none { it.second == DdzScreen.CARD_Y })
@@ -2127,7 +2129,7 @@ class PhoneDdzTurnTest {
         val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(table) + List(8) { table } + List(2) { lobbyFrame("vd_lobby") }))
         val dispatcher = toolDispatcher(game)
         val savedBid = PhoneDdzTurn.adviseBid
-        PhoneDdzTurn.adviseBid = { _, _ -> 0 }
+        PhoneDdzTurn.adviseBid = { _, _ -> PhoneDdzTurn.BidAdvice(0) }
         try {
             val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","auto":true,"room":"tuhao","advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
             assertNotEquals(result.toString(), "room_mismatch", result.text("error"))
@@ -2144,7 +2146,7 @@ class PhoneDdzTurnTest {
         val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(table) + List(8) { table } + List(2) { lobbyFrame("vd_lobby") }))
         val dispatcher = toolDispatcher(game)
         val savedBid = PhoneDdzTurn.adviseBid
-        PhoneDdzTurn.adviseBid = { _, _ -> 0 }
+        PhoneDdzTurn.adviseBid = { _, _ -> PhoneDdzTurn.BidAdvice(0) }
         try {
             val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","auto":true,"advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
             assertNotEquals(result.toString(), "room_mismatch", result.text("error"))
@@ -2160,7 +2162,7 @@ class PhoneDdzTurnTest {
         val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(table) + List(6) { table } + List(2) { lobbyFrame("vd_lobby") }))
         val dispatcher = toolDispatcher(game)
         val savedBid = PhoneDdzTurn.adviseBid
-        PhoneDdzTurn.adviseBid = { _, _ -> 0 }
+        PhoneDdzTurn.adviseBid = { _, _ -> PhoneDdzTurn.BidAdvice(0) }
         try {
             val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","auto":true,"room":"master","advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
             assertNotEquals(result.toString(), "room_mismatch", result.text("error"))
@@ -2274,7 +2276,7 @@ class PhoneDdzTurnTest {
             val (y, isCard) = probe
             val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(shifted, call) + List(6) { call } + List(2) { lobbyFrame("vd_lobby") }))
             val dispatcher = toolDispatcher(game)
-            PhoneDdzTurn.adviseBid = { _, _ -> 0 }
+            PhoneDdzTurn.adviseBid = { _, _ -> PhoneDdzTurn.BidAdvice(0) }
             PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","auto":true,"room":"$room","advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
             val (x, _) = game.taps.first()
             assertTrue("$room tapped x=$x on ${rgb(x, y)}", isCard(rgb(x, y)))
@@ -2466,7 +2468,7 @@ class PhoneDdzTurnTest {
         val call = full("call")
         val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(call, call) + List(20) { waiting } + listOf(lobbyFrame("vd_lobby"))))
         val dispatcher = toolDispatcher(game)
-        PhoneDdzTurn.adviseBid = { _, _ -> 0 }
+        PhoneDdzTurn.adviseBid = { _, _ -> PhoneDdzTurn.BidAdvice(0) }
         val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","auto":true,"advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
         assertEquals(result.toString(), "lobby_return", result.text("reason"))
     }
@@ -2475,7 +2477,7 @@ class PhoneDdzTurnTest {
         val call = full("call")
         val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(call, call) + List(3) { full("human_result_leave_change_continue") }))
         val dispatcher = toolDispatcher(game)
-        PhoneDdzTurn.adviseBid = { _, _ -> 0 }
+        PhoneDdzTurn.adviseBid = { _, _ -> PhoneDdzTurn.BidAdvice(0) }
         val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","auto":true,"advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
         assertEquals(result.toString(), "result", result.text("phase"))
         assertNull(result.text("reason"))
@@ -2489,7 +2491,7 @@ class PhoneDdzTurnTest {
         val call = full("call")
         val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(call, call) + List(20) { waiting } + listOf(lobbyFrame("vd_lobby"))))
         val dispatcher = toolDispatcher(game)
-        PhoneDdzTurn.adviseBid = { _, _ -> 0 }
+        PhoneDdzTurn.adviseBid = { _, _ -> PhoneDdzTurn.BidAdvice(0) }
         val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","auto":true,"advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
         assertEquals(result.toString(), "lobby_return", result.text("reason"))
         assertEquals("only our 不叫 was tapped", 1, game.taps.size)
@@ -2513,7 +2515,7 @@ class PhoneDdzTurnTest {
         val call = full("call")
         val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(call, call, call) + List(20) { full("hand_k2") } + listOf(lobbyFrame("vd_lobby"))))
         val dispatcher = toolDispatcher(game)
-        PhoneDdzTurn.adviseBid = { _, _ -> 0 }
+        PhoneDdzTurn.adviseBid = { _, _ -> PhoneDdzTurn.BidAdvice(0) }
         PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
         val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"wait"}""").jsonObject), dispatcher.ctx)
         assertEquals(result.toString(), "lobby_return", result.text("reason"))
@@ -2524,7 +2526,7 @@ class PhoneDdzTurnTest {
         val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(full("call"), lobbyFrame("vd_lobby"))))
         val dispatcher = toolDispatcher(game)
         val savedBid = PhoneDdzTurn.adviseBid
-        PhoneDdzTurn.adviseBid = { _, _ -> 0 }
+        PhoneDdzTurn.adviseBid = { _, _ -> PhoneDdzTurn.BidAdvice(0) }
         try {
             val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","auto":true,"advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
             assertEquals(result.toString(), "paused", result.text("state"))
@@ -2668,7 +2670,7 @@ class PhoneDdzTurnTest {
             Scene(listOf(full("call"), full("call"), full("call"), full("double"), full("double"), full("lead"))),
         ))
         val savedBid = PhoneDdzTurn.adviseBid
-        PhoneDdzTurn.adviseBid = { _, _ -> 3 }
+        PhoneDdzTurn.adviseBid = { _, _ -> PhoneDdzTurn.BidAdvice(3) }
         try {
             val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","auto":true,"advisor":"http://mac:3426"}""").jsonObject), toolDispatcher(game).ctx)
             assertEquals(result.content.toString(), "lead", result.text("phase"))
@@ -2707,7 +2709,7 @@ class PhoneDdzTurnTest {
         val dispatcher = toolDispatcher(game)
         val savedBid = PhoneDdzTurn.adviseBid
         var bidCalls = 0
-        PhoneDdzTurn.adviseBid = { _, _ -> bidCalls++; 3 }
+        PhoneDdzTurn.adviseBid = { _, _ -> bidCalls++; PhoneDdzTurn.BidAdvice(3) }
         try {
             val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","auto":true,"advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
             assertEquals("lead", result.text("phase"))
@@ -2718,6 +2720,31 @@ class PhoneDdzTurnTest {
         } finally {
             PhoneDdzTurn.adviseBid = savedBid
         }
+    }
+
+    @Test fun theHumanBidLogsADdzTraceLineWithWinLevelAndSource() = runTest {
+        val call = full("call")
+        val double = full("double")
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(call, call, call, double, double, full("lead"))))
+        val dispatcher = toolDispatcher(game)
+        val savedBid = PhoneDdzTurn.adviseBid
+        PhoneDdzTurn.adviseBid = { _, _ -> PhoneDdzTurn.BidAdvice(3, 0.72) }
+        val out = ByteArrayOutputStream()
+        val old = System.out
+        try {
+            System.setOut(PrintStream(out))
+            val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","auto":true,"advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
+            assertEquals("lead", result.text("phase"))
+        } finally {
+            System.setOut(old)
+            PhoneDdzTurn.adviseBid = savedBid
+        }
+        val log = out.toString()
+        assertTrue(log, log.contains("DDZTRACE bid"))
+        assertTrue(log, log.contains("source=douzero"))
+        assertTrue(log, log.contains("win=0.72"))
+        assertTrue(log, log.contains("level=3"))
+        assertTrue(log, log.contains("pressed=3"))
     }
 
     @Test fun humanWaitUsesTheAdvisorToPassAtFollow() = runTest {

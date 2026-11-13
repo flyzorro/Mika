@@ -42,8 +42,13 @@ NAMES = {v: k for k, v in RANKS.items()}
 DECK = [r for r in RANKS.values() if r < 20 for _ in range(4)] + [20, 30]
 # 叫分:当地主自己跟自己打这么多局,赢面到这个数就叫三分,不到就不叫。闯关里农民靠不住电脑队友,地主赢了分数还翻倍
 BID_GAMES = 60
-BID_WIN = 0.5
+BID_WIN = 0.7
 WEIGHTS = os.environ.get("DOUZERO_WEIGHTS", os.path.join(os.path.dirname(__file__), "baselines", "douzero_ADP"))
+
+
+def bid_level(win):
+    """赢面到了门槛就叫三分,不到就不叫。"""
+    return 3 if win >= BID_WIN else 0
 
 
 class Mismatch(Exception):
@@ -294,7 +299,7 @@ def handler(advisor):
                 ms = lambda: round((time.perf_counter() - started) * 1000)
                 if self.path == "/bid":
                     win = advisor.bid(body["hand"])
-                    return self.reply(200, {"level": 3 if win >= BID_WIN else 0, "win": round(win, 2), "ms": ms()}, body)
+                    return self.reply(200, {"level": bid_level(win), "win": round(win, 2), "ms": ms()}, body)
                 move = advisor.act(body["seat"], body["hand"], body.get("bottom", []), body.get("history", []))
                 self.reply(200, {"play": [NAMES[c] for c in move], "ms": ms()}, body)
             except Mismatch as e:
