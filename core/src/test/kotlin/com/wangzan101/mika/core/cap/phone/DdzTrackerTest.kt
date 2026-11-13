@@ -757,6 +757,78 @@ class DdzTrackerTest {
         )
     }
 
+    @Test fun theClockComingBackToTheLeaderWhosePlayWasNotRecordedRecordsItAndBothPasses() {
+        // 2026-11-13 20:29:54–20:30:02 普通场第 1 局(我是地主,手里只剩一张 K):右家 3333、左家不出、我不出,
+        // 右家领出顺子 J109876。顺子只在闹钟还在左家时读到一帧(不够 steady);约 1.9 秒后闹钟已经回到右家,
+        // 左家不出、游戏替我自动不出,右家的出牌区也空了。以前要等闹钟再走开才按 lastSeen 记这一手,两个「不出」
+        // 就丢了:右家接着出 77 时判 missed_play。闹钟回到出牌人这里,就说明另外两家都不出,这时补记。
+        val straight = listOf("J", "10", "9", "8", "7", "6")
+        tracker.restore(
+            DdzSeat.Me, bottom,
+            // 我(地主)出对 8,右家炸弹 3333,左家和我都不出:右家领出
+            listOf(listOf("8", "8"), listOf("3", "3", "3", "3"), emptyList(), emptyList()),
+            DdzSeat.Right,
+        )
+        right = DdzSeen.Unsure
+        see(DdzSeat.Left)          // 右家的顺子还在飞
+        right = DdzSeen.Cards(straight)
+        see(DdzSeat.Left)          // 只读到这一帧
+        right = DdzSeen.Empty
+        see(DdzSeat.Right)         // 约 1.9 秒后:闹钟回到右家,左家和我都不出
+        assertNull(tracker.broken)
+        assertEquals(
+            listOf(
+                listOf("8", "8"), listOf("3", "3", "3", "3"), emptyList(), emptyList(),
+                straight, emptyList(), emptyList(),
+            ),
+            tracker.history,
+        )
+        // 右家接着出 77:历史对得上,照常记下,不再判漏
+        right = DdzSeen.Cards(listOf("7", "7"))
+        repeat(DdzSettlingPolicy.SINGLE.steadyFrames) { see(DdzSeat.Left) }
+        assertNull(tracker.broken)
+        assertEquals(
+            listOf(straight, emptyList(), emptyList(), listOf("7", "7")),
+            tracker.history.takeLast(4),
+        )
+    }
+
+    @Test fun aMiddleSeatStillShowingCardsIsNotBackfilledAsAPass() {
+        // 同一个漏帧,但这回左家其实压了一对 Q(还摆在桌上),我被游戏自动不出,闹钟回到右家。
+        // 不能把左家补成「不出」——那是悄悄记错的历史,比判漏还糟;照旧判漏
+        tracker.restore(
+            DdzSeat.Me, bottom,
+            listOf(listOf("8", "8"), listOf("3", "3", "3", "3"), emptyList(), emptyList()),
+            DdzSeat.Right,
+        )
+        right = DdzSeen.Cards(listOf("J", "10", "9", "8", "7", "6"))
+        see(DdzSeat.Left)          // 只读到这一帧
+        right = DdzSeen.Empty
+        left = DdzSeen.Cards(listOf("Q", "Q"))
+        see(DdzSeat.Right)         // 闹钟回到右家,左家的对 Q 还在
+        // 顺子之后左家那一手:要么还没记,要么记成对 Q,绝不能是「不出」
+        val after = tracker.history.drop(4)
+        assertTrue("${tracker.history}", after.size < 2 || after[1] == listOf("Q", "Q"))
+    }
+
+    @Test fun aLeaderWhosePlayWasOnlyEverUnsureIsNotBackfilledAsPasses() {
+        // 闹钟回到刚出过牌的那一家,可这一手一直只读到 Unsure:不能当成「另外两家不出」补记,
+        // 照旧按现有规则判漏,这一局交给简单规则。
+        tracker.restore(
+            DdzSeat.Me, bottom,
+            listOf(listOf("8", "8"), listOf("3", "3", "3", "3"), emptyList(), emptyList()),
+            DdzSeat.Right,
+        )
+        right = DdzSeen.Unsure
+        see(DdzSeat.Left)          // 右家的牌在飞,认不准
+        right = DdzSeen.Empty
+        see(DdzSeat.Right)         // 闹钟回到右家,出牌区也空了:还是没有能用的读数
+        assertEquals(4, tracker.history.size)   // 没有补记
+        repeat(DdzSettlingPolicy.SINGLE.maxUnconfirmedFrames) { see(DdzSeat.Left) }
+        assertEquals("missed_play", tracker.broken)
+        assertEquals(4, tracker.history.size)
+    }
+
     @Test fun anUnreadableMiddleSeatStillFailsAsMissedPlay() {
         // 闹钟回到地主,可左家的出牌区一直认不准(可能真出了一手):不能当成不出,照旧判漏、不记没读到的牌
         val straight = listOf("J", "10", "9", "8", "7", "6")
