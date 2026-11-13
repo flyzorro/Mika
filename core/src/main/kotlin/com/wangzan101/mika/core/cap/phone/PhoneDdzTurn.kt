@@ -195,11 +195,22 @@ internal object PhoneDdzTurn : PhoneTool {
     internal var advise: suspend (url: String, body: String) -> String? = { url, body -> DdzAdvisor.post(url, body) }
 
     /** 问 DouZero 服务这手牌叫几分(它自己跟自己打几十局看当地主的赢面);测试里换掉。连不上为 null。 */
-    internal var adviseBid: suspend (url: String, hand: List<String>) -> Int? = { url, hand ->
+    internal data class BidAdvice(val level: Int, val win: Double? = null)
+
+    /** 问 DouZero 服务这手牌叫几分(它自己跟自己打几十局看当地主的赢面);测试里换掉。连不上为 null。 */
+    internal var adviseBid: suspend (url: String, hand: List<String>) -> BidAdvice? = { url, hand ->
         DdzAdvisor.post(url, buildJsonObject { put("hand", JsonArray(hand.map(::JsonPrimitive))) }.toString(), "bid")
-            ?.let { runCatching { (kotlinx.serialization.json.Json.parseToJsonElement(it) as? JsonObject)?.get("level") as? JsonPrimitive }.getOrNull() }
-            ?.contentOrNull?.toIntOrNull()?.takeIf { it in 0..3 }
+            ?.let { runCatching { kotlinx.serialization.json.Json.parseToJsonElement(it) as? JsonObject }.getOrNull() }
+            ?.let { obj ->
+                val level = (obj["level"] as? JsonPrimitive)?.contentOrNull?.toIntOrNull()?.takeIf { it in 0..3 }
+                if (level == null) null else BidAdvice(level, (obj["win"] as? JsonPrimitive)?.contentOrNull?.toDoubleOrNull())
+            }
     }
+
+    /** 记下这一次叫分:手牌、来源、赢面、选的几分、实际按了哪个按钮(灰的改按不叫也写)。 */
+    private fun traceBid(mode: String, hand: List<String>?, advice: BidAdvice?, level: Int?, pressed: String) =
+        println("DDZTRACE bid mode=$mode hand=${hand?.joinToString(",") ?: ""} " +
+            "source=${if (advice != null) "douzero" else "rules"} win=${advice?.win} level=$level pressed=$pressed")
 
     override val verb = Verb.PhoneGame
     override val risk = Risk.Write
@@ -1287,14 +1298,17 @@ internal object PhoneDdzTurn : PhoneTool {
                     DdzPhase.Call -> when {
                         turn.mode == DdzMode.Human && !turn.humanActionSeen -> {
                             val hand = DdzCards.hand(frame, view)?.takeIf { it.size == 17 }
-                            val level = hand?.let { cards ->
-                                turn.advisor?.let { url -> adviseBid(url, cards) } ?: bidLevel(cards)
-                            }
+                            val advice = hand?.let { cards -> turn.advisor?.let { url -> adviseBid(url, cards) } }
+                            val level = advice?.level ?: hand?.let(::bidLevel)
                             val button = level?.let { view.buttons.getOrNull(it) }
                             when {
                                 button == null -> humanPause(turn, DdzSessionReason.UNKNOWN_SCENE)
-                                button.color == DdzColor.Gray -> humanPause(turn, DdzSessionReason.REJECTED_ACTION)
+                                button.color == DdzColor.Gray -> {
+                                    traceBid("human", hand, advice, level, "gray")
+                                    humanPause(turn, DdzSessionReason.REJECTED_ACTION)
+                                }
                                 press(button, ctx, turn).moved -> {
+                                    traceBid("human", hand, advice, level, level.toString())
                                     turn.bid = true
                                     turn.humanActionSeen = true
                                 }
@@ -1308,9 +1322,14 @@ internal object PhoneDdzTurn : PhoneTool {
                             val hand = DdzCards.hand(frame, view)?.takeIf { it.size == 17 }
                             if (hand != null) {
                                 // 先问 DouZero 当地主的赢面;服务连不上就按牌力的老规则
-                                val level = turn.advisor?.let { adviseBid(it, hand) } ?: bidLevel(hand)
+                                val advice = turn.advisor?.let { adviseBid(it, hand) }
+                                val level = advice?.level ?: bidLevel(hand)
                                 val button = view.buttons[level].takeIf { it.color != DdzColor.Gray } ?: view.buttons[0]
-                                if (press(button, ctx, turn).moved) turn.bid = true
+                                if (press(button, ctx, turn).moved) {
+                                    val pressed = if (view.buttons[level].color != DdzColor.Gray) level else 0
+                                    traceBid("single", hand, advice, level, pressed.toString())
+                                    turn.bid = true
+                                }
                             }
                             left = true
                         }
