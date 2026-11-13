@@ -2511,6 +2511,110 @@ class PhoneDdzTurnTest {
         assertEquals(DdzScreen.read(double).buttons[0].let { it.x to it.y }, game.taps[1])
     }
 
+    @Test fun humanBidsAgainWhenEveryBidIsFollowedByANewDeal() = runTest {
+        // 2026-11-13 21:24 普通场:三家都不叫,重新发牌。工具还把上一副牌的 humanActionSeen 当数,
+        // 新的叫分画面一下都不按,最后 unknown_scene 停下。重新发牌后要按新手牌再问一次 DouZero。
+        val first = full("human_redeal_call_first")
+        val second = full("human_redeal_call_second")
+        // 发牌中那一帧(21:24:40,第一张王还亮着)认不出;不能因此停下,要等它发完。
+        val dealing = full("human_redeal_call_second_dealing")
+        val asked = mutableListOf<List<String>>()
+        val saved = PhoneDdzTurn.adviseBid
+        PhoneDdzTurn.adviseBid = { _, hand ->
+            asked += hand
+            if (asked.size == 1) PhoneDdzTurn.BidAdvice(0, 0.47) else PhoneDdzTurn.BidAdvice(2, 0.61)
+        }
+        val out = ByteArrayOutputStream()
+        val old = System.out
+        try {
+            System.setOut(PrintStream(out))
+            val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(first, first, dealing, second)))
+            val result = run(game, """{"action":"start","mode":"human","auto":true,"advisor":"http://mac:3426"}""")
+            assertEquals(result.content.toString(), "calling", result.text("state"))
+            assertNull(result.text("reason"))
+            assertEquals("重新发牌后要再问一次 DouZero", 2, asked.size)
+            assertEquals(
+                listOf("SJ", "2", "A", "A", "Q", "Q", "Q", "8", "8", "7", "7", "6", "4", "4", "4", "3", "3"),
+                asked[0],
+            )
+            assertEquals(
+                listOf("BJ", "SJ", "2", "A", "K", "Q", "J", "J", "10", "10", "9", "8", "8", "8", "7", "5", "3"),
+                asked[1],
+            )
+            assertEquals(
+                "第一副不叫,第二副按 DouZero 说的三分",
+                listOf(
+                    DdzScreen.read(first).buttons[0].let { it.x to it.y },
+                    DdzScreen.read(second).buttons[2].let { it.x to it.y },
+                ),
+                game.taps,
+            )
+        } finally {
+            System.setOut(old)
+            PhoneDdzTurn.adviseBid = saved
+        }
+        val log = out.toString()
+        assertEquals(log, 2, log.lines().count { it.contains("DDZTRACE bid") })
+        assertTrue(log, log.contains("hand=BJ,SJ,2,A,K,Q,J,J,10,10,9,8,8,8,7,5,3"))
+        assertTrue(log, log.contains("pressed=2"))
+    }
+
+    @Test fun humanDoesNotBidTheSameHandTwice() = runTest {
+        // 按完叫分按钮后旧的叫分画面还会留几帧;模型再 wait 一次,手牌没变就不能再按一次。
+        val call = full("human_redeal_call_first")
+        val asked = mutableListOf<List<String>>()
+        val saved = PhoneDdzTurn.adviseBid
+        PhoneDdzTurn.adviseBid = { _, hand -> asked += hand; PhoneDdzTurn.BidAdvice(0) }
+        try {
+            val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(call, call)))
+            val dispatcher = toolDispatcher(game)
+            val start = Args(PhoneDdzTurn.def, Json.parseToJsonElement(
+                """{"action":"start","mode":"human","auto":true,"advisor":"http://mac:3426"}"""
+            ).jsonObject)
+            val started = PhoneDdzTurn.execute(start, dispatcher.ctx)
+            assertEquals(started.content.toString(), "calling", started.text("state"))
+            val waited = PhoneDdzTurn.execute(
+                Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"wait"}""").jsonObject),
+                dispatcher.ctx,
+            )
+            assertEquals(waited.content.toString(), "calling", waited.text("state"))
+            assertEquals("同一副牌只问一次 DouZero", 1, asked.size)
+            assertEquals("同一副牌只按一次不叫", 1, game.taps.size)
+        } finally {
+            PhoneDdzTurn.adviseBid = saved
+        }
+    }
+
+    @Test fun oneMisreadCardOnTheSameDealIsNotARedeal() = runTest {
+        // 按完叫分后旧画面还留几帧;其中一帧把一张牌读错(第一张 7 读成 8,仍是 17 张、仍从大到小),不能当成重新发牌再按一次。
+        // 素材是把第一副牌那一帧第二张 8 的点数贴到第一张 7 上
+        val call = full("human_redeal_call_first")
+        val misread = full("human_redeal_call_first_misread")
+        val before = DdzCards.hand(call, DdzScreen.read(call))!!
+        val after = DdzCards.hand(misread, DdzScreen.read(misread))!!
+        assertEquals(17, after.size)
+        val changed = (before + after).toSet().sumOf { r -> kotlin.math.abs(before.count { it == r } - after.count { it == r }) } / 2
+        assertEquals("素材只差一张牌: $before / $after", 1, changed)
+        val asked = mutableListOf<List<String>>()
+        val saved = PhoneDdzTurn.adviseBid
+        PhoneDdzTurn.adviseBid = { _, hand -> asked += hand; PhoneDdzTurn.BidAdvice(0) }
+        try {
+            val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(call, call, misread, misread)))
+            val dispatcher = toolDispatcher(game)
+            val started = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement(
+                """{"action":"start","mode":"human","auto":true,"advisor":"http://mac:3426"}"""
+            ).jsonObject), dispatcher.ctx)
+            assertEquals(started.content.toString(), "calling", started.text("state"))
+            val waited = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"wait"}""").jsonObject), dispatcher.ctx)
+            assertEquals(waited.content.toString(), "calling", waited.text("state"))
+            assertEquals("叫分用的是读对的那副牌", before, asked.first())
+            assertEquals("同一副牌读错一张只问一次 DouZero", 1, asked.size)
+            assertEquals("同一副牌读错一张只按一次", 1, game.taps.size)
+        } finally {
+            PhoneDdzTurn.adviseBid = saved
+        }
+    }
+
     @Test fun humanWaitAtCallingWaitsThroughOtherPlayersBids() = runTest {
         val call = full("call")
         val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(call, call, call) + List(20) { full("hand_k2") } + listOf(lobbyFrame("vd_lobby"))))

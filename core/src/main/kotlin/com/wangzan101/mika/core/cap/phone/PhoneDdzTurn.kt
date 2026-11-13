@@ -1,5 +1,6 @@
 package com.wangzan101.mika.core.cap.phone
 
+import kotlin.math.abs
 import com.wangzan101.mika.core.capability.CapabilityKey
 import com.wangzan101.mika.core.prompt.Prompts
 import com.wangzan101.mika.core.run.waitOrSteer
@@ -37,6 +38,10 @@ internal object PhoneDdzTurn : PhoneTool {
     private const val HUMAN_SETTLE_MS = 6_000L
     /** 真人牌桌切换/发牌时可能短暂读不到正面标记;重试一小段,别立刻交还模型。 */
     private const val HUMAN_SCENE_RETRY_POLLS = 12
+    /** 真人叫分时重新发牌,手牌一张张发出来:等它发完再叫,别把还在发牌的画面当成认不出的场景。 */
+    private const val HUMAN_CALL_RETRY_POLLS = 24
+    /** 叫分画面上的手牌和上次叫分时至少差这么多张,才是重新发了一副牌(读错一两张不算)。 */
+    private const val REDEAL_MIN_CHANGED = 3
     /** start(auto) 刚点完快速开始/继续:真人场匹配的倒计时就有 30 秒,最多等约 45 秒牌桌出来。 */
     private const val START_TABLE_POLLS = 300
     /**
@@ -144,6 +149,10 @@ internal object PhoneDdzTurn : PhoneTool {
         var stage = false
         /** 这一轮叫分已经按过了:按完按钮还会留几帧。 */
         var bid = false
+        /** 真人叫分:上一次自动叫分时读到的那副 17 张手牌;重新发牌后手牌会变。 */
+        var bidHand: List<String>? = null
+        /** 真人叫分:连着几帧叫分画面上的手牌还没发完/认不出。 */
+        var callMisses = 0
         /** 这一轮已经点了不加倍。 */
         var declined = false
         /** 连着一帧帧认出段位弹窗的次数:两帧都对上才点「确定」,过渡动画的一帧不算。 */
@@ -205,6 +214,16 @@ internal object PhoneDdzTurn : PhoneTool {
                 val level = (obj["level"] as? JsonPrimitive)?.contentOrNull?.toIntOrNull()?.takeIf { it in 0..3 }
                 if (level == null) null else BidAdvice(level, (obj["win"] as? JsonPrimitive)?.contentOrNull?.toDoubleOrNull())
             }
+    }
+
+    /**
+     * 叫分画面上的 [hand] 是不是新发的一副牌(还没叫过分也算)。重新发牌是另一副随机的 17 张,和上一副差一大截;
+     * 按完叫分后旧画面还留几帧,其中一帧读错一两张不能当成重新发牌再按一次:至少差 [REDEAL_MIN_CHANGED] 张才算。
+     */
+    private fun redealt(bidHand: List<String>?, hand: List<String>): Boolean {
+        if (bidHand == null) return true
+        val changed = (bidHand + hand).toSet().sumOf { r -> abs(bidHand.count { it == r } - hand.count { it == r }) } / 2
+        return changed >= REDEAL_MIN_CHANGED
     }
 
     /** 记下这一次叫分:手牌、来源、赢面、选的几分、实际按了哪个按钮(灰的改按不叫也写)。 */
@@ -515,6 +534,7 @@ internal object PhoneDdzTurn : PhoneTool {
         turn.advisor = advisor
         turn.atTable = true
         turn.actionsSeen = ctx.evidence.actions
+        turn.callMisses = 0
         if (!recoveringSameGame) {
             turn.tracker = null
             turn.expectedHand = null
@@ -638,6 +658,8 @@ internal object PhoneDdzTurn : PhoneTool {
         turn.expectedHand = null
         turn.snapshot = null
         turn.advisor = null
+        turn.bidHand = null
+        turn.callMisses = 0
         turn.decisions.clear()
         turn.actionsSeen = ctx.evidence.actions
         return ToolExecution(buildJsonObject {
@@ -760,6 +782,8 @@ internal object PhoneDdzTurn : PhoneTool {
                 turn.tracker = recovered.value.tracker
                 turn.joining = false
                 turn.humanSettling = 0
+                turn.bidHand = null
+                turn.callMisses = 0
                 turn.stopped = false
                 turn.phase = phaseOf(snapshot.phase)
                 turn.state = stateFor(snapshot.phase)
@@ -1289,30 +1313,54 @@ internal object PhoneDdzTurn : PhoneTool {
                 }
                 // 单机经典场不在牌桌上:不记牌、不叫分、不出牌,像闯关的 offTable 一样等到交给模型
                 if (classicOffTable) { waitOrSteer { delay(POLL_MS) } ?: return last; continue }
-                if (view.phase != DdzPhase.Call) turn.bid = false
+                if (view.phase != DdzPhase.Call) {
+                    turn.bid = false
+                    turn.callMisses = 0
+                }
                 if (view.phase != DdzPhase.Double) turn.declined = false
                 dealt(turn, view)
                 if (turn.single || turn.mode == DdzMode.Human) track(turn, frame, view)
                 when (view.phase) {
                     // 单机局叫分按牌力定,不等模型(叫分只有十来秒);灰的分数点不了,按不叫算
                     DdzPhase.Call -> when {
-                        turn.mode == DdzMode.Human && !turn.humanActionSeen -> {
+                        turn.mode == DdzMode.Human -> {
                             val hand = DdzCards.hand(frame, view)?.takeIf { it.size == 17 }
-                            val advice = hand?.let { cards -> turn.advisor?.let { url -> adviseBid(url, cards) } }
-                            val level = advice?.level ?: hand?.let(::bidLevel)
-                            val button = level?.let { view.buttons.getOrNull(it) }
                             when {
-                                button == null -> humanPause(turn, DdzSessionReason.UNKNOWN_SCENE)
-                                button.color == DdzColor.Gray -> {
-                                    traceBid("human", hand, advice, level, "gray")
-                                    humanPause(turn, DdzSessionReason.REJECTED_ACTION)
+                                hand == null -> {
+                                    // 重新发牌时手牌一张张发出来,这一帧还认不出:等它发完,别当认不出的场景停下
+                                    if (++turn.callMisses > HUMAN_CALL_RETRY_POLLS) {
+                                        humanPause(turn, DdzSessionReason.UNKNOWN_SCENE)
+                                    }
                                 }
-                                press(button, ctx, turn).moved -> {
-                                    traceBid("human", hand, advice, level, level.toString())
-                                    turn.bid = true
-                                    turn.humanActionSeen = true
+                                else -> {
+                                    turn.callMisses = 0
+                                    if (redealt(turn.bidHand, hand)) {
+                                        // 手牌换了就是重新发牌:上一局的叫分状态作废,按新手牌再叫一次。
+                                        // tracker 等出牌状态不用在这里清:叫分画面上 [track] 每一帧都会清
+                                        if (turn.bidHand != null) {
+                                            turn.humanActionSeen = false
+                                            turn.bid = false
+                                        }
+                                        val advice = turn.advisor?.let { url -> adviseBid(url, hand) }
+                                        val level = advice?.level ?: bidLevel(hand)
+                                        val button = view.buttons.getOrNull(level)
+                                        when {
+                                            button == null -> humanPause(turn, DdzSessionReason.UNKNOWN_SCENE)
+                                            button.color == DdzColor.Gray -> {
+                                                traceBid("human", hand, advice, level, "gray")
+                                                humanPause(turn, DdzSessionReason.REJECTED_ACTION)
+                                            }
+                                            press(button, ctx, turn).moved -> {
+                                                traceBid("human", hand, advice, level, level.toString())
+                                                turn.bidHand = hand
+                                                turn.bid = true
+                                                turn.humanActionSeen = true
+                                            }
+                                            else -> humanPause(turn, DdzSessionReason.REJECTED_ACTION)
+                                        }
+                                    }
+                                    // 同一副牌:按完叫分按钮后留下的那几帧,不能再按一次
                                 }
-                                else -> humanPause(turn, DdzSessionReason.REJECTED_ACTION)
                             }
                             left = true
                         }
