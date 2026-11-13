@@ -194,7 +194,7 @@ internal object PhoneDdzTurn : PhoneTool {
     /** 问 DouZero;测试里换掉。返回响应正文,连不上为 null。 */
     internal var advise: suspend (url: String, body: String) -> String? = { url, body -> DdzAdvisor.post(url, body) }
 
-    /** 问 DouZero 服务这手牌叫几分(它自己跟自己打几十局看当地主的赢面);测试里换掉。连不上为 null。 */
+    /** DouZero 服务的叫分建议:几分,和它自己算的当地主赢面(老服务不回 win 时为 null)。 */
     internal data class BidAdvice(val level: Int, val win: Double? = null)
 
     /** 问 DouZero 服务这手牌叫几分(它自己跟自己打几十局看当地主的赢面);测试里换掉。连不上为 null。 */
