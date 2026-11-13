@@ -364,6 +364,16 @@ class DdzCardsTest {
         assertTrue(DdzCards.humanShop(fullFrame("human_shop_beans")))
     }
 
+    /** 2026-11-13 19:47 普通场:地主最后出炸弹 4444,结算页被 unknownPopup 的暗底+亮面板比例判成弹窗。 */
+    @Test fun theBombResultScreensAreResultPagesNotUnknownPopups() {
+        for (name in listOf("human_bomb_result", "human_bomb_result_faint", "human_bomb_result_later")) {
+            val frame = fullFrame(name)
+            assertTrue("$name 是结算页", DdzCards.humanResult(frame))
+            assertFalse("$name 不是认不出的弹窗", DdzCards.unknownPopup(frame))
+        }
+        assertFalse("牌桌上的炸弹特效不是弹窗", DdzCards.unknownPopup(fullFrame("human_bomb_effect_table")))
+    }
+
     @Test fun noOtherDdzScreenIsTakenForTheBeanStorePage() {
         // 主资源里也有一个 /ddz(样本字),按其中一张测试图找到测试资源的目录
         val dir = File(javaClass.getResource("/ddz/human_main_lobby.png")!!.toURI()).parentFile

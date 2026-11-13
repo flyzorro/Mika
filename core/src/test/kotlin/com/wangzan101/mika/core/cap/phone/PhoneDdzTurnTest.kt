@@ -309,6 +309,15 @@ class PhoneDdzTurnTest {
         return RawFrame(image.width, image.height, (DdzScreen.ROWS + DdzCards.ROWS + DdzCards.LOBBY_ROWS + DdzPopups.SCAN_ROWS).distinct().associateWith { image.getRGB(0, it, image.width, 1, null, 0, image.width) })
     }
 
+    /** 炸弹亮光正盖在结算按钮那一带的一帧:按钮认不出,暗底+亮面板仍和认不出的弹窗一样。 */
+    private fun bombFlash(name: String): RawFrame {
+        val image = ImageIO.read(javaClass.getResourceAsStream("/ddz/$name.png")!!)
+        val rows = (DdzScreen.ROWS + DdzCards.ROWS + DdzCards.LOBBY_ROWS + DdzPopups.SCAN_ROWS).distinct()
+        return RawFrame(image.width, image.height, rows.associateWith { y ->
+            if (y in 760..830) IntArray(image.width) { 0x00FFFFFF } else image.getRGB(0, y, image.width, 1, null, 0, image.width)
+        })
+    }
+
     private val roomRows = (DdzScreen.ROWS + DdzCards.ROWS + DdzCards.LOBBY_ROWS + DdzPopups.SCAN_ROWS + DdzRoomLabel.ROWS).distinct()
 
     /** 带底部场次标签的牌桌/匹配帧。 */
@@ -3303,6 +3312,27 @@ class PhoneDdzTurnTest {
         assertFalse("花朵压着时还没露出结算按钮", DdzCards.humanResult(springOver))
         assertTrue("这一帧确实像认不出的弹窗: ${DdzCards.unknownPopup(springOver)}", DdzCards.unknownPopup(springOver))
         val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(table, springStart, springOver, result)))
+        val started = run(game, """{"action":"start","mode":"human","auto":true,"advisor":"http://mac:3426"}""")
+        assertEquals("result", started.text("state"))
+        assertNotEquals("unknown_popup", started.text("reason"))
+        assertTrue("结算页上一律不点: ${game.taps}", game.taps.isEmpty())
+    }
+
+    @Test fun humanBombFinishOnTheResultScreenDoesNotPauseTheSession() = runTest {
+        // 2026-11-13 19:47 普通场:地主最后一手炸弹 4444 结束,炸弹特效散场后是结算页;
+        // 旧版 start 在那一帧回了 unknown_popup。这些帧一下都不点,认出结算页就返回 result。
+        val table = full("call")
+        val bombEffect = shot("human_bomb_effect_table")
+        val result = shot("human_bomb_result")
+        val faint = shot("human_bomb_result_faint")
+        val later = shot("human_bomb_result_later")
+        assertTrue("炸弹特效散场后是结算页", DdzCards.humanResult(result))
+        assertFalse("结算页不是认不出的弹窗", DdzCards.unknownPopup(result))
+        // 炸弹亮光正盖着离开/换桌/继续的那一两帧:结算页认不出,暗底+亮面板仍像弹窗,不能一帧就停
+        val flash = bombFlash("human_bomb_result")
+        assertFalse("亮光盖着时认不出结算页", DdzCards.humanResult(flash))
+        assertTrue("这一帧确实像认不出的弹窗", DdzCards.unknownPopup(flash))
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(table, bombEffect, flash, flash, result, faint, later)))
         val started = run(game, """{"action":"start","mode":"human","auto":true,"advisor":"http://mac:3426"}""")
         assertEquals("result", started.text("state"))
         assertNotEquals("unknown_popup", started.text("reason"))

@@ -392,6 +392,9 @@ internal object DdzCards {
 
     fun unknownPopup(frame: RawFrame): Boolean {
         if (frame.width != 2412 || frame.height != 1080) return false
+        // 真人结算页本来就是暗底、正中一大块亮面板,比例上刚好也够暗、够亮;它有确定的按钮排布,
+        // 认出来就绝不是弹窗(炸弹特效散场后正是这一帧)。按钮被特效盖住时 humanResult 认不出,才走帧数确认。
+        if (humanResult(frame)) return false
         var dark = 0
         var bright = 0
         var pixels = 0
