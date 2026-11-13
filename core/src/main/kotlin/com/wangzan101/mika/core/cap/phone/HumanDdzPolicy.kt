@@ -39,6 +39,8 @@ internal object DdzSessionReason {
     const val UNKNOWN_POPUP = "unknown_popup"
     /** 「您的豆豆足够到高级的房间游戏啦」:选的场次太低,关掉弹窗后交还模型换更高的场。 */
     const val BEANS_TOO_MANY = "beans_too_many"
+    /** 点了场次后游戏开的是商店金豆页:金豆不够进这个场次。只点商店的返回,回到场次页就停,不可恢复。 */
+    const val BEANS_TOO_FEW = "beans_too_few"
     /** 到了匹配画面或牌桌,游戏给的场次和 room 对不上:不叫分、不出牌,停下让模型原样报告。 */
     const val ROOM_MISMATCH = "room_mismatch"
     const val INVALID_ADVISOR_PLAY = "invalid_advisor_play"

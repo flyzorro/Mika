@@ -367,7 +367,7 @@ class DdzCardsTest {
     @Test fun noOtherDdzScreenIsTakenForTheBeanStorePage() {
         // 主资源里也有一个 /ddz(样本字),按其中一张测试图找到测试资源的目录
         val dir = File(javaClass.getResource("/ddz/human_main_lobby.png")!!.toURI()).parentFile
-        val names = dir.listFiles()!!.map { it.name.substringBeforeLast('.') }.filter { it != "human_shop_beans" }
+        val names = dir.listFiles()!!.map { it.name.substringBeforeLast('.') }.filter { it != "human_shop_beans" && it != "human_shop_beans_short" }
         assertTrue("fixtures: ${names.size}", names.size >= 80)
         for (name in names) assertFalse(name, DdzCards.humanShop(fullFrame(name)))
     }

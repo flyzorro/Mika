@@ -2291,7 +2291,7 @@ class PhoneDdzTurnTest {
         val dir = File(javaClass.getResource("/ddz/human_main_lobby.png")!!.toURI()).parentFile
         val names = dir.listFiles()!!.map { it.name.substringBeforeLast('.') }
         assertTrue("fixtures: ${names.size}", names.size >= 100)
-        val rooms = setOf("human_classic_rooms", "human_classic_rooms_shifted")
+        val rooms = setOf("human_classic_rooms", "human_classic_rooms_shifted", "human_rooms_beans_5wan_before", "human_rooms_beans_5wan_after")
         for (name in names) {
             val frame = shot(name)
             if (name in rooms) assertTrue("rooms $name", DdzCards.humanClassicRooms(frame))
@@ -3290,6 +3290,40 @@ class PhoneDdzTurnTest {
         assertEquals("paused", result.text("state"))
         assertEquals("unknown_popup", result.text("reason"))
         assertTrue(game.taps.isEmpty())
+    }
+
+    @Test fun humanSpringEffectOnTheResultScreenDoesNotPauseTheSession() = runTest {
+        // 2026-11-13 19:34 土豪场:我当地主被打「春天」,结算页上压着粉色花朵特效,start 在那一两帧回了
+        // unknown_popup。特效只是过渡:单帧像认不出的弹窗不算,连着几帧都对上才停;放完就认出结算页。
+        val table = full("call")
+        val springStart = shot("human_spring_start")
+        val springOver = shot("human_spring_over_result")
+        val result = shot("human_result_bankrupt")
+        assertTrue("普通结算页认得出离开/换桌/继续", DdzCards.humanResult(result))
+        assertFalse("花朵压着时还没露出结算按钮", DdzCards.humanResult(springOver))
+        assertTrue("这一帧确实像认不出的弹窗: ${DdzCards.unknownPopup(springOver)}", DdzCards.unknownPopup(springOver))
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(table, springStart, springOver, result)))
+        val started = run(game, """{"action":"start","mode":"human","auto":true,"advisor":"http://mac:3426"}""")
+        assertEquals("result", started.text("state"))
+        assertNotEquals("unknown_popup", started.text("reason"))
+        assertTrue("结算页上一律不点: ${game.taps}", game.taps.isEmpty())
+    }
+
+    @Test fun humanAutoStartReportsBeansTooFewWhenTheRoomOpensTheShop() = runTest {
+        // 2026-11-13 19:34-19:35: 土豪场要 1000万金豆,右上角只有 5万;点了土豪场游戏开的是商店金豆页
+        // (金豆不足)。工具只点商店左上角的返回,一回到场次页就报 beans_too_few,绝不再点场次,也不等到超时。
+        val rooms = shot("human_rooms_beans_5wan_before")
+        val shop = shot("human_shop_beans_short")
+        val roomsBack = shot("human_rooms_beans_5wan_after")
+        assertTrue("场次页", DdzCards.humanClassicRooms(rooms))
+        assertTrue("商店金豆页", DdzCards.humanShop(shop))
+        assertTrue("返回后的场次页", DdzCards.humanClassicRooms(roomsBack))
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(rooms, shop, roomsBack)))
+        val started = run(game, """{"action":"start","mode":"human","auto":true,"room":"tuhao","advisor":"http://mac:3426"}""")
+        assertEquals("beans_too_few", started.text("error"))
+        assertEquals("false", started.text("recoverable"))
+        // 只点土豪场和商店的返回箭头;回到场次页后一下都不点
+        assertEquals(listOf(1847 to 400, 127 to 82), game.taps)
     }
 
     @Test fun humanToolPromptDocumentsWaitAndNestedResumeSchema() {
