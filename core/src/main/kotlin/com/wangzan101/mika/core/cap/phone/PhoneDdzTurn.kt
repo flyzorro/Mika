@@ -39,6 +39,11 @@ internal object PhoneDdzTurn : PhoneTool {
     private const val HUMAN_SCENE_RETRY_POLLS = 12
     /** start(auto) 刚点完快速开始/继续:真人场匹配的倒计时就有 30 秒,最多等约 45 秒牌桌出来。 */
     private const val START_TABLE_POLLS = 300
+    /**
+     * 认不出的弹窗要连着这么多帧都对上才算。真结算页上的「春天」「反春」、炸弹、飞机这类全屏特效会盖住
+     * 「离开/换桌/继续」一两秒,单帧看起来和认不出的弹窗一样;连着几帧(约一秒多)还没散才当弹窗停下。
+     */
+    private const val POPUP_CONFIRM_FRAMES = 8
     /** 同样的约 45 秒也按真实时间算一遍:一轮里的整屏 OCR 在手机上要 ~0.8 秒,只数轮数会被慢轮拖长(2026-11-11 商店页拖到 294 秒)。 */
     private const val START_TABLE_MS = START_TABLE_POLLS * POLL_MS
     /** 弹窗(含约 30 秒的激励视频)最多处理这么多轮;每轮至少 [POLL_MS]。 */
@@ -143,6 +148,8 @@ internal object PhoneDdzTurn : PhoneTool {
         var declined = false
         /** 连着一帧帧认出段位弹窗的次数:两帧都对上才点「确定」,过渡动画的一帧不算。 */
         var rankSightings = 0
+        /** 连着一帧帧认出「认不出的弹窗」的次数:结算页上的「春天」等特效只是过渡,连着几帧才算真弹窗。 */
+        var popupSightings = 0
         /** Human mode has acted on the currently visible decision; prevents repeated taps while it settles. */
         var humanActionSeen = false
         /** The latest human frame passed the positive classic-table gate and may be tapped once. */
@@ -264,6 +271,7 @@ internal object PhoneDdzTurn : PhoneTool {
         // 「这一帧 OCR 过、没东西」只在这一次调用里算数:上一次调用、上一个会话留下的同样画面不能把这次第一回的 OCR 也省掉
         popupFrameKey = null
         turn.rankSightings = 0
+        turn.popupSightings = 0
         val action = a.str("action") ?: throw ArgError("action", "required")
         // stop is deliberately usable even after the app was switched: it must prevent a delayed
         // polling continuation from tapping when the user takes control.
@@ -477,6 +485,7 @@ internal object PhoneDdzTurn : PhoneTool {
             // 在主大厅点「真人对战」、在真人场次页点选的场次(默认普通场),再等匹配和牌桌出来
             val entry = awaitHumanEntry(ctx, turn, page, roomX, roomY)
             if (entry.error == DdzSessionReason.ROOM_MISMATCH) return roomMismatchResult(turn)
+            if (entry.error == DdzSessionReason.BEANS_TOO_FEW) return beansTooFewResult(turn)
             page = entry.frame ?: return refused(entry.error ?: "not_human_game")
         }
         // 到了匹配画面或牌桌,场次和 room 对不上:一下都不点,停下让模型原样报告。
@@ -689,6 +698,15 @@ internal object PhoneDdzTurn : PhoneTool {
             expectedRoomLabel(requested)?.let { put("expected", it) }
         }
         turn.roomLabel?.let { put("room", it) }
+    })
+
+    /** 金豆不够进这个场次(点场次后游戏开的是商店):不可恢复,模型别再换场或重试,原样报告。 */
+    private fun beansTooFewResult(turn: Turn) = ToolExecution(buildJsonObject {
+        put("ok", false)
+        put("error", DdzSessionReason.BEANS_TOO_FEW)
+        put("recoverable", false)
+        turn.mode?.let { put("mode", it.wire) }
+        turn.requestedRoom?.let { put("room", it) }
     })
 
     /** After the wait loop: keep a pause the loop set (and its reason); otherwise report the phase it reached. */
@@ -1147,10 +1165,26 @@ internal object PhoneDdzTurn : PhoneTool {
                     budget = polls
                 }
                 if (turn.mode == DdzMode.Human) {
+                    // 每帧都记一次「认不出的弹窗」,不是就清零:要的是同一判定连续几帧
+                    val popupConfirmed = confirmUnknownPopup(frame, turn)
                     // 真人场结算页(离开/换桌/继续):这一局打完了,不是弹窗
-                    if (DdzCards.humanResult(frame)) return view.copy(phase = DdzPhase.Result)
+                    if (DdzCards.humanResult(frame)) {
+                        return view.copy(phase = DdzPhase.Result)
+                    }
                     if (!DdzCards.classicHumanTable(frame)) {
                         val handoff = humanHandoff(frame)
+                        // 结算页上盖着「春天」「反春」、炸弹/飞机特效时,单帧会被当成认不出的弹窗:
+                        // 连着几帧都对上才停,这中间接着等特效放完(放完就能认出结算页)
+                        if (handoff == DdzSessionReason.UNKNOWN_POPUP && !popupConfirmed) {
+                            if (++humanSceneMisses > HUMAN_SCENE_RETRY_POLLS) {
+                                turn.humanEligible = false
+                                turn.state = DdzSessionState.Paused
+                                turn.reason = DdzSessionReason.UNKNOWN_SCENE
+                                return view
+                            }
+                            waitOrSteer { delay(POLL_MS) } ?: return last
+                            continue
+                        }
                         // 牌桌上盖了广告(进桌、结算时):工具自己关,不停下
                         if (handoff != DdzSessionReason.LOBBY_RETURN && (handoff != null || humanSceneMisses >= 2) && popupBudget-- > 0 && clearPopup(ctx, turn, frame)) {
                             humanSceneMisses = 0
@@ -1173,6 +1207,7 @@ internal object PhoneDdzTurn : PhoneTool {
                         continue
                     }
                     humanSceneMisses = 0
+                    turn.popupSightings = 0
                     turn.humanEligible = true
                     // 底部场次和 room 对不上:一下都不点(不叫分、不出牌),设好暂停后交给调用方报 room_mismatch
                     if (frame != null && roomMismatch(frame, turn)) return view
@@ -1605,6 +1640,8 @@ internal object PhoneDdzTurn : PhoneTool {
         var roomsTapped = false
         var resultTapped = false
         var shopTapped = 0
+        /** 点了场次后游戏开了商店:金豆不够进这个场,点商店的返回后一回到场次页就停。 */
+        var outOfBeans = false
         var polls = 0
         var popupPolls = 0
         // 等牌桌按轮数和真实时间双算:轮数兜虚拟时钟(测试里真实时间不走),时间兜真机上的慢轮
@@ -1617,6 +1654,8 @@ internal object PhoneDdzTurn : PhoneTool {
         while (polls < START_TABLE_POLLS && now() - tableSince < START_TABLE_MS && popupPolls < POPUP_POLLS) {
             if (turn.stopped) return HumanEntry(null)
             val frame = page
+            // 结算页上的「春天」等特效单帧像认不出的弹窗:连着几帧都对上才算
+            val popupConfirmed = confirmUnknownPopup(frame, turn)
             if (frame != null) {
                 DdzFrameDump.seen(frame)
                 if (roomTapDump > 0 && --roomTapDump == 0) DdzFrameDump.dump("room_tap", frame, FULL_ROWS)
@@ -1668,9 +1707,10 @@ internal object PhoneDdzTurn : PhoneTool {
                 return HumanEntry(null, DdzSessionReason.BEANS_TOO_MANY)
             }
             // 金豆输光后冷启动开在商店的金豆页:这页只有左上角的返回箭头不花钱,只点它,别的一概不点;
-            // 连点几次还在这页就交还模型
+            // 连点几次还在这页就交还模型。点了场次才开商店的,是金豆不够进这个场:回到场次页就报错,绝不再点场次
             if (frame != null && DdzCards.humanShop(frame)) {
-                if (shopTapped++ >= HUMAN_SHOP_BACK_TAPS) return HumanEntry(null)
+                if (roomsTapped) outOfBeans = true
+                if (shopTapped++ >= HUMAN_SHOP_BACK_TAPS) return HumanEntry(null, if (outOfBeans) DdzSessionReason.BEANS_TOO_FEW else null)
                 if (!tapOnTheWay(ctx, turn, HUMAN_SHOP_BACK_X, HUMAN_SHOP_BACK_Y)) return HumanEntry(null)
                 polls++
                 waitOrSteer { delay(POLL_MS) } ?: return HumanEntry(null)
@@ -1706,6 +1746,8 @@ internal object PhoneDdzTurn : PhoneTool {
                     lobbyTapped = true
                 }
             } else if (frame != null && DdzCards.humanClassicRooms(frame)) {
+                // 点了场次后开的是商店:已经点过返回,回到这页就停,绝不再点场次、也不等到超时
+                if (outOfBeans) return HumanEntry(null, DdzSessionReason.BEANS_TOO_FEW)
                 if (!roomsTapped) {
                     // 点场次的诊断:哪天又进错了场,日志里能直接看到点的是哪个 room、哪个坐标
                     println("DDZTRACE room_tap room=${turn.requestedRoom ?: "normal"} x=$roomX y=$roomY")
@@ -1727,7 +1769,13 @@ internal object PhoneDdzTurn : PhoneTool {
                 page = ctx.screen.rawFrame(FULL_ROWS)
                 continue
             } else if (frame != null && DdzCards.unknownPopup(frame)) {
-                // 认不出的弹窗:不点,立刻交还模型
+                // 认不出的弹窗:不点;结算页上的「春天」等特效只盖住一两帧,连着几帧都对上才交还模型
+                if (!popupConfirmed) {
+                    polls++
+                    waitOrSteer { delay(POLL_MS) } ?: return HumanEntry(null)
+                    page = ctx.screen.rawFrame(FULL_ROWS)
+                    continue
+                }
                 return HumanEntry(null, DdzSessionReason.UNKNOWN_POPUP)
             }
             polls++
@@ -1819,6 +1867,18 @@ internal object PhoneDdzTurn : PhoneTool {
         else -> null
     }
 
+    /**
+     * 这一帧是不是连着第 [POPUP_CONFIRM_FRAMES] 帧「认不出的弹窗」。不是就清零:要的是同一判定连续几帧,
+     * 结算页上的「春天」等全屏特效只盖住一两帧,不能一帧就暂停。
+     */
+    private fun confirmUnknownPopup(frame: com.wangzan101.mika.core.uistate.RawFrame?, turn: Turn): Boolean {
+        if (frame == null || !DdzCards.unknownPopup(frame)) {
+            turn.popupSightings = 0
+            return false
+        }
+        return ++turn.popupSightings >= POPUP_CONFIRM_FRAMES
+    }
+
     /** Wait out one short transition before calling a human-table scene unknown. Returns the first
      * readable table frame, the first lobby/popup frame (nothing left to wait for), or null. */
     private suspend fun recoverHumanScene(ctx: ToolContext, turn: Turn): com.wangzan101.mika.core.uistate.RawFrame? {
@@ -1827,15 +1887,18 @@ internal object PhoneDdzTurn : PhoneTool {
         while (misses < HUMAN_SCENE_RETRY_POLLS && popupPolls < POPUP_POLLS) {
             waitOrSteer { delay(POLL_MS) } ?: return null
             val frame = ctx.screen.rawFrame(FULL_ROWS)
+            val popupConfirmed = confirmUnknownPopup(frame, turn)
+            val handoff = frame?.let(::humanHandoff)
             if (frame != null && DdzCards.classicHumanTable(frame)) {
                 if (DdzScreen.read(frame, classic = true).phase != DdzPhase.Other) return frame
-            } else if (frame != null && humanHandoff(frame) != DdzSessionReason.LOBBY_RETURN && clearPopup(ctx, turn, frame)) {
+            } else if (frame != null && handoff != DdzSessionReason.LOBBY_RETURN && clearPopup(ctx, turn, frame)) {
                 // 牌桌上盖着的广告:工具自己关掉再接着认
                 popupPolls++
                 misses = 0
                 continue
-            } else if (frame != null && humanHandoff(frame) != null) {
-                return frame
+            } else if (handoff != null) {
+                // 结算页上的「春天」等特效单帧像认不出的弹窗:连着几帧都对上才停
+                if (handoff != DdzSessionReason.UNKNOWN_POPUP || popupConfirmed) return frame
             }
             misses++
         }
@@ -1949,11 +2012,19 @@ internal object PhoneDdzTurn : PhoneTool {
         if (turn?.mode == DdzMode.Human) {
             if (!DdzCards.classicHumanTable(frame)) {
                 turn.humanEligible = false
-                // 大厅、弹窗是确定离开了牌桌,停下;认不出的单帧(出牌动画等)只报 null,停不停交给等待循环按帧数定
-                humanHandoff(frame)?.let { turn.reason = it; turn.state = DdzSessionState.Paused }
+                // 大厅、弹窗是确定离开了牌桌,停下;认不出的单帧(出牌动画、结算特效等)只报 null,
+                // 停不停交给等待循环按帧数定:认不出的弹窗要连着几帧都对上才算
+                val handoff = humanHandoff(frame)
+                if (handoff != null && (handoff != DdzSessionReason.UNKNOWN_POPUP || confirmUnknownPopup(frame, turn))) {
+                    turn.reason = handoff
+                    turn.state = DdzSessionState.Paused
+                } else if (handoff == null) {
+                    turn.popupSightings = 0
+                }
                 return null
             }
             turn.humanEligible = true
+            turn.popupSightings = 0
         }
         return DdzScreen.read(frame, classic = classicTable(turn))
     }
