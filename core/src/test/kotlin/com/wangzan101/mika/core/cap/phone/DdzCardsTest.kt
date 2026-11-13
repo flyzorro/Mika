@@ -192,6 +192,15 @@ class DdzCardsTest {
             DdzCards.play(RawFrame(image.width, image.height, rows), DdzSide.Right))
     }
 
+    @Test fun readsTheHumanRightPlayThatWrapsUnderItsLastCard() {
+        // Live 2026-11-13 16:02 土豪场 (human): Right's 888 777 55 44 filled one row of nine and the
+        // tenth (4♦) wrapped onto a second row under the last card. Only nine were read, so the play
+        // never passed the rules check and the hand went to the simple rules.
+        // 右家的出牌区贴着右边摆(整排右端 2074),第二排也贴着右边:第十张在第一排最后一张下面。
+        val frame = fullFrame("human_right_airplane10_wrapped")
+        assertEquals(DdzSeen.Cards("8 8 8 7 7 7 5 5 4 4".split(' ')), DdzCards.play(frame, DdzSide.Right))
+    }
+
     @Test fun aRowThatIsNotFullDoesNotGrowASecondRow() {
         // 八张一排、下面再画一块白的(像第二排):九张摆满之前不会换排,不能凭空多读一张
         val image = ImageIO.read(javaClass.getResourceAsStream("/ddz/single_left_straight_A_to_8_black_10.png")!!)

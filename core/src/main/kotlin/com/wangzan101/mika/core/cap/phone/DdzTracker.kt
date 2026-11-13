@@ -428,6 +428,13 @@ internal class DdzTracker(private val settling: DdzSettlingPolicy = DdzSettlingP
         return history[index] == cards
     }
 
+    /**
+     * 这一轮读到过牌、却一直没记下(张数对不上、不合牌规)。出牌区被清掉以后看到的「不出」是下一轮的,
+     * 不能当这一手记,也不能盖掉已经看到的那一手:照旧判漏,这一局交给简单规则。
+     */
+    private fun sawUnrecordedPlay(seat: DdzSeat): Boolean =
+        (lastSeen[seat] as? DdzSeen.Cards)?.ranks?.let { !samePlayAgain(seat, it) } ?: false
+
     private fun lastNonEmptyWasMine(): Boolean {
         val index = history.indexOfLast { it.isNotEmpty() }
         return index >= 0 && confirmedSeats.getOrNull(index) == DdzSeat.Me
@@ -467,7 +474,7 @@ internal class DdzTracker(private val settling: DdzSettlingPolicy = DdzSettlingP
             val guessed = seen is DdzSeen.Cards && seat != landlord && seen.ranks.any { it.startsWith(DdzCards.UNKNOWN) }
             // 剩的张数说这家出了几张:读到的张数对不上(还叠着、还没落下)、或者明明出了牌却像「不出」,都再等等
             val played = unplayed(seat)
-            if (seen == DdzSeen.Pass || (seen is DdzSeen.Cards && !guessed)) lastSeen[seat] = seen
+            if ((seen == DdzSeen.Pass && !sawUnrecordedPlay(seat)) || (seen is DdzSeen.Cards && !guessed)) lastSeen[seat] = seen
             // 读到的这一手不合牌规(单张压三带一之类,多半是认错了):不记,和「认不准」一样再等几帧
             val lastCards = (lastSeen[seat] as? DdzSeen.Cards)?.ranks
             val breaksRules = when {
@@ -495,8 +502,9 @@ internal class DdzTracker(private val settling: DdzSettlingPolicy = DdzSettlingP
                         record(seat, seen.ranks)
                     }
                 }
-                // 「不出」也一样:飞过来的牌缩在头像边上那一下,也会落在「不出」那一条里
-                seen == DdzSeen.Pass && (played == null || played == 0) -> {
+                // 「不出」也一样:飞过来的牌缩在头像边上那一下,也会落在「不出」那一条里。
+                // 这一轮读到过牌、却一直没记下时,清桌以后亮出来的「不出」是下一轮的,不能拿来记这一手
+                seen == DdzSeen.Pass && (played == null || played == 0) && !sawUnrecordedPlay(seat) -> {
                     if (!steady(seat to seen)) return
                     record(seat, emptyList())
                 }

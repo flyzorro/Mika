@@ -90,6 +90,45 @@ class DdzTrackerTest {
         assertTrue(tracker.ready())
     }
 
+    @Test fun aPlaySeenButNeverRecordedIsNotAPassWhenItsAreaClears() {
+        // Live 2026-11-13 16:02 土豪场 (human): Right led 888 777 55 44 but only nine cards were read
+        // (the tenth wrapped onto a second row), so the play never passed the rules check and was never
+        // recorded. Left's bomb then cleared the table and Right's 不出 for the bomb showed up: the
+        // tracker took it as Right's pass for the airplane, so the history lost the hand and DouZero
+        // failed (douzero_ambiguous_card). A 不出 that shows after the area was cleared belongs to the
+        // next trick; the unread play has to fail instead of being recorded as a pass.
+        tracker.restore(
+            DdzSeat.Left, bottom,
+            listOf(
+                listOf("3"), listOf("4"), listOf("5"), listOf("6"), emptyList(), emptyList(),
+                listOf("7"), emptyList(), listOf("A", "K", "Q", "J", "10"), emptyList(), emptyList(),
+            ),
+            DdzSeat.Right,
+        )
+        right = DdzSeen.Unsure
+        // 闹钟走到左家,右家的牌还在飞
+        see(DdzSeat.Left)
+        // 只读到九张:不合牌规,一直没记下
+        right = DdzSeen.Cards("8 8 8 7 7 7 5 5 4".split(' '))
+        repeat(4) { see(DdzSeat.Left) }
+        // 左家的炸弹还在落
+        left = DdzSeen.Unsure
+        see(null)
+        // 炸弹 6666 清桌(最后一张压着绶带)
+        left = DdzSeen.Cards(listOf("6", "6", "6", "?6,8,3"))
+        repeat(2) { see(DdzSeat.Me) }
+        // 轮到右家,出牌区空着
+        right = DdzSeen.Empty
+        repeat(2) { see(DdzSeat.Right) }
+        // 右家管不了炸弹:这是下一轮的「不出」
+        left = DdzSeen.Empty
+        right = DdzSeen.Pass
+        see(DdzSeat.Left)
+        // 不能把「不出」记成右家这一手:这一局判漏,交给简单规则
+        assertEquals("missed_play", tracker.broken)
+        assertEquals(listOf("A", "K", "Q", "J", "10"), tracker.history[tracker.confirmedSeats.lastIndexOf(DdzSeat.Right)])
+    }
+
     @Test fun playsBehindTheFrontAreRememberedAndSettledWhenTheClockMovesOn() {
         // Live 2026-11-12 12:50 (single-player classic): Right's SJ was recorded late; Left's 不出 then
         // showed for only two frames while Right's new 554433 sat behind it in the queue. When the clock
