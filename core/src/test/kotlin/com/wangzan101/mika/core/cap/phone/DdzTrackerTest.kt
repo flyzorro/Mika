@@ -110,14 +110,15 @@ class DdzTrackerTest {
         left = DdzSeen.Empty
         right = DdzSeen.Cards(listOf("5", "5", "4", "4", "3", "3"))
         see(DdzSeat.Left)
-        // 两家都过了、闹钟回到右家:以前这里直接 missed_play,右家的 554433 根本没读过
+        // 两家都过了、闹钟回到右家:以前这里直接 missed_play,右家的 554433 根本没读过。
+        // 现在 554433 记上了;闹钟又是回到刚出牌的右家、两家出牌区空着,这一轮后面的两次不出也一并记下
         right = DdzSeen.Empty
         see(DdzSeat.Right)
         assertNull(tracker.broken)
         assertEquals(
             listOf(
                 listOf("3"), emptyList(), emptyList(), listOf("2"), emptyList(), listOf("SJ"),
-                emptyList(), emptyList(), listOf("5", "5", "4", "4", "3", "3"),
+                emptyList(), emptyList(), listOf("5", "5", "4", "4", "3", "3"), emptyList(), emptyList(),
             ),
             tracker.history,
         )
@@ -665,5 +666,61 @@ class DdzTrackerTest {
             human.observe(DdzSeat.Left, { if (it == DdzSide.Right) right else DdzSeen.Empty }, { null })
         }
         assertEquals("unsure_right", human.broken)
+    }
+
+    @Test fun theClockComingBackToTheLastLeaderRecordsTheFastPasses() {
+        // 2026-11-13 08:39:26 大师场:地主(右家)出顺子 J109876,左家和我都要不起,闹钟一圈不到一秒又回到右家,
+        // 两家的出牌区一直空着(「不出」没读到);接着地主出 KKK8 时,advance 把左家还在等当成漏读、判了 missed_play。
+        val straight = listOf("J", "10", "9", "8", "7", "6")
+        tracker.restore(DdzSeat.Right, bottom, listOf(straight), DdzSeat.Left)
+        left = DdzSeen.Empty
+        right = DdzSeen.Empty
+        repeat(3) { see(DdzSeat.Right) }
+        assertNull(tracker.broken)
+        assertEquals(listOf(straight, emptyList(), emptyList()), tracker.history)
+        // 地主紧接着出 KKK8:闹钟右 → 左 → 右,两家又都秒过
+        right = DdzSeen.Cards(listOf("K", "K", "K", "8"))
+        repeat(3) { see(DdzSeat.Left) }
+        assertEquals(listOf("K", "K", "K", "8"), tracker.history.last())
+        right = DdzSeen.Empty
+        repeat(3) { see(DdzSeat.Right) }
+        assertNull(tracker.broken)
+        assertEquals(
+            listOf(straight, emptyList(), emptyList(), listOf("K", "K", "K", "8"), emptyList(), emptyList()),
+            tracker.history,
+        )
+    }
+
+    @Test fun aFastPassAfterAPendingPlayIsRecordedOnceTheClockSitsOnTheLeader() {
+        // 2026-11-13 08:42:45 同一场:地主(右家)出对 2,还没读稳,闹钟已经从右家转了一圈回到右家;
+        // 以前左家一直卡在 waiting 里,地主下一手时 advance 判 missed_play。
+        tracker.restore(
+            DdzSeat.Right, bottom,
+            listOf(listOf("K", "K"), emptyList(), emptyList()), DdzSeat.Right,
+        )
+        left = DdzSeen.Empty
+        right = DdzSeen.Cards(listOf("2", "2"))
+        see(DdzSeat.Left)    // 右家出对 2,牌还在飞;闹钟到左家
+        see(DdzSeat.Right)   // 闹钟左 → 右:左家和我都没要到
+        see(DdzSeat.Right)   // 对 2 读稳记下,同时把这一轮的两家不出按不出记下
+        assertNull(tracker.broken)
+        assertEquals(
+            listOf(listOf("K", "K"), emptyList(), emptyList(), listOf("2", "2"), emptyList(), emptyList()),
+            tracker.history,
+        )
+    }
+
+    @Test fun anUnreadableMiddleSeatStillFailsAsMissedPlay() {
+        // 闹钟回到地主,可左家的出牌区一直认不准(可能真出了一手):不能当成不出,照旧判漏、不记没读到的牌
+        val straight = listOf("J", "10", "9", "8", "7", "6")
+        tracker.restore(DdzSeat.Right, bottom, listOf(straight), DdzSeat.Left)
+        left = DdzSeen.Unsure
+        right = DdzSeen.Empty
+        see(DdzSeat.Right)   // 左家读不准:不推成不出
+        assertNull(tracker.broken)
+        see(DdzSeat.Left)
+        see(DdzSeat.Right)   // 闹钟又转过左家:左家还卡在队头,判漏
+        assertEquals("missed_play", tracker.broken)
+        assertEquals(listOf(straight), tracker.history)
     }
 }

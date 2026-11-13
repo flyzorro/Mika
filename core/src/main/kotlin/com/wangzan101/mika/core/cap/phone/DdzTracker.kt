@@ -135,6 +135,8 @@ internal class DdzTracker(private val settling: DdzSettlingPolicy = DdzSettlingP
         // 我方先出且上一手有效牌是我出的,轮到我前的每家都只能是不出;不等出牌区读稳
         inferOwnLeadPasses(turn, leading)
         resolve(seen)
+        // 闹钟已经在这个最后出牌的人这里(没有走动的这一步):中间各家都空着就是都不出
+        if (turn != null && turn == active && inferPassesToLeader(turn, read)) resolve(seen)
         // 张数少了的那家出过牌了:闹钟还没离开他(出得太快、清桌太快)也当他这一手出完,马上读
         for (seat in listOf(DdzSeat.Left, DdzSeat.Right)) {
             if (active != DdzSeat.Me && waiting.none { it.first == seat } && (unplayed(seat) ?: 0) > 0 && reaches(seat)) {
@@ -147,6 +149,41 @@ internal class DdzTracker(private val settling: DdzSettlingPolicy = DdzSettlingP
         advance(turn)
         inferOwnLeadPasses(turn, leading)
         resolve(seen)
+        if (inferPassesToLeader(turn, read)) resolve(seen)
+    }
+
+    /**
+     * 闹钟回到这一轮最后出牌的那一家,中间各家的出牌区都空着或写着「不出」:他们都要不起,按不出记下,不判漏。
+     * 真人桌上两家的「不出」一闪就没了(一整圈不到一秒),等不到读数,再等下去就会把下一手的牌当成漏读。
+     * 只在能确定的时候推:最后一手确实是这家出的([trickLeaderSeat]),中间各家都没读到新的一手(Empty 或 Pass),
+     * 手上也没有这一轮读到过的新牌。别的情况照旧交给 [resolve]/[advance] 判漏。
+     */
+    private fun inferPassesToLeader(turn: DdzSeat?, read: (DdzSide) -> DdzSeen): Boolean {
+        if (turn == null || turn != trickLeaderSeat()) return false
+        // 领出的人也还在等:他手上可能有一手没记下的新牌,不能替他按不出
+        if (waiting.isEmpty() || waiting.any { it.first == turn }) return false
+        for ((seat, _) in waiting) {
+            if (seat == DdzSeat.Me) continue
+            val seen = read(if (seat == DdzSeat.Left) DdzSide.Left else DdzSide.Right)
+            if (seen != DdzSeen.Empty && seen != DdzSeen.Pass) return false
+            // 已经读到过他的什么(「不出」亮过一帧、或者一手牌又清掉了):交给 resolve,这里不替他推
+            if (lastSeen[seat] != null) return false
+        }
+        while (waiting.isNotEmpty()) {
+            val (seat, _) = waiting.removeFirst()
+            record(seat, emptyList())
+            lastSeen -= seat
+        }
+        return true
+    }
+
+    /** 这一轮还没人管的那手牌是谁出的;两次「不出」之后、或者还没人出牌时为 null。 */
+    private fun trickLeaderSeat(): DdzSeat? {
+        val index = history.indexOfLast { it.isNotEmpty() }
+        if (index < 0) return null
+        // 这一手之后已经两家都不出:这一轮结束了,接下来是新的领出
+        if (history.size - index - 1 >= 2) return null
+        return confirmedSeats.getOrNull(index)
     }
 
     /**
@@ -231,6 +268,9 @@ internal class DdzTracker(private val settling: DdzSettlingPolicy = DdzSettlingP
 
     /** 轮到自己时能不能交给 DouZero:别家的都读到了、历史没断。 */
     fun ready(): Boolean = broken == null && landlord != null && waiting.isEmpty() && active == DdzSeat.Me
+
+    /** 这家最近两帧都一样的剩牌张数;读不到为 null。这一局记不下去了也可能还留着上一次的读数。 */
+    internal fun seatCount(seat: DdzSeat): Int? = count[seat]
 
     /** Install a complete, already validated visible history without observing a new frame. */
     internal fun restore(landlord: DdzSeat, bottom: List<String>, moves: List<List<String>>, current: DdzSeat = landlord) {
