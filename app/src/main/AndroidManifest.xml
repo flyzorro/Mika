@@ -127,6 +127,11 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <!-- 覆盖磁贴长按的系统默认应用详情页，直接回到 Mika。 -->
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE_PREFERENCES" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
             <!-- 系统分享只进入现有对话页的草稿;文字、链接或一张内容图片都不会自动执行。 -->
             <intent-filter>
                 <action android:name="android.intent.action.SEND" />
@@ -139,6 +144,14 @@
                 <data android:mimeType="image/*" />
             </intent-filter>
         </activity>
+
+        <activity
+            android:name=".self.SelfNotificationActivity"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:noHistory="true"
+            android:taskAffinity=""
+            android:theme="@android:style/Theme.NoDisplay" />
 
         <!-- 通知里接管按钮的落点:从通知启动 Activity 才会收起通知栏,让用户直接看到挪到主屏的 App -->
         <activity
@@ -185,6 +198,18 @@
             android:taskAffinity=""
             android:windowSoftInputMode="stateHidden" />
 
+        <!-- Android Quick Settings binds this service; ordinary apps cannot toggle the capsule through it. -->
+        <service android:name=".capsule.CapsuleTileService"
+            android:enabled="false"
+            android:exported="true"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE"
+            android:label="@string/capsule_tile_label"
+            android:icon="@drawable/ic_notification">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
+
         <service
             android:name=".a11y.MikaAccessibilityService"
             android:exported="true"
@@ -196,6 +221,24 @@
             <meta-data
                 android:name="android.accessibilityservice"
                 android:resource="@xml/accessibility_service" />
+        </service>
+
+        <!-- 主动能力(实验):默认停用,第一次打开功能时由 ProactiveRuntime 启用,系统「通知使用权」列表里才出现;
+             之后关掉功能只解绑、不再停用(组件一停用系统就收回使用权)。
+             exported=false 与 NotificationListenerService 文档里的清单示例一致(系统按 BIND_NOTIFICATION_LISTENER_SERVICE 绑定);
+             只滤掉常驻通知,不滤静默通知(用户常把微信设成静默)。 -->
+        <service
+            android:name=".proactive.NoticeListenerService"
+            android:enabled="false"
+            android:exported="false"
+            android:label="@string/app_name"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.service.notification.disabled_filter_types"
+                android:value="ongoing" />
         </service>
 
         <service
@@ -331,6 +374,15 @@
             </intent-filter>
         </receiver>
         <receiver android:name=".task.TriggerAlarmReceiver" android:exported="false" />
+
+        <!-- 外部脚本建任务的广播入口:对外开放(无权限),由「允许外部脚本建任务」开关 + 每分钟限流 + 来源标记把关 -->
+        <receiver
+            android:name=".task.ExternalScheduleReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="com.wangzan101.mika.SCHEDULE" />
+            </intent-filter>
+        </receiver>
         <receiver android:name=".teach.TeachReceiver" android:exported="false" />
     </application>
 
