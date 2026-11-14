@@ -2695,10 +2695,12 @@ class PhoneDdzTurnTest {
         assertEquals("不加倍 is the first (blue) button", listOf(DdzScreen.read(double).buttons[0].let { it.x to it.y }), game.taps)
     }
 
-    /** 加倍画面三个按钮:蓝「不加倍」、黄「加倍」、绿「超级加倍」。DouZero 说值就点黄色,绝不点绿色。 */
-    @Test fun humanDoublesOnTheYellowButtonAndNeverTheGreenSuperDouble() = runTest {
+    /**
+     * 地主的加倍画面只有蓝「不加倍」、黄「加倍」(2026-11-14 11:52 真机,底牌 7 2 J)。DouZero 说值就点黄色。
+     */
+    @Test fun humanLandlordDoublesOnTheYellowButton() = runTest {
         val call = full("call")
-        val double = full("double")
+        val double = full("double_landlord_20")
         val view = DdzScreen.read(double, classic = true)
         val asked = mutableListOf<Triple<String, List<String>, List<String>>>()
         val savedBid = PhoneDdzTurn.adviseBid
@@ -2706,7 +2708,7 @@ class PhoneDdzTurnTest {
         PhoneDdzTurn.adviseBid = { _, _ -> PhoneDdzTurn.BidAdvice(3) }
         PhoneDdzTurn.adviseDouble = { _, seat, hand, bottom ->
             asked += Triple(seat, hand, bottom)
-            PhoneDdzTurn.DoubleAdvice(true, 0.83)
+            PhoneDdzTurn.DoubleAdvice(true, 0.93)
         }
         try {
             val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(call, call, call, double)))
@@ -2719,13 +2721,43 @@ class PhoneDdzTurnTest {
             assertEquals(result.content.toString(), "double", result.text("phase"))
             assertNull("加倍时不暂停: ${result.content}", result.text("reason"))
             val yellow = view.buttons.single { it.color == DdzColor.Yellow }
-            val green = view.buttons.single { it.color == DdzColor.Green }
             assertEquals("点了黄色的「加倍」", yellow.x to yellow.y, game.taps[1])
-            assertTrue("绝不点绿色的「超级加倍」: ${game.taps}", (green.x to green.y) !in game.taps)
             assertEquals(1, asked.size)
-            assertEquals("landlord_up", asked.single().first)
-            assertEquals(DdzCards.hand(double, view), asked.single().second)
-            assertEquals(listOf("K", "Q", "8"), asked.single().third)
+            assertEquals("landlord", asked.single().first)
+            assertEquals(20, asked.single().second.size)
+            assertEquals(listOf("7", "2", "J"), asked.single().third)
+        } finally {
+            PhoneDdzTurn.adviseBid = savedBid
+            PhoneDdzTurn.adviseDouble = savedDouble
+        }
+    }
+
+    /**
+     * 农民绝不加倍(2026-11-14 12:01 精英场:农民 0.93 加倍,地主两个炸弹,一局输光 219 万)。
+     * 农民的加倍画面三个按钮:蓝「不加倍」、黄「加倍」、绿「超级加倍」:不问服务,点蓝色。
+     */
+    @Test fun humanFarmerNeverDoubles() = runTest {
+        val call = full("call")
+        val double = full("double")
+        val view = DdzScreen.read(double, classic = true)
+        var asked = 0
+        val savedBid = PhoneDdzTurn.adviseBid
+        val savedDouble = PhoneDdzTurn.adviseDouble
+        PhoneDdzTurn.adviseBid = { _, _ -> PhoneDdzTurn.BidAdvice(3) }
+        PhoneDdzTurn.adviseDouble = { _, _, _, _ -> asked++; PhoneDdzTurn.DoubleAdvice(true, 0.93) }
+        try {
+            val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(call, call, call, double)))
+            val result = PhoneDdzTurn.execute(
+                Args(PhoneDdzTurn.def, Json.parseToJsonElement(
+                    """{"action":"start","mode":"human","auto":true,"advisor":"http://mac:3426"}"""
+                ).jsonObject),
+                toolDispatcher(game).ctx,
+            )
+            assertEquals(result.content.toString(), "double", result.text("phase"))
+            assertNull("加倍时不暂停: ${result.content}", result.text("reason"))
+            val blue = view.buttons.single { it.color == DdzColor.Blue }
+            assertEquals("农民点蓝色的「不加倍」", blue.x to blue.y, game.taps[1])
+            assertEquals("农民不问加倍服务", 0, asked)
         } finally {
             PhoneDdzTurn.adviseBid = savedBid
             PhoneDdzTurn.adviseDouble = savedDouble
@@ -2788,11 +2820,11 @@ class PhoneDdzTurnTest {
 
     @Test fun theHumanDoubleLogsADdzTraceLine() = runTest {
         val call = full("call")
-        val double = full("double")
+        val double = full("double_landlord_20")
         val savedBid = PhoneDdzTurn.adviseBid
         val savedDouble = PhoneDdzTurn.adviseDouble
         PhoneDdzTurn.adviseBid = { _, _ -> PhoneDdzTurn.BidAdvice(3) }
-        PhoneDdzTurn.adviseDouble = { _, _, _, _ -> PhoneDdzTurn.DoubleAdvice(true, 0.83) }
+        PhoneDdzTurn.adviseDouble = { _, _, _, _ -> PhoneDdzTurn.DoubleAdvice(true, 0.93) }
         val out = ByteArrayOutputStream()
         val old = System.out
         try {
@@ -2811,9 +2843,9 @@ class PhoneDdzTurnTest {
         }
         val log = out.toString()
         assertTrue(log, log.lines().any { it.contains("DDZTRACE double") })
-        assertTrue(log, log.contains("seat=landlord_up"))
+        assertTrue(log, log.contains("seat=landlord "))
         assertTrue(log, log.contains("source=douzero"))
-        assertTrue(log, log.contains("win=0.83"))
+        assertTrue(log, log.contains("win=0.93"))
         assertTrue(log, log.contains("pressed=double"))
     }
 

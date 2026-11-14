@@ -261,17 +261,11 @@ internal object PhoneDdzTurn : PhoneTool {
             "win=${advice?.win} pressed=$pressed")
 
     /**
-     * 加倍时自己在 DouZero 里的座位:手里 20 张就是地主;17 张是农民,两家农民的赢面一样,
-     * 还认不出上家下家就按上家问。手牌或底牌认不全为 null,不问服务。
+     * 只有地主才加倍:手里认全 20 张(含底牌)、底牌认全才是 "landlord",别的(农民、认不全)为 null,不问服务也不加倍。
+     * 农民不加倍:2026-11-14 精英场农民赢面 0.93 加倍,地主两个炸弹,一局输光 219 万。
      */
-    private fun doubleSeat(turn: Turn, hand: List<String>?, bottom: List<String>?, handCount: Int): String? {
-        if (hand == null || bottom == null || bottom.size != 3 || hand.size != handCount) return null
-        return when (hand.size) {
-            20 -> "landlord"
-            17 -> turn.tracker?.takeIf { it.landlord != null }?.seat() ?: "landlord_up"
-            else -> null
-        }
-    }
+    private fun doubleSeat(hand: List<String>?, bottom: List<String>?, handCount: Int): String? =
+        "landlord".takeIf { hand != null && bottom?.size == 3 && hand.size == handCount && hand.size == 20 }
 
     override val verb = Verb.PhoneGame
     override val risk = Risk.Write
@@ -1444,13 +1438,13 @@ internal object PhoneDdzTurn : PhoneTool {
                             val hand = DdzCards.hand(frame, view)
                             // 底牌在加倍时通常已经翻开;认不出就不加倍(和手牌认不出一样保守),不停下。
                             val bottom = DdzCards.bottom(frame)
-                            val seat = doubleSeat(turn, hand, bottom, view.handCount)
+                            val seat = doubleSeat(hand, bottom, view.handCount)
                             // 手牌、底牌、座位都认全才问服务;连不上/超时/认不全就不加倍,不暂停。
                             val advice = if (hand != null && bottom != null && seat != null) {
                                 turn.advisor?.let { url -> runCatching { adviseDouble(url, seat, hand, bottom) }.getOrNull() }
                             } else null
-                            // 服务说加才加;服务不可用时退回保守规则,但它满足时也只点黄色「加倍」。
-                            val double = advice?.double ?: (hand != null && bottom != null && HumanDdzPolicy.shouldDouble(hand, bottom))
+                            // 只有地主才加倍。服务说加才加;服务不可用时退回保守规则,但它满足时也只点黄色「加倍」。
+                            val double = hand != null && bottom != null && seat != null && (advice?.double ?: HumanDdzPolicy.shouldDouble(hand, bottom))
                             // 只按颜色找黄色「加倍」:绝不点绿色「超级加倍」。该加但找不到黄色、或本就不该加,都点蓝色「不加倍」。
                             val yellow = if (double) view.buttons.lastOrNull { it.color == DdzColor.Yellow } else null
                             val button = yellow ?: view.buttons.firstOrNull { it.color == DdzColor.Blue }
