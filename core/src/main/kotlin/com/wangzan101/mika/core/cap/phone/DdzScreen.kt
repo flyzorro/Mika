@@ -172,8 +172,15 @@ internal object DdzScreen {
 
     private fun buttons(frame: RawFrame, y: Int): List<DdzButton> = DdzColor.entries.flatMap { color ->
         runs(frame.width, gap = 30, minWidth = MIN_BUTTON) { color(frame.pixel(it, y)) == color }
+            // 自己刚出的一排明牌横跨按钮行:牌面是白的、牌间灰影很窄,但 gap 会把它们连成一段"灰按钮"。
+            // 真灰按钮这一行是一整块实色(文字都在扫描行上下),灰至少占这段的一半才算。
+            .filter { color != DdzColor.Gray || solid(frame, it, y, color) }
             .map { DdzButton(it.first, it.last, y + BUTTON_TAP_DY, color) }
     }.sortedBy { it.left }
+
+    /** 这段里有几成是 [color]:牌面排成一行时只有牌间的窄灰影,真按钮是一整块。 */
+    private fun solid(frame: RawFrame, span: IntRange, y: Int, color: DdzColor): Boolean =
+        span.count { color(frame.pixel(it, y)) == color } * 2 >= span.last - span.first + 1
 
     private fun color(argb: Int): DdzColor? {
         val r = argb shr 16 and 0xff
