@@ -1504,7 +1504,15 @@ internal object PhoneDdzTurn : PhoneTool {
                     else -> if (left || view.phase != from || (turn.mode == DdzMode.Human && !turn.humanActionSeen)) {
                         if (turn.mode == DdzMode.Human) {
                             when (byHuman(ctx, turn, frame, view)) {
-                                Auto.Played -> { left = false; turn.humanActionSeen = true; budget = polls }
+                                Auto.Played -> {
+                                    left = false
+                                    turn.humanActionSeen = true
+                                    budget = polls
+                                    // 自己这一手(出牌或不出)确认了就是新的决定:等别家读稳的窗口从头算。
+                                    // phase 在主循环看来可能还是 Follow(出牌那几帧被 submit 自己读了),不重开就会拿上一手的起点判漏
+                                    turn.humanSettling = 0
+                                    turn.settleSince = now()
+                                }
                                 Auto.Settling -> Unit
                                 Auto.Off -> return view
                             }
@@ -2219,5 +2227,8 @@ internal object PhoneDdzTurn : PhoneTool {
         return picked
     }
 
-    private fun now() = System.currentTimeMillis()
+    /** 当前时间;测试里换成虚拟时钟,好让「等别家读稳」的窗口按测试时间走。 */
+    internal var clock: () -> Long = System::currentTimeMillis
+
+    private fun now() = clock()
 }
