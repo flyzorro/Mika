@@ -2146,6 +2146,36 @@ class PhoneDdzTurnTest {
         }
     }
 
+    @Test fun humanAutoStartClearsTheBronzeRankPopupThenLeavesTheResultScreen() = runTest {
+        // 2026-11-14 13:00:新号青铜升段,正中徽章是青铜菱形、没有绿梅花,rankPopup 认不出,start 回了 unknown_popup。
+        // 现在按和段位无关的特征认出它:先点橙色「确定」(绝不点绿色「炫耀一下」),再照原来的流程离开 → 场次页 → 普通场。
+        val rank = shot("rank_up_bronze_on_result")
+        val rank2 = shot("rank_up_bronze_on_result_2")
+        val result = shot("human_result_leave_change_continue")
+        val rooms = shot("human_classic_rooms")
+        val call = full("call")
+        val confirm = DdzCards.rankPopup(rank)
+        val leave = DdzCards.humanResultLeave(result)
+        assertTrue("橙色「确定」: $confirm", confirm!!.first in 1440..1475 && confirm.second == 852)
+        assertTrue("绿色「离开」: $leave", leave!!.first in 1010..1300 && leave.second in 785..882)
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(
+            rank, rank2, result, result, rooms, call, call, call, lobbyFrame("vd_lobby"),
+        )))
+        val dispatcher = toolDispatcher(game)
+        val savedBid = PhoneDdzTurn.adviseBid
+        PhoneDdzTurn.adviseBid = { _, _ -> PhoneDdzTurn.BidAdvice(0) }
+        try {
+            val started = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","auto":true,"advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
+            assertNull(started.toString(), started.text("error"))
+            // 两帧确认后只点一次「确定」,然后离开 → 场次页 → 普通场
+            assertEquals(listOf(confirm, leave, 872 to 400), game.taps.take(3))
+            assertEquals("「确定」只点一下", 1, game.taps.count { it == confirm })
+            assertTrue("一下都不点绿色「炫耀一下」: ${game.taps}", game.taps.none { (x, y) -> y in 790..910 && x in 760..1140 })
+        } finally {
+            PhoneDdzTurn.adviseBid = savedBid
+        }
+    }
+
     @Test fun humanAutoStartAcknowledgesThePrivilegePopupThenLeavesTheResultScreen() = runTest {
         // 2026-11-14 09:58:第 2 局打完,结算页上弹出「至尊特权升级」。以前认不出,start 回 unknown_scene,三局连打卡在第 2 局。
         // 现在只点蓝色「我知道了」(绝不点橙色「查看更多特权」),再照原来的流程点绿色「离开」、场次页点普通场。

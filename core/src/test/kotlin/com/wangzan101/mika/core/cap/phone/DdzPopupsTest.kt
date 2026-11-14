@@ -126,11 +126,18 @@ class DdzPopupsTest {
         }
     }
 
+    /** 2026-11-14:青铜段位也是同一个段位提升弹窗,正中徽章是青铜菱形(没有绿梅花),同样只点右边的橙色「确定」。 */
+    @Test fun aBronzeRankUpPopupIsConfirmedAtTheRightButtonToo() {
+        for (name in listOf("rank_up_bronze_on_result", "rank_up_bronze_on_result_2")) {
+            assertEquals(name, 1458 to 852, DdzCards.rankPopup(frame(name)))
+        }
+    }
+
     /** 结算页、真人场次页、救济金、大厅本身都不是段位弹窗。 */
     @Test fun plainScreensAreNeverRankPopups() {
         for (name in listOf(
             "human_result_leave_change_continue", "human_classic_rooms", "popup_relief_two_buttons",
-            "popup_relief_video_only", "popup_classic_lobby",
+            "popup_relief_video_only", "popup_classic_lobby", "single_gift_pack_ad_over_result",
         )) {
             assertNull(name, DdzCards.rankPopup(frame(name)))
         }
