@@ -365,6 +365,11 @@ class DdzCardsTest {
         assertNull(DdzCards.bottom(fullFrame("counter_call_2")))
     }
 
+    @Test fun readsTheBottomCardsRevealedAtDoubling() {
+        // 加倍时三张底牌放大摆在牌桌上方正中(2026-11-14 的 double.jpg:K Q 8)
+        assertEquals(listOf("K", "Q", "8"), DdzCards.bottom(fullFrame("double")))
+    }
+
     @Test fun seesWhoseTurnItIs() {
         assertEquals(DdzSide.Right, DdzCards.clock(frame("table_left55")))
         assertEquals(DdzSide.Left, DdzCards.clock(frame("table_rightKK")))

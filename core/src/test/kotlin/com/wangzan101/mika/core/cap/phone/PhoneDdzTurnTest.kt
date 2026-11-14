@@ -37,8 +37,11 @@ import java.io.PrintStream
 import javax.imageio.ImageIO
 
 class PhoneDdzTurnTest {
-    /** 叫分默认不连网:服务连不上,按牌力的老规则叫。 */
-    @org.junit.Before fun noBidService() { PhoneDdzTurn.adviseBid = { _, _ -> null } }
+    /** 叫分、加倍默认不连网:服务连不上,按牌力的老规则叫、不加倍。 */
+    @org.junit.Before fun noBidService() {
+        PhoneDdzTurn.adviseBid = { _, _ -> null }
+        PhoneDdzTurn.adviseDouble = { _, _, _, _ -> null }
+    }
 
     private fun frame(name: String): RawFrame {
         val image = ImageIO.read(javaClass.getResourceAsStream("/ddz/$name.jpg")!!)
@@ -2690,6 +2693,128 @@ class PhoneDdzTurnTest {
         val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","auto":true,"advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
         assertNull(result.toString(), result.text("reason"))
         assertEquals("不加倍 is the first (blue) button", listOf(DdzScreen.read(double).buttons[0].let { it.x to it.y }), game.taps)
+    }
+
+    /** 加倍画面三个按钮:蓝「不加倍」、黄「加倍」、绿「超级加倍」。DouZero 说值就点黄色,绝不点绿色。 */
+    @Test fun humanDoublesOnTheYellowButtonAndNeverTheGreenSuperDouble() = runTest {
+        val call = full("call")
+        val double = full("double")
+        val view = DdzScreen.read(double, classic = true)
+        val asked = mutableListOf<Triple<String, List<String>, List<String>>>()
+        val savedBid = PhoneDdzTurn.adviseBid
+        val savedDouble = PhoneDdzTurn.adviseDouble
+        PhoneDdzTurn.adviseBid = { _, _ -> PhoneDdzTurn.BidAdvice(3) }
+        PhoneDdzTurn.adviseDouble = { _, seat, hand, bottom ->
+            asked += Triple(seat, hand, bottom)
+            PhoneDdzTurn.DoubleAdvice(true, 0.83)
+        }
+        try {
+            val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(call, call, call, double)))
+            val result = PhoneDdzTurn.execute(
+                Args(PhoneDdzTurn.def, Json.parseToJsonElement(
+                    """{"action":"start","mode":"human","auto":true,"advisor":"http://mac:3426"}"""
+                ).jsonObject),
+                toolDispatcher(game).ctx,
+            )
+            assertEquals(result.content.toString(), "double", result.text("phase"))
+            assertNull("加倍时不暂停: ${result.content}", result.text("reason"))
+            val yellow = view.buttons.single { it.color == DdzColor.Yellow }
+            val green = view.buttons.single { it.color == DdzColor.Green }
+            assertEquals("点了黄色的「加倍」", yellow.x to yellow.y, game.taps[1])
+            assertTrue("绝不点绿色的「超级加倍」: ${game.taps}", (green.x to green.y) !in game.taps)
+            assertEquals(1, asked.size)
+            assertEquals("landlord_up", asked.single().first)
+            assertEquals(DdzCards.hand(double, view), asked.single().second)
+            assertEquals(listOf("K", "Q", "8"), asked.single().third)
+        } finally {
+            PhoneDdzTurn.adviseBid = savedBid
+            PhoneDdzTurn.adviseDouble = savedDouble
+        }
+    }
+
+    @Test fun humanDeclinesOnTheBlueButtonWhenDouZeroSaysNotToDouble() = runTest {
+        val call = full("call")
+        val double = full("double")
+        val view = DdzScreen.read(double, classic = true)
+        val savedBid = PhoneDdzTurn.adviseBid
+        val savedDouble = PhoneDdzTurn.adviseDouble
+        PhoneDdzTurn.adviseBid = { _, _ -> PhoneDdzTurn.BidAdvice(3) }
+        PhoneDdzTurn.adviseDouble = { _, _, _, _ -> PhoneDdzTurn.DoubleAdvice(false, 0.41) }
+        try {
+            val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(call, call, call, double)))
+            val result = PhoneDdzTurn.execute(
+                Args(PhoneDdzTurn.def, Json.parseToJsonElement(
+                    """{"action":"start","mode":"human","auto":true,"advisor":"http://mac:3426"}"""
+                ).jsonObject),
+                toolDispatcher(game).ctx,
+            )
+            assertEquals(result.content.toString(), "double", result.text("phase"))
+            assertNull("加倍服务说不加也不暂停: ${result.content}", result.text("reason"))
+            val blue = view.buttons.single { it.color == DdzColor.Blue }
+            val green = view.buttons.single { it.color == DdzColor.Green }
+            assertEquals("点了蓝色的「不加倍」", blue.x to blue.y, game.taps[1])
+            assertTrue("绝不点绿色的「超级加倍」: ${game.taps}", (green.x to green.y) !in game.taps)
+        } finally {
+            PhoneDdzTurn.adviseBid = savedBid
+            PhoneDdzTurn.adviseDouble = savedDouble
+        }
+    }
+
+    @Test fun humanDeclinesOnTheBlueButtonWhenTheDoubleServiceIsUnreachable() = runTest {
+        val call = full("call")
+        val double = full("double")
+        val view = DdzScreen.read(double, classic = true)
+        val savedBid = PhoneDdzTurn.adviseBid
+        val savedDouble = PhoneDdzTurn.adviseDouble
+        PhoneDdzTurn.adviseBid = { _, _ -> PhoneDdzTurn.BidAdvice(3) }
+        PhoneDdzTurn.adviseDouble = { _, _, _, _ -> null }
+        try {
+            val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(call, call, call, double)))
+            val result = PhoneDdzTurn.execute(
+                Args(PhoneDdzTurn.def, Json.parseToJsonElement(
+                    """{"action":"start","mode":"human","auto":true,"advisor":"http://mac:3426"}"""
+                ).jsonObject),
+                toolDispatcher(game).ctx,
+            )
+            assertEquals(result.content.toString(), "double", result.text("phase"))
+            assertNull("服务连不上不暂停: ${result.content}", result.text("reason"))
+            val blue = view.buttons.single { it.color == DdzColor.Blue }
+            assertEquals("服务连不上就点蓝色的「不加倍」", blue.x to blue.y, game.taps[1])
+        } finally {
+            PhoneDdzTurn.adviseBid = savedBid
+            PhoneDdzTurn.adviseDouble = savedDouble
+        }
+    }
+
+    @Test fun theHumanDoubleLogsADdzTraceLine() = runTest {
+        val call = full("call")
+        val double = full("double")
+        val savedBid = PhoneDdzTurn.adviseBid
+        val savedDouble = PhoneDdzTurn.adviseDouble
+        PhoneDdzTurn.adviseBid = { _, _ -> PhoneDdzTurn.BidAdvice(3) }
+        PhoneDdzTurn.adviseDouble = { _, _, _, _ -> PhoneDdzTurn.DoubleAdvice(true, 0.83) }
+        val out = ByteArrayOutputStream()
+        val old = System.out
+        try {
+            System.setOut(PrintStream(out))
+            val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(call, call, call, double)))
+            PhoneDdzTurn.execute(
+                Args(PhoneDdzTurn.def, Json.parseToJsonElement(
+                    """{"action":"start","mode":"human","auto":true,"advisor":"http://mac:3426"}"""
+                ).jsonObject),
+                toolDispatcher(game).ctx,
+            )
+        } finally {
+            System.setOut(old)
+            PhoneDdzTurn.adviseBid = savedBid
+            PhoneDdzTurn.adviseDouble = savedDouble
+        }
+        val log = out.toString()
+        assertTrue(log, log.lines().any { it.contains("DDZTRACE double") })
+        assertTrue(log, log.contains("seat=landlord_up"))
+        assertTrue(log, log.contains("source=douzero"))
+        assertTrue(log, log.contains("win=0.83"))
+        assertTrue(log, log.contains("pressed=double"))
     }
 
     @Test fun humanLoopWaitsWhenNoClockIsReadable() = runTest {

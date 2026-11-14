@@ -116,7 +116,19 @@ internal object DdzCards {
         counterBottom(frame)?.let { return it }
         val (bar, k) = content(frame)
         val cards = strip(frame, bar + (1050 * k).toInt(), bar + (1380 * k).toInt(), 5, 105, pitch = 44 * k, width = 57 * k,
-            glyphRows = 46, glyphWidth = (32 * k).toInt(), k = k, minRows = 60, sure = BOTTOM_SURE, margin = BOTTOM_MARGIN) ?: return null
+            glyphRows = 46, glyphWidth = (32 * k).toInt(), k = k, minRows = 60, sure = BOTTOM_SURE, margin = BOTTOM_MARGIN)
+        cards?.map { it.rank }?.takeIf { it.size == 3 && it.all { r -> r != null } }?.let { return it.map { r -> r!! } }
+        return revealedBottom(frame, bar, k)
+    }
+
+    /**
+     * 叫完地主、加倍时,三张底牌会放大摆在牌桌上方正中(K Q 8 这一帧):牌面从 120 行到约 290 行,
+     * 三张牌宽约 123、间距约 135,整排以内容区居中。认不出为 null。
+     */
+    private fun revealedBottom(frame: RawFrame, bar: Int, k: Double): List<String>? {
+        val cards = strip(frame, bar + (953 * k).toInt(), bar + (1347 * k).toInt(), 120, 310, pitch = 135 * k, width = 123 * k,
+            glyphRows = 60, glyphWidth = (56 * k).toInt(), k = k, minRows = 60, sure = BOTTOM_SURE, margin = BOTTOM_MARGIN,
+            probeNearBottom = true, gap = 20, spanAll = true) ?: return null
         return cards.map { it.rank }.takeIf { it.size == 3 && it.all { r -> r != null } }?.map { it!! }
     }
 
@@ -868,6 +880,7 @@ internal object DdzCards {
         k: Double, minRows: Int = 100, sure: Double = SURE, margin: Double = MARGIN, probeNearBottom: Boolean = false,
         wideLast: Int? = null, wrapDy: Int? = null, tailDy: Int? = null, wrapBelow: Int = WRAP_BELOW,
         wrapFull: Boolean = false, wrapWhite: Int = 100, probeTop: Int? = null,
+        gap: Int = 12, spanAll: Boolean = false,
     ): List<Read>? {
         val right = minOf(x1, frame.width)
         fun white(x: Int, y: Int) = frame.pixel(x, y).let { p -> min(p) > 190 && spread(p) < 45 }
@@ -889,7 +902,9 @@ internal object DdzCards {
         val probes = if (probeNearBottom) listOf(top + 5, bottom - 10, bottom - 30)
         else listOfNotNull(top + 10, top + 20, minOf(top + minRows, y1 - 1), probeTop?.let { top + it }, minOf(top + CARD_FOOT, y1 - 1))
         val span = probes.mapNotNull { probe ->
-            DdzScreen.runs(right - x0, gap = 12, minWidth = 40) { white(x0 + it, probe) }.maxByOrNull { it.last - it.first }
+            val found = DdzScreen.runs(right - x0, gap = gap, minWidth = 40) { white(x0 + it, probe) }
+            // 底牌放大摆开时三张牌中间隔着桌布:按最左到最右的整排宽度数张数,不能只取最宽的一张
+            if (spanAll && found.size > 1) found.first().first..found.last().last else found.maxByOrNull { it.last - it.first }
         }.maxByOrNull { it.last - it.first } ?: return null
         val n = ((span.last - span.first + 1 - width) / pitch).roundToInt() + 1
         if (n !in 1..20) return null
