@@ -218,6 +218,27 @@ internal object PhoneDdzTurn : PhoneTool {
             }
     }
 
+    /** DouZero 服务的加倍建议:这手牌值不值得加倍,和它自己算的赢面。连不上为 null。 */
+    internal data class DoubleAdvice(val double: Boolean, val win: Double? = null)
+
+    /**
+     * 问 DouZero 服务这手牌加倍值不值(它自己跟自己打几十局看赢面);测试里换掉。
+     * 地主给 20 张(含底牌),农民给 17 张加三张明牌。连不上为 null。
+     */
+    internal var adviseDouble: suspend (url: String, seat: String, hand: List<String>, bottom: List<String>) -> DoubleAdvice? =
+        { url, seat, hand, bottom ->
+            DdzAdvisor.post(url, buildJsonObject {
+                put("seat", seat)
+                put("hand", JsonArray(hand.map(::JsonPrimitive)))
+                put("bottom", JsonArray(bottom.map(::JsonPrimitive)))
+            }.toString(), "double")
+                ?.let { runCatching { kotlinx.serialization.json.Json.parseToJsonElement(it) as? JsonObject }.getOrNull() }
+                ?.let { obj ->
+                    val double = (obj["double"] as? JsonPrimitive)?.contentOrNull?.toBooleanStrictOrNull()
+                    if (double == null) null else DoubleAdvice(double, (obj["win"] as? JsonPrimitive)?.contentOrNull?.toDoubleOrNull())
+                }
+        }
+
     /**
      * 叫分画面上的 [hand] 是不是新发的一副牌(还没叫过分也算)。重新发牌是另一副随机的 17 张,和上一副差一大截;
      * 按完叫分后旧画面还留几帧,其中一帧读错一两张不能当成重新发牌再按一次:至少差 [REDEAL_MIN_CHANGED] 张才算。
@@ -232,6 +253,25 @@ internal object PhoneDdzTurn : PhoneTool {
     private fun traceBid(mode: String, hand: List<String>?, advice: BidAdvice?, level: Int?, pressed: String) =
         println("DDZTRACE bid mode=$mode hand=${hand?.joinToString(",") ?: ""} " +
             "source=${if (advice != null) "douzero" else "rules"} win=${advice?.win} level=$level pressed=$pressed")
+
+    /** 记下这一次加倍:座位、手牌、底牌、来源、赢面、实际按了「加倍」还是「不加倍」。 */
+    private fun traceDouble(seat: String?, hand: List<String>?, bottom: List<String>?, advice: DoubleAdvice?, pressed: String) =
+        println("DDZTRACE double seat=${seat ?: ""} hand=${hand?.joinToString(",") ?: ""} " +
+            "bottom=${bottom?.joinToString(",") ?: ""} source=${if (advice != null) "douzero" else "rules"} " +
+            "win=${advice?.win} pressed=$pressed")
+
+    /**
+     * 加倍时自己在 DouZero 里的座位:手里 20 张就是地主;17 张是农民,两家农民的赢面一样,
+     * 还认不出上家下家就按上家问。手牌或底牌认不全为 null,不问服务。
+     */
+    private fun doubleSeat(turn: Turn, hand: List<String>?, bottom: List<String>?, handCount: Int): String? {
+        if (hand == null || bottom == null || bottom.size != 3 || hand.size != handCount) return null
+        return when (hand.size) {
+            20 -> "landlord"
+            17 -> turn.tracker?.takeIf { it.landlord != null }?.seat() ?: "landlord_up"
+            else -> null
+        }
+    }
 
     override val verb = Verb.PhoneGame
     override val risk = Risk.Write
@@ -1402,22 +1442,37 @@ internal object PhoneDdzTurn : PhoneTool {
                         left = true
                         if (turn.mode == DdzMode.Human && !turn.humanActionSeen) {
                             val hand = DdzCards.hand(frame, view)
-                            // Bottom cards are often still face-down during doubling. Unknown bottom
-                            // cards conservatively mean "do not double"; they must not block the safe pass.
-                            val bottom = DdzCards.bottom(frame).orEmpty()
-                            val double = hand != null && HumanDdzPolicy.shouldDouble(hand, bottom)
-                            val button = if (double) {
-                                view.buttons.lastOrNull { it.color == DdzColor.Green || it.color == DdzColor.Yellow }
-                            } else view.buttons.firstOrNull()
-                            // 地主拿了底牌的 20 张常认不出:认不出就不加倍(和底牌认不出一样保守),不停下
+                            // 底牌在加倍时通常已经翻开;认不出就不加倍(和手牌认不出一样保守),不停下。
+                            val bottom = DdzCards.bottom(frame)
+                            val seat = doubleSeat(turn, hand, bottom, view.handCount)
+                            // 手牌、底牌、座位都认全才问服务;连不上/超时/认不全就不加倍,不暂停。
+                            val advice = if (hand != null && bottom != null && seat != null) {
+                                turn.advisor?.let { url -> runCatching { adviseDouble(url, seat, hand, bottom) }.getOrNull() }
+                            } else null
+                            // 服务说加才加;服务不可用时退回保守规则,但它满足时也只点黄色「加倍」。
+                            val double = advice?.double ?: (hand != null && bottom != null && HumanDdzPolicy.shouldDouble(hand, bottom))
+                            // 只按颜色找黄色「加倍」:绝不点绿色「超级加倍」。该加但找不到黄色、或本就不该加,都点蓝色「不加倍」。
+                            val yellow = if (double) view.buttons.lastOrNull { it.color == DdzColor.Yellow } else null
+                            val button = yellow ?: view.buttons.firstOrNull { it.color == DdzColor.Blue }
                             when {
-                                button == null -> humanPause(turn, DdzSessionReason.UNKNOWN_SCENE)
-                                button.color == DdzColor.Gray -> humanPause(turn, DdzSessionReason.REJECTED_ACTION)
+                                button == null -> {
+                                    traceDouble(seat, hand, bottom, advice, "no")
+                                    humanPause(turn, DdzSessionReason.UNKNOWN_SCENE)
+                                }
+                                button.color == DdzColor.Gray -> {
+                                    traceDouble(seat, hand, bottom, advice, "no")
+                                    humanPause(turn, DdzSessionReason.REJECTED_ACTION)
+                                }
                                 press(button, ctx, turn).moved -> {
-                                    turn.declined = !double
+                                    val doubled = double && button.color == DdzColor.Yellow
+                                    traceDouble(seat, hand, bottom, advice, if (doubled) "double" else "no")
+                                    turn.declined = !doubled
                                     turn.humanActionSeen = true
                                 }
-                                else -> humanPause(turn, DdzSessionReason.REJECTED_ACTION)
+                                else -> {
+                                    traceDouble(seat, hand, bottom, advice, "no")
+                                    humanPause(turn, DdzSessionReason.REJECTED_ACTION)
+                                }
                             }
                         } else {
                             val no = view.buttons.first()

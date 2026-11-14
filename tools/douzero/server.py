@@ -17,6 +17,11 @@ POST /act  {"seat": "landlord" | "landlord_down" | "landlord_up",
 -> {"play": ["5", "5"]} 或 {"error": "..."}
 
 POST /bid  {"hand": [17 张]}  -> {"level": 3 | 0, "win": 0.62}   # 当地主的赢面,够了就叫三分
+
+POST /double {"seat": "landlord" | "landlord_down" | "landlord_up",
+              "hand": [...],                     # 地主 20 张(含底牌),农民 17 张
+              "bottom": [三张]}                  # 三张明牌,归地主
+-> {"double": true | false, "win": 0.83}     # 自己这一方的赢面,够了才建议加倍
 """
 import json
 import os
@@ -43,12 +48,22 @@ DECK = [r for r in RANKS.values() if r < 20 for _ in range(4)] + [20, 30]
 # 叫分:当地主自己跟自己打这么多局,赢面到这个数就叫三分,不到就不叫。闯关里农民靠不住电脑队友,地主赢了分数还翻倍
 BID_GAMES = 60
 BID_WIN = 0.7
+# 加倍:同一手牌自己跟自己打这么多局看这一方的赢面。加倍只有约 5 秒,80 局在本机实测 0.75~1.35 秒
+# (/bid 60 局约 0.74 秒);再多就赶不上手机的往返和超时重试了。
+DOUBLE_GAMES = 80
+# 赢面到了这个门槛才加倍。只点黄色「加倍」,绝不点绿色的「超级加倍」,金豆省着用。
+DOUBLE_WIN = 0.8
 WEIGHTS = os.environ.get("DOUZERO_WEIGHTS", os.path.join(os.path.dirname(__file__), "baselines", "douzero_ADP"))
 
 
 def bid_level(win):
     """赢面到了门槛就叫三分,不到就不叫。"""
     return 3 if win >= BID_WIN else 0
+
+
+def should_double(win):
+    """赢面到了门槛才建议加倍。"""
+    return win >= DOUBLE_WIN
 
 
 class Mismatch(Exception):
@@ -270,6 +285,45 @@ class Advisor:
             wins += bool(env.num_wins["landlord"])
         return wins / games
 
+    def double(self, seat, hand, bottom, games=DOUBLE_GAMES):
+        """这手牌加倍值不值:地主按 20 张(含底牌)、农民按 17 张加三张明牌,看不见的牌随机分给另外两家,
+        DouZero 自己跟自己打 [games] 局,返回自己这一方的赢面(地主或农民)。"""
+        if seat not in SEATS:
+            raise Mismatch("bad_seat")
+        hand, bottom = cards(hand), cards(bottom)
+        if len(bottom) != 3:
+            raise Mismatch("bottom_count_mismatch")
+        if seat == "landlord":
+            if len(hand) != 20:
+                raise Mismatch("hand_count_mismatch")
+            fixed = {"landlord": list(hand)}
+            unseen = minus(DECK, hand)
+        else:
+            if len(hand) != 17:
+                raise Mismatch("hand_count_mismatch")
+            # 底牌归地主;看不见的 34 张随机分成地主另外的 17 张和队友的 17 张
+            fixed = {seat: list(hand), "landlord": list(bottom)}
+            unseen = minus(minus(DECK, hand), bottom)
+        # 同一副牌每次问都一样:底牌也参与种子,地主和农民看到的是同一副
+        rng = random.Random(hash(tuple(sorted(hand + bottom))))
+        wins = 0
+        for _ in range(games):
+            rng.shuffle(unseen)
+            hands = {s: list(fixed.get(s, [])) for s in SEATS}
+            pool = list(unseen)
+            for s in SEATS:
+                need = (20 if s == "landlord" else 17) - len(hands[s])
+                hands[s] = sorted(hands[s] + pool[:need])
+                pool = pool[need:]
+            if pool:
+                raise Mismatch("card_count_mismatch")
+            env = GameEnv(self.plain)
+            env.card_play_init({**hands, "three_landlord_cards": sorted(bottom)})
+            while not env.game_over:
+                env.step()
+            wins += bool(env.num_wins["landlord" if seat == "landlord" else "farmer"])
+        return wins / games
+
     def act(self, seat, hand, bottom, history):
         hand, bottom = cards(hand), cards(bottom)
         history = resolve(hand, [[str(c) if str(c).startswith("?") else cards([c])[0] for c in m] for m in history])
@@ -291,7 +345,7 @@ class Advisor:
 def handler(advisor):
     class Handler(BaseHTTPRequestHandler):
         def do_POST(self):
-            if self.path not in ("/act", "/bid"):
+            if self.path not in ("/act", "/bid", "/double"):
                 return self.reply(404, {"error": "not_found"})
             started = time.perf_counter()
             try:
@@ -300,6 +354,9 @@ def handler(advisor):
                 if self.path == "/bid":
                     win = advisor.bid(body["hand"])
                     return self.reply(200, {"level": bid_level(win), "win": round(win, 2), "ms": ms()}, body)
+                if self.path == "/double":
+                    win = advisor.double(body["seat"], body["hand"], body["bottom"])
+                    return self.reply(200, {"double": should_double(win), "win": round(win, 2), "ms": ms()}, body)
                 move = advisor.act(body["seat"], body["hand"], body.get("bottom", []), body.get("history", []))
                 self.reply(200, {"play": [NAMES[c] for c in move], "ms": ms()}, body)
             except Mismatch as e:

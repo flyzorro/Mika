@@ -4,7 +4,9 @@ import unittest
 
 from douzero.env.game import GameEnv
 
-from server import DECK, NAMES, SEATS, Advisor, WEIGHTS, bid_level, cards, resolve
+from server import (
+    DECK, DOUBLE_WIN, NAMES, SEATS, Advisor, Mismatch, WEIGHTS, bid_level, cards, resolve, should_double,
+)
 
 ADVISOR = Advisor(WEIGHTS)
 
@@ -222,6 +224,35 @@ class BidTest(unittest.TestCase):
         weak = ["3", "3", "4", "5", "6", "6", "7", "8", "9", "9", "10", "J", "J", "Q", "4", "5", "8"]
         self.assertGreater(ADVISOR.bid(strong, games=20), 0.7)
         self.assertLess(ADVISOR.bid(weak, games=20), 0.3)
+
+
+class DoubleTest(unittest.TestCase):
+    """加倍:明显的强牌值,烂牌不值;张数不对报错。20 张是地主(含底牌),17 张是农民加三张明牌。"""
+
+    STRONG = ["BJ", "SJ", "2", "2", "2", "2", "A", "A", "A", "K", "K", "Q", "Q", "J", "10", "9", "8", "7", "6", "5"]
+    WEAK = ["3", "3", "3", "4", "4", "5", "5", "6", "6", "7", "7", "8", "8", "9", "9", "10", "10", "J", "J", "Q"]
+
+    def test_double_threshold(self):
+        # 0.79 还不到门槛不加倍,0.80 到了就加倍(门槛 0.8)
+        self.assertFalse(should_double(0.79))
+        self.assertTrue(should_double(0.80))
+
+    def test_a_strong_landlord_hand_is_worth_doubling(self):
+        self.assertGreaterEqual(ADVISOR.double("landlord", self.STRONG, ["2", "A", "K"]), DOUBLE_WIN)
+
+    def test_a_weak_landlord_hand_is_not_worth_doubling(self):
+        self.assertLess(ADVISOR.double("landlord", self.WEAK, ["3", "4", "5"]), DOUBLE_WIN)
+
+    def test_a_strong_farmer_hand_is_worth_doubling(self):
+        self.assertGreaterEqual(ADVISOR.double("landlord_up", self.STRONG[:17], ["3", "4", "5"]), DOUBLE_WIN)
+
+    def test_a_weak_farmer_hand_is_not_worth_doubling(self):
+        self.assertLess(ADVISOR.double("landlord_down", self.WEAK[:17], ["2", "A", "K"]), DOUBLE_WIN)
+
+    def test_a_wrong_hand_count_is_an_error(self):
+        with self.assertRaises(Mismatch) as caught:
+            ADVISOR.double("landlord", self.STRONG[:19], ["2", "A", "K"])
+        self.assertIn("hand_count_mismatch", str(caught.exception))
 
 
 class OrderTest(unittest.TestCase):
