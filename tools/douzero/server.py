@@ -53,6 +53,9 @@ BID_WIN = 0.7
 DOUBLE_GAMES = 80
 # 赢面到了这个门槛才加倍。只点黄色「加倍」,绝不点绿色的「超级加倍」,金豆省着用。
 DOUBLE_WIN = 0.8
+# 几手分数几乎一样时 DouZero 基本是随手挑:差不到这个数就优先不拆三条/对子/炸弹。
+# 实机那手拆 10 10 10 去顶队友的 6 只比单张 9 高 0.009;再大就会盖住真正该拆的一手,0.05 只收真正的平局。
+KEEP_MARGIN = 0.05
 WEIGHTS = os.environ.get("DOUZERO_WEIGHTS", os.path.join(os.path.dirname(__file__), "baselines", "douzero_ADP"))
 
 
@@ -96,6 +99,12 @@ class Replay:
         if move not in infoset.legal_actions:
             raise Mismatch("history_mismatch")
         return move
+
+
+def breaks_combo(move, hand):
+    """这手是不是从手里某个点数里只拿了一部分:三条拆单、对子拆单、炸弹拆开。不出不算。"""
+    in_hand = Counter(hand)
+    return any(0 < n < in_hand[rank] for rank, n in Counter(move).items())
 
 
 def legal(move, before):
@@ -226,6 +235,8 @@ class Agent:
                                           sorted(infoset.other_hand_cards), left[others[0]], left[others[1]])
             if quick is not None and tuple(sorted(move)) != quick[0]:
                 return list(quick[0])
+            # 分数几乎一样的几手里优先不拆牌:DouZero 常常随手拆三条、对子去顶一张小牌
+            move = self.keep_combos(infoset, values, move)
         ok = lambda m: allowed is None or tuple(sorted(m)) in allowed
         # 地主只剩一张、桌上是他的牌、我是他前面最后一个能管的农民:不管就是让他出完。DouZero 残局偶尔会选不出,
         # 能管就挑管得上的里面分最高的
@@ -241,6 +252,19 @@ class Agent:
                 and len(move) < len(infoset.player_hand_cards) and [] in infoset.legal_actions and ok([]):
             move = []
         return move
+
+    def keep_combos(self, infoset, values, move):
+        """最高分那手拆牌时,在 KEEP_MARGIN 以内的不拆候选里挑分数最高的;都不拆或都拆就保持原选择。"""
+        top = float(values.max())
+        hand = infoset.player_hand_cards
+        best, best_score = None, None
+        for i, action in enumerate(infoset.legal_actions):
+            score = float(values[i])
+            if top - score > KEEP_MARGIN or breaks_combo(action, hand):
+                continue
+            if best_score is None or score > best_score:
+                best, best_score = action, score
+        return move if best is None else best
 
     def values(self, infoset):
         obs = get_obs(infoset)

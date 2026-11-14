@@ -154,6 +154,27 @@ class TeammateTest(unittest.TestCase):
         self.assertEqual([], ADVISOR.act("landlord_down", hand, [], history))
 
 
+class KeepCombosTest(unittest.TestCase):
+    """几手分数几乎一样时,优先不拆三条/对子/炸弹。按公开入口测。残局有结论时仍由残局搜索说了算(见 EndgameTest)。"""
+
+    def test_a_near_tie_keeps_the_triple_and_beats_with_the_single_9(self):
+        # 2026-11-14 13:44 实机:DouZero 拆了 10 10 10 里的 10 去顶队友的 6;单张 9 只差 0.009,不该拆
+        history = [["3"], ["5", "5", "5", "5"], [], [], ["6"]]
+        hand = ["BJ", "2", "K", "K", "Q", "10", "10", "10", "9", "8", "7", "6", "4", "4", "4", "3", "3"]
+        self.assertEqual(["9"], [NAMES[c] for c in ADVISOR.act("landlord_up", hand, ["9", "2", "J"], history)])
+
+    def test_a_clear_best_move_is_left_alone(self):
+        # 最高分那手本来就不拆(一对 3),照旧
+        hand = ["3", "3", "4", "4", "4", "6", "6", "8", "10", "J", "J", "Q", "K", "K", "K", "A", "A", "A", "2", "BJ"]
+        self.assertEqual(["3", "3"], [NAMES[c] for c in ADVISOR.act("landlord", hand, ["A", "A", "A"], [])])
+
+    def test_a_breaking_move_that_is_clearly_better_is_left_alone(self):
+        # 最高分是拆一对 2 的单张 2;不拆的最好一手还差 0.15,超过 KEEP_MARGIN,照旧
+        hand = ["3", "4", "4", "4", "5", "6", "7", "9", "10", "10", "10", "K", "K", "A", "2", "2"]
+        history = [["3", "4", "5", "6", "7", "8"], [], [], ["3"], ["Q"], [], ["A"]]
+        self.assertEqual(["2"], [NAMES[c] for c in ADVISOR.act("landlord_down", hand, ["K", "2"], history)])
+
+
 class EndgameTest(unittest.TestCase):
     def test_the_search_finds_the_forced_win_douzero_missed(self):
         # 地主只剩一张(最大到 J)、我小王是场上最大:小王接过来,再出对子、A、Q、8 一路走完
@@ -283,7 +304,8 @@ class LookaheadTest(unittest.TestCase):
         out = resolve(cards(hand), [[str(c) if str(c).startswith("?") else cards([c])[0] for c in m] for m in history])
         self.assertEqual([6, 7, 8, 9, 10, 11, 12, 13], out[0])
         self.assertEqual([5], out[3])
-        self.assertTrue(ADVISOR.act("landlord_down", hand, [], history))
+        # 这手只是确认能出牌、不报错;不出([])也是合法的一手
+        self.assertIsNotNone(ADVISOR.act("landlord_down", hand, [], history))
 
     def test_guesses_that_all_fail_fall_back_to_any_legal_rank(self):
         # 实机上的一手:我出 A、上家不出,地主压了一张带绶带的 2,手机猜 J、5、3,都压不住 A
