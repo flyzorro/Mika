@@ -2904,6 +2904,41 @@ class PhoneDdzTurnTest {
         }
     }
 
+    /**
+     * 2026-11-14 13:06:09 真机:飞机动画盖在跟牌按钮那一行,[DdzScreen.read] 把这一帧读成 Double(三个按钮,第一个蓝、
+     * 第三个绿)。那时这一局已经有人出过牌,工具照 Double 走加倍逻辑点了一下第一个按钮,而在跟牌画面上蓝色就是「不出」。
+     * 已经出过牌之后读到的 Double 一律不当加倍:一下都不点,等动画过去接着读下一帧。
+     */
+    @Test fun aDoubleMisreadMidHandIsNeverTapped() = runTest {
+        val asked = mutableListOf<String>()
+        val saved = PhoneDdzTurn.advise
+        PhoneDdzTurn.advise = { _, body -> asked += body; """{"play":[]}""" }
+        try {
+            val double = full("double")
+            val follow = full("130608_362")
+            val result = full("human_result_leave_change_continue")
+            // start 那一帧和 execute 开头那一帧先用跟牌画面,让等待循环真的读到误读成 Double 的那一帧
+            val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(follow, double, double, follow, follow, follow) + List(3) { result }))
+            val dispatcher = toolDispatcher(game)
+            PhoneDdzTurn.execute(
+                Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","advisor":"http://mac:3426"}""").jsonObject),
+                dispatcher.ctx,
+            )
+            PhoneDdzTurn.useTracker(dispatcher.ctx, leftLedPairs())
+            val out = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"wait"}""").jsonObject), dispatcher.ctx)
+            assertTrue("动画过去后的跟牌照常问 DouZero: ${out.content}", asked.isNotEmpty())
+            assertEquals(
+                "Double 画面上一下都不点",
+                listOf(DdzScreen.read(follow).buttons[0].let { it.x to it.y }),
+                game.taps,
+            )
+            assertEquals(out.content.toString(), "result", out.text("phase"))
+            assertNull("不因误读的 Double 暂停: ${out.content}", out.text("reason"))
+        } finally {
+            PhoneDdzTurn.advise = saved
+        }
+    }
+
     @Test fun humanDeclinesOnTheBlueButtonWhenDouZeroSaysNotToDouble() = runTest {
         val call = full("call")
         val double = full("double")

@@ -1363,7 +1363,11 @@ internal object PhoneDdzTurn : PhoneTool {
                 }
                 if (view.phase != DdzPhase.Double) turn.declined = false
                 dealt(turn, view)
-                if (turn.single || turn.mode == DdzMode.Human) track(turn, frame, view)
+                // 真正的加倍只出现在叫完分、任何人出第一手之前。已经有人出过牌后读到的 Double 是动画(飞机、炸弹)
+                // 盖住了按钮行:[DdzScreen.read] 把跟牌的「不出/提示/出牌」读成了三个加倍按钮。
+                // 这一帧不是要决策的一帧:不喂给 tracker,也一下都不点,等动画过去接着读下一帧。
+                val misreadDouble = view.phase == DdzPhase.Double && playedSinceDeal(turn)
+                if (!misreadDouble && (turn.single || turn.mode == DdzMode.Human)) track(turn, frame, view)
                 when (view.phase) {
                     // 单机局叫分按牌力定,不等模型(叫分只有十来秒);灰的分数点不了,按不叫算
                     DdzPhase.Call -> when {
@@ -1434,43 +1438,45 @@ internal object PhoneDdzTurn : PhoneTool {
                     // 加倍只有约 5 秒,模型来不及:单机局里自己点最左边蓝色的不加倍(加倍要看视频,绝不点);不是单机就让它走完
                     DdzPhase.Double -> {
                         left = true
-                        if (turn.mode == DdzMode.Human && !turn.humanActionSeen) {
-                            val hand = DdzCards.hand(frame, view)
-                            // 底牌在加倍时通常已经翻开;认不出就不加倍(和手牌认不出一样保守),不停下。
-                            val bottom = DdzCards.bottom(frame)
-                            val seat = doubleSeat(hand, bottom, view.handCount)
-                            // 手牌、底牌、座位都认全才问服务;连不上/超时/认不全就不加倍,不暂停。
-                            val advice = if (hand != null && bottom != null && seat != null) {
-                                turn.advisor?.let { url -> runCatching { adviseDouble(url, seat, hand, bottom) }.getOrNull() }
-                            } else null
-                            // 只有地主才加倍。服务说加才加;服务不可用时退回保守规则,但它满足时也只点黄色「加倍」。
-                            val double = hand != null && bottom != null && seat != null && (advice?.double ?: HumanDdzPolicy.shouldDouble(hand, bottom))
-                            // 只按颜色找黄色「加倍」:绝不点绿色「超级加倍」。该加但找不到黄色、或本就不该加,都点蓝色「不加倍」。
-                            val yellow = if (double) view.buttons.lastOrNull { it.color == DdzColor.Yellow } else null
-                            val button = yellow ?: view.buttons.firstOrNull { it.color == DdzColor.Blue }
-                            when {
-                                button == null -> {
-                                    traceDouble(seat, hand, bottom, advice, "no")
-                                    humanPause(turn, DdzSessionReason.UNKNOWN_SCENE)
+                        if (!misreadDouble) {
+                            if (turn.mode == DdzMode.Human && !turn.humanActionSeen) {
+                                val hand = DdzCards.hand(frame, view)
+                                // 底牌在加倍时通常已经翻开;认不出就不加倍(和手牌认不出一样保守),不停下。
+                                val bottom = DdzCards.bottom(frame)
+                                val seat = doubleSeat(hand, bottom, view.handCount)
+                                // 手牌、底牌、座位都认全才问服务;连不上/超时/认不全就不加倍,不暂停。
+                                val advice = if (hand != null && bottom != null && seat != null) {
+                                    turn.advisor?.let { url -> runCatching { adviseDouble(url, seat, hand, bottom) }.getOrNull() }
+                                } else null
+                                // 只有地主才加倍。服务说加才加;服务不可用时退回保守规则,但它满足时也只点黄色「加倍」。
+                                val double = hand != null && bottom != null && seat != null && (advice?.double ?: HumanDdzPolicy.shouldDouble(hand, bottom))
+                                // 只按颜色找黄色「加倍」:绝不点绿色「超级加倍」。该加但找不到黄色、或本就不该加,都点蓝色「不加倍」。
+                                val yellow = if (double) view.buttons.lastOrNull { it.color == DdzColor.Yellow } else null
+                                val button = yellow ?: view.buttons.firstOrNull { it.color == DdzColor.Blue }
+                                when {
+                                    button == null -> {
+                                        traceDouble(seat, hand, bottom, advice, "no")
+                                        humanPause(turn, DdzSessionReason.UNKNOWN_SCENE)
+                                    }
+                                    button.color == DdzColor.Gray -> {
+                                        traceDouble(seat, hand, bottom, advice, "no")
+                                        humanPause(turn, DdzSessionReason.REJECTED_ACTION)
+                                    }
+                                    press(button, ctx, turn).moved -> {
+                                        val doubled = double && button.color == DdzColor.Yellow
+                                        traceDouble(seat, hand, bottom, advice, if (doubled) "double" else "no")
+                                        turn.declined = !doubled
+                                        turn.humanActionSeen = true
+                                    }
+                                    else -> {
+                                        traceDouble(seat, hand, bottom, advice, "no")
+                                        humanPause(turn, DdzSessionReason.REJECTED_ACTION)
+                                    }
                                 }
-                                button.color == DdzColor.Gray -> {
-                                    traceDouble(seat, hand, bottom, advice, "no")
-                                    humanPause(turn, DdzSessionReason.REJECTED_ACTION)
-                                }
-                                press(button, ctx, turn).moved -> {
-                                    val doubled = double && button.color == DdzColor.Yellow
-                                    traceDouble(seat, hand, bottom, advice, if (doubled) "double" else "no")
-                                    turn.declined = !doubled
-                                    turn.humanActionSeen = true
-                                }
-                                else -> {
-                                    traceDouble(seat, hand, bottom, advice, "no")
-                                    humanPause(turn, DdzSessionReason.REJECTED_ACTION)
-                                }
+                            } else {
+                                val no = view.buttons.first()
+                                if (turn.single && !turn.declined && no.color == DdzColor.Blue && press(no, ctx, turn).moved) turn.declined = true
                             }
-                        } else {
-                            val no = view.buttons.first()
-                            if (turn.single && !turn.declined && no.color == DdzColor.Blue && press(no, ctx, turn).moved) turn.declined = true
                         }
                     }
                     DdzPhase.Other -> left = true
@@ -1548,6 +1554,9 @@ internal object PhoneDdzTurn : PhoneTool {
         }
         turn.noHand = 0
     }
+
+    /** 这一局已经有人出过牌:真加倍只在叫完分、第一手牌之前,之后的 [DdzPhase.Double] 都是动画误读。 */
+    private fun playedSinceDeal(turn: Turn) = turn.tracker?.history?.any { it.isNotEmpty() } == true
 
     /** 把这一帧喂给这一局的出牌历史;叫分时还没开局,换一局重新记。 */
     private fun track(turn: Turn, frame: com.wangzan101.mika.core.uistate.RawFrame, view: DdzView) {
