@@ -45,6 +45,11 @@ internal class DdzTracker(private val settling: DdzSettlingPolicy = DdzSettlingP
     private val waiting = ArrayDeque<Pair<DdzSeat, Int>>()
     /** 还在等的几家最近一次读到的「不出」或牌:真人桌上有时只亮一帧,之后出牌区就读不出了。 */
     private val lastSeen = mutableMapOf<DdzSeat, DdzSeen>()
+    /**
+     * 这一轮(从这家轮到出牌起)读到过 Unsure 的座位:出牌区有东西(牌在飞、动画),不能当成没出。
+     * 记下这一手或者读到真正的「不出」时清掉;下一轮重新算。
+     */
+    private val unsureThisTrick = mutableSetOf<DdzSeat>()
     /** 左右两家剩几张:上一帧的读数,和连着两帧一样的读数(一帧认错不算)。 */
     private val countSeen = mutableMapOf<DdzSeat, Int?>()
     private val count = mutableMapOf<DdzSeat, Int?>()
@@ -89,6 +94,7 @@ internal class DdzTracker(private val settling: DdzSettlingPolicy = DdzSettlingP
             confirmedSeats.clear()
             waiting.clear()
             lastSeen.clear()
+            unsureThisTrick.clear()
             awaitLeader = null
             awaitSawPlay = false
         }
@@ -286,13 +292,24 @@ internal class DdzTracker(private val settling: DdzSettlingPolicy = DdzSettlingP
         return true
     }
 
-    /** [seat] 这一轮像是没出牌:这一帧空着或写着「不出」,没读到过牌,剩的张数也没少。 */
+    /**
+     * [seat] 这一轮像是没出牌:这一帧空着或写着「不出」,没读到过牌,剩的张数也没少。
+     * 这一轮读到过 Unsure 的不算:出牌区有东西(牌在飞、动画),那一手可能还没落下;要等到读稳成真牌,
+     * 或者真正读到「不出」(Pass)才补。
+     */
     private fun passedSince(seat: DdzSeat, read: (DdzSide) -> DdzSeen): Boolean {
-        val now = read(sideOf(seat))
+        val now = rememberUnsure(seat, read(sideOf(seat)))
+        if (seat in unsureThisTrick && now != DdzSeen.Pass) return false
         val seen = lastSeen[seat]
         return (now == DdzSeen.Empty || now == DdzSeen.Pass) &&
             (seen == null || seen == DdzSeen.Empty || seen == DdzSeen.Pass) &&
             (unplayed(seat) ?: 0) == 0
+    }
+
+    /** 读一眼 [seat] 的出牌区,这一轮读到 Unsure 就记下来(见 [passedSince])。 */
+    private fun rememberUnsure(seat: DdzSeat, seen: DdzSeen): DdzSeen {
+        if (seen == DdzSeen.Unsure) unsureThisTrick += seat
+        return seen
     }
 
     /** [seat] 读到的这一手能记:不是出牌区还摆着的他自己上一手、合牌规、张数对得上(对不上就是还没落稳)。 */
@@ -318,7 +335,7 @@ internal class DdzTracker(private val settling: DdzSettlingPolicy = DdzSettlingP
             if (seat == leader) break
             if (seat == DdzSeat.Me) continue
             reads.any = true
-            val seen = read(sideOf(seat))
+            val seen = rememberUnsure(seat, read(sideOf(seat)))
             if (seen != DdzSeen.Empty && seen != DdzSeen.Pass) {
                 reads.sawPlay = true
                 reads.looksPassed = false
@@ -471,6 +488,7 @@ internal class DdzTracker(private val settling: DdzSettlingPolicy = DdzSettlingP
         active = current
         waiting.clear()
         lastSeen.clear()
+        unsureThisTrick.clear()
         broken = null
         leftMe = true
         awaitLeader = null
@@ -501,6 +519,7 @@ internal class DdzTracker(private val settling: DdzSettlingPolicy = DdzSettlingP
     fun fail(reason: String) { if (broken == null) { broken = reason; note("fail $reason") } }
 
     private fun record(seat: DdzSeat, cards: List<String>) {
+        unsureThisTrick -= seat
         history += cards.toList()
         confirmedSeats += seat
         if (cards.isNotEmpty()) lastPlay[seat] = cards.toList()
@@ -556,7 +575,7 @@ internal class DdzTracker(private val settling: DdzSettlingPolicy = DdzSettlingP
         for ((seat, _) in waiting.drop(1)) {
             if (seat == DdzSeat.Me) continue
             // 不补 ?:前面几家还没记,[trickLead] 是旧的那一手,拿它筛补法会把几种都行的错当成只有一种
-            val seen = read(sideOf(seat))
+            val seen = rememberUnsure(seat, read(sideOf(seat)))
             val guessed = seen is DdzSeen.Cards && seat != landlord && seen.ranks.any { it.startsWith(DdzCards.UNKNOWN) }
             // 出牌区还摆着他自己上一手:那是「不出」,不是又出了一手
             val oldPlay = seen is DdzSeen.Cards && seen.ranks == lastPlay[seat]
@@ -565,7 +584,7 @@ internal class DdzTracker(private val settling: DdzSettlingPolicy = DdzSettlingP
         while (waiting.isNotEmpty()) {
             val (seat, tries) = waiting.first()
             if (seat == DdzSeat.Me) { record(seat, emptyList()); waiting.removeFirst(); continue }
-            val raw = read(sideOf(seat))
+            val raw = rememberUnsure(seat, read(sideOf(seat)))
             val seen = if (raw is DdzSeen.Cards) filledUnknown(raw.ranks) ?: raw else raw
             // 只有地主的牌压着绶带;农民的牌带着猜的那一张就是没认准
             val guessed = seen is DdzSeen.Cards && seat != landlord && seen.ranks.any { it.startsWith(DdzCards.UNKNOWN) }
