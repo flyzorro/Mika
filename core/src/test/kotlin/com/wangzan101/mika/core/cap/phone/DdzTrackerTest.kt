@@ -1083,4 +1083,65 @@ class DdzTrackerTest {
             tracker.history,
         )
     }
+
+    @Test fun aSeatThatReadUnsureThisTrickIsNotBackfilledAsAPass() {
+        // 2026-11-14 14:09:56–59 真机(DDZTRACE + DouZero 日志):地主(左家)出小王 SJ,我要不起、游戏自动替我不出,
+        // 右家压大王 BJ。14:09:58.207 右家出牌区读成 Unsure(大王正飞进来),14:09:58.869 闹钟已经到左家、
+        // 右家这一帧读成 Empty(大王还没落下)。以前同一帧把右家补成「不出」,历史成了 [SJ],[],[],
+        // DouZero 回放不合规(history_mismatch)。这一轮读到过 Unsure 的座位不能当成没出。
+        tracker.restore(
+            DdzSeat.Left, bottom,
+            listOf(listOf("K"), emptyList(), emptyList()),
+            DdzSeat.Left,
+        )
+        left = DdzSeen.Cards(listOf("SJ"))
+        right = DdzSeen.Empty
+        see(DdzSeat.Me)              // 左家出 SJ,闹钟到我(要连着两帧才算我的回合)
+        see(DdzSeat.Me)              // 左家这一手只读到一帧
+        left = DdzSeen.Empty
+        right = DdzSeen.Unsure
+        see(DdzSeat.Left)            // 右家出得太快,闹钟已经到左家;右家的大王正飞进来,读成 Unsure
+        right = DdzSeen.Empty
+        see(DdzSeat.Left)            // 大王还没落下:右家这一帧读成 Empty
+        assertNull(tracker.broken)
+        // 不能把右家补成「不出」:左家的 SJ 和我的不出也先不补,等右家这一手读稳
+        assertEquals(
+            listOf(listOf("K"), emptyList(), emptyList()),
+            tracker.history,
+        )
+        // 大王落稳:记成右家的一手 BJ
+        right = DdzSeen.Cards(listOf("BJ"))
+        repeat(DdzSettlingPolicy.SINGLE.steadyFrames) { see(DdzSeat.Left) }
+        // 左家不出,轮到我
+        left = DdzSeen.Pass
+        // 第一帧只用来认「轮到我了」,之后左家的「不出」还要读稳
+        repeat(DdzSettlingPolicy.SINGLE.steadyFrames + 1) { see(DdzSeat.Me) }
+        assertNull(tracker.broken)
+        assertTrue(tracker.ready())
+        assertEquals(
+            listOf(listOf("K"), emptyList(), emptyList(), listOf("SJ"), emptyList(), listOf("BJ"), emptyList()),
+            tracker.history,
+        )
+    }
+
+    @Test fun aSeatThatNeverReadUnsureIsStillBackfilledAsAPass() {
+        // 同一串帧,但右家这一轮从没读到过 Unsure、出牌区一直是空的:照旧按「不出」补记。
+        tracker.restore(
+            DdzSeat.Left, bottom,
+            listOf(listOf("K"), emptyList(), emptyList()),
+            DdzSeat.Left,
+        )
+        left = DdzSeen.Cards(listOf("SJ"))
+        right = DdzSeen.Empty
+        see(DdzSeat.Me)              // 左家出 SJ,闹钟到我(要连着两帧才算我的回合)
+        see(DdzSeat.Me)              // 左家这一手只读到一帧
+        left = DdzSeen.Empty
+        see(DdzSeat.Left)            // 右家出得太快,闹钟已经到左家;出牌区一直空着
+        see(DdzSeat.Left)
+        assertNull(tracker.broken)
+        assertEquals(
+            listOf(listOf("K"), emptyList(), emptyList(), listOf("SJ"), emptyList(), emptyList()),
+            tracker.history,
+        )
+    }
 }
