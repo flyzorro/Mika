@@ -843,6 +843,57 @@ class DdzTrackerTest {
         assertEquals(listOf(straight), tracker.history)
     }
 
+    @Test fun aNewLeadFromTheLastLeaderBackfillsTheUnreadMiddlePasses() {
+        // 2026-11-14 13:37 真机(DDZTRACE,我是地主):左家出 2,我不出;右家的「不出」只亮了一下,
+        // 两帧之间没读到;闹钟从右家直接跳到我,左家已经重新领出 6。以前右家卡在队头,等满 6 秒判 missed_play。
+        // 这一轮最后一手是左家的 2,他出牌区又亮出新的 6,中间那几家都读不到:只能是都不出。
+        tracker.restore(
+            DdzSeat.Me, bottom,
+            listOf(listOf("3"), emptyList(), listOf("2")),
+            DdzSeat.Me,
+        )
+        left = DdzSeen.Empty
+        right = DdzSeen.Empty
+        tracker.mine(emptyList())   // 我不出:轮到右家
+        see(DdzSeat.Right)          // 右家不出(没读到)
+        see(DdzSeat.Me)             // 我的回合要连着两帧
+        see(DdzSeat.Me)             // 左家领出太快,闹钟从右家直接跳到我:右家、左家都排进 waiting
+        assertEquals(listOf(listOf("3"), emptyList(), listOf("2"), emptyList()), tracker.history)
+        assertFalse(tracker.ready())
+        // 左家的出牌区这时摆着新的一手 6
+        left = DdzSeen.Cards(listOf("6"))
+        repeat(DdzSettlingPolicy.SINGLE.steadyFrames) { see(DdzSeat.Me) }
+        assertNull(tracker.broken)
+        assertEquals(
+            listOf(listOf("3"), emptyList(), listOf("2"), emptyList(), emptyList(), listOf("6")),
+            tracker.history,
+        )
+        assertTrue(tracker.ready())
+    }
+
+    @Test fun aNewLeadDoesNotBackfillAMiddleSeatThatShowsCards() {
+        // 同一个漏帧,但这回右家其实出了一手 BJ(读到了真牌):不能把右家补成「不出」,照常按原来的流程记。
+        tracker.restore(
+            DdzSeat.Me, bottom,
+            listOf(listOf("3"), emptyList(), listOf("2")),
+            DdzSeat.Me,
+        )
+        left = DdzSeen.Empty
+        right = DdzSeen.Empty
+        tracker.mine(emptyList())
+        see(DdzSeat.Right)
+        see(DdzSeat.Me)
+        see(DdzSeat.Me)
+        right = DdzSeen.Cards(listOf("BJ"))
+        left = DdzSeen.Cards(listOf("6"))
+        repeat(4) { see(DdzSeat.Me) }
+        // 右家的 BJ 记在这一轮里,不是「不出」;左家的 6 压不过 BJ,交回原来的规则判
+        assertEquals(
+            listOf(listOf("3"), emptyList(), listOf("2"), emptyList(), listOf("BJ")),
+            tracker.history,
+        )
+    }
+
     @Test fun thePlayAndPassBehindMyLingeringButtonsAreStillRecorded() {
         // 2026-11-13 14:37:52 土豪场:我出 5678910 后按钮还留在画面上,右家过、左家压 KQJ1098,游戏又替我秒过。
         // 闹钟已经到别家,再按「轮到我」喂进来,这几帧以前全被丢掉:右家的「不出」和左家的 KQJ1098 都没记,

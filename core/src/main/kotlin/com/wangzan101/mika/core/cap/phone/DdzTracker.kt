@@ -177,6 +177,8 @@ internal class DdzTracker(private val settling: DdzSettlingPolicy = DdzSettlingP
         if (leader == null) {
             // 闹钟回到刚出过牌、还没记下的那一家:另外两家都不出,先补记这一手和两个「不出」
             if (recordReturnedLeader(turn, read)) return true
+            // 这一轮最后出牌的那家已经亮出新的领出,中间几家还读不到:他们只能都不出
+            if (recordNewLeadFromLastLeader(read)) return true
             // 闹钟停在这一轮最后出牌的那家、中间各家都还空着:先记下,等他下一步动作再判
             if (turn == null || turn != trickLeaderSeat()) return false
             // 领出的人也还在等:他手上可能有一手没记下的新牌
@@ -240,6 +242,41 @@ internal class DdzTracker(private val settling: DdzSettlingPolicy = DdzSettlingP
             record(seat, emptyList())
             lastSeen -= seat
         }
+        return true
+    }
+
+    /**
+     * 这一轮最后一手是 [trickLeaderSeat] 出的,闹钟已经转过中间几家、又回到我这里,中间那几家还没读到:
+     * 如果他的出牌区这时亮出和上一手不同的新牌,那只能是中间几家都不出、他接着领出。
+     * 只在逻辑上唯一时补:他排在等着的队尾(前面等着的那几家这一轮都该跟他的牌),这几家这一帧都读不到、
+     * 也没读到过牌;读到真牌、认不准、张数对不上就不补,照常交给 [resolve]。
+     * 返回是否补记了。
+     */
+    private fun recordNewLeadFromLastLeader(read: (DdzSide) -> DdzSeen): Boolean {
+        val leader = trickLeaderSeat() ?: return false
+        if (leader == DdzSeat.Me) return false
+        if (waiting.lastOrNull()?.first != leader) return false
+        val seen = read(sideOf(leader))
+        if (seen !is DdzSeen.Cards || seen.ranks == lastPlay[leader]) return false
+        // 带 ? 的没认准,推断出来的补记不再叠一层猜测
+        if (seen.ranks.any { it.startsWith(DdzCards.UNKNOWN) }) return false
+        if (DdzSnapshotRecovery.classify(seen.ranks) == null) return false
+        val played = unplayed(leader)
+        if (played != null && played != seen.ranks.size) return false
+        // 中间那几家这一帧都空着/没读数,也没读到过牌:只能是都不出
+        if (!pendingReads(leader, read).looksPassed) return false
+        // 新的一手也要读稳:牌可能还在落,一帧认错不算
+        if (!steady(leader to seen.ranks, if (played == null) settling.steadyFrames else settling.countedFrames)) return false
+        while (waiting.isNotEmpty() && waiting.first().first != leader) {
+            val seat = waiting.removeFirst().first
+            record(seat, emptyList())
+            lastSeen -= seat
+        }
+        // 队尾的领出这一手已经出完:先把他从等着的那一队里去掉,再记他的新牌
+        waiting.removeFirst()
+        record(leader, seen.ranks)
+        lastSeen -= leader
+        active = leader.next
         return true
     }
 
