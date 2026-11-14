@@ -577,26 +577,33 @@ internal object DdzCards {
     private const val MORE_COINS_OK_Y = 765
 
     /**
-     * 段位弹窗(真人结算页、真人场次页上):正中一个大段位徽章(绿梅花加银翅膀)、顶上一行彩色标题、
-     * 下面一个橙色「确定」。只有一个按钮时「确定」在正中;有绿色「炫耀一下」时它在右边。
+     * 段位弹窗(真人结算页、真人场次页上):正中一个大段位徽章(两侧银蓝色翅膀,颜色随段位变)、
+     * 顶上一行彩色标题、下面一个橙色「确定」。只有一个按钮时「确定」在正中;有绿色「炫耀一下」时它在右边。
      * 返回橙色「确定」的中点,绝不返回左边的绿色「炫耀一下」;认不准为 null。只认 2412×1080 的 Mika 屏。
      */
     fun rankPopup(frame: RawFrame): Pair<Int, Int>? {
         if (frame.width != 2412 || frame.height != 1080) return null
         // 只截了部分行的帧(测试里的手牌帧)上没这些行:当作认不出,别去读到不存在的行
         if ((RANK_ROWS + RANK_CONFIRM_ROW).any { frame.row(it) == null }) return null
-        // 正中徽章的绿梅花:场次页的绿色场次卡也有大片绿色,所以还要橙色「确定」和上面那行标题一起对上
-        var green = 0
-        var badge = 0
-        for (y in RANK_BADGE_ROWS) for (x in RANK_BADGE_X0 until RANK_BADGE_X1 step 8) {
-            badge++
-            val p = frame.pixel(x, y)
+        // 正中徽章两侧的银蓝色翅膀:和段位无关(青铜、白银、黄金……都长这对翅膀),不像绿梅花那样只认白银。
+        // 左右两边都要有,单靠一边的蓝色背景(场次页、大厅)过不了。
+        fun wing(p: Int): Boolean {
             val r = p shr 16 and 0xff
             val g = p shr 8 and 0xff
             val b = p and 0xff
-            if (g > 110 && g - r > 45 && b >= 60 && b < 205) green++
+            return r + g + b > 420 && b > 140 && b >= r - 20 && g > 100
         }
-        if (green.toDouble() / badge < RANK_BADGE_GREEN) return null
+        fun wingDensity(x0: Int, x1: Int): Double {
+            var hit = 0
+            var all = 0
+            for (y in RANK_WING_ROWS) for (x in x0 until x1 step 8) {
+                all++
+                if (wing(frame.pixel(x, y))) hit++
+            }
+            return hit.toDouble() / all
+        }
+        if (wingDensity(RANK_WING_LEFT_X0, RANK_WING_LEFT_X1) < RANK_WING_MIN) return null
+        if (wingDensity(RANK_WING_RIGHT_X0, RANK_WING_RIGHT_X1) < RANK_WING_MIN) return null
         // 顶上一行彩色大标题(降段是蓝的、升段是橙红的、段位保护是蓝的)
         var bright = 0
         for (y in RANK_TITLE_ROWS) for (x in RANK_TITLE_X0 until RANK_TITLE_X1 step 8) {
@@ -616,25 +623,28 @@ internal object DdzCards {
         return (confirm.first + confirm.last) / 2 to RANK_CONFIRM_Y
     }
 
-    /** 段位弹窗要读的行:标题那一行和中间徽章一片,稀疏取够认色(每帧多截的行要少,等人时一轮帧很多)。 */
-    val RANK_ROWS: List<Int> = ((RANK_TITLE_Y0 until RANK_TITLE_Y1 step RANK_TITLE_STEP) + (RANK_BADGE_Y0 until RANK_BADGE_Y1 step RANK_BADGE_STEP)).toList()
+    /** 段位弹窗要读的行:标题那一行和徽章两侧的翅膀一片,稀疏取够认色(每帧多截的行要少,等人时一轮帧很多)。 */
+    val RANK_ROWS: List<Int> =
+        ((RANK_TITLE_Y0 until RANK_TITLE_Y1 step RANK_TITLE_STEP) + (RANK_WING_Y0 until RANK_WING_Y1 step RANK_WING_STEP)).toList()
 
     private const val RANK_TITLE_STEP = 6
-    private const val RANK_BADGE_STEP = 20
     private const val RANK_TITLE_Y0 = 130
     private const val RANK_TITLE_Y1 = 180
     private const val RANK_TITLE_X0 = 700
     private const val RANK_TITLE_X1 = 1700
     private const val RANK_TITLE_MIN = 40
-    private const val RANK_BADGE_Y0 = 348
-    private const val RANK_BADGE_Y1 = 558
-    private const val RANK_BADGE_X0 = 1060
-    private const val RANK_BADGE_X1 = 1390
-    private const val RANK_BADGE_GREEN = 0.09
+    private const val RANK_WING_Y0 = 260
+    private const val RANK_WING_Y1 = 520
+    private const val RANK_WING_STEP = 20
+    private const val RANK_WING_LEFT_X0 = 950
+    private const val RANK_WING_LEFT_X1 = 1070
+    private const val RANK_WING_RIGHT_X0 = 1340
+    private const val RANK_WING_RIGHT_X1 = 1460
+    private const val RANK_WING_MIN = 0.15
     private const val RANK_CONFIRM_ROW = 810
     private const val RANK_CONFIRM_Y = 852
     private val RANK_TITLE_ROWS = (RANK_TITLE_Y0 until RANK_TITLE_Y1 step RANK_TITLE_STEP).toList()
-    private val RANK_BADGE_ROWS = (RANK_BADGE_Y0 until RANK_BADGE_Y1 step RANK_BADGE_STEP).toList()
+    private val RANK_WING_ROWS = (RANK_WING_Y0 until RANK_WING_Y1 step RANK_WING_STEP).toList()
 
     private const val PRIVILEGE_BADGE_Y0 = 340
     private const val PRIVILEGE_BADGE_Y1 = 460
