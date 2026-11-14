@@ -113,11 +113,51 @@ internal object DdzCards {
     /** 三张底牌;没摆出来或认不准为 null。 */
     fun bottom(frame: RawFrame): List<String>? {
         if (singleStageTable(frame)) return stageBottom(frame)
+        counterBottom(frame)?.let { return it }
         val (bar, k) = content(frame)
         val cards = strip(frame, bar + (1050 * k).toInt(), bar + (1380 * k).toInt(), 5, 105, pitch = 44 * k, width = 57 * k,
             glyphRows = 46, glyphWidth = (32 * k).toInt(), k = k, minRows = 60, sure = BOTTOM_SURE, margin = BOTTOM_MARGIN) ?: return null
         return cards.map { it.rank }.takeIf { it.size == 3 && it.all { r -> r != null } }?.map { it!! }
     }
+
+    /**
+     * 开了「记牌器」时的底牌:顶上正中换成一条横条,右端紧接着三张小号底牌。三张牌背是浅灰(比横条的白底暗一截),
+     * 在点数与花色之间那一行正好是三段并排的浅灰;点数比桌面牌还小,用桌面牌的字形认,认不准为 null。
+     * 认不出横条(老画面、叫分阶段扣着的牌背)为 null,交回 [bottom] 原来的读法。
+     */
+    private fun counterBottom(frame: RawFrame): List<String>? {
+        if (frame.width != 2412 || frame.height != 1080) return null
+        if ((COUNTER_RANK_Y0 until COUNTER_RANK_Y0 + COUNTER_RANK_H).any { frame.row(it) == null }) return null
+        fun cardBg(p: Int): Boolean {
+            val r = p shr 16 and 0xff
+            val g = p shr 8 and 0xff
+            val b = p and 0xff
+            return minOf(r, g, b) >= 200 && maxOf(r, g, b) < 232 && maxOf(r, g, b) - minOf(r, g, b) < 20
+        }
+        val cards = DdzScreen.runs(frame.width, gap = 2, minWidth = 35) { x -> cardBg(frame.pixel(x, COUNTER_GAP_Y)) }
+        if (cards.size != 3) return null
+        // 三张并排、都在横条右端;横条左边的点数表头和剩余张数不是这种浅灰,绝不会被当成底牌
+        if (cards[0].first !in COUNTER_CARDS_X0 || cards[2].last !in COUNTER_CARDS_X1) return null
+        if (cards[1].first - cards[0].last > 4 || cards[2].first - cards[1].last > 4) return null
+        return cards.map { card ->
+            val ink = Array(COUNTER_RANK_H) { r -> BooleanArray(card.last - card.first + 1) { c ->
+                val p = frame.pixel(card.first + c, COUNTER_RANK_Y0 + r)
+                minOf(p shr 16 and 0xff, p shr 8 and 0xff, p and 0xff) < COUNTER_INK
+            } }
+            val box = inkBox(ink) ?: return null
+            val red = share(frame, card.first, COUNTER_RANK_Y0, ink) { r, g, _ -> r - g > 50 } > 0.5
+            sure(ranked(tableGlyphs, boxSig(box, TABLE_W, TABLE_H)), COUNTER_SURE, COUNTER_MARGIN)?.let { joker(it, red) } ?: return null
+        }
+    }
+
+    private const val COUNTER_GAP_Y = 80
+    private const val COUNTER_RANK_Y0 = 18
+    private const val COUNTER_RANK_H = 66
+    private const val COUNTER_INK = 120
+    private const val COUNTER_SURE = 0.3
+    private const val COUNTER_MARGIN = 0.05
+    private val COUNTER_CARDS_X0 = 1260..1280
+    private val COUNTER_CARDS_X1 = 1420..1440
 
     /** 认大厅、闯关页要读的行。 */
     val LOBBY_ROWS: List<Int> = ((5 until 105) + (100 until 135) + (885 until 925) + STAGE_BUTTON_ROW).toList()
@@ -995,6 +1035,17 @@ internal object DdzCards {
         val left = rows.minOf { row -> row.indexOfFirst { it }.let { if (it < 0) Int.MAX_VALUE else it } }
         val right = rows.maxOf { row -> row.indexOfLast { it } }
         return Array(rows.size) { r -> rows[r].copyOfRange(left, right + 1) }
+    }
+
+    /** 只留点数字:整体墨迹的外框。小牌的字中间可能有一两行空白,不能像 [rankBox] 那样在第一处空白就截断。 */
+    private fun inkBox(ink: Array<BooleanArray>): Array<BooleanArray>? {
+        val rows = ink.indices.filter { r -> ink[r].any { it } }
+        if (rows.isEmpty()) return null
+        val top = rows.first()
+        val bottom = rows.last()
+        val cols = ink[top].indices.filter { c -> (top..bottom).any { r -> ink[r][c] } }
+        if (cols.isEmpty()) return null
+        return Array(bottom - top + 1) { r -> ink[top + r].copyOfRange(cols.first(), cols.last() + 1) }
     }
 
     /** 盒式缩放到 [w]×[h],一格里四成以上是墨迹就算有。和生成样本的脚本逐格同样算。 */

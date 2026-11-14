@@ -346,6 +346,12 @@ class PhoneDdzTurnTest {
         repeat(3) { observe(DdzSeat.Me, { if (it == DdzSide.Left) pairs else DdzSeen.Empty }, { listOf("J", "7", "4") }) }
     }
 
+    /** 同上,但底牌还没读到:等这一帧的记牌器横条把它补上。 */
+    private fun leftLedPairsWithoutBottom() = DdzTracker().apply {
+        val pairs = DdzSeen.Cards("10 10 9 9 8 8".split(' '))
+        repeat(3) { observe(DdzSeat.Me, { if (it == DdzSide.Left) pairs else DdzSeen.Empty }, { null }) }
+    }
+
     private fun full(name: String): RawFrame {
         val image = ImageIO.read((javaClass.getResourceAsStream("/ddz/$name.jpg") ?: javaClass.getResourceAsStream("/ddz/$name.png"))!!)
         return RawFrame(image.width, image.height, (DdzScreen.ROWS + DdzCards.ROWS + DdzCards.LOBBY_ROWS + DdzPopups.SCAN_ROWS).distinct().associateWith { image.getRGB(0, it, image.width, 1, null, 0, image.width) })
@@ -509,6 +515,26 @@ class PhoneDdzTurnTest {
             assertEquals("SJ 2 2 2 A A A A Q J 10 9 9 8 7 3 3".split(' '), body["hand"]!!.jsonArray.map { it.jsonPrimitive.content })
             assertEquals(1, body["history"]!!.jsonArray.size)
             assertEquals("DouZero 说不出就按不出", DdzScreen.read(follow).buttons[0].let { it.x to it.y }, game.taps.single())
+        } finally {
+            PhoneDdzTurn.advise = saved
+        }
+    }
+
+    /** 2026-11-14 11:18 起开了「记牌器」:底牌变成横条右端的三张小牌,发给 DouZero 的 bottom 也得是这三张。 */
+    @Test fun theCounterBarBottomCardsReachTheDouZeroRequest() = runTest {
+        val asked = mutableListOf<String>()
+        val saved = PhoneDdzTurn.advise
+        PhoneDdzTurn.advise = { _, body -> asked += body; """{"play":[]}""" }
+        try {
+            val follow = full("counter_bottom_36A")
+            val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(follow, follow, fullBlank, full("result"))))
+            val dispatcher = toolDispatcher(game)
+            PhoneDdzTurn.markSingle(dispatcher.ctx, "http://mac:3426")
+            PhoneDdzTurn.useTracker(dispatcher.ctx, leftLedPairsWithoutBottom())
+            PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"wait"}""").jsonObject), dispatcher.ctx)
+            assertTrue("要问 DouZero", asked.isNotEmpty())
+            val body = Json.parseToJsonElement(asked.first()).jsonObject
+            assertEquals(listOf("3", "6", "A"), body["bottom"]!!.jsonArray.map { it.jsonPrimitive.content })
         } finally {
             PhoneDdzTurn.advise = saved
         }
