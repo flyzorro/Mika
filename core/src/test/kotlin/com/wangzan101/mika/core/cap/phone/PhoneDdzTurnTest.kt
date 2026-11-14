@@ -2939,6 +2939,42 @@ class PhoneDdzTurnTest {
         }
     }
 
+    /**
+     * 第一手的空档:真实加倍已经按过「不加倍」,但 tracker 要两帧确认才记下第一手的出牌。
+     * 开局第一手的飞机/炸弹动画被读成 Double 时 tracker 还没有出牌历史,不能再按一次蓝色(跟牌时就是「不出」)。
+     */
+    @Test fun aDoubleMisreadBeforeTheFirstPlayIsRecordedIsNotTappedAgain() = runTest {
+        val call = full("call")
+        val double = full("double")
+        // 轮到自己先出,两家出牌区都是空的:换一个 phase,但 tracker 还记不下任何一手
+        val lead = full("lead")
+        val result = full("human_result_leave_change_continue")
+        val savedBid = PhoneDdzTurn.adviseBid
+        PhoneDdzTurn.adviseBid = { _, _ -> PhoneDdzTurn.BidAdvice(0) }
+        try {
+            val game = Game(
+                PhoneDdzTurn.PACKAGE,
+                ArrayDeque(listOf(call, call, call, double, lead, double, double) + List(3) { result }),
+            )
+            val out = PhoneDdzTurn.execute(
+                Args(PhoneDdzTurn.def, Json.parseToJsonElement(
+                    """{"action":"start","mode":"human","auto":true,"advisor":"http://mac:3426"}"""
+                ).jsonObject),
+                toolDispatcher(game).ctx,
+            )
+            val decline = DdzScreen.read(double, classic = true).buttons.first { it.color == DdzColor.Blue }
+            assertEquals(
+                "真实加倍只按一次,之后再读到 Double 一下都不点: ${game.taps}",
+                1,
+                game.taps.count { it == decline.x to decline.y },
+            )
+            assertEquals(out.content.toString(), "result", out.text("phase"))
+            assertNull("不因误读的 Double 暂停: ${out.content}", out.text("reason"))
+        } finally {
+            PhoneDdzTurn.adviseBid = savedBid
+        }
+    }
+
     @Test fun humanDeclinesOnTheBlueButtonWhenDouZeroSaysNotToDouble() = runTest {
         val call = full("call")
         val double = full("double")
