@@ -353,6 +353,18 @@ class DdzCardsTest {
         assertEquals(listOf("9", "4", "5"), DdzCards.bottom(frame("vd_stage_leftpass_rightQQQ6")))
     }
 
+    /** 2026-11-14 11:18 起开了「记牌器」:顶上正中换成一条横条,右端紧接着三张小号底牌。 */
+    @Test fun readsTheSmallBottomCardsAtTheRightEndOfTheCounterBar() {
+        assertEquals(listOf("3", "6", "A"), DdzCards.bottom(fullFrame("counter_bottom_36A")))
+        assertEquals(listOf("9", "Q", "2"), DdzCards.bottom(fullFrame("counter_bottom_9Q2_1")))
+        assertEquals(listOf("9", "Q", "2"), DdzCards.bottom(fullFrame("counter_bottom_9Q2_2")))
+        assertEquals(listOf("3", "10", "A"), DdzCards.bottom(fullFrame("counter_bottom_310A_1")))
+        assertEquals(listOf("3", "10", "A"), DdzCards.bottom(fullFrame("counter_bottom_310A_2")))
+        // 叫分阶段还没有记牌器条,中间是三张扣着的牌背
+        assertNull(DdzCards.bottom(fullFrame("counter_call_1")))
+        assertNull(DdzCards.bottom(fullFrame("counter_call_2")))
+    }
+
     @Test fun seesWhoseTurnItIs() {
         assertEquals(DdzSide.Right, DdzCards.clock(frame("table_left55")))
         assertEquals(DdzSide.Left, DdzCards.clock(frame("table_rightKK")))
