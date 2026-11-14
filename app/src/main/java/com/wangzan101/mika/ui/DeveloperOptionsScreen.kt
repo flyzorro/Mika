@@ -33,6 +33,7 @@ object DeveloperSwitches {
         DevSwitch("replay", tr(R.string.dev_replay), tr(R.string.dev_replay_sub), flags.replay) { flags.copy(replay = it) },
         DevSwitch("parallel-tasks", tr(R.string.dev_parallel), tr(R.string.dev_parallel_sub), flags.parallelTasks) { flags.copy(parallelTasks = it) },
         DevSwitch("structured-compaction", tr(R.string.dev_compaction), tr(R.string.dev_compaction_sub), flags.structuredCompaction) { flags.copy(structuredCompaction = it) },
+        DevSwitch("tables-at-birth", tr(R.string.dev_screen_tables), tr(R.string.dev_screen_tables_sub), flags.tablesAtBirth) { flags.copy(tablesAtBirth = it) },
     )
 }
 
@@ -56,8 +57,8 @@ object GroundingCopy {
 }
 
 /**
- * 设置 › 高级与其他 › 开发者选项:速度和实验两组开关;有看图模型时另有它的「看图定位已验证」
- * ([grounding] 为 null 时不显示);最后是「运行统计」的入口([onOpenRunStats] 为 null 时不显示)。
+ * 设置 › 高级与其他 › 开发者选项:最上面是「主动能力(实验)」的入口([onOpenProactive]);然后是速度和实验两组开关;
+ * 有看图模型时另有它的「看图定位已验证」([grounding] 为 null 时不显示);最后是「运行统计」的入口([onOpenRunStats] 为 null 时不显示)。
  */
 @Composable
 fun DeveloperOptionsScreen(
@@ -67,8 +68,14 @@ fun DeveloperOptionsScreen(
     grounding: GroundingSetting? = null,
     onGrounding: (Boolean) -> Unit = {},
     onOpenRunStats: (() -> Unit)? = null,
+    onOpenProactive: (() -> Unit)? = null,
 ) {
     PageScaffold(tr(R.string.settings_developer), onBack) {
+        if (onOpenProactive != null) {
+            GroupCard {
+                ListRow(null, tr(R.string.proactive_title), tr(R.string.proactive_entry_sub), first = true, onClick = onOpenProactive) { RowChevron() }
+            }
+        }
         GroupLabel(tr(R.string.dev_speed))
         SwitchGroup(DeveloperSwitches.speed(speed), onSpeed)
         GroupLabel(tr(R.string.dev_experiments))

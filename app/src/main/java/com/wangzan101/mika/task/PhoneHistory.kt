@@ -2,6 +2,7 @@ package com.wangzan101.mika.task
 
 import com.wangzan101.mika.chat.ConversationStore
 import com.wangzan101.mika.chat.ConversationSummary
+import com.wangzan101.mika.core.agent.NoticeTurn
 import com.wangzan101.mika.core.agent.Turn
 import com.wangzan101.mika.core.record.Redactor
 import com.wangzan101.mika.core.record.RunEvent
@@ -28,11 +29,12 @@ class PhoneHistory(
         val pending = live().distinctBy { it.conversation }.asReversed().map {
             ConversationSummary(it.conversation, it.goal, it.createdAtMs)
         }
-        val page = conversations.listPage(offset, limit + 1, pending)
+        val page = conversations.listPage(offset, limit + 1, pending, includeArchived = true)
         return buildJsonObject {
             putJsonArray("conversations") {
                 for (c in page.take(limit)) addJsonObject {
                     put("id", c.id); put("title", c.title.take(TEXT_LIMIT)); put("updated_at_ms", c.updatedAt)
+                    put("archived", c.archivedAt != null)
                 }
             }
             put("next_offset", if (page.size > limit) JsonPrimitive(offset + limit) else JsonNull)
@@ -71,8 +73,11 @@ class PhoneHistory(
         turn.runId?.let { put("run_id", it) }
         turn.remoteTaskId?.let { put("source_task_id", it) }
         started?.let { put("started_at_ms", it) }
-        put("goal", turn.userText.take(TEXT_LIMIT)); put("answer", turn.outcome.take(TEXT_LIMIT))
-        put("text_truncated", turn.userText.length > TEXT_LIMIT || turn.outcome.length > TEXT_LIMIT)
+        // A notice turn lists other apps' notifications (third-party text Mika showed the user). It is not an answer to a task,
+        // and the remote client would read it as Mika's own words, so the text stays on the phone.
+        val answer = if (NoticeTurn.isNotice(turn)) "" else turn.outcome
+        put("goal", turn.userText.take(TEXT_LIMIT)); put("answer", answer.take(TEXT_LIMIT))
+        put("text_truncated", turn.userText.length > TEXT_LIMIT || answer.length > TEXT_LIMIT)
         put("status", when (turn.status) {
             "succeeded", "unverified" -> "done"
             "cancelled" -> "cancelled"

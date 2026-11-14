@@ -51,6 +51,29 @@ class PhoneHistoryTest {
         assertTrue(turns.none { "run_id" in it.jsonObject })
     }
 
+    @Test fun archivedConversationsRemainInPagedHistoryAndCanBeRead() {
+        val store = conversations()
+        store.append("archived", Turn("old question", "old answer", "succeeded"))
+        store.append("active", Turn("new question", "new answer", "succeeded"))
+        assertTrue(tmp.root.resolve("conversations/archived.json").setLastModified(1_000L))
+        assertTrue(tmp.root.resolve("conversations/active.json").setLastModified(2_000L))
+        assertTrue(store.setArchived("archived", true, 3_000L))
+        val reader = PhoneHistory(store, runs(), traces(), { true })
+        val first = reader.conversations(0, 1)
+        val active = first.getValue("conversations").jsonArray.single().jsonObject
+        assertEquals("active", active.getValue("id").jsonPrimitive.content)
+        assertEquals(1, first.getValue("next_offset").jsonPrimitive.int)
+        assertFalse(active.getValue("archived").jsonPrimitive.boolean)
+        val second = reader.conversations(1, 1)
+        val archived = second.getValue("conversations").jsonArray.single().jsonObject
+        assertEquals("archived", archived.getValue("id").jsonPrimitive.content)
+        assertTrue(archived.getValue("archived").jsonPrimitive.boolean)
+        assertEquals(JsonNull, second.getValue("next_offset"))
+        assertEquals("old answer", reader.turns("archived", 0, 20)!!.getValue("turns").jsonArray.single().jsonObject.getValue("answer").jsonPrimitive.content)
+        assertTrue(store.setArchived("archived", false))
+        assertFalse(reader.conversations(1, 1).getValue("conversations").jsonArray.single().jsonObject.getValue("archived").jsonPrimitive.boolean)
+    }
+
     @Test fun historyListReadsOnlyThePageAndReusesUnchangedConversationBodies() {
         val dir = tmp.newFolder("old-chats")
         val writer = ConversationStore(dir)
@@ -184,5 +207,16 @@ class PhoneHistoryTest {
         val record = reader.run("phone", "old-run", 0, 20)!!
         assertFalse(record.getValue("record_available").jsonPrimitive.boolean)
         assertFalse(record.getValue("trace_available").jsonPrimitive.boolean)
+    }
+
+    // 通知提醒那一轮列的是别的 App 的通知:经电脑端读历史时不给出这些字
+    @Test fun noticeTurnTextIsNotExported() {
+        val store = conversations()
+        store.append("talk", Turn("", "1. 微信 张三:明天来吗", "succeeded", runId = "notice:n1"))
+        store.append("talk", Turn("帮我回个好的", "已回复", "succeeded"))
+        val turns = history().turns("talk", 0, 20)!!.getValue("turns").jsonArray.map { it.jsonObject }
+        assertEquals(listOf("", "已回复"), turns.map { it.getValue("answer").jsonPrimitive.content })
+        assertEquals(listOf("", "帮我回个好的"), turns.map { it.getValue("goal").jsonPrimitive.content })
+        assertFalse(turns.toString().contains("张三"))
     }
 }

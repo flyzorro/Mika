@@ -82,6 +82,17 @@ fun TriggerDefinition.toPlanDraft(): PlanDraft {
     )
 }
 
+fun TriggerDefinition.toCopyPlanDraft(nowMs: Long): PlanDraft {
+    val draft = toPlanDraft()
+    val firstAt = when {
+        draft.repeat == PlanRepeat.Daily || draft.repeat == PlanRepeat.Weekly -> draft.firstAt
+        nextAtMs > nowMs -> Instant.ofEpochMilli(nextAtMs).toString()
+        intervalMs != null -> Instant.ofEpochMilli(upcoming(this, nowMs + 1, 1).single()).toString()
+        else -> newPlanDraft(nowMs, ZoneId.of(draft.zone)).firstAt
+    }
+    return draft.copy(firstAt = firstAt, enabled = false)
+}
+
 /**
  * 把表单变成可持久化的计划。编辑时只替换表单负责的字段，保留 ID、对话和执行账本；
  * 条件语义改变后旧值不能继续作为新条件的比较基线。
@@ -92,6 +103,7 @@ fun editedTrigger(
     newId: String,
     newThreadId: String,
     nowMs: Long,
+    source: TriggerSource = TriggerSource.User,
 ): TriggerDefinition {
     val content = draft.content.trim()
     if (content.isEmpty()) invalid(PlanValidation.MissingContent)
@@ -151,7 +163,7 @@ fun editedTrigger(
         minutes * 60_000
     } else null
     val reminderText = content.takeIf { draft.reminder }
-    val base = original ?: TriggerDefinition(newId, newThreadId, content, nextAt)
+    val base = original ?: TriggerDefinition(newId, newThreadId, content, nextAt, source = source)
     val updated = base.copy(
         goal = content,
         nextAtMs = nextAt,
