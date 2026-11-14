@@ -107,6 +107,12 @@ def breaks_combo(move, hand):
     return any(0 < n < in_hand[rank] for rank, n in Counter(move).items())
 
 
+def is_simple_combo(move):
+    """单张、对子、三条,以及带牌的三带一/三带二。顺子、连对、飞机、炸弹、王炸都不算。"""
+    counts = tuple(sorted(Counter(move).values()))
+    return counts in ((1,), (2,), (3,), (1, 3), (2, 3))
+
+
 def legal(move, before):
     """[move] 接在 [before] 这串出牌后面合不合规:让 DouZero 的牌局按只拿着这手牌来生成能出的牌。"""
     probe = GameEnv({s: None for s in SEATS})
@@ -254,13 +260,17 @@ class Agent:
         return move
 
     def keep_combos(self, infoset, values, move):
-        """最高分那手拆牌时,在 KEEP_MARGIN 以内的不拆候选里挑分数最高的;都不拆或都拆就保持原选择。"""
+        """最高分那手是单张/对子/三条(含三带一/三带二)且拆牌时,在 KEEP_MARGIN 以内的不拆出牌里挑分数最高的。
+        不出、顺子、连对、飞机、炸弹、王炸都不参与;都不拆或都拆就保持原选择。"""
+        if not move or not is_simple_combo(move):
+            return move
         top = float(values.max())
         hand = infoset.player_hand_cards
         best, best_score = None, None
         for i, action in enumerate(infoset.legal_actions):
             score = float(values[i])
-            if top - score > KEEP_MARGIN or breaks_combo(action, hand):
+            if not action or top - score > KEEP_MARGIN or breaks_combo(action, hand) \
+                    or not is_simple_combo(action):
                 continue
             if best_score is None or score > best_score:
                 best, best_score = action, score

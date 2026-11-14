@@ -174,6 +174,18 @@ class KeepCombosTest(unittest.TestCase):
         history = [["3", "4", "5", "6", "7", "8"], [], [], ["3"], ["Q"], [], ["A"]]
         self.assertEqual(["2"], [NAMES[c] for c in ADVISOR.act("landlord_down", hand, ["K", "2"], history)])
 
+    def test_a_breaking_play_is_not_replaced_by_a_pass(self):
+        # 实机同一手:最高分是拆一对 2 的单张 2;不出虽在 margin 内,但规则只在出牌里挑,没有不拆的出牌就保持出牌
+        hand = ["2", "2", "K", "K", "J", "J", "10", "10", "8", "7", "6", "5", "4", "4", "4", "3", "3"]
+        history = [["6", "7", "8", "9", "10", "J", "Q", "K"], [], [], ["5"], [], ["J"], ["Q"]]
+        self.assertEqual(["2"], [NAMES[c] for c in ADVISOR.act("landlord_down", hand, [], history)])
+
+    def test_a_straight_that_breaks_a_pair_is_left_alone(self):
+        # 最高分是拆了一对 5(和一对 6)的顺子;单张 3 只差 0.012,但规则只管单张/对子/三条,顺子不动
+        hand = ["3", "4", "4", "4", "5", "5", "6", "6", "7", "8", "9", "9", "Q", "Q", "Q", "K", "A", "2", "2", "2"]
+        self.assertEqual(["5", "6", "7", "8", "9"],
+                         [NAMES[c] for c in ADVISOR.act("landlord", hand, ["Q", "K", "A"], [])])
+
 
 class EndgameTest(unittest.TestCase):
     def test_the_search_finds_the_forced_win_douzero_missed(self):
@@ -304,8 +316,7 @@ class LookaheadTest(unittest.TestCase):
         out = resolve(cards(hand), [[str(c) if str(c).startswith("?") else cards([c])[0] for c in m] for m in history])
         self.assertEqual([6, 7, 8, 9, 10, 11, 12, 13], out[0])
         self.assertEqual([5], out[3])
-        # 这手只是确认能出牌、不报错;不出([])也是合法的一手
-        self.assertIsNotNone(ADVISOR.act("landlord_down", hand, [], history))
+        self.assertTrue(ADVISOR.act("landlord_down", hand, [], history))
 
     def test_guesses_that_all_fail_fall_back_to_any_legal_rank(self):
         # 实机上的一手:我出 A、上家不出,地主压了一张带绶带的 2,手机猜 J、5、3,都压不住 A
