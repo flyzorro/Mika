@@ -13,6 +13,8 @@ class DdzTrackerTest {
     private val tracker = DdzTracker()
 
     private fun see(turn: DdzSeat?) = tracker.observe(turn, { if (it == DdzSide.Left) left else right }, { bottom })
+    private fun seeLeading(turn: DdzSeat?) =
+        tracker.observe(turn, { if (it == DdzSide.Left) left else right }, { bottom }, leading = true)
     private var counts = mapOf<DdzSide, Int?>()
     private fun seeCounted(turn: DdzSeat?) = tracker.observe(turn, { if (it == DdzSide.Left) left else right }, { bottom }, counts = { counts })
 
@@ -282,6 +284,41 @@ class DdzTrackerTest {
         repeat(5) { tracker.observe(DdzSeat.Me, { DdzSeen.Empty }, { bottom }, leading = true) }
         assertEquals(listOf(listOf("3")), tracker.history)
         assertFalse(tracker.ready())
+    }
+
+    @Test fun myOwnBombLeadIsFollowedByTwoUnreadPasses() {
+        // 2026-11-14 13:48:55 真机:左家地主出 KKKK,我出王炸 SJ BJ;没人管得了,右家(队友)和左家都自动不出,
+        // 又轮到我领出。右家的「不出」没读到(L=Pass、R=Empty),闹钟直接从右家跳回我:
+        // 以前 leftMe 还是 false,这几帧全被当成「我的按钮还留着」丢掉,tracker 一直 not ready,6 秒后判 missed_play。
+        tracker.restore(DdzSeat.Left, bottom, listOf(listOf("K", "K", "K", "K")), DdzSeat.Me)
+        left = DdzSeen.Empty
+        right = DdzSeen.Empty
+        repeat(2) { see(DdzSeat.Me) }   // 我出牌前已经连着两帧轮到我,meFrames 已经够了
+        tracker.mine(listOf("SJ", "BJ"))
+        // 下一帧:phase=Lead、seat=Me、左家亮着「不出」、右家的不出没读到
+        left = DdzSeen.Pass
+        right = DdzSeen.Empty
+        seeLeading(DdzSeat.Me)
+        assertNull(tracker.broken)
+        assertEquals(
+            listOf(listOf("K", "K", "K", "K"), listOf("SJ", "BJ"), emptyList(), emptyList()),
+            tracker.history,
+        )
+        assertTrue(tracker.ready())
+    }
+
+    @Test fun myOwnBombLeadIsNotBackfilledWhenAnOpponentShowsCards() {
+        // 同一个漏帧,但这回右家读到了真牌:不能把两家都补成「不出」,照旧交给原来的流程。
+        tracker.restore(DdzSeat.Left, bottom, listOf(listOf("K", "K", "K", "K")), DdzSeat.Me)
+        left = DdzSeen.Empty
+        right = DdzSeen.Empty
+        repeat(2) { see(DdzSeat.Me) }
+        tracker.mine(listOf("SJ", "BJ"))
+        left = DdzSeen.Pass
+        right = DdzSeen.Cards(listOf("A"))
+        repeat(3) { seeLeading(DdzSeat.Me) }
+        assertFalse(tracker.ready())
+        assertFalse(tracker.history.takeLast(2) == listOf(emptyList<String>(), emptyList<String>()))
     }
 
     @Test fun aPlayThatNeverShowedBreaksTheHistoryInsteadOfBorrowingTheNextOne() {
