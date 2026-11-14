@@ -144,7 +144,12 @@ internal class DdzTracker(private val settling: DdzSettlingPolicy = DdzSettlingP
         // 我出的牌没人要得起:两家都被秒过(闹钟没在他们头上停过),又轮到我先出。两家都摆着「不出」,
         // 就不是我刚出完、按钮还留着的那几帧(那时桌上没有他们的「不出」)
         if (turn == DdzSeat.Me && !leftMe && leading && read(DdzSide.Left) == DdzSeen.Pass && read(DdzSide.Right) == DdzSeen.Pass) leftMe = true
-        if (turn == DdzSeat.Me && !leftMe) return
+        if (turn == DdzSeat.Me && !leftMe) {
+            // 我刚出完、按钮还留着的那几帧桌上还没有两家的「不出」。但我出的这一轮两家都要不起、
+            // 又轮到我领出时,只要有一家亮着「不出」、另一家也读不到牌,这一轮就已经转完了
+            // (闹钟可能从右家直接跳回我,waiting 里一家都没有),放行给下面的 advance 按顺序补记。
+            if (!(leading && lastNonEmptyWasMine() && othersPassedSinceMyLead(read))) return
+        }
         // 我方先出且上一手有效牌是我出的,轮到我前的每家都只能是不出;不等出牌区读稳
         inferOwnLeadPasses(turn, leading)
         resolve(seen)
@@ -177,6 +182,8 @@ internal class DdzTracker(private val settling: DdzSettlingPolicy = DdzSettlingP
         if (leader == null) {
             // 闹钟回到刚出过牌、还没记下的那一家:另外两家都不出,先补记这一手和两个「不出」
             if (recordReturnedLeader(turn, read)) return true
+            // 这一轮最后出牌的那家已经亮出新的领出,中间几家还读不到:他们只能都不出
+            if (recordNewLeadFromLastLeader(read)) return true
             // 闹钟停在这一轮最后出牌的那家、中间各家都还空着:先记下,等他下一步动作再判
             if (turn == null || turn != trickLeaderSeat()) return false
             // 领出的人也还在等:他手上可能有一手没记下的新牌
@@ -240,6 +247,42 @@ internal class DdzTracker(private val settling: DdzSettlingPolicy = DdzSettlingP
             record(seat, emptyList())
             lastSeen -= seat
         }
+        return true
+    }
+
+    /**
+     * 这一轮最后一手是 [trickLeaderSeat] 出的,闹钟已经转过中间几家、又回到我这里,中间那几家还没读到:
+     * 如果他的出牌区这时亮出和上一手不同的新牌,那只能是中间几家都不出、他接着领出。
+     * 只在逻辑上唯一时补:他排在等着的队尾(前面等着的那几家这一轮都该跟他的牌),这几家这一帧都读不到、
+     * 也没读到过牌、张数没少(和 #65 的 [passedSince] 同一条);读到真牌、认不准、张数对不上就不补,照常交给 [resolve]。
+     * 返回是否补记了。
+     */
+    private fun recordNewLeadFromLastLeader(read: (DdzSide) -> DdzSeen): Boolean {
+        val leader = trickLeaderSeat() ?: return false
+        if (leader == DdzSeat.Me) return false
+        if (waiting.lastOrNull()?.first != leader) return false
+        val seen = read(sideOf(leader))
+        if (seen !is DdzSeen.Cards || seen.ranks == lastPlay[leader]) return false
+        // 带 ? 的没认准,推断出来的补记不再叠一层猜测
+        if (seen.ranks.any { it.startsWith(DdzCards.UNKNOWN) }) return false
+        if (DdzSnapshotRecovery.classify(seen.ranks) == null) return false
+        val played = unplayed(leader)
+        if (played != null && played != seen.ranks.size) return false
+        // 中间那几家这一帧都得像不出(见 [passedSince],和 #65 补记「不出」用的是同一条):
+        // 摆着牌、读到过牌、张数少了都不补
+        if (!waiting.takeWhile { it.first != leader }.all { (seat, _) -> seat == DdzSeat.Me || passedSince(seat, read) }) return false
+        // 新的一手也要读稳:牌可能还在落,一帧认错不算
+        if (!steady(leader to seen.ranks, if (played == null) settling.steadyFrames else settling.countedFrames)) return false
+        while (waiting.isNotEmpty() && waiting.first().first != leader) {
+            val seat = waiting.removeFirst().first
+            record(seat, emptyList())
+            lastSeen -= seat
+        }
+        // 队尾的领出这一手已经出完:先把他从等着的那一队里去掉,再记他的新牌
+        waiting.removeFirst()
+        record(leader, seen.ranks)
+        lastSeen -= leader
+        active = leader.next
         return true
     }
 
@@ -492,6 +535,15 @@ internal class DdzTracker(private val settling: DdzSettlingPolicy = DdzSettlingP
             record(seat, emptyList())
             lastSeen -= seat
         }
+    }
+
+    /**
+     * 我领出的这一轮,另外两家这一帧都像不出:至少一家亮着「不出」(证明这一轮已经转完,不是我的按钮还留着),
+     * 两家都没读到牌、也没读到过牌、张数没少(见 [passedSince])。
+     */
+    private fun othersPassedSinceMyLead(read: (DdzSide) -> DdzSeen): Boolean {
+        val others = listOf(DdzSeat.Right, DdzSeat.Left)
+        return others.any { read(sideOf(it)) == DdzSeen.Pass } && others.all { passedSince(it, read) }
     }
 
     private fun note(event: String) {

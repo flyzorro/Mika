@@ -13,6 +13,8 @@ class DdzTrackerTest {
     private val tracker = DdzTracker()
 
     private fun see(turn: DdzSeat?) = tracker.observe(turn, { if (it == DdzSide.Left) left else right }, { bottom })
+    private fun seeLeading(turn: DdzSeat?) =
+        tracker.observe(turn, { if (it == DdzSide.Left) left else right }, { bottom }, leading = true)
     private var counts = mapOf<DdzSide, Int?>()
     private fun seeCounted(turn: DdzSeat?) = tracker.observe(turn, { if (it == DdzSide.Left) left else right }, { bottom }, counts = { counts })
 
@@ -282,6 +284,41 @@ class DdzTrackerTest {
         repeat(5) { tracker.observe(DdzSeat.Me, { DdzSeen.Empty }, { bottom }, leading = true) }
         assertEquals(listOf(listOf("3")), tracker.history)
         assertFalse(tracker.ready())
+    }
+
+    @Test fun myOwnBombLeadIsFollowedByTwoUnreadPasses() {
+        // 2026-11-14 13:48:55 真机:左家地主出 KKKK,我出王炸 SJ BJ;没人管得了,右家(队友)和左家都自动不出,
+        // 又轮到我领出。右家的「不出」没读到(L=Pass、R=Empty),闹钟直接从右家跳回我:
+        // 以前 leftMe 还是 false,这几帧全被当成「我的按钮还留着」丢掉,tracker 一直 not ready,6 秒后判 missed_play。
+        tracker.restore(DdzSeat.Left, bottom, listOf(listOf("K", "K", "K", "K")), DdzSeat.Me)
+        left = DdzSeen.Empty
+        right = DdzSeen.Empty
+        repeat(2) { see(DdzSeat.Me) }   // 我出牌前已经连着两帧轮到我,meFrames 已经够了
+        tracker.mine(listOf("SJ", "BJ"))
+        // 下一帧:phase=Lead、seat=Me、左家亮着「不出」、右家的不出没读到
+        left = DdzSeen.Pass
+        right = DdzSeen.Empty
+        seeLeading(DdzSeat.Me)
+        assertNull(tracker.broken)
+        assertEquals(
+            listOf(listOf("K", "K", "K", "K"), listOf("SJ", "BJ"), emptyList(), emptyList()),
+            tracker.history,
+        )
+        assertTrue(tracker.ready())
+    }
+
+    @Test fun myOwnBombLeadIsNotBackfilledWhenAnOpponentShowsCards() {
+        // 同一个漏帧,但这回右家读到了真牌:不能把两家都补成「不出」,照旧交给原来的流程。
+        tracker.restore(DdzSeat.Left, bottom, listOf(listOf("K", "K", "K", "K")), DdzSeat.Me)
+        left = DdzSeen.Empty
+        right = DdzSeen.Empty
+        repeat(2) { see(DdzSeat.Me) }
+        tracker.mine(listOf("SJ", "BJ"))
+        left = DdzSeen.Pass
+        right = DdzSeen.Cards(listOf("A"))
+        repeat(3) { seeLeading(DdzSeat.Me) }
+        assertFalse(tracker.ready())
+        assertFalse(tracker.history.takeLast(2) == listOf(emptyList<String>(), emptyList<String>()))
     }
 
     @Test fun aPlayThatNeverShowedBreaksTheHistoryInsteadOfBorrowingTheNextOne() {
@@ -841,6 +878,57 @@ class DdzTrackerTest {
         see(DdzSeat.Right)   // 闹钟又转过左家:左家还卡在队头,判漏
         assertEquals("missed_play", tracker.broken)
         assertEquals(listOf(straight), tracker.history)
+    }
+
+    @Test fun aNewLeadFromTheLastLeaderBackfillsTheUnreadMiddlePasses() {
+        // 2026-11-14 13:37 真机(DDZTRACE,我是地主):左家出 2,我不出;右家的「不出」只亮了一下,
+        // 两帧之间没读到;闹钟从右家直接跳到我,左家已经重新领出 6。以前右家卡在队头,等满 6 秒判 missed_play。
+        // 这一轮最后一手是左家的 2,他出牌区又亮出新的 6,中间那几家都读不到:只能是都不出。
+        tracker.restore(
+            DdzSeat.Me, bottom,
+            listOf(listOf("3"), emptyList(), listOf("2")),
+            DdzSeat.Me,
+        )
+        left = DdzSeen.Empty
+        right = DdzSeen.Empty
+        tracker.mine(emptyList())   // 我不出:轮到右家
+        see(DdzSeat.Right)          // 右家不出(没读到)
+        see(DdzSeat.Me)             // 我的回合要连着两帧
+        see(DdzSeat.Me)             // 左家领出太快,闹钟从右家直接跳到我:右家、左家都排进 waiting
+        assertEquals(listOf(listOf("3"), emptyList(), listOf("2"), emptyList()), tracker.history)
+        assertFalse(tracker.ready())
+        // 左家的出牌区这时摆着新的一手 6
+        left = DdzSeen.Cards(listOf("6"))
+        repeat(DdzSettlingPolicy.SINGLE.steadyFrames) { see(DdzSeat.Me) }
+        assertNull(tracker.broken)
+        assertEquals(
+            listOf(listOf("3"), emptyList(), listOf("2"), emptyList(), emptyList(), listOf("6")),
+            tracker.history,
+        )
+        assertTrue(tracker.ready())
+    }
+
+    @Test fun aNewLeadDoesNotBackfillAMiddleSeatThatShowsCards() {
+        // 同一个漏帧,但这回右家其实出了一手 BJ(读到了真牌):不能把右家补成「不出」,照常按原来的流程记。
+        tracker.restore(
+            DdzSeat.Me, bottom,
+            listOf(listOf("3"), emptyList(), listOf("2")),
+            DdzSeat.Me,
+        )
+        left = DdzSeen.Empty
+        right = DdzSeen.Empty
+        tracker.mine(emptyList())
+        see(DdzSeat.Right)
+        see(DdzSeat.Me)
+        see(DdzSeat.Me)
+        right = DdzSeen.Cards(listOf("BJ"))
+        left = DdzSeen.Cards(listOf("6"))
+        repeat(4) { see(DdzSeat.Me) }
+        // 右家的 BJ 记在这一轮里,不是「不出」;左家的 6 压不过 BJ,交回原来的规则判
+        assertEquals(
+            listOf(listOf("3"), emptyList(), listOf("2"), emptyList(), listOf("BJ")),
+            tracker.history,
+        )
     }
 
     @Test fun thePlayAndPassBehindMyLingeringButtonsAreStillRecorded() {
