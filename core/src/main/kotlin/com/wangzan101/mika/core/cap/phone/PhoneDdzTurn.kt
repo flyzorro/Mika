@@ -1075,16 +1075,21 @@ internal object PhoneDdzTurn : PhoneTool {
         if (view.buttons.size != buttons) return Sent.Rejected
         repeat(2) {
             if (!tap(ctx, turn, view.buttons.last().x, view.buttons.last().y)) return Sent.Rejected
-            delay(VERDICT_MS)
             val verdict = verify(view, count, left, ctx, classicTable(turn))
             if (verdict != null) return verdict
         }
         return Sent.Rejected
     }
 
-    /** 按了出牌之后看手牌:出去了、少的不对(Drift),或者一点没动(null,可以再按一次)。 */
+    /**
+     * 按了出牌之后马上看手牌:出去了、少的不对(Drift),或者一点没动(null,可以再按一次)。
+     * 手牌没动只有在按下后过了 [VERDICT_MS] 才算游戏没认:之前只是动画还没走完,接着看,不能提前重按。
+     * 认不出的帧接着看;一直看不出出了什么(约 [VERDICT_MS] + [HUMAN_SCENE_RETRY_POLLS] 次轮询)还是 Drift。
+     * 计时只数自己 delay 掉的协程时间:读帧本身不比这短,所以真机上的等待不会比这个窗口短(测试里走虚拟时间)。
+     */
     private suspend fun verify(view: DdzView, count: Int, left: List<String>?, ctx: ToolContext, classic: Boolean): Sent? {
-        repeat(HUMAN_SCENE_RETRY_POLLS) {
+        var waited = 0L
+        while (waited < VERDICT_MS + HUMAN_SCENE_RETRY_POLLS * POLL_MS) {
             val frame = ctx.screen.rawFrame(FULL_ROWS)
             val after = frame?.let { DdzScreen.read(it, classic = classic) }
             if (frame != null && after != null) {
@@ -1096,11 +1101,13 @@ internal object PhoneDdzTurn : PhoneTool {
                         // 牌还在动的那几帧认不出,接着看
                         DdzCards.hand(frame, after)?.let { return if (it.sorted() == left.sorted()) Sent.Played else Sent.Drift }
                     }
-                    // 认得出的画面上手牌一张没少、还轮到我:这一下游戏没认,再按一次
-                    after.handCount == view.handCount && after.phase == view.phase -> return null
+                    // 认得出的画面上手牌一张没少、还轮到我:过了 [VERDICT_MS] 才是这一下游戏没认,再按一次;
+                    // 之前只是动画还没走完,接着看
+                    after.handCount == view.handCount && after.phase == view.phase -> if (waited >= VERDICT_MS) return null
                 }
             }
             delay(POLL_MS)
+            waited += POLL_MS
         }
         // 一直看不出出了什么:不能当成出去了
         return Sent.Drift
