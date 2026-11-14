@@ -154,6 +154,39 @@ class TeammateTest(unittest.TestCase):
         self.assertEqual([], ADVISOR.act("landlord_down", hand, [], history))
 
 
+class KeepCombosTest(unittest.TestCase):
+    """几手分数几乎一样时,优先不拆三条/对子/炸弹。按公开入口测。残局有结论时仍由残局搜索说了算(见 EndgameTest)。"""
+
+    def test_a_near_tie_keeps_the_triple_and_beats_with_the_single_9(self):
+        # 2026-11-14 13:44 实机:DouZero 拆了 10 10 10 里的 10 去顶队友的 6;单张 9 只差 0.009,不该拆
+        history = [["3"], ["5", "5", "5", "5"], [], [], ["6"]]
+        hand = ["BJ", "2", "K", "K", "Q", "10", "10", "10", "9", "8", "7", "6", "4", "4", "4", "3", "3"]
+        self.assertEqual(["9"], [NAMES[c] for c in ADVISOR.act("landlord_up", hand, ["9", "2", "J"], history)])
+
+    def test_a_clear_best_move_is_left_alone(self):
+        # 最高分那手本来就不拆(一对 3),照旧
+        hand = ["3", "3", "4", "4", "4", "6", "6", "8", "10", "J", "J", "Q", "K", "K", "K", "A", "A", "A", "2", "BJ"]
+        self.assertEqual(["3", "3"], [NAMES[c] for c in ADVISOR.act("landlord", hand, ["A", "A", "A"], [])])
+
+    def test_a_breaking_move_that_is_clearly_better_is_left_alone(self):
+        # 最高分是拆一对 2 的单张 2;不拆的最好一手还差 0.15,超过 KEEP_MARGIN,照旧
+        hand = ["3", "4", "4", "4", "5", "6", "7", "9", "10", "10", "10", "K", "K", "A", "2", "2"]
+        history = [["3", "4", "5", "6", "7", "8"], [], [], ["3"], ["Q"], [], ["A"]]
+        self.assertEqual(["2"], [NAMES[c] for c in ADVISOR.act("landlord_down", hand, ["K", "2"], history)])
+
+    def test_a_breaking_play_is_not_replaced_by_a_pass(self):
+        # 实机同一手:最高分是拆一对 2 的单张 2;不出虽在 margin 内,但规则只在出牌里挑,没有不拆的出牌就保持出牌
+        hand = ["2", "2", "K", "K", "J", "J", "10", "10", "8", "7", "6", "5", "4", "4", "4", "3", "3"]
+        history = [["6", "7", "8", "9", "10", "J", "Q", "K"], [], [], ["5"], [], ["J"], ["Q"]]
+        self.assertEqual(["2"], [NAMES[c] for c in ADVISOR.act("landlord_down", hand, [], history)])
+
+    def test_a_straight_that_breaks_a_pair_is_left_alone(self):
+        # 最高分是拆了一对 5(和一对 6)的顺子;单张 3 只差 0.012,但规则只管单张/对子/三条,顺子不动
+        hand = ["3", "4", "4", "4", "5", "5", "6", "6", "7", "8", "9", "9", "Q", "Q", "Q", "K", "A", "2", "2", "2"]
+        self.assertEqual(["5", "6", "7", "8", "9"],
+                         [NAMES[c] for c in ADVISOR.act("landlord", hand, ["Q", "K", "A"], [])])
+
+
 class EndgameTest(unittest.TestCase):
     def test_the_search_finds_the_forced_win_douzero_missed(self):
         # 地主只剩一张(最大到 J)、我小王是场上最大:小王接过来,再出对子、A、Q、8 一路走完
