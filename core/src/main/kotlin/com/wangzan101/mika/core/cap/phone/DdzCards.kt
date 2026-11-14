@@ -584,6 +584,75 @@ internal object DdzCards {
     private val RANK_TITLE_ROWS = (RANK_TITLE_Y0 until RANK_TITLE_Y1 step RANK_TITLE_STEP).toList()
     private val RANK_BADGE_ROWS = (RANK_BADGE_Y0 until RANK_BADGE_Y1 step RANK_BADGE_STEP).toList()
 
+    private const val PRIVILEGE_BADGE_Y0 = 340
+    private const val PRIVILEGE_BADGE_Y1 = 460
+    private const val PRIVILEGE_BADGE_STEP = 20
+    private const val PRIVILEGE_BADGE_X0 = 1100
+    private const val PRIVILEGE_BADGE_X1 = 1240
+    private const val PRIVILEGE_BADGE_RED = 0.25
+    private const val PRIVILEGE_BANNER_Y0 = 472
+    private const val PRIVILEGE_BANNER_Y1 = 536
+    private const val PRIVILEGE_BANNER_STEP = 8
+    private const val PRIVILEGE_BANNER_X0 = 1000
+    private const val PRIVILEGE_BANNER_X1 = 1390
+    private const val PRIVILEGE_BANNER_RED = 0.5
+    private const val PRIVILEGE_BUTTON_ROW = 870
+    private const val PRIVILEGE_TAP_Y = 840
+    private val PRIVILEGE_BADGE_ROWS = (PRIVILEGE_BADGE_Y0 until PRIVILEGE_BADGE_Y1 step PRIVILEGE_BADGE_STEP).toList()
+    private val PRIVILEGE_BANNER_ROWS = (PRIVILEGE_BANNER_Y0 until PRIVILEGE_BANNER_Y1 step PRIVILEGE_BANNER_STEP).toList()
+
+    /**
+     * 「至尊特权升级」弹窗要读的行:红色六边形等级徽章、红色「新增特权」横幅,和底部按钮那一行。
+     * 认这个弹窗要截的行比段位弹窗少一点,每帧多读的行也少一些。
+     */
+    val PRIVILEGE_ROWS: List<Int> = (PRIVILEGE_BADGE_ROWS + PRIVILEGE_BANNER_ROWS + PRIVILEGE_BUTTON_ROW).distinct()
+
+    /**
+     * 「至尊特权升级」弹窗(真人结算页上):正中一个红色六边形等级徽章、下面一条红色「新增特权」横幅、
+     * 底部左边蓝色「我知道了」、右边橙色「查看更多特权」。返回蓝色「我知道了」的中点,
+     * 绝不返回橙色「查看更多特权」(会进特权/充值页);认不准为 null。只认 2412×1080 的 Mika 屏。
+     */
+    fun privilegePopup(frame: RawFrame): Pair<Int, Int>? {
+        if (frame.width != 2412 || frame.height != 1080) return null
+        // 只截了部分行的帧上没这些行:当作认不出,别去读到不存在的行
+        if (PRIVILEGE_ROWS.any { frame.row(it) == null }) return null
+        fun red(p: Int): Boolean {
+            val r = p shr 16 and 0xff
+            val g = p shr 8 and 0xff
+            val b = p and 0xff
+            return r > 150 && g < 105 && b < 120 && r - g > 80
+        }
+        // 正中红色六边形等级徽章:别的画面正中没这么一片饱和的红
+        var redBadge = 0
+        var badge = 0
+        for (y in PRIVILEGE_BADGE_ROWS) for (x in PRIVILEGE_BADGE_X0 until PRIVILEGE_BADGE_X1 step 8) {
+            badge++
+            if (red(frame.pixel(x, y))) redBadge++
+        }
+        if (redBadge.toDouble() / badge < PRIVILEGE_BADGE_RED) return null
+        // 「新增特权」红色横幅:和上面的徽章一起对上,排除别处的红
+        var redBanner = 0
+        var banner = 0
+        for (y in PRIVILEGE_BANNER_ROWS) for (x in PRIVILEGE_BANNER_X0 until PRIVILEGE_BANNER_X1 step 8) {
+            banner++
+            if (red(frame.pixel(x, y))) redBanner++
+        }
+        if (redBanner.toDouble() / banner < PRIVILEGE_BANNER_RED) return null
+        // 底部左边蓝色「我知道了」,右边橙色「查看更多特权」:橙色只用来确认摆法,绝不返回它的坐标
+        val blue = DdzScreen.runs(frame.width, gap = 30, minWidth = 250) { x ->
+            val p = frame.pixel(x, PRIVILEGE_BUTTON_ROW)
+            (p shr 16 and 0xff) < 130 && (p shr 8 and 0xff) > 120 && (p and 0xff) > 170
+        }.singleOrNull() ?: return null
+        if (blue.first !in 730..790 || blue.last !in 1040..1100) return null
+        val orange = DdzScreen.runs(frame.width, gap = 30, minWidth = 250) { x ->
+            val p = frame.pixel(x, PRIVILEGE_BUTTON_ROW)
+            (p shr 16 and 0xff) > 200 && (p shr 8 and 0xff) in 130..235 && (p and 0xff) < 110
+        }.singleOrNull() ?: return null
+        if (orange.first !in 1320..1390 || orange.last !in 1630..1700) return null
+        if (orange.first <= blue.last) return null
+        return (blue.first + blue.last) / 2 to PRIVILEGE_TAP_Y
+    }
+
     private const val BEANS_PANEL_X0 = 740
     private const val BEANS_PANEL_X1 = 1680
     private const val BEANS_PANEL_Y0 = 345

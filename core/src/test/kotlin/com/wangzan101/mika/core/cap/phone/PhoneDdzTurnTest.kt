@@ -2071,6 +2071,65 @@ class PhoneDdzTurnTest {
         }
     }
 
+    @Test fun humanAutoStartAcknowledgesThePrivilegePopupThenLeavesTheResultScreen() = runTest {
+        // 2026-11-14 09:58:第 2 局打完,结算页上弹出「至尊特权升级」。以前认不出,start 回 unknown_scene,三局连打卡在第 2 局。
+        // 现在只点蓝色「我知道了」(绝不点橙色「查看更多特权」),再照原来的流程点绿色「离开」、场次页点普通场。
+        val privilege = shot("privilege_up_on_result")
+        val early = shot("privilege_up_on_result_early")
+        val result = shot("human_result_leave_change_continue")
+        val rooms = shot("human_classic_rooms")
+        val call = full("call")
+        val ack = DdzCards.privilegePopup(privilege)
+        val leave = DdzCards.humanResultLeave(result)
+        assertTrue("蓝色「我知道了」: $ack", ack!!.first in 850..980 && ack.second in 820..860)
+        assertTrue("绿色「离开」: $leave", leave!!.first in 1010..1300 && leave.second in 785..882)
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(
+            privilege, early, result, result, rooms, call, call, call, lobbyFrame("vd_lobby"),
+        )))
+        val dispatcher = toolDispatcher(game)
+        val savedBid = PhoneDdzTurn.adviseBid
+        PhoneDdzTurn.adviseBid = { _, _ -> PhoneDdzTurn.BidAdvice(0) }
+        try {
+            val started = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","auto":true,"advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
+            assertNull(started.toString(), started.text("error"))
+            // 两帧确认后只点一次「我知道了」,然后离开 → 场次页 → 普通场
+            assertEquals(listOf(ack, leave, 872 to 400), game.taps.take(3))
+            assertEquals("「我知道了」只点一下", 1, game.taps.count { it == ack })
+            assertTrue("绝不点橙色「查看更多特权」: ${game.taps}", game.taps.none { (x, y) -> y in 770..910 && x in 1320..1700 })
+        } finally {
+            PhoneDdzTurn.adviseBid = savedBid
+        }
+    }
+
+    @Test fun humanAutoStartClearsARankPopupAndAPrivilegePopupInTurn() = runTest {
+        // 同一局里段位弹窗和「至尊特权升级」弹窗先后压上来(或反过来):两种都按两帧确认依次点掉,不 pause。
+        val rank = shot("rank_down_on_result")
+        val privilege = shot("privilege_up_on_result")
+        val result = shot("human_result_leave_change_continue")
+        val rooms = shot("human_classic_rooms")
+        val call = full("call")
+        val confirm = DdzCards.rankPopup(rank)!!
+        val ack = DdzCards.privilegePopup(privilege)!!
+        val leave = DdzCards.humanResultLeave(result)!!
+        val savedBid = PhoneDdzTurn.adviseBid
+        PhoneDdzTurn.adviseBid = { _, _ -> PhoneDdzTurn.BidAdvice(0) }
+        try {
+            for ((first, second) in listOf(rank to privilege, privilege to rank)) {
+                val firstTap = if (first === rank) confirm else ack
+                val secondTap = if (second === rank) confirm else ack
+                val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(
+                    first, first, second, second, result, result, rooms, call, call, call, lobbyFrame("vd_lobby"),
+                )))
+                val dispatcher = toolDispatcher(game)
+                val started = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","auto":true,"advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
+                assertNull(started.toString(), started.text("error"))
+                assertEquals("$firstTap → $secondTap → 离开 → 普通场", listOf(firstTap, secondTap, leave, 872 to 400), game.taps.take(4))
+            }
+        } finally {
+            PhoneDdzTurn.adviseBid = savedBid
+        }
+    }
+
     @Test fun humanStartReportsTheSizeCompatWindowInsteadOfAGuess() = runTest {
         // 安卓的兼容小窗:游戏画面只占屏幕一角,截到的帧不是 2412×1080;认牌的坐标全不对
         for (auto in listOf(false, true)) {

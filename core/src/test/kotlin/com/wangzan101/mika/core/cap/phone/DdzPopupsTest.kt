@@ -8,6 +8,7 @@ import com.wangzan101.mika.core.uistate.VisibleTextLine
 import com.wangzan101.mika.core.uistate.toPx
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import javax.imageio.ImageIO
 
@@ -132,6 +133,35 @@ class DdzPopupsTest {
             "popup_relief_video_only", "popup_classic_lobby",
         )) {
             assertNull(name, DdzCards.rankPopup(frame(name)))
+        }
+    }
+
+    /** 2026-11-14:真人结算页上弹「至尊特权升级」:红色六边形徽章、红色「新增特权」条、蓝「我知道了」、橙「查看更多特权」。 */
+    @Test fun aPrivilegeUpgradePopupIsAcknowledgedAtTheBlueButton() {
+        for (name in listOf("privilege_up_on_result", "privilege_up_on_result_early")) {
+            assertEquals(name, 914 to 840, DdzCards.privilegePopup(frame(name)))
+        }
+    }
+
+    /** 认出特权弹窗时绝不返回橙色「查看更多特权」的位置(会进特权/充值页),只返回左下的蓝色「我知道了」。 */
+    @Test fun thePrivilegePopupNeverReturnsTheOrangeMoreButton() {
+        for (name in listOf("privilege_up_on_result", "privilege_up_on_result_early")) {
+            val tap = DdzCards.privilegePopup(frame(name))!!
+            assertTrue("$name: 只点蓝色「我知道了」: $tap", tap.first in 850..980 && tap.second in 820..860)
+        }
+    }
+
+    /** 结算页、场次页、段位弹窗、救济金、大厅都不是特权弹窗;新素材也不被段位弹窗当成橙色「确定」。 */
+    @Test fun plainScreensAreNeverPrivilegePopups() {
+        for (name in listOf(
+            "human_result_leave_change_continue", "human_classic_rooms", "popup_relief_two_buttons",
+            "popup_relief_video_only", "popup_classic_lobby",
+            "rank_down_on_result", "rank_down_on_rooms", "rank_protect_on_result", "rank_up_on_result", "rank_up_on_rooms",
+        )) {
+            assertNull(name, DdzCards.privilegePopup(frame(name)))
+        }
+        for (name in listOf("privilege_up_on_result", "privilege_up_on_result_early")) {
+            assertNull("$name: 不是段位弹窗", DdzCards.rankPopup(frame(name)))
         }
     }
 }
