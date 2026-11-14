@@ -5,6 +5,7 @@ import com.wangzan101.mika.core.run.SteerSignal
 import com.wangzan101.mika.core.tool.ArgError
 import com.wangzan101.mika.core.tool.Args
 import com.wangzan101.mika.core.tool.FakeScreen
+import com.wangzan101.mika.core.tool.ToolContext
 import com.wangzan101.mika.core.tool.ToolExecution
 import com.wangzan101.mika.core.uistate.RawFrame
 import com.wangzan101.mika.core.uistate.ScreenPort
@@ -4162,6 +4163,168 @@ class PhoneDdzTurnTest {
         val tracker = replayAutopassBomb(5, listOf("5", "A", "A", "A"))
         assertNull("只有一帧读得出的炸弹也不能丢: history=${tracker.history} trace=${tracker.trace}", tracker.broken)
         assertBombRecorded(tracker, listOf("4", "4", "4", "4"))
+    // ---- TEMP diagnostics: unsure_* 帧转储只在「认不准」持续时才写 (revert after) ----
+
+    /** 虚拟时钟:每读一帧往前走一步。认不准持续了多久、DdzFrameDump 的 3 秒限速都按它算,测试不用真等。 */
+    private class VirtualClock { var ms = 1_000_000L }
+
+    /**
+     * 每读一帧虚拟时钟往前走 [stepMs]:一帧的「时间」由测试定,不用真等 2 秒。
+     * [steerAfter] 让第 n 次读帧时置上「用户插话」,等待循环处理完这一帧就返回,不用跑满 300 轮。
+     */
+    private class SteeredGame(app: String, frames: ArrayDeque<RawFrame>, val clock: VirtualClock, private val stepMs: Long) : Game(app, frames) {
+        val steer = MutableStateFlow(false)
+        private var stopAfter = Int.MAX_VALUE
+        private var reads = 0
+        fun steerAfter(n: Int) { steer.value = false; reads = 0; stopAfter = n }
+        override suspend fun rawFrame(rows: List<Int>): RawFrame? {
+            clock.ms += stepMs
+            val frame = super.rawFrame(rows)
+            if (++reads >= stopAfter) steer.value = true
+            return frame
+        }
+    }
+
+    /** start 装好真人局,再装一个空的历史(不然第一帧就被当成中途接手、DouZero 停用),再 start 一次把它留住。 */
+    private suspend fun humanSessionWithEmptyTracker(ctx: ToolContext) {
+        val start = Args(PhoneDdzTurn.def, Json.parseToJsonElement(
+            """{"action":"start","mode":"human","advisor":"http://mac:3426"}"""
+        ).jsonObject)
+        PhoneDdzTurn.execute(start, ctx)
+        PhoneDdzTurn.useTracker(ctx, DdzTracker(DdzSettlingPolicy.HUMAN))
+        PhoneDdzTurn.execute(start, ctx)
+    }
+
+    /** 走 [polls] 轮观察循环就停下(execute 先读一帧,再进循环)。 */
+    private suspend fun steeredWait(game: SteeredGame, ctx: ToolContext, polls: Int) {
+        game.steerAfter(polls + 1)
+        withContext(SteerSignal(game.steer)) {
+            PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"wait"}""").jsonObject), ctx)
+        }
+    }
+
+    /** 把左家出牌区平移到右家、左边填桌布色:同一张牌桌上右家认不准、左家空。 */
+    private fun rightPlayUnsure(name: String): RawFrame {
+        val image = ImageIO.read(javaClass.getResourceAsStream("/ddz/$name.png")!!)
+        val shift = 1137
+        val rows = (DdzScreen.ROWS + DdzCards.ROWS + DdzCards.LOBBY_ROWS + DdzPopups.SCAN_ROWS).distinct()
+        return RawFrame(image.width, image.height, rows.associateWith { y ->
+            IntArray(image.width) { x ->
+                when {
+                    y in 220..419 && x - shift in 280..926 -> image.getRGB(x - shift, y)
+                    y in 220..419 && x in 280..926 -> image.getRGB(1000, y)
+                    else -> image.getRGB(x, y)
+                }
+            }
+        })
+    }
+
+    /** 临时目录里某个 tag 的转储:文件名是「时间_tag_序号_时间.ddzf.gz」,按时间前缀去重就是写了几次。 */
+    private fun dumps(dir: File, tag: String): List<String> =
+        (dir.listFiles() ?: emptyArray()).map { it.name }.filter { "_${tag}_" in it }
+            .map { it.substringBefore("_$tag") }.distinct()
+
+    /** 把 DdzFrameDump 指到临时目录跑 [block],跑完恢复;给了 [clock] 就把它当成虚拟时钟。 */
+    private suspend fun withUnsureDumps(clock: VirtualClock? = null, block: suspend (File) -> Unit) {
+        val dir = java.nio.file.Files.createTempDirectory("ddzdump").toFile()
+        val savedDirs = DdzFrameDump.dirs
+        val savedAdvise = PhoneDdzTurn.advise
+        val savedDumpClock = DdzFrameDump.clock
+        try {
+            DdzFrameDump.dirs = listOf(dir.path)
+            DdzFrameDump.reset()
+            PhoneDdzTurn.advise = { _, _ -> null }
+            if (clock != null) DdzFrameDump.clock = { clock.ms }
+            block(dir)
+        } finally {
+            DdzFrameDump.dirs = savedDirs
+            PhoneDdzTurn.advise = savedAdvise
+            DdzFrameDump.clock = savedDumpClock
+            DdzFrameDump.reset()
+            dir.deleteRecursively()
+        }
+    }
+
+    /** 跑一次真人局的 start + wait;帧用完以后一直重复最后一帧。 */
+    private suspend fun humanWait(game: Game, ctx: ToolContext) {
+        PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement(
+            """{"action":"start","mode":"human","advisor":"http://mac:3426"}"""
+        ).jsonObject), ctx)
+        PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"wait"}""").jsonObject), ctx)
+    }
+
+    @Test fun aSingleUnsureFrameThatIsReadOnTheNextFrameWritesNoUnsureDump() = runTest {
+        // 2026-11-14 真机 16 局:20 次 unsure 转储全是游戏动画(出的牌还在展开、JOKER 飞入、炸弹/飞机特效),
+        // 下一帧(0.46-1.4 秒后)就认对了。单帧认不准不该写转储。
+        withUnsureDumps { dir ->
+            val unsure = full("counts_L16_R17") // 左家出牌区认不准,右家空
+            val read = full("hand_t1")          // 左家认得出 10 10 9 9 8 8,右家空
+            val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(unsure, unsure, unsure, read, read, read)))
+            humanWait(game, toolDispatcher(game).ctx)
+            DdzFrameDump.writer.submit {}.get()
+            assertEquals("单帧认不准不写转储: ${dir.list()?.toList()}", emptyList<String>(), dumps(dir, "unsure_Left"))
+            assertEquals(emptyList<String>(), dumps(dir, "unsure_Right"))
+        }
+    }
+
+    @Test fun aSideThatStaysUnsureForOverTwoSecondsDumpsExactlyOnce() = runTest {
+        // 同一边连着认不准超过 2 秒(从这一边第一次 Unsure 那帧算起)才写,而且一段只写一次。
+        val clock = VirtualClock()
+        withUnsureDumps(clock) { dir ->
+            val unsure = full("counts_L16_R17") // 左家认不准,右家空
+            val game = SteeredGame(PhoneDdzTurn.PACKAGE, ArrayDeque(List(40) { unsure }), clock, 200L)
+            val dispatcher = toolDispatcher(game)
+            humanSessionWithEmptyTracker(dispatcher.ctx)
+            // 一帧 0.2 秒:认不准 6 帧才 1 秒,还不到 2 秒
+            steeredWait(game, dispatcher.ctx, polls = 6)
+            DdzFrameDump.writer.submit {}.get()
+            assertEquals("还不到 2 秒不写: ${dir.list()?.toList()}", emptyList<String>(), dumps(dir, "unsure_Left"))
+            // 接着认不准,过了 2 秒:写一次,这一段之后不再写
+            steeredWait(game, dispatcher.ctx, polls = 6)
+            DdzFrameDump.writer.submit {}.get()
+            assertEquals("过了 2 秒只写一次: ${dir.list()?.toList()}", 1, dumps(dir, "unsure_Left").size)
+            assertEquals(emptyList<String>(), dumps(dir, "unsure_Right"))
+        }
+    }
+
+    @Test fun leftsUnsureStreakDoesNotMakeRightDump() = runTest {
+        // 两家各算各的:Left 先连着认不准 1.6 秒,接着 Right 才开始认不准 0.4 秒。
+        // Right 的 2 秒要从它自己第一次 Unsure 那帧算起,不能接着 Left 那一段算。
+        val clock = VirtualClock()
+        withUnsureDumps(clock) { dir ->
+            val leftUnsure = full("counts_L16_R17")             // 左家认不准,右家空
+            val rightUnsure = rightPlayUnsure("counts_L16_R17") // 左家空,右家认不准
+            val game = SteeredGame(PhoneDdzTurn.PACKAGE, ArrayDeque(List(10) { leftUnsure } + List(10) { rightUnsure }), clock, 200L)
+            val dispatcher = toolDispatcher(game)
+            humanSessionWithEmptyTracker(dispatcher.ctx)
+            repeat(5) { steeredWait(game, dispatcher.ctx, polls = 1) } // 左家认不准 5 帧、1.6 秒
+            repeat(2) { steeredWait(game, dispatcher.ctx, polls = 1) } // 右家才认不准 2 帧、0.4 秒
+            DdzFrameDump.writer.submit {}.get()
+            assertEquals("Right 才认不准 0.4 秒,不能写: ${dir.list()?.toList()}", emptyList<String>(), dumps(dir, "unsure_Right"))
+            assertEquals("Left 只认不准 1.6 秒,也不该写: ${dir.list()?.toList()}", emptyList<String>(), dumps(dir, "unsure_Left"))
+        }
+    }
+
+    @Test fun aGapOfSkippedFramesBreaksTheUnsureStreak() = runTest {
+        // 「连续」认不准要真的是连续的帧:结算页、没有手牌、看不见闹钟的帧不记历史,也不该把两段 Unsure 连成一段。
+        // 左家认不准 2 帧,中间隔了 2.4 秒不记历史的画面,再认不准 1 帧:这不是连着 3 帧,不能写转储。
+        val clock = VirtualClock()
+        withUnsureDumps(clock) { dir ->
+            val unsure = full("counts_L16_R17") // 左家认不准,右家空
+            val skipped = full("vd_17")         // 牌桌还在,但轮不到我、没有按钮也没有闹钟:不记历史
+            val game = SteeredGame(
+                PhoneDdzTurn.PACKAGE,
+                // 两次 start 各读一帧;wait 先读一帧再进循环,所以认不准的 2 帧要 5 帧打底
+                ArrayDeque(List(5) { unsure } + List(12) { skipped } + List(1) { unsure }),
+                clock, 200L,
+            )
+            val dispatcher = toolDispatcher(game)
+            humanSessionWithEmptyTracker(dispatcher.ctx)
+            // 2 帧认不准(0.4 秒)→ 12 帧不记历史(2.4 秒)→ 再 1 帧认不准
+            steeredWait(game, dispatcher.ctx, polls = 15)
+            DdzFrameDump.writer.submit {}.get()
+            assertEquals("隔着被跳过的帧不算连着: ${dir.list()?.toList()}", emptyList<String>(), dumps(dir, "unsure_Left"))
+        }
     }
 
     @Test fun humanToolPromptDocumentsWaitAndNestedResumeSchema() {

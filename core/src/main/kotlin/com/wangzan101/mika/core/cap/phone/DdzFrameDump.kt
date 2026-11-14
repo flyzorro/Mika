@@ -25,6 +25,8 @@ internal object DdzFrameDump {
     private const val RING = 6
     private const val MAX_FILES = 400
     private const val MIN_GAP_MS = 3_000L
+    /** 测试里换成虚拟时钟(3 秒限速按它算)。 */
+    internal var clock: () -> Long = { System.currentTimeMillis() }
     /** 测试里换成临时目录。 */
     internal var dirs = listOf(
         "/sdcard/Android/data/com.wangzan101.mika.dev/files/ddzdump",
@@ -54,7 +56,7 @@ internal object DdzFrameDump {
     /** 出事了:把最近几帧连同 [frame] 一起写盘。同一个 [tag] 至少隔 [MIN_GAP_MS] 才再写一次。 */
     @Synchronized
     fun dump(tag: String, frame: RawFrame?, rows: List<Int>) {
-        val now = System.currentTimeMillis()
+        val now = clock()
         val last = lastByTag[tag]
         if (last != null && now - last < MIN_GAP_MS) return
         if (written >= MAX_FILES) return

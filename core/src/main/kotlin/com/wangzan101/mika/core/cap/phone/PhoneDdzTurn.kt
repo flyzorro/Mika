@@ -49,6 +49,10 @@ internal object PhoneDdzTurn : PhoneTool {
      * 「离开/换桌/继续」一两秒,单帧看起来和认不出的弹窗一样;连着几帧(约一秒多)还没散才当弹窗停下。
      */
     private const val POPUP_CONFIRM_FRAMES = 8
+    /** TEMP diagnostics: 一边连着这么多帧都认不准才算真的认不准(游戏动画只认不准一两帧,下一帧就读对了)。 */
+    private const val UNSURE_MIN_FRAMES = 3
+    /** TEMP diagnostics: 还要连着认不准这么久(从这一边第一次 Unsure 的那一帧算起)才算真的认不准。 */
+    private const val UNSURE_PERSIST_MS = 2_000L
     /** 同样的约 45 秒也按真实时间算一遍:一轮里的整屏 OCR 在手机上要 ~0.8 秒,只数轮数会被慢轮拖长(2026-11-11 商店页拖到 294 秒)。 */
     private const val START_TABLE_MS = START_TABLE_POLLS * POLL_MS
     /** 弹窗(含约 30 秒的激励视频)最多处理这么多轮;每轮至少 [POLL_MS]。 */
@@ -174,9 +178,18 @@ internal object PhoneDdzTurn : PhoneTool {
         /** 我的出牌/跟牌按钮还亮着时,闹钟指到别家的读数要连着两帧一样才认:上一帧那个座位,和连着几帧了。 */
         var clockPending: DdzSeat? = null
         var clockFrames = 0
+        /** TEMP diagnostics: 两家各自从哪一帧开始连着认不准、连着几帧了,和这一段是不是已经写过 unsure 转储。 */
+        val unsure = DdzSide.entries.associateWith { UnsureRun() }
         /** 这一轮已经结算的各局停用 DouZero 的原因;报过就清空。 */
         val offs = mutableListOf<DouzeroOff>()
         val decisions = mutableListOf<Long>()
+    }
+
+    /** TEMP diagnostics: 某一边连着认不准的起点(毫秒)、帧数,和这一段是不是已经写过 unsure 转储。 */
+    internal class UnsureRun {
+        var since = 0L
+        var frames = 0
+        var dumped = false
     }
 
     /** 这一轮某一局结算时 DouZero 停用的原因:[hand] 是这一轮的第几局(从 1 数),[reason] 是当时的 [DdzTracker.broken]。 */
@@ -1589,14 +1602,23 @@ internal object PhoneDdzTurn : PhoneTool {
     /** 把这一帧喂给这一局的出牌历史;叫分时还没开局,换一局重新记。 */
     private fun track(turn: Turn, frame: com.wangzan101.mika.core.uistate.RawFrame, view: DdzView) {
         DdzFrameDump.seen(frame) // TEMP diagnostics (单机也抓); remove after.
-        if (view.phase == DdzPhase.Call) { turn.tracker = null; turn.expectedHand = null; turn.joining = false; turn.doubleDecided = false; return }
+        if (view.phase == DdzPhase.Call) {
+            turn.tracker = null; turn.expectedHand = null; turn.joining = false; turn.doubleDecided = false
+            resetUnsure(turn) // TEMP diagnostics; remove after.
+            return
+        }
         // 结算页、「当前金币可前往更高级场次」弹窗、大厅不是出牌的一刻:弹窗把两家出牌区整片盖住,读出来全是认不准,
         // 这一手还没出牌就 unsure_first_play 了。没有手牌、又轮不到我、还看不见闹钟的画面同样不喂。
         // 例外:游戏替我「要不起」的那一两秒没有按钮也没有闹钟,但别家刚出的炸弹还清楚地摆在出牌区;
         // 只要有一家读到认得准的一手牌,这一帧仍是牌桌上的出牌一刻,要照常喂给 tracker,否则这一手会漏记成 missed_play。
         val clock = DdzCards.clock(frame)
         if (view.phase == DdzPhase.Result || view.handCount == 0 ||
-            (view.phase == DdzPhase.Other && view.buttons.isEmpty() && clock == null && !readableOpponentPlay(frame))) return
+            (view.phase == DdzPhase.Other && view.buttons.isEmpty() && clock == null && !readableOpponentPlay(frame))
+        ) {
+            // 这一帧不记历史:两段 Unsure 中间隔着它就不是连续的帧,不能连成一段
+            resetUnsure(turn) // TEMP diagnostics; remove after.
+            return
+        }
         // 农民 17 张、地主 20 张说明自己还没出过牌,在那之前的出牌都还摆在桌上,接得上;别的张数是打了一半,这一手不交给 DouZero。
         // 发牌时手牌一张张多起来,要等到加倍或者轮到自己才数
         // 真人局的结算画面说明不了下一局:等下一个牌桌画面再定
@@ -1618,7 +1640,9 @@ internal object PhoneDdzTurn : PhoneTool {
         // TEMP diagnostics for live runs (单机也抓); remove after.
         run {
             if (brokenBefore == null && tracker.broken != null) DdzFrameDump.dump("fail_${tracker.broken}", frame, FULL_ROWS)
-            for (side in DdzSide.entries) if (DdzCards.play(frame, side) == DdzSeen.Unsure) DdzFrameDump.dump("unsure_${side.name}", frame, FULL_ROWS)
+            for (side in DdzSide.entries) {
+                if (unsurePersisted(turn, side, DdzCards.play(frame, side))) DdzFrameDump.dump("unsure_${side.name}", frame, FULL_ROWS)
+            }
             val line = "phase=${view.phase} hand=${view.handCount}${DdzCards.hand(frame, view)} lifted=${view.lifted} clock=$clock seat=$seat " +
                 "L=${DdzCards.play(frame, DdzSide.Left)} R=${DdzCards.play(frame, DdzSide.Right)} ${tracker.debugState()}"
             if (line != turn.lastTrace) { turn.lastTrace = line; println("DDZTRACE ${System.currentTimeMillis() % 100_000} $line") }
@@ -1631,6 +1655,26 @@ internal object PhoneDdzTurn : PhoneTool {
      */
     private fun readableOpponentPlay(frame: com.wangzan101.mika.core.uistate.RawFrame): Boolean =
         DdzSide.entries.any { DdzCards.play(frame, it) is DdzSeen.Cards }
+
+    /**
+     * TEMP diagnostics: 某一边连着认不准才算。游戏动画(出的牌还在展开、JOKER 飞入、炸弹/飞机/爆炸特效)只认不准
+     * 一两帧,下一帧就读对了;一段持续的认不准只写一次转储,读出任何别的结果就清零。
+     */
+    private fun unsurePersisted(turn: Turn, side: DdzSide, seen: DdzSeen): Boolean {
+        val run = turn.unsure.getValue(side)
+        if (seen != DdzSeen.Unsure) { run.since = 0L; run.frames = 0; run.dumped = false; return false }
+        val now = DdzFrameDump.clock()
+        if (run.frames == 0) run.since = now
+        run.frames++
+        if (run.dumped || run.frames < UNSURE_MIN_FRAMES || now - run.since <= UNSURE_PERSIST_MS) return false
+        run.dumped = true
+        return true
+    }
+
+    /** TEMP diagnostics: 两家的认不准连续计数都重新算(新开一局)。 */
+    private fun resetUnsure(turn: Turn) {
+        turn.unsure.values.forEach { it.since = 0L; it.frames = 0; it.dumped = false }
+    }
 
     /** 闹钟/按钮直接对应的座位,不含单帧闪烁的确认:轮到自己出牌时闹钟是藏起来的。 */
     internal fun rawSeat(phase: DdzPhase, clock: DdzSide?): DdzSeat? = when {
