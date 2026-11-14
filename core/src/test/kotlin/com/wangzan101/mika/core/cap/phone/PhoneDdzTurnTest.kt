@@ -267,6 +267,52 @@ class PhoneDdzTurnTest {
         assertEquals("两次出牌", 2, game.taps.count { it.second != DdzScreen.CARD_Y })
     }
 
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    @Test fun aPlayVisibleOnTheNextFrameReturnsBeforeTheVerdictWindow() = runTest {
+        // 实测 2026-11-14:按出牌后固定死等 800ms,可牌下一帧就已经出去了。看到手牌少了就马上返回。
+        val hand = (List(14) { "4" } + "3").joinToString(",", "[", "]") { "\"$it\"" }
+        val lifted = frame("lead_lifted") // 最后一张已抬起,不用再选
+        val played = withoutCards("lead", setOf(14)) // 3 出去了,手里剩 14 张 4
+        var pressedAt = -1L
+        val game = object : Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(lifted, lifted, lifted, played, full("result")))) {
+            override suspend fun quickTap(x: Int, y: Int): Boolean {
+                taps += x to y
+                if (y != DdzScreen.CARD_Y && pressedAt < 0) pressedAt = testScheduler.currentTime
+                return true
+            }
+        }
+        val result = run(game, """{"action":"play","hand":$hand,"play":["3"]}""")
+        assertNull(result.toString(), result.text("error"))
+        assertEquals(result.toString(), "result", result.text("phase"))
+        assertTrue(
+            "press at $pressedAt, returned at ${testScheduler.currentTime}",
+            testScheduler.currentTime - pressedAt < 800,
+        )
+    }
+
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    @Test fun aHandThatOnlyShrinksAfterTheVerdictWindowIsPressedOnce() = runTest {
+        // 按下后 800ms 内手牌没变只是动画还没走完:接着看,不能提前重按(牌可能已经出去了,再按会点到别的按钮)。
+        val hand = (List(14) { "4" } + "3").joinToString(",", "[", "]") { "\"$it\"" }
+        val lifted = frame("lead_lifted") // 最后一张已抬起,不用再选
+        val played = withoutCards("lead", setOf(14))
+        var pressedAt = -1L
+        val game = object : Game(PhoneDdzTurn.PACKAGE, ArrayDeque(List(3) { lifted })) {
+            override suspend fun quickTap(x: Int, y: Int): Boolean {
+                taps += x to y
+                if (y != DdzScreen.CARD_Y && pressedAt < 0) pressedAt = testScheduler.currentTime
+                return true
+            }
+            override suspend fun rawFrame(rows: List<Int>): RawFrame? {
+                if (pressedAt < 0) return super.rawFrame(rows)
+                return if (testScheduler.currentTime - pressedAt < 600) lifted else played
+            }
+        }
+        val result = run(game, """{"action":"play","hand":$hand,"play":["3"]}""")
+        assertNull(result.toString(), result.text("error"))
+        assertEquals("one press only: ${game.taps}", 1, game.taps.count { it.second != DdzScreen.CARD_Y })
+    }
+
     @Test fun playingTheLastCardsOntoTheHumanResultScreenIsAPlay() = runTest {
         // 实测 2026-11-11 15:52:最后一张 BJ 出去这局就完了,真人场直接换成离开/换桌/继续的结算页;
         // 那一页认成 Other、手牌 15 张,一直看不出出了什么,报成 hand_drift 停下
@@ -3390,8 +3436,9 @@ class PhoneDdzTurnTest {
             val game = object : Game(PhoneDdzTurn.PACKAGE, ArrayDeque(List(20) { hint })) {
                 override suspend fun quickTap(x: Int, y: Int): Boolean {
                     taps += x to y
-                    // 按下出牌后 verify 那十二帧都认不出(报 Drift),之后这一局结束、出现结算页
-                    if (x to y == play) { frames.clear(); frames.addAll(List(12) { fullBlank } + full("human_result_leave_change_continue")) }
+                    // 按下出牌后 verify 的每一帧都认不出(报 Drift),之后这一局结束、出现结算页。
+                    // 帧数要盖住整个 verify 窗口(现在按下后先轮询 VERDICT_MS,再多看 12 帧),不能提前露出结算页
+                    if (x to y == play) { frames.clear(); frames.addAll(List(20) { fullBlank } + full("human_result_leave_change_continue")) }
                     return true
                 }
             }
