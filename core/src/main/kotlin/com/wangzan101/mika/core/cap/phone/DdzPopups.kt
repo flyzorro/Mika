@@ -22,8 +22,8 @@ internal object DdzPopups {
     /** 判断救济金是两个按钮还是只有看视频那一个要读的行(左边按钮的高度)。 */
     val ROWS: List<Int> = (BUTTON_Y0 until BUTTON_Y1 step 3).toList()
 
-    /** 认弹窗要截的行:救济金按钮那一块,加上段位弹窗的标题和徽章。 */
-    val SCAN_ROWS: List<Int> = (ROWS + DdzCards.RANK_ROWS).distinct()
+    /** 认弹窗要截的行:救济金按钮那一块,加上段位弹窗的标题和徽章、特权弹窗的徽章和横幅。 */
+    val SCAN_ROWS: List<Int> = (ROWS + DdzCards.RANK_ROWS + DdzCards.PRIVILEGE_ROWS).distinct()
 
     fun next(snapshot: ScreenSnapshot, texts: List<VisibleTextLine>?, frame: RawFrame?): Step? {
         val els = snapshot.elements

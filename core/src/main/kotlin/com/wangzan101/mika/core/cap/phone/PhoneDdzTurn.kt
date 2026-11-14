@@ -157,6 +157,8 @@ internal object PhoneDdzTurn : PhoneTool {
         var declined = false
         /** 连着一帧帧认出段位弹窗的次数:两帧都对上才点「确定」,过渡动画的一帧不算。 */
         var rankSightings = 0
+        /** 连着一帧帧认出「至尊特权升级」弹窗的次数:同样两帧都对上才点蓝色「我知道了」。 */
+        var privilegeSightings = 0
         /** 连着一帧帧认出「认不出的弹窗」的次数:结算页上的「春天」等特效只是过渡,连着几帧才算真弹窗。 */
         var popupSightings = 0
         /** Human mode has acted on the currently visible decision; prevents repeated taps while it settles. */
@@ -301,6 +303,7 @@ internal object PhoneDdzTurn : PhoneTool {
         // 「这一帧 OCR 过、没东西」只在这一次调用里算数:上一次调用、上一个会话留下的同样画面不能把这次第一回的 OCR 也省掉
         popupFrameKey = null
         turn.rankSightings = 0
+        turn.privilegeSightings = 0
         turn.popupSightings = 0
         val action = a.str("action") ?: throw ArgError("action", "required")
         // stop is deliberately usable even after the app was switched: it must prevent a delayed
@@ -1182,7 +1185,7 @@ internal object PhoneDdzTurn : PhoneTool {
             if (turn.mode == DdzMode.Human && turn.state == DdzSessionState.Paused) return last
             val frame = ctx.screen.rawFrame(if (turn.single || turn.mode == DdzMode.Human) FULL_ROWS else DdzScreen.ROWS)
             // 牌桌上、结算页上盖了段位弹窗:只点橙色「确定」(两帧确认),别拿弹窗上的假按钮出牌,也别因此停下
-            if (turn.mode == DdzMode.Human && frame != null && tapRankPopup(ctx, turn, frame)) {
+            if (turn.mode == DdzMode.Human && frame != null && tapGamePopup(ctx, turn, frame)) {
                 waitOrSteer { delay(POLL_MS) } ?: return last
                 continue
             }
@@ -1728,7 +1731,7 @@ internal object PhoneDdzTurn : PhoneTool {
                 if (roomTapDump > 0 && --roomTapDump == 0) DdzFrameDump.dump("room_tap", frame, FULL_ROWS)
             }
             // 段位弹窗压在结算页或场次页上:先点它的「确定」(两帧确认),再照常认下面的离开/场次页
-            if (frame != null && tapRankPopup(ctx, turn, frame)) {
+            if (frame != null && tapGamePopup(ctx, turn, frame)) {
                 if (turn.stopped) return HumanEntry(null)
                 popupPolls++
                 polls = 0
@@ -1862,22 +1865,37 @@ internal object PhoneDdzTurn : PhoneTool {
     private var popupFrameKey: Int? = null
 
     /**
-     * 段位弹窗(结算页、真人场次页、牌桌上)连着两帧都认出来才点,别把过渡动画的一帧当成弹窗。
-     * 只点橙色「确定」,绝不点绿色「炫耀一下」。处理了(这一帧先等着,或已经点下去)为 true。
+     * 结算页、真人场次页、牌桌上游戏自己的两种弹窗,连着两帧都认出同一种才点,别把过渡动画的一帧当成弹窗。
+     * 段位弹窗只点橙色「确定」,绝不点绿色「炫耀一下」;「至尊特权升级」弹窗只点蓝色「我知道了」,
+     * 绝不点橙色「查看更多特权」(会进特权/充值页)。处理了(这一帧先等着,或已经点下去)为 true。
      */
-    private suspend fun tapRankPopup(ctx: ToolContext, turn: Turn, frame: com.wangzan101.mika.core.uistate.RawFrame?): Boolean {
+    private suspend fun tapGamePopup(ctx: ToolContext, turn: Turn, frame: com.wangzan101.mika.core.uistate.RawFrame?): Boolean {
+        val privilege = frame?.let { DdzCards.privilegePopup(it) }
+        if (privilege != null) {
+            turn.rankSightings = 0
+            return confirmTap(ctx, turn, privilege, privilegeSighting = true)
+        }
+        turn.privilegeSightings = 0
         val confirm = frame?.let { DdzCards.rankPopup(it) }
         if (confirm == null) {
             turn.rankSightings = 0
             return false
         }
-        if (turn.rankSightings++ == 0) {
+        return confirmTap(ctx, turn, confirm, privilegeSighting = false)
+    }
+
+    /** 两帧确认同一个弹窗后点 [tap];[privilegeSighting] 决定用哪一种弹窗的计数。 */
+    private suspend fun confirmTap(
+        ctx: ToolContext, turn: Turn, tap: Pair<Int, Int>, privilegeSighting: Boolean,
+    ): Boolean {
+        val sightings = if (privilegeSighting) turn.privilegeSightings++ else turn.rankSightings++
+        if (sightings == 0) {
             popupFrameKey = null
             return true
         }
-        turn.rankSightings = 0
+        if (privilegeSighting) turn.privilegeSightings = 0 else turn.rankSightings = 0
         if (turn.stopped || ctx.screen.peek().packageName != PACKAGE) return true
-        ctx.screen.quickTap(confirm.first, confirm.second)
+        ctx.screen.quickTap(tap.first, tap.second)
         delay(POPUP_TAP_MS)
         return true
     }
@@ -1886,7 +1904,7 @@ internal object PhoneDdzTurn : PhoneTool {
     private suspend fun clearPopup(ctx: ToolContext, turn: Turn, frame: com.wangzan101.mika.core.uistate.RawFrame?): Boolean {
         val screen = ctx.screen.peek()
         if (screen.packageName != PACKAGE) return false
-        if (tapRankPopup(ctx, turn, frame)) return true
+        if (tapGamePopup(ctx, turn, frame)) return true
         // 广告是原生控件,看无障碍树就够;游戏里画的弹窗才要 OCR
         val native = screen.elements.any { it.role != "SurfaceView" }
         // 画面没变、上一轮 OCR 又什么都没认出来:直接跳过(认不出的静态页一停就是几百轮 OCR,start 被拖到 294 秒);
