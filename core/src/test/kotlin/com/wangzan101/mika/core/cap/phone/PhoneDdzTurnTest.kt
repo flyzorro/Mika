@@ -41,6 +41,7 @@ class PhoneDdzTurnTest {
     @org.junit.Before fun noBidService() {
         PhoneDdzTurn.adviseBid = { _, _ -> null }
         PhoneDdzTurn.adviseDouble = { _, _, _, _ -> null }
+        PhoneDdzTurn.clock = System::currentTimeMillis
     }
 
     private fun frame(name: String): RawFrame {
@@ -2712,6 +2713,115 @@ class PhoneDdzTurnTest {
         PhoneDdzTurn.execute(wait, dispatcher.ctx)
         assertTrue("waited ${game.reads - before} frames before giving up", game.reads - before > 40)
         assertTrue("the fallback acted after the window", game.taps.size > tapsBefore)
+    }
+
+    /**
+     * 2026-11-14 12:48 真机:跟牌帧进来(from=Other)以后自己出牌/不出,phase 在主循环看来还是 Follow,
+     * 等别家读稳的 settleSince 没重开;下一帧右家的王炸还没读稳,就用 6 秒前的旧起点判 missed_play、交给简单规则。
+     * 自己这一手确认后窗口要从头算:别家还没读稳就接着等,不立刻判漏。
+     */
+    @Test fun aConfirmedPassRestartsTheSettlingWindow() = runTest {
+        val saved = PhoneDdzTurn.advise
+        val savedClock = PhoneDdzTurn.clock
+        val asked = mutableListOf<String>()
+        PhoneDdzTurn.advise = { _, body -> asked += body; """{"play":[]}""" }
+        var fakeNow = 1_000_000L
+        PhoneDdzTurn.clock = { fakeNow }
+        try {
+            val follow = full("hand_t1")
+            // 别家在想的一帧:还是真人牌桌,只是没有我的按钮(按钮行抹掉),track 不动 tracker
+            val othersTurn = editedFrame("hand_t1") { _, rows, _ -> rows[470]?.fill(0) }
+            val result = full("human_result_leave_change_continue")
+            // start 先吃掉一帧;wait 的第一帧是别家在打(from=Other),下一帧才轮到我
+            val frames = ArrayDeque(listOf(follow, othersTurn, follow) + List(30) { follow } + listOf(result))
+            val game = object : Game(PhoneDdzTurn.PACKAGE, frames) {
+                var reads = 0
+                override suspend fun rawFrame(rows: List<Int>): RawFrame? { reads++; return super.rawFrame(rows) }
+                override suspend fun quickTap(x: Int, y: Int): Boolean {
+                    taps += x to y
+                    // 用户/动画/DouZero 用掉的真实时间:出牌确认时距上次 phase 变化已超过 6 秒
+                    if (y != DdzScreen.CARD_Y) fakeNow += 6_500
+                    return true
+                }
+            }
+            val dispatcher = toolDispatcher(game)
+            PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
+            PhoneDdzTurn.useTracker(dispatcher.ctx, DdzTracker(DdzSettlingPolicy.HUMAN).apply {
+                restore(DdzSeat.Left, listOf("J", "7", "4"), listOf(listOf("10", "10", "9", "9", "8", "8")), current = DdzSeat.Me)
+            })
+            val waited = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"wait"}""").jsonObject), dispatcher.ctx)
+            assertEquals("my pass is the only DouZero call: ${waited.content}", 1, asked.size)
+            val hint = DdzScreen.read(follow).buttons[1].let { it.x to it.y }
+            assertFalse("the rules must not take the hand over: ${game.taps}", hint in game.taps)
+            assertEquals("only 不出: ${game.taps}", 1, game.taps.size)
+            assertTrue("kept settling on ${game.reads} frames instead of giving up at once", game.reads > 20)
+            assertNotEquals("the hand is not paused", "paused", waited.text("state"))
+        } finally {
+            PhoneDdzTurn.advise = saved
+            PhoneDdzTurn.clock = savedClock
+        }
+    }
+
+    /**
+     * 同上,出牌路径:自己按「出牌」确认之后(submit 的 verify 自己读掉了几帧),phase 在主循环看来还是 Follow;
+     * 下一帧别家的王炸还没读稳,窗口要从出牌确认那一刻重开,不能拿上一手的起点判 missed_play。
+     */
+    @Test fun aConfirmedPlayRestartsTheSettlingWindow() = runTest {
+        val saved = PhoneDdzTurn.advise
+        val savedClock = PhoneDdzTurn.clock
+        val asked = mutableListOf<String>()
+        PhoneDdzTurn.advise = { _, body ->
+            asked += body
+            if (asked.size == 1) """{"play":["A","A"]}""" else """{"play":[]}"""
+        }
+        var fakeNow = 1_000_000L
+        PhoneDdzTurn.clock = { fakeNow }
+        try {
+            val follow = full("follow_lifted") // 跟 5 5,提示把两张 A 抬起;DouZero 也出 A A
+            val after = withoutCards("follow_lifted", setOf(5, 6))
+            val othersTurn = editedFrame("follow_lifted") { _, rows, _ -> rows[470]?.fill(0) }
+            val result = full("human_result_leave_change_continue")
+            var reads = 0
+            var played = false
+            var postPlay = 0
+            val game = object : Game(PhoneDdzTurn.PACKAGE, ArrayDeque()) {
+                override suspend fun rawFrame(rows: List<Int>): RawFrame? {
+                    reads++
+                    // start 吃一帧;wait 的第一帧是别家在打(from=Other);出牌按钮按过之后手牌少两张
+                    last = when {
+                        played -> if (++postPlay <= 30) after else result
+                        reads == 1 -> follow
+                        reads == 2 -> othersTurn
+                        else -> follow
+                    }
+                    return last
+                }
+                override suspend fun quickTap(x: Int, y: Int): Boolean {
+                    taps += x to y
+                    if (y != DdzScreen.CARD_Y) {
+                        // 用户/动画/DouZero 用掉的真实时间:出牌确认时距上次 phase 变化已超过 6 秒
+                        fakeNow += 6_500
+                        played = true
+                    }
+                    return true
+                }
+            }
+            val dispatcher = toolDispatcher(game)
+            PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
+            PhoneDdzTurn.useTracker(dispatcher.ctx, DdzTracker(DdzSettlingPolicy.HUMAN).apply {
+                restore(DdzSeat.Left, listOf("J", "7", "4"), listOf(listOf("5", "5"), emptyList()), current = DdzSeat.Me)
+            })
+            val waited = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"wait"}""").jsonObject), dispatcher.ctx)
+            assertEquals("my play is the only DouZero call: ${waited.content}", 1, asked.size)
+            val hint = DdzScreen.read(after).buttons[1].let { it.x to it.y }
+            assertFalse("the rules must not take the hand over: ${game.taps}", hint in game.taps)
+            assertEquals("only the play button: ${game.taps}", 1, game.taps.size)
+            assertTrue("kept settling on $reads frames instead of giving up at once", reads > 20)
+            assertNotEquals("the hand is not paused", "paused", waited.text("state"))
+        } finally {
+            PhoneDdzTurn.advise = saved
+            PhoneDdzTurn.clock = savedClock
+        }
     }
 
     @Test fun humanLandlordDeclinesDoublingWhenTheTwentyCardHandIsUnreadable() = runTest {
