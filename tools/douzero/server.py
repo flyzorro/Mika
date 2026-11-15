@@ -16,12 +16,12 @@ POST /act  {"seat": "landlord" | "landlord_down" | "landlord_up",
 猜错了,后面的出牌在重放里会不合规,照样对得出来。
 -> {"play": ["5", "5"]} 或 {"error": "..."}
 
-POST /bid  {"hand": [17 张]}  -> {"level": 3 | 0, "win": 0.62}   # 当地主的赢面,够了就叫三分
+POST /bid  {"hand": [17 张]}  -> {"level": 3 | 0, "win": 0.62, "games": 300}   # 当地主的赢面,够了就叫三分;games 是 3 秒内实际打了几局
 
 POST /double {"seat": "landlord" | "landlord_down" | "landlord_up",
               "hand": [...],                     # 地主 20 张(含底牌),农民 17 张
               "bottom": [三张]}                  # 三张明牌,归地主
--> {"double": true | false, "win": 0.83}     # 自己这一方的赢面,够了才建议加倍
+-> {"double": true | false, "win": 0.83, "games": 300}     # 自己这一方的赢面,够了才建议加倍
 """
 import json
 import os
@@ -46,11 +46,14 @@ RANKS = {"3": 3, "4": 4, "5": 5, "6": 6, "7": 7, "8": 8, "9": 9, "10": 10, "J": 
 NAMES = {v: k for k, v in RANKS.items()}
 DECK = [r for r in RANKS.values() if r < 20 for _ in range(4)] + [20, 30]
 # 叫分:当地主自己跟自己打这么多局,赢面到这个数就叫三分,不到就不叫。闯关里农民靠不住电脑队友,地主赢了分数还翻倍
-BID_GAMES = 60
+BID_GAMES = 300
 BID_WIN = 0.7
-# 加倍:同一手牌自己跟自己打这么多局看这一方的赢面。加倍只有约 5 秒,80 局在本机实测 0.75~1.35 秒
-# (/bid 60 局约 0.74 秒);再多就赶不上手机的往返和超时重试了。
-DOUBLE_GAMES = 80
+# 加倍:同一手牌自己跟自己打这么多局看这一方的赢面。80 局只能分到 ±0.06,0.8 和 0.74 分不开;
+# 300 局约 ±0.03。加倍只有约 5 秒,80 局在本机实测 0.75~1.35 秒,300 局最慢要 5 秒:
+# 叫分、加倍都最多打 [ROLLOUT_BUDGET_S] 秒,到点就按已经打完的局数算(至少 [ROLLOUT_MIN_GAMES] 局),手机等 4 秒。
+DOUBLE_GAMES = 300
+ROLLOUT_BUDGET_S = 3.0
+ROLLOUT_MIN_GAMES = 40
 # 赢面到了这个门槛才加倍。只点黄色「加倍」,绝不点绿色的「超级加倍」,金豆省着用。
 DOUBLE_WIN = 0.8
 # 几手分数几乎一样时 DouZero 基本是随手挑:差不到这个数就优先不拆三条/对子/炸弹。
@@ -303,15 +306,20 @@ class Advisor:
         self.agents = {s: Agent(s, os.path.join(weights, f"{s}.ckpt")) for s in SEATS}
         self.plain = {s: Plain(self.agents[s]) for s in SEATS}
 
-    def bid(self, hand, games=BID_GAMES):
-        """拿这 17 张当地主能赢几成:看不见的牌随机发成底牌和两家,DouZero 自己跟自己打 [games] 局。"""
+    def bid(self, hand, games=BID_GAMES, budget=ROLLOUT_BUDGET_S):
+        """拿这 17 张当地主能赢几成:看不见的牌随机发成底牌和两家,DouZero 自己跟自己打 [games] 局。
+        返回 (赢面, 实际打了几局):超过 [budget] 秒就停。"""
         hand = cards(hand)
         if len(hand) != 17:
             raise Mismatch("hand_count_mismatch")
         rest = minus(DECK, hand)
         rng = random.Random(hash(tuple(hand)))
-        wins = 0
+        wins = played = 0
+        deadline = time.perf_counter() + budget
         for _ in range(games):
+            if played >= ROLLOUT_MIN_GAMES and time.perf_counter() > deadline:
+                break
+            played += 1
             rng.shuffle(rest)
             bottom = rest[:3]
             env = GameEnv(self.plain)
@@ -320,11 +328,11 @@ class Advisor:
             while not env.game_over:
                 env.step()
             wins += bool(env.num_wins["landlord"])
-        return wins / games
+        return wins / played, played
 
-    def double(self, seat, hand, bottom, games=DOUBLE_GAMES):
+    def double(self, seat, hand, bottom, games=DOUBLE_GAMES, budget=ROLLOUT_BUDGET_S):
         """这手牌加倍值不值:地主按 20 张(含底牌)、农民按 17 张加三张明牌,看不见的牌随机分给另外两家,
-        DouZero 自己跟自己打 [games] 局,返回自己这一方的赢面(地主或农民)。"""
+        DouZero 自己跟自己打 [games] 局,返回 (自己这一方的赢面(地主或农民), 实际打了几局):超过 [budget] 秒就停。"""
         if seat not in SEATS:
             raise Mismatch("bad_seat")
         hand, bottom = cards(hand), cards(bottom)
@@ -343,8 +351,12 @@ class Advisor:
             unseen = minus(minus(DECK, hand), bottom)
         # 同一副牌每次问都一样:底牌也参与种子,地主和农民看到的是同一副
         rng = random.Random(hash(tuple(sorted(hand + bottom))))
-        wins = 0
+        wins = played = 0
+        deadline = time.perf_counter() + budget
         for _ in range(games):
+            if played >= ROLLOUT_MIN_GAMES and time.perf_counter() > deadline:
+                break
+            played += 1
             rng.shuffle(unseen)
             hands = {s: list(fixed.get(s, [])) for s in SEATS}
             pool = list(unseen)
@@ -359,7 +371,7 @@ class Advisor:
             while not env.game_over:
                 env.step()
             wins += bool(env.num_wins["landlord" if seat == "landlord" else "farmer"])
-        return wins / games
+        return wins / played, played
 
     def act(self, seat, hand, bottom, history):
         hand, bottom = cards(hand), cards(bottom)
@@ -389,11 +401,11 @@ def handler(advisor):
                 body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))))
                 ms = lambda: round((time.perf_counter() - started) * 1000)
                 if self.path == "/bid":
-                    win = advisor.bid(body["hand"])
-                    return self.reply(200, {"level": bid_level(win), "win": round(win, 2), "ms": ms()}, body)
+                    win, games = advisor.bid(body["hand"])
+                    return self.reply(200, {"level": bid_level(win), "win": round(win, 2), "games": games, "ms": ms()}, body)
                 if self.path == "/double":
-                    win = advisor.double(body["seat"], body["hand"], body["bottom"])
-                    return self.reply(200, {"double": should_double(win), "win": round(win, 2), "ms": ms()}, body)
+                    win, games = advisor.double(body["seat"], body["hand"], body["bottom"])
+                    return self.reply(200, {"double": should_double(win), "win": round(win, 2), "games": games, "ms": ms()}, body)
                 move = advisor.act(body["seat"], body["hand"], body.get("bottom", []), body.get("history", []))
                 self.reply(200, {"play": [NAMES[c] for c in move], "ms": ms()}, body)
             except Mismatch as e:
