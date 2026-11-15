@@ -1124,6 +1124,29 @@ class DdzTrackerTest {
         )
     }
 
+    @Test fun aOneFramePassThenTheTrickLeadersNewLeadBothSettle() {
+        // Live 2026-11-15 12:31 (human 精英场): Right's 不出 showed for one frame, Left led A,A at once.
+        // resolve() settling Right and recordNewLeadFromLastLeader() settling Left's A,A reset the
+        // single steady() slot every frame; the tracker sat on waiting=[Right, Left] until missed_play.
+        val tracker = DdzTracker(DdzSettlingPolicy.HUMAN)
+        fun see(turn: DdzSeat?) = tracker.observe(turn, { if (it == DdzSide.Left) left else right }, { bottom })
+        right = DdzSeen.Cards(listOf("3"))
+        repeat(3) { see(DdzSeat.Left) }
+        left = DdzSeen.Cards(listOf("5"))
+        repeat(4) { see(DdzSeat.Me) }
+        tracker.mine(emptyList())
+        repeat(2) { see(DdzSeat.Right) }
+        right = DdzSeen.Pass
+        left = DdzSeen.Empty
+        see(DdzSeat.Left)                 // Right's 不出 visible for this one frame
+        right = DdzSeen.Empty
+        left = DdzSeen.Cards(listOf("A", "A"))
+        repeat(10) { see(DdzSeat.Me) }    // Left already led A,A; our turn
+        assertNull(tracker.broken)
+        assertEquals(listOf(listOf("3"), listOf("5"), emptyList(), emptyList(), listOf("A", "A")), tracker.history)
+        assertTrue(tracker.ready())
+    }
+
     @Test fun aSeatThatNeverReadUnsureIsStillBackfilledAsAPass() {
         // 同一串帧,但右家这一轮从没读到过 Unsure、出牌区一直是空的:照旧按「不出」补记。
         tracker.restore(

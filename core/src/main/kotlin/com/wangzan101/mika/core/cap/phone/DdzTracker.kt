@@ -34,9 +34,9 @@ internal class DdzTracker(private val settling: DdzSettlingPolicy = DdzSettlingP
     private var leftMe = true
     /** 第几帧;同一帧里 resolve 会调两次,「不出」要按帧数。 */
     private var frameNo = 0L
-    private var steadyKey: Any? = null
-    private var steadyFrames = 0
-    private var steadyFrameNo = -1L
+    /** 每个读数各自数连着几帧:同一帧里 resolve 和补记会各读一个 key,不能互相清零。 */
+    private val steadyFrames = mutableMapOf<Any, Int>()
+    private val steadyFrameNo = mutableMapOf<Any, Long>()
     /** 最近几件事(闹钟换到谁、给谁记了什么),记不下去时随原因交出去,查是哪一步错的。 */
     val trace = ArrayDeque<String>()
     private var lastTurn: DdzSeat? = null
@@ -494,9 +494,8 @@ internal class DdzTracker(private val settling: DdzSettlingPolicy = DdzSettlingP
         awaitLeader = null
         awaitSawPlay = false
         firstUnsure = 0
-        steadyKey = null
-        steadyFrames = 0
-        steadyFrameNo = -1L
+        steadyFrames.clear()
+        steadyFrameNo.clear()
     }
 
     /** Compare the currently visible opponent play areas with the recovered current trick. */
@@ -685,10 +684,17 @@ internal class DdzTracker(private val settling: DdzSettlingPolicy = DdzSettlingP
      * 算数后从头数,下一家从这一帧起数。
      */
     private fun steady(key: Any, frames: Int = settling.steadyFrames): Boolean {
-        if (key != steadyKey) { steadyKey = key; steadyFrames = 0; steadyFrameNo = -1 }
-        if (steadyFrameNo != frameNo) { steadyFrameNo = frameNo; steadyFrames++ }
-        if (steadyFrames < frames) return false
-        steadyKey = null
+        val last = steadyFrameNo[key]
+        val count = when (last) {
+            frameNo -> steadyFrames[key] ?: 0
+            frameNo - 1 -> (steadyFrames[key] ?: 0) + 1
+            // 上一帧没见到这个 key:不连着,从这一帧重新数
+            else -> 1
+        }
+        steadyFrameNo[key] = frameNo
+        if (count < frames) { steadyFrames[key] = count; return false }
+        steadyFrames -= key
+        steadyFrameNo -= key
         return true
     }
 
