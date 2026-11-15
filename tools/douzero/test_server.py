@@ -273,9 +273,9 @@ class RibbonMisreadTest(unittest.TestCase):
 
 class BidTest(unittest.TestCase):
     def test_bid_level_threshold(self):
-        # 0.69 还不到门槛不叫,0.70 到了就叫三分(门槛 0.7)
-        self.assertEqual(0, bid_level(0.69))
-        self.assertEqual(3, bid_level(0.70))
+        # 0.54 还不到门槛不叫,0.55 到了就叫三分(门槛 0.55)
+        self.assertEqual(0, bid_level(0.54))
+        self.assertEqual(3, bid_level(0.55))
 
     def test_a_strong_hand_is_worth_more_as_landlord_than_a_weak_one(self):
         strong = ["BJ", "SJ", "2", "2", "2", "A", "A", "K", "K", "Q", "Q", "J", "10", "9", "8", "7", "6"]
