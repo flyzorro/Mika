@@ -54,6 +54,8 @@ internal object DdzCards {
     private const val STAGE_RIGHT_EDGE = 1990
     private const val CONTENT_WIDTH = 2292.0
     private const val MIKA_PLAY_PITCH = 51.5
+    /** 左家出牌区每张点数窗口的宽:牌实际排到 52.5 一张,按 51.5 走时末张会偏左,窗口要留到能把两位数 10 的 0 量全。 */
+    private const val MIKA_LEFT_PLAY_WINDOW = 52
 
     private val handGlyphs by lazy { load("/ddz/hand.txt", HAND_W * HAND_H) }
     private val tableGlyphs by lazy { load("/ddz/table.txt", TABLE_W * TABLE_H) }
@@ -93,14 +95,16 @@ internal object DdzCards {
         } else {
             val (x0, x1) = if (side == DdzSide.Left) bar + (280 * k).toInt() to bar + (880 * k).toInt()
             else bar + (1360 * k).toInt() to bar + (1990 * k).toInt()
+            val pitch = if (bar == 0) MIKA_PLAY_PITCH else 53 * k
             // 出的牌间距:主屏 53;Mika 的屏(没黑边)只有 51.5,不跟着横向放大,按 53 × 1.05 算六七张就错位
             // 真人右家十张牌排满后,地主绶带那张会在最后一张下面错开一格
             // 经典牌桌上一排摆满九张后,第十张也从同一个左边接着摆第二排:牌顶比第一排低 [CLASSIC_WRAP_DY],
             // 第一排的牌面下沿以下 [CLASSIC_WRAP_BELOW] 那一行探它
-            strip(frame, x0, x1, 220, 420, pitch = if (bar == 0) MIKA_PLAY_PITCH else 53 * k, width = 103 * k, glyphRows = 60, glyphWidth = (44 * k).toInt(),
+            strip(frame, x0, x1, 220, 420, pitch = pitch, width = 103 * k, glyphRows = 60, glyphWidth = (44 * k).toInt(),
                 k = k, wideLast = (48 * k).toInt(), tailDy = if (side == DdzSide.Right) HUMAN_RIBBON_DY else null,
                 probeTop = CLASSIC_PROBE_TOP, wrapDy = CLASSIC_WRAP_DY, wrapBelow = CLASSIC_WRAP_BELOW,
-                wrapFull = true, wrapWhite = CLASSIC_WRAP_WHITE)
+                wrapFull = true, wrapWhite = CLASSIC_WRAP_WHITE,
+                window = if (bar == 0 && side == DdzSide.Left) MIKA_LEFT_PLAY_WINDOW else null)
         }
         if (cards == null) return if (passed(frame, side, bar, k, stage)) DdzSeen.Pass else DdzSeen.Empty
         val ranks = cards.map { it.rank }.toMutableList()
@@ -890,7 +894,7 @@ internal object DdzCards {
         k: Double, minRows: Int = 100, sure: Double = SURE, margin: Double = MARGIN, probeNearBottom: Boolean = false,
         wideLast: Int? = null, wrapDy: Int? = null, tailDy: Int? = null, wrapBelow: Int = WRAP_BELOW,
         wrapFull: Boolean = false, wrapWhite: Int = 100, probeTop: Int? = null,
-        gap: Int = 12, spanAll: Boolean = false,
+        gap: Int = 12, spanAll: Boolean = false, window: Int? = null,
     ): List<Read>? {
         val right = minOf(x1, frame.width)
         fun white(x: Int, y: Int) = frame.pixel(x, y).let { p -> min(p) > 190 && spread(p) < 45 }
@@ -918,7 +922,7 @@ internal object DdzCards {
         }.maxByOrNull { it.last - it.first } ?: return null
         val n = ((span.last - span.first + 1 - width) / pitch).roundToInt() + 1
         if (n !in 1..20) return null
-        val first = row(frame, x0 + span.first, top, n, pitch, glyphRows, glyphWidth, k, sure, margin, wideLast)
+        val first = row(frame, x0 + span.first, top, n, pitch, glyphRows, glyphWidth, k, sure, margin, wideLast, window)
         // 真人右家最后一张带绶带时会下移,横向宽度仍和上一张重叠,不能靠牌面总宽计数
         if (tailDy != null) {
             val tailLeft = x0 + span.first + ((n - 1) * pitch).toInt()
@@ -929,7 +933,7 @@ internal object DdzCards {
                 }
             } } >= 45
             if (ribbon) {
-                val tail = row(frame, tailLeft, tailTop, 1, pitch, glyphRows, glyphWidth, k, sure, margin, wideLast ?: 72)
+                val tail = row(frame, tailLeft, tailTop, 1, pitch, glyphRows, glyphWidth, k, sure, margin, wideLast ?: 72, window)
                 return first + tail
             }
         }
@@ -946,13 +950,13 @@ internal object DdzCards {
         // 右家的贴着右边(2074),第二排接着从最后一张下面摆(真人右家的十张飞机带对子)。
         // 九张没摆满不会有第二排,也别把真人右家掉下去那张绶带牌(在右边)当成第二排
         if (wrapFull && (n != 9 || !wrapsUnder(span, span2))) return first
-        return first + row(frame, x0 + span2.first, top + wrapDy, n2, pitch, glyphRows, glyphWidth, k, sure, margin, wideLast)
+        return first + row(frame, x0 + span2.first, top + wrapDy, n2, pitch, glyphRows, glyphWidth, k, sure, margin, wideLast, window)
     }
 
     /** 一排 [n] 张牌,最左一张从 [left] 起、牌顶在 [top]:每张的点数。 */
     private fun row(
         frame: RawFrame, left: Int, top: Int, n: Int, pitch: Double, glyphRows: Int, glyphWidth: Int, k: Double,
-        sure: Double, margin: Double, wideLast: Int?,
+        sure: Double, margin: Double, wideLast: Int?, window: Int? = null,
     ): List<Read> {
         return (0 until n).map { i ->
             val cx = left + (i * pitch).toInt() + 3
@@ -963,6 +967,8 @@ internal object DdzCards {
             } } >= 45
             // 只有最后一张右上角可能压着绶带;前面的牌点数(10 有两位)可以看全,但别碰到下一张牌左边的阴影。
             // Mika 的屏间距 51.5:黑 10 的 0 伸到第 47 列,窗口只留 46 会切掉右边,认不准;留到 pitch - 3
+            // 左家的牌从固定的左边往右排,实测约 52.5 一张:按 51.5 走末几张会偏左,把两位数的 10 的 0 切掉,
+            // 所以左家另给一个更宽的 [window](右家贴着右边摆、挤得更紧,宽了会量到下一张牌边的投影)
             // 最后一张整张露着:窄了 10 的 0 会切掉,宽了地主的绶带会进来;给了 [wideLast] 就两种都量,取更像的
             // 最后一张右边没有下一张牌,宽窗封顶到 pitch 就够、不用减那 3 的余量(窄窗仍减 3 避绶带):
             // 这手末尾的黑 10 偏右、0 伸到第 49 列,47 的宽窗量不全,整手读成 ?K,7,J;量到 50 才认出 10
@@ -970,7 +976,7 @@ internal object DdzCards {
                 (minOf(glyphWidth.toDouble(), pitch) - 3).toInt(),
                 wideLast?.let { minOf(it.toDouble(), pitch).toInt() },
             ).distinct()
-            else listOf(minOf(pitch - 3, 48 * k).toInt())
+            else listOf(window ?: minOf(pitch - 3, 48 * k).toInt())
             // 真人牌桌的绶带更靠左:黑边在亮红左边 5 列(第 r 行约 39+r),落在上面那条斜线以内,和点数连成一块
             // (AKQJ10 的 10 读成 ?K,A,7,王炸的小王读成 ?K,7,A)。每行再从亮红往左 [RIBBON_EDGE] 列擦掉;
             // 点数的红最亮约 195,绶带 240,按 [RIBBON_RED] 分得开
