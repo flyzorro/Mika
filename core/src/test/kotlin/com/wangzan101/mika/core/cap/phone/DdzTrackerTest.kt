@@ -1201,6 +1201,30 @@ class DdzTrackerTest {
         assertEquals(2, tracker.history.count { it == listOf("8") })
     }
 
+    @Test fun aOneFramePassDoesNotHideThePlaySettledAfterTheClockMovesOn() {
+        // 右家跟我的 3 出 5:牌飞过来时闹钟已经到左家,右家出牌区那一帧只闪了一下「不出」。左家随即压 9、
+        // 闹钟走到我这里(发生 advance);之后右家的 5 才落稳(读到真牌,只亮两帧就被清掉)。
+        // 那 1 帧没读稳的「不出」不能挡住同一轮的真牌,否则 history 里右家这一手记成了「不出」。
+        tracker.restore(DdzSeat.Me, bottom, listOf(listOf("3")), DdzSeat.Right)
+        see(DdzSeat.Right)                    // 右家出牌,出牌区还空着
+        right = DdzSeen.Pass
+        see(DdzSeat.Left)                     // 闹钟到左家:右家这一帧只闪了一下「不出」
+        left = DdzSeen.Cards(listOf("9"))     // 左家很快压上 9
+        right = DdzSeen.Empty
+        see(DdzSeat.Me)                       // 闹钟到我:第一帧还不算
+        see(DdzSeat.Me)                       // 第二帧:advance(Me),右家的牌这时还没落下
+        right = DdzSeen.Cards(listOf("5"))    // 右家的 5 这才落稳
+        repeat(2) { see(DdzSeat.Me) }
+        right = DdzSeen.Empty                 // 出牌区很快被清掉:仍是读到过的这一手,不是「不出」
+        repeat(6) { see(DdzSeat.Me) }
+        assertEquals(
+            "history=${tracker.history} trace=${tracker.trace}",
+            listOf(listOf("3"), listOf("5"), listOf("9")),
+            tracker.history,
+        )
+        assertNull(tracker.broken)
+    }
+
     @Test fun aSeatThatNeverReadUnsureIsStillBackfilledAsAPass() {
         // 同一串帧,但右家这一轮从没读到过 Unsure、出牌区一直是空的:照旧按「不出」补记。
         tracker.restore(
