@@ -60,6 +60,17 @@ class PhoneDdzTurnTest {
         open override suspend fun quickTap(x: Int, y: Int): Boolean { taps += x to y; return true }
     }
 
+    /** 诊断帧很大(每帧几百行 ARGB),按名字一帧帧读,别把十几帧同时留在堆上。 */
+    private class LazyFrameGame(
+        private val names: ArrayDeque<String>,
+        private val load: (String) -> RawFrame,
+    ) : Game(PhoneDdzTurn.PACKAGE, ArrayDeque()) {
+        override suspend fun rawFrame(rows: List<Int>): RawFrame? {
+            val name = names.removeFirstOrNull() ?: return last
+            return load(name).also { last = it }
+        }
+    }
+
     /** After the first button tap (not 取消托管) it is an opponent's turn, then the hand ends on the human result screen. */
     private fun playsThenEnds(frames: List<RawFrame>) = object : Game(PhoneDdzTurn.PACKAGE, ArrayDeque(frames)) {
         override suspend fun quickTap(x: Int, y: Int): Boolean {
@@ -4087,6 +4098,70 @@ class PhoneDdzTurnTest {
         assertEquals("false", started.text("recoverable"))
         // 只点土豪场和商店的返回箭头;回到场次页后一下都不点
         assertEquals(listOf(1847 to 400, 127 to 82), game.taps)
+    }
+
+    /** DDZDUMP 导出的诊断帧(全分辨率 PNG,没读的行涂黑):按工具当时读过的 [roomRows] 还原成 RawFrame。 */
+    private fun dumpFrame(name: String): RawFrame {
+        val image = ImageIO.read(javaClass.getResourceAsStream("/ddz/$name.png")!!)
+        return RawFrame(image.width, image.height, roomRows.associateWith { y ->
+            image.getRGB(0, y, image.width, 1, null, 0, image.width)
+        })
+    }
+
+    /**
+     * 两局失败前的 tracker 状态(DDZTRACE):右家是地主,我刚领出 [lastLead]、只剩一张(SJ / 2);
+     * 16:41:27.6 / 16:47:18.9 闹钟到左家时炸弹还在飞(R=Unsure),waiting=[Right],active=Left。
+     */
+    private fun bombPending(lastLead: List<String>) = DdzTracker(DdzSettlingPolicy.HUMAN).apply {
+        restore(
+            DdzSeat.Right, listOf("8", "10", "3"),
+            listOf(listOf("3"), emptyList(), listOf("A"), emptyList(), emptyList(), lastLead),
+            current = DdzSeat.Right,
+        )
+        observe(DdzSeat.Left, { side -> if (side == DdzSide.Right) DdzSeen.Unsure else DdzSeen.Empty }, { null })
+    }
+
+    /**
+     * 走公开入口(start + wait)把第 [case] 局失败前那 6 帧诊断画面按真机顺序喂给 track():
+     * start 读一帧、wait 开头再读一帧,这两帧本来就不进 tracker;最后用真人结算页收尾。
+     */
+    private suspend fun replayAutopassBomb(case: Int, lastLead: List<String>): DdzTracker {
+        val frames = (0..5).map { "human_autopass_bomb_game${case}_f$it" }
+        val names = ArrayDeque(listOf(frames[0], frames[0]) + frames + listOf("human_result_leave_change_continue"))
+        val game = LazyFrameGame(names) { name ->
+            if (name.startsWith("human_autopass_bomb_")) dumpFrame(name) else full(name)
+        }
+        val dispatcher = toolDispatcher(game)
+        val tracker = bombPending(lastLead)
+        PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
+        PhoneDdzTurn.useTracker(dispatcher.ctx, tracker)
+        PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"wait"}""").jsonObject), dispatcher.ctx)
+        return tracker
+    }
+
+    /** 炸弹记进 history,后面跟着两家的不出。 */
+    private fun assertBombRecorded(tracker: DdzTracker, bomb: List<String>) {
+        val at = tracker.history.indexOf(bomb)
+        assertTrue("别家的炸弹要记进 history: ${tracker.history}", at >= 0)
+        assertEquals("炸弹之后两家都不出: ${tracker.history}", listOf(emptyList<String>(), emptyList()), tracker.history.drop(at + 1).take(2))
+    }
+
+    @Test fun anAutopassBombFrameStillTracksTheLandlordsBomb() = runTest {
+        // 2026-11-15 16:41 真人精英场第 1 局:我(农民)出 7 2 2 2 后只剩 SJ,右家地主想 9 秒后炸 KKKK,
+        // 游戏直接替我「要不起」:0~2 帧没有按钮也没有闹钟,但 R=Cards([K,K,K,K])、L=Pass 读得清清楚楚。
+        // 旧规则把这三帧整帧丢掉;清桌后闹钟回右家、再到左家时 advance(Left) 走过还在 waiting 的 Right,
+        // settle() 没有可用读数 → missed_play。
+        val tracker = replayAutopassBomb(1, listOf("7", "2", "2", "2"))
+        assertNull("被游戏自动要不起时别家炸弹那一帧不能整帧丢掉: history=${tracker.history} trace=${tracker.trace}", tracker.broken)
+        assertBombRecorded(tracker, listOf("K", "K", "K", "K"))
+    }
+
+    @Test fun oneAutopassBombFrameStillTracksTheLandlordsBomb() = runTest {
+        // 同批第 5 局 16:47:我出 5 A A A 后只剩一张 2,右家地主炸 4444,闹钟到左家时 R=Unsure;
+        // 只有 1 帧读得出(16:47:20.566 L=Pass R=Cards([4,4,4,4])),之后马上清桌 —— 修法不能依赖连续 3 帧 steady。
+        val tracker = replayAutopassBomb(5, listOf("5", "A", "A", "A"))
+        assertNull("只有一帧读得出的炸弹也不能丢: history=${tracker.history} trace=${tracker.trace}", tracker.broken)
+        assertBombRecorded(tracker, listOf("4", "4", "4", "4"))
     }
 
     @Test fun humanToolPromptDocumentsWaitAndNestedResumeSchema() {
