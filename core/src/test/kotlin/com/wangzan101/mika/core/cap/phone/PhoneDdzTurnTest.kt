@@ -2848,6 +2848,44 @@ class PhoneDdzTurnTest {
     }
 
     /**
+     * 2026-11-15 23:10 真机精英场第 4 局:地主加倍画面上蓝「不加倍」那一帧没认出来,只剩黄「加倍」(x≈1454),
+     * 读成了「轮到我先出」;工具选了一张 4 去按「出牌」,按下的其实是「加倍」(赢面 0.70,不到 0.8 本不该加倍)。
+     * 真人局的出牌按钮在 1256:只剩一个按钮、又不在那儿,就不是出牌画面,一下都不点。
+     */
+    @Test fun aLoneDoubleButtonIsNeverTakenForThePlayButton() = runTest {
+        val call = full("call")
+        val double = full("double_landlord_20")
+        val yellow = DdzScreen.read(double, classic = true).buttons.single { it.color == DdzColor.Yellow }
+        val rows = (DdzScreen.ROWS + DdzCards.ROWS + DdzCards.LOBBY_ROWS + DdzPopups.SCAN_ROWS).distinct()
+        val noBlue = RawFrame(double.width, double.height, rows.associateWith { y ->
+            IntArray(double.width) { x -> double.pixel(x, y).let { p -> if ((p and 0xff) > 225 && (p shr 16 and 0xff) < 110) 0xFF202020.toInt() else p } }
+        })
+        assertEquals("抹掉蓝色后只剩黄色「加倍」", listOf(DdzColor.Yellow), DdzScreen.read(noBlue, classic = true).buttons.map { it.color })
+        val savedBid = PhoneDdzTurn.adviseBid
+        val savedDouble = PhoneDdzTurn.adviseDouble
+        val saved = PhoneDdzTurn.advise
+        PhoneDdzTurn.adviseBid = { _, _ -> PhoneDdzTurn.BidAdvice(3) }
+        PhoneDdzTurn.adviseDouble = { _, _, _, _ -> PhoneDdzTurn.DoubleAdvice(false, 0.70) }
+        PhoneDdzTurn.advise = { _, _ -> """{"play":["4"]}""" }
+        try {
+            val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(call, call, call) + List(12) { noBlue }))
+            PhoneDdzTurn.execute(
+                Args(PhoneDdzTurn.def, Json.parseToJsonElement(
+                    """{"action":"start","mode":"human","auto":true,"advisor":"http://mac:3426"}"""
+                ).jsonObject),
+                toolDispatcher(game).ctx,
+            )
+            assertTrue("不能把黄色「加倍」当出牌按下去: ${game.taps}", (yellow.x to yellow.y) !in game.taps)
+            // 真机上牌抬起来了才接着按的黄色;这里帧不动、牌抬不起来,只能看它有没有当成出牌去点手牌:叫完分一下都不该点
+            assertEquals("叫完三分后不点手牌、不点按钮: ${game.taps}", 1, game.taps.size)
+        } finally {
+            PhoneDdzTurn.adviseBid = savedBid
+            PhoneDdzTurn.adviseDouble = savedDouble
+            PhoneDdzTurn.advise = saved
+        }
+    }
+
+    /**
      * 地主的加倍画面只有蓝「不加倍」、黄「加倍」(2026-11-14 11:52 真机,底牌 7 2 J)。DouZero 说值就点黄色。
      */
     @Test fun humanLandlordDoublesOnTheYellowButton() = runTest {
