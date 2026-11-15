@@ -54,6 +54,8 @@ internal object DdzCards {
     private const val STAGE_RIGHT_EDGE = 1990
     private const val CONTENT_WIDTH = 2292.0
     private const val MIKA_PLAY_PITCH = 51.5
+    /** 左家的牌从左边起摆,实测约 52.5 一张;右家贴着右边摆、挤得更紧(约 51.5)。 */
+    private const val MIKA_LEFT_PLAY_PITCH = 52.5
 
     private val handGlyphs by lazy { load("/ddz/hand.txt", HAND_W * HAND_H) }
     private val tableGlyphs by lazy { load("/ddz/table.txt", TABLE_W * TABLE_H) }
@@ -93,11 +95,16 @@ internal object DdzCards {
         } else {
             val (x0, x1) = if (side == DdzSide.Left) bar + (280 * k).toInt() to bar + (880 * k).toInt()
             else bar + (1360 * k).toInt() to bar + (1990 * k).toInt()
-            // 出的牌间距:主屏 53;Mika 的屏(没黑边)只有 51.5,不跟着横向放大,按 53 × 1.05 算六七张就错位
+            val pitch = when {
+                bar != 0 -> 53 * k
+                side == DdzSide.Left -> MIKA_LEFT_PLAY_PITCH
+                else -> MIKA_PLAY_PITCH
+            }
+            // 出的牌间距:主屏 53;Mika 的屏(没黑边)左家实测 52.5、右家 51.5,不跟着横向放大,按 53 × 1.05 算六七张就错位
             // 真人右家十张牌排满后,地主绶带那张会在最后一张下面错开一格
             // 经典牌桌上一排摆满九张后,第十张也从同一个左边接着摆第二排:牌顶比第一排低 [CLASSIC_WRAP_DY],
             // 第一排的牌面下沿以下 [CLASSIC_WRAP_BELOW] 那一行探它
-            strip(frame, x0, x1, 220, 420, pitch = if (bar == 0) MIKA_PLAY_PITCH else 53 * k, width = 103 * k, glyphRows = 60, glyphWidth = (44 * k).toInt(),
+            strip(frame, x0, x1, 220, 420, pitch = pitch, width = 103 * k, glyphRows = 60, glyphWidth = (44 * k).toInt(),
                 k = k, wideLast = (48 * k).toInt(), tailDy = if (side == DdzSide.Right) HUMAN_RIBBON_DY else null,
                 probeTop = CLASSIC_PROBE_TOP, wrapDy = CLASSIC_WRAP_DY, wrapBelow = CLASSIC_WRAP_BELOW,
                 wrapFull = true, wrapWhite = CLASSIC_WRAP_WHITE)

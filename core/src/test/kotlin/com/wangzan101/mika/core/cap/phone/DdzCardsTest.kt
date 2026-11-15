@@ -148,6 +148,17 @@ class DdzCardsTest {
         assertRibbonPlay("10 10 10 9 9 9 7 7 5 5", DdzCards.play(frame("human_right_landlord_10cards"), DdzSide.Right))
     }
 
+    @Test fun readsTheLeftLandlordsAirplaneWithWingsAfterItSettles() {
+        // Live 2026-11-15 14:36 精英场: the left landlord led J J J 10 10 10 5 4 (airplane with two
+        // single kickers) and the settled frames read Unsure, so the first hand never registered and the
+        // game went missed_play. The cards step ~52.5 px on Mika's screen but the row is walked at 51.5,
+        // so by the third 10 the rank window sits ~4 px left of the card and clips the 「0」's right edge.
+        for (name in listOf("human_left_plane_JJJ101010_5_4_ribbon", "human_left_plane_JJJ101010_5_4_ribbon_f1",
+            "human_left_plane_JJJ101010_5_4_ribbon_flying")) {
+            assertEquals(name, DdzSeen.Cards("J J J 10 10 10 5 4".split(' ')), DdzCards.play(fullFrame(name), DdzSide.Left))
+        }
+    }
+
     /** 绶带那张要么认准,要么留成 ? 交给 DouZero 服务按牌规补;别的牌必须认准。 */
     private fun assertRibbonPlay(expected: String, seen: DdzSeen) {
         val ranks = (seen as DdzSeen.Cards).ranks
