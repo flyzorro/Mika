@@ -4163,6 +4163,8 @@ class PhoneDdzTurnTest {
         val tracker = replayAutopassBomb(5, listOf("5", "A", "A", "A"))
         assertNull("只有一帧读得出的炸弹也不能丢: history=${tracker.history} trace=${tracker.trace}", tracker.broken)
         assertBombRecorded(tracker, listOf("4", "4", "4", "4"))
+    }
+
     // ---- TEMP diagnostics: unsure_* 帧转储只在「认不准」持续时才写 (revert after) ----
 
     /** 虚拟时钟:每读一帧往前走一步。认不准持续了多久、DdzFrameDump 的 3 秒限速都按它算,测试不用真等。 */
