@@ -1576,9 +1576,12 @@ internal object PhoneDdzTurn : PhoneTool {
             return
         }
         // 结算页、「当前金币可前往更高级场次」弹窗、大厅不是出牌的一刻:弹窗把两家出牌区整片盖住,读出来全是认不准,
-        // 这一手还没出牌就 unsure_first_play 了。没有手牌、又轮不到我、还看不见闹钟的画面同样不喂
+        // 这一手还没出牌就 unsure_first_play 了。没有手牌、又轮不到我、还看不见闹钟的画面同样不喂。
+        // 例外:游戏替我「要不起」的那一两秒没有按钮也没有闹钟,但别家刚出的炸弹还清楚地摆在出牌区;
+        // 只要有一家读到认得准的一手牌,这一帧仍是牌桌上的出牌一刻,要照常喂给 tracker,否则这一手会漏记成 missed_play。
+        val clock = DdzCards.clock(frame)
         if (view.phase == DdzPhase.Result || view.handCount == 0 ||
-            (view.phase == DdzPhase.Other && view.buttons.isEmpty() && DdzCards.clock(frame) == null)) return
+            (view.phase == DdzPhase.Other && view.buttons.isEmpty() && clock == null && !readableOpponentPlay(frame))) return
         // 农民 17 张、地主 20 张说明自己还没出过牌,在那之前的出牌都还摆在桌上,接得上;别的张数是打了一半,这一手不交给 DouZero。
         // 发牌时手牌一张张多起来,要等到加倍或者轮到自己才数
         // 真人局的结算画面说明不了下一局:等下一个牌桌画面再定
@@ -1589,7 +1592,6 @@ internal object PhoneDdzTurn : PhoneTool {
             if (!fresh) turn.tracker = DdzTracker().apply { fail(DdzSessionReason.JOINED_MID_GAME) }
         }
         val tracker = turn.tracker ?: DdzTracker(if (turn.mode == DdzMode.Human) DdzSettlingPolicy.HUMAN else DdzSettlingPolicy.SINGLE).also { turn.tracker = it }
-        val clock = DdzCards.clock(frame)
         val seat = trackedSeat(turn, view.phase, clock)
         tracker.observe(
             seat, { DdzCards.play(frame, it) }, { DdzCards.bottom(frame) },
@@ -1598,6 +1600,13 @@ internal object PhoneDdzTurn : PhoneTool {
             if (DdzCards.singleStageTable(frame)) DdzCards.counts(frame) else emptyMap()
         }
     }
+
+    /**
+     * 没有按钮、没有闹钟的一帧,别家出牌区还摆着读得准的一手牌:这是游戏替我「要不起」时的牌桌。
+     * 结算页、弹窗、大厅两家出牌区被整片盖住,只会读到 Unsure / Empty,不会读到 Cards。
+     */
+    private fun readableOpponentPlay(frame: com.wangzan101.mika.core.uistate.RawFrame): Boolean =
+        DdzSide.entries.any { DdzCards.play(frame, it) is DdzSeen.Cards }
 
     /** 闹钟/按钮直接对应的座位,不含单帧闪烁的确认:轮到自己出牌时闹钟是藏起来的。 */
     internal fun rawSeat(phase: DdzPhase, clock: DdzSide?): DdzSeat? = when {
