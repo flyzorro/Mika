@@ -187,6 +187,31 @@ class KeepCombosTest(unittest.TestCase):
                          [NAMES[c] for c in ADVISOR.act("landlord", hand, ["Q", "K", "A"], [])])
 
 
+class JokerKickerTest(unittest.TestCase):
+    """带牌里不能同时有大小王(王炸不能当飞机/四带二的带牌),只带一张王、王炸单独出照旧。"""
+
+    def test_the_plane_does_not_take_both_jokers_as_kickers(self):
+        # 2026-11-15 13:52 实机:地主 444555 + 大小王,advisor 出了 444555 SJ BJ,按下后手牌仍是 8 张、仍是领出
+        history = [["10", "10", "10", "2"], ["K", "K", "K", "8"], [], ["7", "A", "A", "A"], [], [], ["Q", "Q", "Q", "Q"], [], []]
+        hand = ["BJ", "SJ", "5", "5", "5", "4", "4", "4"]
+        play = [NAMES[c] for c in ADVISOR.act("landlord", hand, ["4", "4", "10"], history)]
+        self.assertNotEqual(sorted(["4", "4", "4", "5", "5", "5", "SJ", "BJ"]), sorted(play))
+        # 大小王一起出现时只能是王炸本身,不能当任何带牌的翅膀
+        if {"SJ", "BJ"} <= set(play):
+            self.assertEqual(sorted(["SJ", "BJ"]), sorted(play))
+
+    def test_the_search_never_generates_both_jokers_as_kickers(self):
+        # 残局搜索模拟别家出牌用同一套合法性:别的玩家也出不了 444555 + 大小王
+        import endgame
+        hand = tuple(cards(["4", "4", "4", "5", "5", "5", "9", "SJ", "BJ"]))
+        found = endgame.moves(hand, [])
+        self.assertNotIn(tuple(sorted(cards(["4", "4", "4", "5", "5", "5", "SJ", "BJ"]))), found)
+        # 不带王、只带一张王的飞机,以及王炸本身,照旧
+        self.assertIn(tuple(sorted(cards(["4", "4", "4", "5", "5", "5", "SJ", "9"]))), found)
+        self.assertIn(tuple(sorted(cards(["4", "4", "4", "5", "5", "5"]))), found)
+        self.assertIn(tuple(sorted(cards(["SJ", "BJ"]))), found)
+
+
 class EndgameTest(unittest.TestCase):
     def test_the_search_finds_the_forced_win_douzero_missed(self):
         # 地主只剩一张(最大到 J)、我小王是场上最大:小王接过来,再出对子、A、Q、8 一路走完

@@ -217,6 +217,9 @@ class Agent:
         self.model.eval()
 
     def act(self, infoset):
+        # 斗地主经典版不允许大小王一起当带牌(飞机带单的翅膀、四带二的两张单牌):DouZero 的合法出牌里有,
+        # 先剔掉,后面 DouZero 打分、残局搜索、两手出完都只看这份
+        infoset.legal_actions = endgame.without_double_joker_kickers(infoset.legal_actions)
         if len(infoset.legal_actions) == 1:
             return infoset.legal_actions[0]
         values = self.values(infoset)
