@@ -1147,6 +1147,84 @@ class DdzTrackerTest {
         assertTrue(tracker.ready())
     }
 
+    @Test fun aStableLeadIsNotLostWhenThePreviousPassesAreStillQueued() {
+        // Live 2026-11-15 15:42:50 (human 精英场, 第 1 局): 右家是地主, 领出单张 8; 左家压 2;
+        // 轮到我 Follow、手里只剩 7, 只能要不起; 右家不出, 闹钟到左家。最后 6 帧转储重跑读牌全对
+        // (4 帧 L=[2] R=[8], 然后 clock=Right L=[2] R=Empty, 最后 clock=Left L=Empty R=Pass),
+        // 可是第 5 帧的 observe 里 advance(Left) 发现右家还在 waiting、settle() 记不上, 判 missed_play。
+        // 上文: 上一轮右家领出 5, 左家和我都不出(游戏替我秒过), 闹钟一圈跳得快, 两个「不出」
+        // 还排在 waiting 里右家就已经领出了 8; 补记时左家新一轮的 2 先落进 history, 从此 trickLead()
+        // 变成那张 2, 一直读得准的 8 被 illegal()/usablePlay() 当成「压不过 2」卡在队头。
+        val tracker = DdzTracker(DdzSettlingPolicy.HUMAN)
+        fun feed(turn: DdzSeat?, l: DdzSeen, r: DdzSeen) =
+            tracker.observe(turn, { if (it == DdzSide.Left) l else r }, { bottom })
+        val eight = DdzSeen.Cards(listOf("8"))
+        val two = DdzSeen.Cards(listOf("2"))
+        val five = DdzSeen.Cards(listOf("5"))
+        // 地主(右家)领出 5, 闹钟到左家; 只亮了两帧, 第三帧轮到我才读稳
+        repeat(2) { feed(DdzSeat.Left, DdzSeen.Empty, five) }
+        // 左家不出、轮到我; 游戏替我秒过, 闹钟到右家, 右家也不出
+        repeat(2) { feed(DdzSeat.Me, DdzSeen.Pass, five) }
+        feed(DdzSeat.Right, DdzSeen.Pass, DdzSeen.Empty)
+        // 新一轮: 右家领出 8(闹钟到左家), 左家压 2, 轮到我
+        feed(DdzSeat.Left, DdzSeen.Empty, eight)
+        // 4 帧 Follow: 读牌一直正确, 工具没按要不起(tracker 不 ready), 游戏替我过
+        repeat(4) { feed(DdzSeat.Me, two, eight) }
+        feed(DdzSeat.Right, two, DdzSeen.Empty)       // clock=Right, 我这边显示「不出」
+        feed(DdzSeat.Left, DdzSeen.Empty, DdzSeen.Pass) // clock=Left, 右家「不出」
+        assertNull("history=${tracker.history} trace=${tracker.trace}", tracker.broken)
+        assertEquals(
+            listOf(
+                listOf("5"), emptyList(), emptyList(),       // 上一轮: 右家领出 5, 两家都不出
+                listOf("8"), listOf("2"), emptyList(),      // 这一轮: 右家领出 8, 左家压 2, 我不出
+            ),
+            tracker.history,
+        )
+    }
+
+    @Test fun aSameRankLeadInTheNextTrickIsStillRecorded() {
+        // 同上, 但右家上一轮领出的也是单张 8(lastPlay 相同): 8 仍是新一轮的领出, 不能当成桌上的旧牌。
+        val tracker = DdzTracker(DdzSettlingPolicy.HUMAN)
+        fun feed(turn: DdzSeat?, l: DdzSeen, r: DdzSeen) =
+            tracker.observe(turn, { if (it == DdzSide.Left) l else r }, { bottom })
+        val eight = DdzSeen.Cards(listOf("8"))
+        val two = DdzSeen.Cards(listOf("2"))
+        repeat(3) { feed(DdzSeat.Left, DdzSeen.Empty, eight) }
+        repeat(4) { feed(DdzSeat.Me, DdzSeen.Pass, eight) }
+        repeat(3) { feed(DdzSeat.Right, DdzSeen.Pass, DdzSeen.Empty) }
+        repeat(2) { feed(DdzSeat.Left, DdzSeen.Empty, eight) }
+        feed(DdzSeat.Left, two, eight)
+        repeat(4) { feed(DdzSeat.Me, two, eight) }
+        feed(DdzSeat.Right, two, DdzSeen.Empty)
+        feed(DdzSeat.Left, DdzSeen.Empty, DdzSeen.Pass)
+        assertNull("history=${tracker.history} trace=${tracker.trace}", tracker.broken)
+        assertEquals(2, tracker.history.count { it == listOf("8") })
+    }
+
+    @Test fun aOneFramePassDoesNotHideThePlaySettledAfterTheClockMovesOn() {
+        // 右家跟我的 3 出 5:牌飞过来时闹钟已经到左家,右家出牌区那一帧只闪了一下「不出」。左家随即压 9、
+        // 闹钟走到我这里(发生 advance);之后右家的 5 才落稳(读到真牌,只亮两帧就被清掉)。
+        // 那 1 帧没读稳的「不出」不能挡住同一轮的真牌,否则 history 里右家这一手记成了「不出」。
+        tracker.restore(DdzSeat.Me, bottom, listOf(listOf("3")), DdzSeat.Right)
+        see(DdzSeat.Right)                    // 右家出牌,出牌区还空着
+        right = DdzSeen.Pass
+        see(DdzSeat.Left)                     // 闹钟到左家:右家这一帧只闪了一下「不出」
+        left = DdzSeen.Cards(listOf("9"))     // 左家很快压上 9
+        right = DdzSeen.Empty
+        see(DdzSeat.Me)                       // 闹钟到我:第一帧还不算
+        see(DdzSeat.Me)                       // 第二帧:advance(Me),右家的牌这时还没落下
+        right = DdzSeen.Cards(listOf("5"))    // 右家的 5 这才落稳
+        repeat(2) { see(DdzSeat.Me) }
+        right = DdzSeen.Empty                 // 出牌区很快被清掉:仍是读到过的这一手,不是「不出」
+        repeat(6) { see(DdzSeat.Me) }
+        assertEquals(
+            "history=${tracker.history} trace=${tracker.trace}",
+            listOf(listOf("3"), listOf("5"), listOf("9")),
+            tracker.history,
+        )
+        assertNull(tracker.broken)
+    }
+
     @Test fun aSeatThatNeverReadUnsureIsStillBackfilledAsAPass() {
         // 同一串帧,但右家这一轮从没读到过 Unsure、出牌区一直是空的:照旧按「不出」补记。
         tracker.restore(

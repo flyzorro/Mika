@@ -45,6 +45,11 @@ internal class DdzTracker(private val settling: DdzSettlingPolicy = DdzSettlingP
     private val waiting = ArrayDeque<Pair<DdzSeat, Int>>()
     /** 还在等的几家最近一次读到的「不出」或牌:真人桌上有时只亮一帧,之后出牌区就读不出了。 */
     private val lastSeen = mutableMapOf<DdzSeat, DdzSeen>()
+    /** 排队中这家读到「不出」的帧号,和最近一次 [advance] 的帧号:闹钟走过之后才亮出的牌是下一轮的。 */
+    private val passFrame = mutableMapOf<DdzSeat, Long>()
+    /** 上面那个「不出」连着读了几帧:只闪一帧的多半是飞过来的牌缩在头像边上,不算读稳。 */
+    private val passFrames = mutableMapOf<DdzSeat, Int>()
+    private var lastAdvanceFrame = 0L
     /**
      * 这一轮(从这家轮到出牌起)读到过 Unsure 的座位:出牌区有东西(牌在飞、动画),不能当成没出。
      * 记下这一手或者读到真正的「不出」时清掉;下一轮重新算。
@@ -378,6 +383,7 @@ internal class DdzTracker(private val settling: DdzSettlingPolicy = DdzSettlingP
     private fun advance(turn: DdzSeat) {
         val from = active ?: return
         active = turn
+        lastAdvanceFrame = frameNo
         var seat: DdzSeat = from
         while (seat != turn) {
             // 这家上一手还没读到又轮过他一次:先看已经看到的是不是够记,不够才判漏,别拿他下一手顶上
@@ -488,6 +494,8 @@ internal class DdzTracker(private val settling: DdzSettlingPolicy = DdzSettlingP
         active = current
         waiting.clear()
         lastSeen.clear()
+        passFrame.clear()
+        passFrames.clear()
         unsureThisTrick.clear()
         broken = null
         leftMe = true
@@ -569,6 +577,29 @@ internal class DdzTracker(private val settling: DdzSettlingPolicy = DdzSettlingP
         if (trace.size > TRACE) trace.removeFirst()
     }
 
+    /**
+     * 记住这一帧读到的「不出」或牌。闹钟已经走过这家之后才亮出来的牌是下一轮的新一手,不能盖掉
+     * 这一轮已经读到的「不出」:否则补记时下一手的牌会记到上一轮的位置上,领出这一手反而被判成
+     * 「压不过」卡在队头。牌刚飞过来那一帧像「不出」、下一帧就落稳成真牌(闹钟没动),照旧覆盖;
+     * 只闪一帧的「不出」还没读稳,同一轮后来落稳的真牌也照旧覆盖它。
+     */
+    private fun rememberSeen(seat: DdzSeat, seen: DdzSeen) {
+        if (lastSeen[seat] == DdzSeen.Pass && seen is DdzSeen.Cards && (passFrames[seat] ?: 0) >= 2 &&
+            (passFrame[seat] ?: -1) < lastAdvanceFrame) return
+        lastSeen[seat] = seen
+        if (seen == DdzSeen.Pass) {
+            passFrames[seat] = when (passFrame[seat]) {
+                frameNo -> passFrames[seat] ?: 1
+                frameNo - 1 -> (passFrames[seat] ?: 1) + 1
+                else -> 1
+            }
+            passFrame[seat] = frameNo
+        } else {
+            passFrame -= seat
+            passFrames -= seat
+        }
+    }
+
     private fun resolve(read: (DdzSide) -> DdzSeen) {
         // 队头还没读稳,后面几家却已经出过了:先记住他们的读数,等排到队头再记(见下面的 seen_then_cleared)
         for ((seat, _) in waiting.drop(1)) {
@@ -578,7 +609,7 @@ internal class DdzTracker(private val settling: DdzSettlingPolicy = DdzSettlingP
             val guessed = seen is DdzSeen.Cards && seat != landlord && seen.ranks.any { it.startsWith(DdzCards.UNKNOWN) }
             // 出牌区还摆着他自己上一手:那是「不出」,不是又出了一手
             val oldPlay = seen is DdzSeen.Cards && seen.ranks == lastPlay[seat]
-            if (!oldPlay && (seen == DdzSeen.Pass || (seen is DdzSeen.Cards && !guessed))) lastSeen[seat] = seen
+            if (!oldPlay && (seen == DdzSeen.Pass || (seen is DdzSeen.Cards && !guessed))) rememberSeen(seat, seen)
         }
         while (waiting.isNotEmpty()) {
             val (seat, tries) = waiting.first()
@@ -589,7 +620,7 @@ internal class DdzTracker(private val settling: DdzSettlingPolicy = DdzSettlingP
             val guessed = seen is DdzSeen.Cards && seat != landlord && seen.ranks.any { it.startsWith(DdzCards.UNKNOWN) }
             // 剩的张数说这家出了几张:读到的张数对不上(还叠着、还没落下)、或者明明出了牌却像「不出」,都再等等
             val played = unplayed(seat)
-            if ((seen == DdzSeen.Pass && !sawUnrecordedPlay(seat)) || (seen is DdzSeen.Cards && !guessed)) lastSeen[seat] = seen
+            if ((seen == DdzSeen.Pass && !sawUnrecordedPlay(seat)) || (seen is DdzSeen.Cards && !guessed)) rememberSeen(seat, seen)
             // 读到的这一手不合牌规(单张压三带一之类,多半是认错了):不记,和「认不准」一样再等几帧
             val lastCards = (lastSeen[seat] as? DdzSeen.Cards)?.ranks
             val breaksRules = when {
