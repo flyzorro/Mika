@@ -24,6 +24,16 @@ class Timeout(Exception):
     pass
 
 
+def double_joker_kickers(move):
+    """这手牌是不是把大小王一起当了带牌:飞机带单的翅膀、四带二的两张单牌。王炸自己出不算。"""
+    kind = md.get_move_type(list(move))["type"]
+    return kind in (md.TYPE_11_SERIAL_3_1, md.TYPE_13_4_2) and 20 in move and 30 in move
+
+
+def without_double_joker_kickers(actions):
+    return [m for m in actions if not double_joker_kickers(m)]
+
+
 def moves(hand, rival):
     """[hand] 能出的牌:[rival] 是要压的那手([] 是自己先出);要压时含不出 []。同 DouZero 牌局的规则。"""
     mg = MovesGener(list(hand))
@@ -51,7 +61,7 @@ def moves(hand, rival):
             md.TYPE_14_4_22: (mg.gen_type_14_4_22, ms.filter_type_14_4_22),
         }[t]
         found = keep(gen(), rival) + mg.gen_type_4_bomb() + mg.gen_type_5_king_bomb()
-    out = {tuple(sorted(m)) for m in found}
+    out = {tuple(sorted(m)) for m in found if not double_joker_kickers(m)}
     if rival:
         out.add(())
     return out
