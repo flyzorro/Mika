@@ -312,6 +312,17 @@ class EndgameTest(unittest.TestCase):
         play = ADVISOR.act("landlord", ["BJ", "SJ", "2", "Q", "9", "9"], ["9", "10", "Q"], history)
         self.assertEqual(["2"], [NAMES[c] for c in play])
 
+    def test_a_terrible_opponent_move_does_not_turn_off_the_search(self):
+        # 2026-11-16 人工构造(用 plain DouZero 随机打到残局,再让地主在倒数第 2 手故意出一张
+        # DouZero 分数比最优低 3.64 的单 K):这张 K 在温度 0.02 下 float32 概率下溢成 0,
+        # 4 手概率相乘后所有分法权重都是 0。旧实现 total=0、wins 全 0,act 不换牌,退回 DouZero
+        # 原本的 pass;可不加权的残局搜索这手会换成 8 8。加权必须仍按搜索换牌。
+        history = [['9'], ['K'], [], ['2'], [], [], ['4', '4'], [], ['10', '10'], ['J', 'J'], ['Q', 'Q'], [], ['A', 'A'], [], [],
+                   ['10'], [], ['Q'], ['2'], [], [], ['6', '6'], [], ['9', '9'], [], [], ['K'], [], [], ['K'], [], ['A'], [], [],
+                   ['6'], ['2'], [], [], ['5', '5'], ['8', '8'], [], [], ['SJ', 'BJ'], [], [], ['K'], ['2'], [], [], ['5', '5']]
+        play = ADVISOR.act("landlord_up", ["3", "6", "8", "8", "9", "J", "A"], ["9", "J", "2"], history)
+        self.assertEqual(["8", "8"], [NAMES[c] for c in play])
+
     def test_a_landlord_with_a_pair_left_who_leads_wins(self):
         import endgame, time
         solver = endgame.Solver(time.monotonic() + 1)

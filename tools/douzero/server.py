@@ -26,6 +26,7 @@ POST /double {"seat": "landlord" | "landlord_down" | "landlord_up" | "farmer",
 # farmer 是认不出地主坐哪边时用的:两个农民座位各算一遍(共用时间预算),取较低的赢面
 """
 import json
+import math
 import os
 import random
 import sys
@@ -940,8 +941,12 @@ class Advisor:
         """给 endgame.best 的似然回调:按两家对手最近 [LIKELIHOOD_MOVES] 手不是不出的出牌,判断一种分法像不像他们当时会这么出。
 
         每个对手的每一手都把他当时的手牌和局面用 history 倒推出来,用他自己座位的 DouZero 模型给当时所有
-        合法出牌打分,取这一手的 softmax 概率 P(那手 | 当时手牌);同一对手各手概率相乘,两家对手再相乘。
-        只看最近一手不够:下家倒数第二手 10 10 10 + Q 才是「他手里没有 4/9 这种零散小牌」的证据。
+        合法出牌打分,取这一手的 log softmax 概率 P(那手 | 当时手牌);同一对手各手 log 概率相加,两家对手
+        再相加。只看最近一手不够:下家倒数第二手 10 10 10 + Q 才是「他手里没有 4/9 这种零散小牌」的证据。
+        用 float64 在对数空间算,再减去所有分法里最大的 log 似然后 exp:相对权重不变,但对手真出过一手
+        模型觉得极差的牌时不会像 float32 概率相乘那样下溢成 0(那会让 total=0、残局搜索整个退回 DouZero)。
+        某个观测出法在这种分法的合法出牌里找不到时(正常历史不该发生)这种分法权重记 0;
+        如果所有分法都这样(全 -inf),这次退回不加权,不能把搜索关掉。
         一次把同一手的全部分法攒成一批前向;到 [deadline] 就抛 Timeout,best 退回不加权的摆法数。
         回调第一次被调用时才去翻 history:不是残局时 endgame.best 根本不叫它,这一手就没有额外开销。
         """
@@ -953,7 +958,7 @@ class Advisor:
                     moves = indices.setdefault(seat, [])
                     if len(moves) < LIKELIHOOD_MOVES:
                         moves.append(i)
-            likes = [1.0] * len(splits_hands)
+            logs = [0.0] * len(splits_hands)
             for seat, moves in indices.items():
                 for index in moves:
                     frame = history_frame(history, index)
@@ -969,12 +974,18 @@ class Advisor:
                             continue
                         actions = [tuple(sorted(m)) for m in state.legal_actions]
                         if observed not in actions:
+                            logs[k] = float("-inf")
                             continue
                         j = actions.index(observed)
-                        likes[k] *= float(torch.softmax(values / LIKELIHOOD_TEMPERATURE, dim=0)[j])
+                        logs[k] += float(torch.log_softmax(
+                            values.double() / LIKELIHOOD_TEMPERATURE, dim=0)[j])
                     if time.monotonic() > deadline:
                         raise endgame.Timeout()
-            return likes
+            finite = [x for x in logs if x != float("-inf")]
+            if not finite:
+                return [1.0] * len(splits_hands)
+            top = max(finite)
+            return [math.exp(x - top) if x != float("-inf") else 0.0 for x in logs]
 
         return callback
 
