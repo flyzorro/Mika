@@ -1,8 +1,11 @@
-"""农民加倍门槛校准:随机发牌,只留地主会叫的,用新的 Advisor.double 估农民赢面,再让三家 DouZero 把这副牌打完,
-按估值分桶看「估值 → 实际胜率、样本数」,给出 FARMER_DOUBLE_WIN 的建议值。
+"""加倍门槛校准:随机发牌,只留地主会叫的,用新的 Advisor.double 估自己这一方的赢面,再让三家 DouZero
+把这副牌打完,按估值分桶看「估值 → 实际胜率、样本数」,给出 FARMER_DOUBLE_WIN / SUPER_DOUBLE_WIN 的建议值。
+
+农民模式(默认)每个地主会叫的牌局算两个农民座位;地主模式只算地主这一方,用来定超级加倍门槛。
 
 用法(在 tools/douzero 下,用带 douzero 的 Python):
   .venv/bin/python calibrate_double.py --deals 2000 --workers 8
+  .venv/bin/python calibrate_double.py --mode landlord --deals 1000 --workers 8
 """
 import argparse
 import json
@@ -15,7 +18,7 @@ from collections import defaultdict
 
 from douzero.env.game import GameEnv
 
-from server import Advisor, BID_BATCH, DECK, NAMES, WEIGHTS
+from server import Advisor, BID_BATCH, DECK, DOUBLE_WIN, NAMES, WEIGHTS
 
 _ADVISOR = None
 
@@ -72,37 +75,51 @@ def work(job):
     return rows
 
 
+def work_landlord(job):
+    """地主模式:估地主这一方的赢面,实际输赢是同一副牌地主有没有赢。"""
+    deal, games, budget, min_games = job
+    bottom, landlord, up, down = deal
+    actual = not play_out(bottom, landlord, up, down)
+    win, played = estimate("landlord", landlord, bottom, games, budget, min_games)
+    return [(win, actual, "landlord", played)] if played >= min_games else []
+
+
 def main():
     parser = argparse.ArgumentParser()
+    parser.add_argument("--mode", choices=("farmer", "landlord"), default="farmer",
+                        help="farmer:两个农民座位;landlord:只算地主,用来定超级加倍门槛")
     parser.add_argument("--deals", type=int, default=2000, help="留多少副地主会叫的牌")
     parser.add_argument("--workers", type=int, default=8)
     parser.add_argument("--seed", type=int, default=20261116)
-    parser.add_argument("--games", type=int, default=12, help="每个农民估值打几局")
-    parser.add_argument("--budget", type=float, default=0.8, help="每个农民估值最多几秒")
+    parser.add_argument("--games", type=int, default=12, help="每一方估值打几局")
+    parser.add_argument("--budget", type=float, default=0.8, help="每一方估值最多几秒")
     parser.add_argument("--min-games", type=int, default=8, help="少于这么多局就跳过这一行")
-    parser.add_argument("--out", default="calibrate_double.json")
+    parser.add_argument("--out", default=None)
     args = parser.parse_args()
+    out = args.out or f"calibrate_double_{args.mode}.json"
+    worker = work_landlord if args.mode == "landlord" else work
 
     started = time.time()
+    # 用 #99 的条件抽样估值(landlords_would_call)代替逐副跑 bid:只留地主会叫的牌,和 /bid 的口径一致
     deals = sample_deals(args.deals, args.seed)
-    print(f"deals={len(deals)} sampled in {time.time() - started:.1f}s", flush=True)
+    print(f"mode={args.mode} deals={len(deals)} sampled in {time.time() - started:.1f}s", flush=True)
 
     jobs = [(deal, args.games, args.budget, args.min_games) for deal in deals]
     rows = []
     if args.workers > 1:
         with mp.Pool(args.workers) as pool:
-            for i, part in enumerate(pool.imap_unordered(work, jobs, chunksize=8), 1):
+            for i, part in enumerate(pool.imap_unordered(worker, jobs, chunksize=8), 1):
                 rows.extend(part)
                 if i % 100 == 0:
                     print(f"{i}/{len(deals)} deals, {time.time() - started:.0f}s", flush=True)
     else:
         for i, job in enumerate(jobs, 1):
-            rows.extend(work(job))
+            rows.extend(worker(job))
             if i % 100 == 0:
                 print(f"{i}/{len(deals)} deals, {time.time() - started:.0f}s", flush=True)
 
-    json.dump([{"win": w, "actual": a, "seat": s, "games": g} for w, a, s, g in rows], open(args.out, "w"))
-    print(f"rows={len(rows)} in {time.time() - started:.0f}s -> {args.out}")
+    json.dump([{"win": w, "actual": a, "seat": s, "games": g} for w, a, s, g in rows], open(out, "w"))
+    print(f"rows={len(rows)} in {time.time() - started:.0f}s -> {out}")
 
     buckets = defaultdict(list)
     for win, actual, _, _ in rows:
@@ -112,8 +129,23 @@ def main():
         values = buckets[key]
         print(f"{key:.2f}    {statistics.mean(values):.3f}     {len(values)}")
 
-    # 实际胜率稳定 >= 0.6 的最低估值:本档样本 >= 30 且下一档也 >= 0.6
     keys = sorted(buckets)
+    if args.mode == "landlord":
+        # 实际胜率 >= 0.85 的最低估值档(本档样本 >= 30),且不低于普通加倍门槛
+        best = None
+        for key in keys:
+            values = buckets[key]
+            if len(values) >= 30 and statistics.mean(values) >= 0.85:
+                best = key
+                break
+        if best is None:
+            print("\n建议 SUPER_DOUBLE_WIN = 没有样本 >= 30 且实际胜率 >= 0.85 的档")
+        else:
+            print(f"\n建议 SUPER_DOUBLE_WIN = {max(best, DOUBLE_WIN):.2f} "
+                  f"(实际胜率 >= 0.85 的最低估值档 {best:.2f},不低于 DOUBLE_WIN {DOUBLE_WIN})")
+        return
+
+    # 实际胜率稳定 >= 0.6 的最低估值:本档样本 >= 30 且下一档也 >= 0.6
     best = None
     for i, key in enumerate(keys):
         values = buckets[key]
