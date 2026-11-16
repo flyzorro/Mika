@@ -3,11 +3,13 @@ import random
 import time
 import unittest
 from types import SimpleNamespace
+from unittest import mock
 
 from douzero.env.game import GameEnv
 
 from server import (
-    DECK, DOUBLE_WIN, NAMES, ROLLOUT_MIN_GAMES, SEATS, Advisor, Mismatch, WEIGHTS, bid_level, cards, resolve, should_double,
+    DECK, DOUBLE_WIN, NAMES, ROLLOUT_MIN_GAMES, SEATS, Advisor, Mismatch, WEIGHTS, bid_level, cards, fewer_plays, resolve,
+    should_double,
 )
 
 # 造局面时关掉「接近时现场模拟」:随机走一步有近一半的顶两手分差在 0.1 以内,开着会让原有测试慢到不可用。
@@ -296,6 +298,53 @@ class EndgameTest(unittest.TestCase):
         self.assertFalse(solver.landlord_wins(hands, "landlord_down", (), "landlord_down"))
 
 
+class MinPlaysTest(unittest.TestCase):
+    """出完一手以后还剩几手:自己每次都先出,把牌拆成最少的几手合规牌(同 DouZero 的牌型,大小王不当带牌)。"""
+
+    def test_min_plays_counts_the_cleanest_split(self):
+        import endgame
+        self.assertEqual(3, endgame.min_plays(cards(["BJ", "2", "J", "5", "5", "5"])))  # 555 带 J,再 2、BJ
+        self.assertEqual(1, endgame.min_plays(cards(["3", "4", "5", "6", "7"])))  # 一手顺子
+        self.assertEqual(1, endgame.min_plays(cards(["3", "3"])))  # 一对
+        self.assertEqual(1, endgame.min_plays(cards(["BJ", "SJ"])))  # 王炸
+        self.assertEqual(2, endgame.min_plays(cards(["3", "5", "5"])))  # 单张 + 一对
+
+    def test_an_empty_hand_needs_no_plays(self):
+        import endgame
+        self.assertEqual(0, endgame.min_plays([]))
+
+    def test_the_live_tie_hands_are_three_and_four_plays(self):
+        # 2026-11-16 11:58:20:5..9 出完剩 BJ 2 J 5 5 5 4 四手,4..9 出完剩 BJ 2 J 5 5 5 三手
+        import endgame
+        hand = cards(["BJ", "2", "J", "9", "8", "7", "6", "5", "5", "5", "5", "4"])
+        self.assertEqual(4, endgame.min_plays(endgame.minus(hand, cards(["5", "6", "7", "8", "9"]))))
+        self.assertEqual(3, endgame.min_plays(endgame.minus(hand, cards(["4", "5", "6", "7", "8", "9"]))))
+
+
+class FewerPlaysTest(unittest.TestCase):
+    """模拟赢面不低于 DouZero 那手时才拿手数翻案:赢面更低的候选再干净也不换。"""
+
+    # 2026-11-16 11:58:20 那手:5..9 出完剩 BJ 2 J 5 5 5 4 四手,4..9 出完剩 BJ 2 J 5 5 5 三手
+    HAND = cards(["BJ", "2", "J", "9", "8", "7", "6", "5", "5", "5", "5", "4"])
+    OWN = tuple(cards(["5", "6", "7", "8", "9"]))
+    CLEANER = tuple(cards(["4", "5", "6", "7", "8", "9"]))
+
+    def test_the_fewest_plays_wins_among_equal_rates(self):
+        import endgame
+        self.assertEqual(4, endgame.min_plays(endgame.minus(self.HAND, self.OWN)))
+        self.assertEqual(3, endgame.min_plays(endgame.minus(self.HAND, self.CLEANER)))
+        picked, plays = fewer_plays(self.HAND, [self.OWN, self.CLEANER],
+                                    {self.OWN: 0.6, self.CLEANER: 0.6},
+                                    {self.OWN: 1.0, self.CLEANER: 0.9}, self.OWN)
+        self.assertEqual(self.CLEANER, picked)
+        self.assertEqual({self.OWN: 4, self.CLEANER: 3}, plays)
+
+    def test_a_cleaner_move_the_simulation_rates_worse_is_not_taken(self):
+        self.assertIsNone(fewer_plays(self.HAND, [self.OWN, self.CLEANER],
+                                      {self.OWN: 0.7, self.CLEANER: 0.6},
+                                      {self.OWN: 1.0, self.CLEANER: 0.9}, self.OWN))
+
+
 class FinishInTwoTest(unittest.TestCase):
     def test_a_safe_pair_then_the_last_card_beats_a_single_into_a_known_joker(self):
         # Live 2026-11-10 run 19: landlord holding 2 2 6 led a single 2 (the small joker is out there
@@ -479,6 +528,14 @@ class CloseCallRolloutTest(unittest.TestCase):
                       history=[["5", "6", "7", "8", "9", "10", "J", "Q", "K"], [], [], ["10"], ["J"], ["Q"], ["SJ"], [], ["BJ"], [], [],
                                ["A"], ["2"], [], [], ["Q", "Q"], [], [], ["2"], [], []])
 
+    # 2026-11-16 11:58:20 土豪场:我是地主上家,领出,手里 BJ 2 J 9 8 7 6 5 5 5 5 4。
+    # DouZero 出 5 6 7 8 9,模拟 152 局 5..9 赢 0.59、4..9 赢 0.64,差不到 0.1 的门槛仍出 5..9;
+    # 可 4..9 出完剩 BJ 2 J 5 5 5 三手,5..9 剩 BJ 2 J 5 5 5 4 四手,该出 4..9。
+    TIEBREAK = dict(seat="landlord_up",
+                    hand=["BJ", "2", "J", "9", "8", "7", "6", "5", "5", "5", "5", "4"],
+                    bottom=[],
+                    history=[["9"], ["10"], ["Q"], ["2"], [], ["3", "3", "3", "3"], [], []])
+
     def act(self, position, report=None):
         return ROLLOUT_ADVISOR.act(position["seat"], position["hand"], position["bottom"],
                                    position["history"], report)
@@ -491,6 +548,22 @@ class CloseCallRolloutTest(unittest.TestCase):
         self.assertIn("pass", rollout["rates"])
         self.assertIn("BJ", rollout["rates"])
         self.assertEqual("pass", rollout["chosen"])
+
+    def test_a_near_tie_prefers_the_move_that_leaves_fewer_plays(self):
+        # 模拟赢面差不到门槛时,手数更少的一手胜出:4..9 剩三手,5..9 剩四手。
+        # 2.5 秒里多打一两局就能把赢面差顶过 0.05(150 局差 0.047,152 局差 0.053),固定局数让这条每次都走比手数那条路。
+        import server
+        report = {}
+        with mock.patch.object(server, "ACT_ROLLOUT_GAMES", 150), \
+                mock.patch.object(server, "ACT_ROLLOUT_BUDGET_S", 60.0):
+            move = self.act(self.TIEBREAK, report)
+        self.assertEqual(["4", "5", "6", "7", "8", "9"], [NAMES[c] for c in move])
+        rollout = report.get("rollout")
+        self.assertIsNotNone(rollout, "顶两手差不到门槛,应该现场模拟")
+        self.assertEqual("fewer_plays", rollout.get("tiebreak"))
+        self.assertEqual(3, rollout["plays"]["4 5 6 7 8 9"])
+        self.assertEqual(4, rollout["plays"]["5 6 7 8 9"])
+        self.assertEqual("4 5 6 7 8 9", rollout["chosen"])
 
     def test_a_close_call_the_rollout_prefers_the_second_move(self):
         report = {}

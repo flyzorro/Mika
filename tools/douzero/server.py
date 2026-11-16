@@ -273,6 +273,31 @@ def move_label(move):
     return " ".join(NAMES[c] for c in move) if move else "pass"
 
 
+def fewer_plays(hand, keys, rates, scores, own, deadline=None):
+    """模拟赢面差不多时,在赢面不低于 DouZero 那手([own])的候选里挑出完剩下手数最少的一手。
+
+    [keys] 是候选手牌(已排序的元组),[rates] 是模拟赢面,[scores] 是 DouZero 分数。
+    赢面比 [own] 低的候选不用手数翻案(模拟都说更差);手数一样多时挑赢面高的,再挑分数高的。
+    返回 (选中的一手, 比过的手数),没有更少手的候选返回 None。一手都算不完(到 [deadline])也返回 None。
+    """
+    if deadline is None:
+        deadline = time.monotonic() + endgame.MIN_PLAYS_BUDGET_S
+    plays = {own: endgame.min_plays(endgame.minus(hand, own), deadline)}
+    if plays[own] is None:
+        return None
+    picked = None
+    for k in keys:
+        if k == own or rates[k] < rates[own]:
+            continue
+        plays[k] = endgame.min_plays(endgame.minus(hand, k), deadline)
+        if plays[k] is None:
+            return None
+        if plays[k] < plays[own] and (picked is None or (
+                plays[k], -rates[k], -scores[k]) < (plays[picked], -rates[picked], -scores[picked])):
+            picked = k
+    return None if picked is None else (picked, plays)
+
+
 def sample_hands(infoset, rng):
     """只按看得见的信息随机发牌:别人两家合起来的手牌分给两家、张数对得上。
     我是农民时地主没打出去的底牌一定还在他手里,先把这几张留出来(sample 与 deal 是同一个意思)。"""
@@ -409,6 +434,7 @@ class Agent:
         同一批发牌拿来比所有候选(控制随机性),一手都打 ACT_ROLLOUT_GAMES 局或者到 2.5 秒为止,轮着来。
         每手不够 ACT_ROLLOUT_MIN_GAMES 局就当没模拟;开局(三家手里还够 OPENING_CARDS 张)只要求
         ACT_ROLLOUT_MIN_GAMES_OPENING 局,局数不到 60 时改用 OPENING_SWITCH_MARGIN 才换。
+        差不到门槛时,赢面不低于 DouZero 那手的候选里出完剩下手数更少的胜出(见 fewer_plays)。
         返回 (选定的一手, 写进回复的诊断);分数差得开、不用模拟时返回 None。
         """
         # 分数从高到低;同分时把 DouZero 挑的那手放最前,后面「仍听 DouZero」才有确定的参照
@@ -447,6 +473,7 @@ class Agent:
             return None
         rates = {k: wins[k] / played[k] for k in keys}
         chosen = move
+        tie = None
         min_games = ACT_ROLLOUT_MIN_GAMES_OPENING if sum(infoset.num_cards_left_dict.values()) >= OPENING_CARDS \
             else ACT_ROLLOUT_MIN_GAMES
         if games >= min_games:
@@ -457,11 +484,24 @@ class Agent:
             margin = SWITCH_MARGIN if games >= ACT_ROLLOUT_MIN_GAMES else OPENING_SWITCH_MARGIN
             if rates[best] - rates[own] >= margin:
                 chosen = next(c for k, c in zip(keys, candidates) if k == best)
+            else:
+                # 差不到门槛时挑出完剩下手数更少的:2026-11-16 11:58:20 土豪场,我是地主上家领出,
+                # 手里 BJ 2 J 9 8 7 6 5 5 5 5 4。DouZero 出 5 6 7 8 9,模拟 152 局 5..9 赢 0.59、4..9 赢 0.64,
+                # 差不到 0.1 的门槛仍出 5..9;可 4..9 出完剩 BJ 2 J 5 5 5 三手,5..9 剩 BJ 2 J 5 5 5 4 四手。
+                # 赢面不低于 DouZero 那手的候选里手数更少就换;min_plays 算不完(超时)就照旧。
+                scores = {k: float(values[i]) for k, i in zip(keys, picks)}
+                tie = fewer_plays(infoset.player_hand_cards, keys, rates, scores, own,
+                                  time.monotonic() + endgame.MIN_PLAYS_BUDGET_S)
+                if tie is not None:
+                    chosen = next(c for k, c in zip(keys, candidates) if k == tie[0])
         info = {"games": games, "min_games": min_games,
                 "rates": {labels[k]: round(rates[k], 2) for k in keys},
                 "chosen": move_label(chosen)}
         if late:
             info["late"] = True
+        if tie is not None:
+            info["tiebreak"] = "fewer_plays"
+            info["plays"] = {labels[k]: n for k, n in tie[1].items()}
         return chosen, info
 
     def play_out(self, hands, bottom, history, me, move):

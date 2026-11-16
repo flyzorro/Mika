@@ -117,14 +117,17 @@ internal object DdzCards {
         return if (ranks.any { it == null }) DdzSeen.Unsure else DdzSeen.Cards(ranks.map { it!! })
     }
 
-    /** 三张底牌;没摆出来或认不准为 null。 */
+    /**
+     * 三张底牌;没摆出来为 null。王那张牌的牌面会把牌背切开,可能只认出两张:认得出的两张也交出去,
+     * DouZero 服务会把对不上的那张从看不见的牌里补上(见 tools/douzero/server.py 的 deal)。
+     */
     fun bottom(frame: RawFrame): List<String>? {
         if (singleStageTable(frame)) return stageBottom(frame)
         counterBottom(frame)?.let { return it }
         val (bar, k) = content(frame)
         val cards = strip(frame, bar + (1050 * k).toInt(), bar + (1380 * k).toInt(), 5, 105, pitch = 44 * k, width = 57 * k,
             glyphRows = 46, glyphWidth = (32 * k).toInt(), k = k, minRows = 60, sure = BOTTOM_SURE, margin = BOTTOM_MARGIN)
-        cards?.map { it.rank }?.takeIf { it.size == 3 && it.all { r -> r != null } }?.let { return it.map { r -> r!! } }
+        cards?.map { it.rank }?.filterNotNull()?.takeIf { it.size >= 2 }?.let { return it }
         return revealedBottom(frame, bar, k)
     }
 
@@ -136,7 +139,7 @@ internal object DdzCards {
         val cards = strip(frame, bar + (953 * k).toInt(), bar + (1347 * k).toInt(), 120, 310, pitch = 135 * k, width = 123 * k,
             glyphRows = 60, glyphWidth = (56 * k).toInt(), k = k, minRows = 60, sure = BOTTOM_SURE, margin = BOTTOM_MARGIN,
             probeNearBottom = true, gap = 20, spanAll = true) ?: return null
-        return cards.map { it.rank }.takeIf { it.size == 3 && it.all { r -> r != null } }?.map { it!! }
+        return cards.map { it.rank }.filterNotNull().takeIf { it.size >= 2 }
     }
 
     /**
@@ -154,19 +157,21 @@ internal object DdzCards {
             return minOf(r, g, b) >= 200 && maxOf(r, g, b) < 232 && maxOf(r, g, b) - minOf(r, g, b) < 20
         }
         val cards = DdzScreen.runs(frame.width, gap = 2, minWidth = 35) { x -> cardBg(frame.pixel(x, COUNTER_GAP_Y)) }
-        if (cards.size != 3) return null
-        // 三张并排、都在横条右端;横条左边的点数表头和剩余张数不是这种浅灰,绝不会被当成底牌
-        if (cards[0].first !in COUNTER_CARDS_X0 || cards[2].last !in COUNTER_CARDS_X1) return null
-        if (cards[1].first - cards[0].last > 4 || cards[2].first - cards[1].last > 4) return null
-        return cards.map { card ->
+        // 王那张牌的牌面会把浅灰牌背切开,三张里可能只认出两张:认出的每张都得落在三张底牌的位置上,
+        // 横条左边的点数表头和剩余张数不是这种浅灰,绝不会被当成底牌。
+        if (cards.size !in 2..3) return null
+        if (cards.any { card -> COUNTER_CARD_LEFTS.none { left -> card.first in left - 8..left + 8 } }) return null
+        if (cards.size == 3 && (cards[1].first - cards[0].last > 4 || cards[2].first - cards[1].last > 4)) return null
+        val ranks = cards.mapNotNull { card ->
             val ink = Array(COUNTER_RANK_H) { r -> BooleanArray(card.last - card.first + 1) { c ->
                 val p = frame.pixel(card.first + c, COUNTER_RANK_Y0 + r)
                 minOf(p shr 16 and 0xff, p shr 8 and 0xff, p and 0xff) < COUNTER_INK
             } }
-            val box = inkBox(ink) ?: return null
+            val box = inkBox(ink) ?: return@mapNotNull null
             val red = share(frame, card.first, COUNTER_RANK_Y0, ink) { r, g, _ -> r - g > 50 } > 0.5
-            sure(ranked(tableGlyphs, boxSig(box, TABLE_W, TABLE_H)), COUNTER_SURE, COUNTER_MARGIN)?.let { joker(it, red) } ?: return null
+            sure(ranked(tableGlyphs, boxSig(box, TABLE_W, TABLE_H)), COUNTER_SURE, COUNTER_MARGIN)?.let { joker(it, red) }
         }
+        return ranks.takeIf { it.size >= 2 }
     }
 
     private const val COUNTER_GAP_Y = 80
@@ -175,8 +180,8 @@ internal object DdzCards {
     private const val COUNTER_INK = 120
     private const val COUNTER_SURE = 0.3
     private const val COUNTER_MARGIN = 0.05
-    private val COUNTER_CARDS_X0 = 1260..1280
-    private val COUNTER_CARDS_X1 = 1420..1440
+    /** 三张底牌各自的左边缘(实测);王那张认不出时,剩下两张也要落在这几个位置上。 */
+    private val COUNTER_CARD_LEFTS = listOf(1270, 1319, 1367)
 
     /** 认大厅、闯关页要读的行。 */
     val LOBBY_ROWS: List<Int> = ((5 until 105) + (100 until 135) + (885 until 925) + STAGE_BUTTON_ROW).toList()
