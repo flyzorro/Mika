@@ -78,13 +78,13 @@ internal object PhoneDdzTurn : PhoneTool {
     private const val HUMAN_SHOP_BACK_Y = 82
     /** 连点几次返回还停在商店页就交还模型,不再点。 */
     private const val HUMAN_SHOP_BACK_TAPS = 3
-    /** Mika 屏上真人场次页绿色「普通场」卡片的中心(5 万-200 万金豆)。 */
     /**
      * 真人局出牌键的中心(2026-11-15 真机 37 次先出都在 1256);别的牌桌截图上出牌键在 1205~1340。
      * 加倍画面的黄「加倍」在 1454,差 198:允许差 120 以内。
      */
     private const val HUMAN_LEAD_X = 1256
     private const val HUMAN_LEAD_SLACK = 120
+    /** Mika 屏上真人场次页绿色「普通场」卡片的中心(5 万-200 万金豆)。 */
     private const val HUMAN_NORMAL_ROOM_X = 872
     private const val HUMAN_NORMAL_ROOM_Y = 400
     /** 同一排青色「精英场」卡片的中心(200 万-6000 万金豆):豆豆过了普通场上限,点普通场只会弹「去高级房间」。 */
