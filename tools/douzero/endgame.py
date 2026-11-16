@@ -207,11 +207,13 @@ SAFE_FIRST = 0.3
 SAMPLES = 300
 
 
-def finish_in_two(hand, legal, rival, unknown, left_a, left_b, samples=SAMPLES, limit=SAFE_FIRST, seed=0):
+def finish_in_two(hand, legal, rival, unknown, left_a, left_b, samples=SAMPLES, limit=SAFE_FIRST, seed=0,
+                  deadline=None):
     """剩的牌多、搜不动时的一条捷径:自己手里能两手出完(先出一手、剩下的正好是一手)时,挑第一手最不容易被压的。
 
     把 [unknown](两家手里合起来的牌)随机分成 [left_a]、[left_b] 张,看有没有一家压得住第一手;第一手没人压就接着出完。
     [legal] 是现在能出的牌,[rival] 是要压的那手(() 是自己先出)。返回 (第一手, 被压的机会),没有够安全的为 None。
+    [deadline] 是这一手牌总预算的截止时刻(monotonic):到了就返回 None,照用 DouZero 的,别把现场模拟的时间也吃掉。
     """
     best = None
     for move in legal:
@@ -226,6 +228,8 @@ def finish_in_two(hand, legal, rival, unknown, left_a, left_b, samples=SAMPLES, 
         beaten = 0
         pool = list(unknown)
         for _ in range(samples):
+            if deadline is not None and time.monotonic() > deadline:
+                return None
             rng.shuffle(pool)
             a, b = pool[:left_a], pool[left_a:left_a + left_b]
             if any(m for m in moves(a, list(move))) or any(m for m in moves(b, list(move))):

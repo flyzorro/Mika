@@ -79,6 +79,16 @@ ACT_ROLLOUT_GAMES = 300
 ACT_ROLLOUT_MIN_GAMES = 60
 OPENING_CARDS = 45
 ACT_ROLLOUT_MIN_GAMES_OPENING = 30
+# 一手牌总共只给这么多秒:手机 /act 最多等 4 秒(连接 2 秒 + 读 4 秒,失败还重试一次),超了就当服务挂了。
+# 2026-11-16 12:18:11 土豪场,我是地主下家,手里 A 5 4 4 4,三家还剩 19 张:残局搜索先花掉 1.5 秒没结论,
+# 现场模拟又打满 2.5 秒,回复 4903 毫秒;手机 4 秒超时,标成 douzero_unreachable 重发同一手,三次各约 4020 毫秒,
+# 最后按简单规则打完这一局。所以从 Agent.act 进来起总共只给 3.2 秒,残局搜索、两手出完、现场模拟、比手数都在这一个预算里分:
+# 残局搜索最多 ACT_ENDGAME_BUDGET_S 秒(原来就是 1.5),现场模拟用 min(2.5, 剩下的 − 0.1 − 比手数的 0.2) 秒,
+# 剩下的不到 ACT_ROLLOUT_MIN_S 就整个不模拟,直接听 DouZero 的。
+ACT_TOTAL_BUDGET_S = 3.2
+ACT_BUDGET_SAFETY_S = 0.1
+ACT_ROLLOUT_MIN_S = 0.8
+ACT_ENDGAME_BUDGET_S = 1.5
 # 后半局不管分差都现场模拟:三家手里合起来只剩 LATE_CARDS 张时,DouZero 分数最高的 LATE_TOP 手(不出也算一手)都模拟一遍。
 # 2026-11-16 11:43:53 土豪场,我是地主下家,手里 2 2 K Q J 10 9 8 8 8 4 3 3,三家还剩 33 张。
 # DouZero 给 8 9 10 J Q K +0.736、8 9 10 J Q +0.627,只差 0.109,按 CLOSE_MARGIN 不模拟,信分数出了 8..K,输了。
@@ -330,6 +340,8 @@ class Agent:
         self.plain = {}
 
     def act(self, infoset, report=None):
+        # 一手牌的总预算从这里开始算:下面 DouZero 打分、残局搜索、两手出完、现场模拟、比手数都只能用剩下的时间
+        deadline = time.monotonic() + ACT_TOTAL_BUDGET_S
         # 斗地主经典版不允许大小王一起当带牌(飞机带单的翅膀、四带二的两张单牌):DouZero 的合法出牌里有,
         # 先剔掉,后面 DouZero 打分、残局搜索、两手出完都只看这份
         infoset.legal_actions = endgame.without_double_joker_kickers(infoset.legal_actions)
@@ -338,8 +350,9 @@ class Agent:
         values = self.values(infoset)
         move = infoset.legal_actions[int(torch.argmax(values))]
         # 剩的牌少时按明牌把各种分法算到底:有赢面更大的一手就换成它(赢面一样大的里挑 DouZero 打分最高的)。
-        # 下面几条硬规则只在搜索也认为不吃亏时才换
-        solved = endgame.best(infoset)
+        # 下面几条硬规则只在搜索也认为不吃亏时才换。搜索最多 1.5 秒,总预算不够时只给剩下的
+        left_s = deadline - time.monotonic()
+        solved = endgame.best(infoset, budget=min(ACT_ENDGAME_BUDGET_S, left_s)) if left_s > 0 else None
         allowed = None
         if solved is not None:
             wins, _ = solved
@@ -355,11 +368,12 @@ class Agent:
             left = infoset.num_cards_left_dict
             rival = tuple(sorted(infoset.last_move)) if [] in infoset.legal_actions else ()
             quick = endgame.finish_in_two(tuple(sorted(infoset.player_hand_cards)), infoset.legal_actions, rival,
-                                          sorted(infoset.other_hand_cards), left[others[0]], left[others[1]])
+                                          sorted(infoset.other_hand_cards), left[others[0]], left[others[1]],
+                                          deadline=deadline - ACT_BUDGET_SAFETY_S)
             if quick is not None and tuple(sorted(move)) != quick[0]:
                 return list(quick[0])
             # 分数只差一点点时,现场按看得见的牌模拟几百局再定;模拟了就以它为准,不再走下面那条不拆牌的规则
-            rolled = self.close_rollout(infoset, values, move) if self.rollout else None
+            rolled = self.close_rollout(infoset, values, move, deadline, report) if self.rollout else None
             if rolled is not None:
                 move, info = rolled
                 if report is not None:
@@ -427,14 +441,18 @@ class Agent:
                 best, best_score = action, score
         return move if best is None else best
 
-    def close_rollout(self, infoset, values, move):
+    def close_rollout(self, infoset, values, move, deadline=None, report=None):
         """顶两手的分数差不到 CLOSE_MARGIN 时,按看得见的牌随机发一批牌,每一手都用 DouZero 打分打到完,比赢面。
 
         后半局(三家手里合起来不超过 LATE_CARDS 张)不管分差多大都模拟,取 DouZero 分数最高的 LATE_TOP 手。
-        同一批发牌拿来比所有候选(控制随机性),一手都打 ACT_ROLLOUT_GAMES 局或者到 2.5 秒为止,轮着来。
+        同一批发牌拿来比所有候选(控制随机性),一手都打 ACT_ROLLOUT_GAMES 局或者到时限为止,轮着来。
+        时限是 min(ACT_ROLLOUT_BUDGET_S, [deadline] 剩下的 − ACT_BUDGET_SAFETY_S − endgame.MIN_PLAYS_BUDGET_S):
+        一手牌总共只有 ACT_TOTAL_BUDGET_S 秒,残局搜索花掉的要从这里扣,还要给比手数留出 0.2 秒。
+        剩下的不到 ACT_ROLLOUT_MIN_S 就整个不模拟(回复里记 rollout_skipped: no_time),直接听 DouZero 的。
         每手不够 ACT_ROLLOUT_MIN_GAMES 局就当没模拟;开局(三家手里还够 OPENING_CARDS 张)只要求
         ACT_ROLLOUT_MIN_GAMES_OPENING 局,局数不到 60 时改用 OPENING_SWITCH_MARGIN 才换。
-        差不到门槛时,赢面不低于 DouZero 那手的候选里出完剩下手数更少的胜出(见 fewer_plays)。
+        差不到门槛时,赢面不低于 DouZero 那手的候选里出完剩下手数更少的胜出(见 fewer_plays);
+        比手数最多 endgame.MIN_PLAYS_BUDGET_S 秒,且不超过总预算剩下的,没余量就不比。
         返回 (选定的一手, 写进回复的诊断);分数差得开、不用模拟时返回 None。
         """
         # 分数从高到低;同分时把 DouZero 挑的那手放最前,后面「仍听 DouZero」才有确定的参照
@@ -448,6 +466,15 @@ class Agent:
             else [i for i in order if top - float(values[i]) < CLOSE_MARGIN][:CLOSE_TOP]
         if len(picks) < 2:
             return None
+        # 总预算快用完了:模拟来不及打满下限,不如直接听 DouZero 的,别让手机等到超时
+        if deadline is None:
+            deadline = time.monotonic() + ACT_TOTAL_BUDGET_S
+        left = deadline - time.monotonic()
+        if left < ACT_ROLLOUT_MIN_S:
+            if report is not None:
+                report["rollout_skipped"] = "no_time"
+            return None
+        budget = min(ACT_ROLLOUT_BUDGET_S, left - ACT_BUDGET_SAFETY_S - endgame.MIN_PLAYS_BUDGET_S)
         candidates = [infoset.legal_actions[i] for i in picks]
         keys = [tuple(sorted(c)) for c in candidates]
         labels = {k: move_label(c) for k, c in zip(keys, candidates)}
@@ -457,13 +484,13 @@ class Agent:
         history = [list(m) for m in infoset.card_play_action_seq]
         wins = {k: 0 for k in keys}
         played = {k: 0 for k in keys}
-        deadline = time.perf_counter() + ACT_ROLLOUT_BUDGET_S
-        while time.perf_counter() < deadline and any(played[k] < ACT_ROLLOUT_GAMES for k in keys):
+        rollout_deadline = time.monotonic() + budget
+        while time.monotonic() < rollout_deadline and any(played[k] < ACT_ROLLOUT_GAMES for k in keys):
             hands = sample_hands(infoset, rng)  # 这一批发牌所有候选都用
             for k, candidate in zip(keys, candidates):
                 if played[k] >= ACT_ROLLOUT_GAMES:
                     continue
-                if time.perf_counter() >= deadline:
+                if time.monotonic() >= rollout_deadline:
                     break
                 played[k] += 1
                 if self.play_out(hands, infoset.three_landlord_cards, history, infoset.player_position, candidate):
@@ -489,12 +516,16 @@ class Agent:
                 # 手里 BJ 2 J 9 8 7 6 5 5 5 5 4。DouZero 出 5 6 7 8 9,模拟 152 局 5..9 赢 0.59、4..9 赢 0.64,
                 # 差不到 0.1 的门槛仍出 5..9;可 4..9 出完剩 BJ 2 J 5 5 5 三手,5..9 剩 BJ 2 J 5 5 5 4 四手。
                 # 赢面不低于 DouZero 那手的候选里手数更少就换;min_plays 算不完(超时)就照旧。
+                # 手数比较也吃一手牌的总预算:截止时刻取 min(自己的 0.2 秒, 总预算剩下的 − 0.1),
+                # 总预算没余量就不比了(模拟截止时间已经先给它留出 0.2 秒)。
                 scores = {k: float(values[i]) for k, i in zip(keys, picks)}
-                tie = fewer_plays(infoset.player_hand_cards, keys, rates, scores, own,
-                                  time.monotonic() + endgame.MIN_PLAYS_BUDGET_S)
+                tie_left = deadline - time.monotonic() - ACT_BUDGET_SAFETY_S
+                if tie_left > 0:
+                    tie = fewer_plays(infoset.player_hand_cards, keys, rates, scores, own,
+                                      time.monotonic() + min(endgame.MIN_PLAYS_BUDGET_S, tie_left))
                 if tie is not None:
                     chosen = next(c for k, c in zip(keys, candidates) if k == tie[0])
-        info = {"games": games, "min_games": min_games,
+        info = {"games": games, "min_games": min_games, "budget_left": round(left, 2),
                 "rates": {labels[k]: round(rates[k], 2) for k in keys},
                 "chosen": move_label(chosen)}
         if late:
