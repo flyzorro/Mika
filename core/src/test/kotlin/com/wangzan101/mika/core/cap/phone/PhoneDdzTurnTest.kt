@@ -4761,4 +4761,127 @@ class PhoneDdzTurnTest {
         assertEquals(setOf("call", "double", "lead", "follow"), snapshot["properties"]!!.jsonObject["phase"]!!.jsonObject["enum"]!!.jsonArray.map { it.jsonPrimitive.content }.toSet())
         assertEquals(setOf("landlord", "landlord_up", "landlord_down"), snapshot["properties"]!!.jsonObject["seat"]!!.jsonObject["enum"]!!.jsonArray.map { it.jsonPrimitive.content }.toSet())
     }
+
+    /**
+     * 反向守卫:连续两帧认出的手牌一致、又都和出牌后该剩的对不上,才判 Drift。
+     * 这里先出 3,按下出牌后两帧都读成「BJ 出去了」,和该剩的 14 张 4 不符。
+     */
+    @Test fun aPlayThatStillReadsWrongOnTwoFramesIsADrift() = runTest {
+        val hand = (List(14) { "4" } + "3").joinToString(",", "[", "]") { "\"$it\"" }
+        val lifted = frame("lead_lifted") // 最后一张已抬起,不用再选
+        val wrong = withoutCards("lead", setOf(0)) // 张数对了(14),走掉的却是 BJ
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(lifted, lifted, lifted, wrong, wrong) + List(3) { full("result") }))
+        val result = run(game, """{"action":"play","hand":$hand,"play":["3"]}""")
+        assertEquals(result.content.toString(), "hand_drift", result.text("error"))
+    }
+
+    /**
+     * 2026-11-16:按出牌后手牌收回的那段动画里有一帧会把手牌认错,下一帧就认回对的。
+     * 第一帧认错不能立刻判 Drift(会把 DouZero 后半局关掉):只要有一帧和预期相符就是 Played。
+     */
+    @Test fun aSingleMisreadFrameAfterThePlayIsNotADrift() = runTest {
+        val hand = (List(14) { "4" } + "3").joinToString(",", "[", "]") { "\"$it\"" }
+        val lifted = frame("lead_lifted") // 最后一张已抬起,不用再选
+        val wrong = withoutCards("lead", setOf(0)) // 动画里的一帧:张数对了(14),走掉的却是 BJ
+        val played = withoutCards("lead", setOf(14)) // 3 出去了,手里剩 14 张 4
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(lifted, lifted, lifted, wrong, played) + List(3) { full("result") }))
+        val result = run(game, """{"action":"play","hand":$hand,"play":["3"]}""")
+        assertNull("一帧误读不能判 Drift: ${result.content}", result.text("error"))
+        assertEquals("result", result.text("phase"))
+    }
+
+    /** 在整屏帧上改几笔(和 [editedFrame] 一样,但保留弹窗、场次等整屏要读的行),供真人的加倍/牌桌用例。 */
+    private fun editedFull(name: String, edit: (RawFrame, MutableMap<Int, IntArray>, DdzView) -> Unit): RawFrame {
+        val image = ImageIO.read((javaClass.getResourceAsStream("/ddz/$name.jpg") ?: javaClass.getResourceAsStream("/ddz/$name.png"))!!)
+        val rows = (DdzScreen.ROWS + DdzCards.ROWS + DdzCards.LOBBY_ROWS + DdzPopups.SCAN_ROWS).distinct()
+            .associateWith { image.getRGB(0, it, image.width, 1, null, 0, image.width) }.toMutableMap()
+        val base = RawFrame(image.width, image.height, rows)
+        edit(base, rows, DdzScreen.read(base, classic = true))
+        return RawFrame(image.width, image.height, rows)
+    }
+
+    /**
+     * 反向守卫:手牌一直认不出(直到加倍截止时间)就按老规矩点蓝色「不加倍」,不问服务。
+     */
+    @Test fun humanLandlordDeclinesWhenTheHandStaysUnreadableUntilTheDoubleDeadline() = runTest {
+        val call = full("call")
+        val unreadable = unreadableDouble("double_landlord_20")
+        val view = DdzScreen.read(unreadable, classic = true)
+        val blue = view.buttons.first { it.color == DdzColor.Blue }
+        var asked = 0
+        val savedBid = PhoneDdzTurn.adviseBid
+        val savedDouble = PhoneDdzTurn.adviseDouble
+        PhoneDdzTurn.adviseBid = { _, _ -> PhoneDdzTurn.BidAdvice(3) }
+        PhoneDdzTurn.adviseDouble = { _, _, _, _ -> asked++; PhoneDdzTurn.DoubleAdvice(true, 0.93) }
+        try {
+            val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(call, call, call) + List(60) { unreadable }))
+            val result = PhoneDdzTurn.execute(
+                Args(PhoneDdzTurn.def, Json.parseToJsonElement(
+                    """{"action":"start","mode":"human","auto":true,"advisor":"http://mac:3426"}"""
+                ).jsonObject),
+                toolDispatcher(game).ctx,
+            )
+            assertEquals(result.content.toString(), "double", result.text("phase"))
+            assertNull("认不出也不暂停: ${result.content}", result.text("reason"))
+            assertEquals("认不出就问不了服务", 0, asked)
+            assertEquals("到截止时间只点一次蓝色「不加倍」: ${game.taps}", 1, game.taps.count { it == blue.x to blue.y })
+        } finally {
+            PhoneDdzTurn.adviseBid = savedBid
+            PhoneDdzTurn.adviseDouble = savedDouble
+        }
+    }
+
+    /**
+     * 2026-11-16 23:41 精英场:刚当上地主,三张底牌插进手牌并抬起来,加倍的第一帧手牌认不出。
+     * 加倍约有 5 秒:别在这一帧就按「不加倍」,等手牌认全了再按服务的回答点「加倍」。
+     */
+    @Test fun humanLandlordWaitsForAReadableHandBeforeDecidingToDouble() = runTest {
+        val call = full("call")
+        val unreadable = unreadableDouble("double_landlord_20")
+        val double = full("double_landlord_20")
+        val unreadableView = DdzScreen.read(unreadable, classic = true)
+        assertEquals("构造:第一帧还是加倍画面", DdzPhase.Double, unreadableView.phase)
+        assertEquals("构造:第一帧手牌张数照旧", 20, unreadableView.handCount)
+        assertNull("构造:第一帧手牌认不出", DdzCards.hand(unreadable, unreadableView))
+        val view = DdzScreen.read(double, classic = true)
+        val asked = mutableListOf<Triple<String, List<String>, List<String>>>()
+        val savedBid = PhoneDdzTurn.adviseBid
+        val savedDouble = PhoneDdzTurn.adviseDouble
+        PhoneDdzTurn.adviseBid = { _, _ -> PhoneDdzTurn.BidAdvice(3) }
+        PhoneDdzTurn.adviseDouble = { _, seat, hand, bottom ->
+            asked += Triple(seat, hand, bottom)
+            PhoneDdzTurn.DoubleAdvice(true, 0.93)
+        }
+        try {
+            val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(call, call, call, unreadable, double) + List(3) { double }))
+            val result = PhoneDdzTurn.execute(
+                Args(PhoneDdzTurn.def, Json.parseToJsonElement(
+                    """{"action":"start","mode":"human","auto":true,"advisor":"http://mac:3426"}"""
+                ).jsonObject),
+                toolDispatcher(game).ctx,
+            )
+            assertEquals(result.content.toString(), "double", result.text("phase"))
+            assertNull("加倍时不暂停: ${result.content}", result.text("reason"))
+            val yellow = view.buttons.single { it.color == DdzColor.Yellow }
+            assertEquals("第二帧认全了才点黄色的「加倍」", yellow.x to yellow.y, game.taps[1])
+            assertEquals("按第二帧的手牌问服务", 1, asked.size)
+            assertEquals("landlord", asked.single().first)
+            assertEquals(20, asked.single().second.size)
+        } finally {
+            PhoneDdzTurn.adviseBid = savedBid
+            PhoneDdzTurn.adviseDouble = savedDouble
+        }
+    }
+
+    /**
+     * 加倍时手牌还没认全的一帧(2026-11-16 23:41 精英场:刚当上地主,三张底牌插进手牌并抬起):
+     * 把手牌那一段的点数抹平,整手认牌返回 null,张数、底牌和加倍按钮照旧。
+     */
+    private fun unreadableDouble(name: String = "double_landlord_20"): RawFrame =
+        editedFull(name) { base, rows, view ->
+            val flatTop = if (DdzScreen.blackBar(base) > 0) 669 else 644
+            val handEnd = minOf(base.width, view.handLeft + ((view.handCount - 1) * view.pitch).roundToInt() + 222)
+            for ((y, px) in rows) if (y in 600..680) for (x in view.handLeft until handEnd) px[x] = if (y < flatTop) 0xFF0B2B4A.toInt() else -1
+            for ((y, px) in rows) if (y in flatTop..716) for (x in view.handLeft until view.handLeft + 80) px[x] = -1
+        }
 }

@@ -40,6 +40,13 @@ internal object PhoneDdzTurn : PhoneTool {
     private const val HUMAN_SCENE_RETRY_POLLS = 12
     /** 真人叫分时重新发牌,手牌一张张发出来:等它发完再叫,别把还在发牌的画面当成认不出的场景。 */
     private const val HUMAN_CALL_RETRY_POLLS = 24
+    /**
+     * 加倍约有 5 秒。刚当上地主时三张底牌插进手牌并抬起来,第一帧手牌认不出:先接着读后面的帧,
+     * 最多等约 2.5 秒再退回保守的「不加倍」(服务一次最多约 3 秒,还要留出点按钮的时间)。
+     * 真机读一帧比 [POLL_MS] 慢,轮数只兜测试里的虚拟时钟(和等牌桌那几处一样双算,见 [keepReadingDouble])。
+     */
+    private const val DOUBLE_WAIT_MS = 2_500L
+    private const val DOUBLE_WAIT_POLLS = 17
     /** 叫分画面上的手牌和上次叫分时至少差这么多张,才是重新发了一副牌(读错一两张不算)。 */
     private const val REDEAL_MIN_CHANGED = 3
     /** start(auto) 刚点完快速开始/继续:真人场匹配的倒计时就有 30 秒,最多等约 45 秒牌桌出来。 */
@@ -169,6 +176,12 @@ internal object PhoneDdzTurn : PhoneTool {
         var declined = false
         /** 这一局已经按过加倍/不加倍:之后再读到 Double 就是动画误读(第一手还没记进 tracker 时也一样)。 */
         var doubleDecided = false
+        /**
+         * 加倍时手牌/底牌/座位还没认全:第一次看到 Double 的时间、连着几帧还没认全;到截止时间才不加倍。
+         * 主循环每见到一帧不是 Double 就清零,换局、恢复、叫分都由它盖住,别处不再各清一遍。
+         */
+        var doubleSeenAt: Long? = null
+        var doubleMisses = 0
         /** 连着一帧帧认出段位弹窗的次数:两帧都对上才点「确定」,过渡动画的一帧不算。 */
         var rankSightings = 0
         /** 连着一帧帧认出「至尊特权升级」弹窗的次数:同样两帧都对上才点蓝色「我知道了」。 */
@@ -328,6 +341,16 @@ internal object PhoneDdzTurn : PhoneTool {
     /** 这些牌里有不可能的张数:同一张超过 4 张,或者大小王重复。 */
     private fun impossibleCards(cards: List<String>): Boolean =
         cards.groupingBy { it }.eachCount().any { (rank, n) -> n > 4 || (rank == "SJ" || rank == "BJ") && n > 1 }
+
+    /**
+     * 加倍时手牌/底牌/座位还没认全:记下第一次看到加倍的时间,没到截止时间就返回 true(接着读下一帧)。
+     * 轮数和时间双算:测试里 delay 走虚拟时钟,真机上读一帧比 [POLL_MS] 慢,单靠一边都不准。
+     */
+    private fun keepReadingDouble(turn: Turn): Boolean {
+        val since = turn.doubleSeenAt ?: now().also { turn.doubleSeenAt = it }
+        turn.doubleMisses++
+        return now() - since < DOUBLE_WAIT_MS && turn.doubleMisses < DOUBLE_WAIT_POLLS
+    }
 
     override val verb = Verb.PhoneGame
     override val risk = Risk.Write
@@ -1185,11 +1208,15 @@ internal object PhoneDdzTurn : PhoneTool {
     /**
      * 按了出牌之后马上看手牌:出去了、少的不对(Drift),或者一点没动(null,可以再按一次)。
      * 手牌没动只有在按下后过了 [VERDICT_MS] 才算游戏没认:之前只是动画还没走完,接着看,不能提前重按。
-     * 认不出的帧接着看;一直看不出出了什么(约 [VERDICT_MS] + [HUMAN_SCENE_RETRY_POLLS] 次轮询)还是 Drift。
+     * 手牌张数对了、认出的牌却和预期不一样时,出牌动画里常有一帧把手牌认错:要连续两帧认成同一手错的
+     * (都和预期不符)才判 Drift;只要有一帧和预期相符就是 Played。认不出的帧接着看,并打断这个「连续」。
+     * 一直看不出出了什么(约 [VERDICT_MS] + [HUMAN_SCENE_RETRY_POLLS] 次轮询)还是 Drift。
      * 计时只数自己 delay 掉的协程时间:读帧本身不比这短,所以真机上的等待不会比这个窗口短(测试里走虚拟时间)。
      */
     private suspend fun verify(view: DdzView, count: Int, left: List<String>?, ctx: ToolContext, classic: Boolean): Sent? {
         var waited = 0L
+        // 上一帧认出的、和该剩的不一样的手牌(出牌动画的误读);下一帧还认成同一手才判 Drift
+        var mismatch: List<String>? = null
         while (waited < VERDICT_MS + HUMAN_SCENE_RETRY_POLLS * POLL_MS) {
             val frame = ctx.screen.rawFrame(FULL_ROWS)
             val after = frame?.let { DdzScreen.read(it, classic = classic) }
@@ -1201,12 +1228,24 @@ internal object PhoneDdzTurn : PhoneTool {
                     after.phase == DdzPhase.Result || DdzCards.humanResult(frame) -> return Sent.Played
                     after.handCount == view.handCount - count -> {
                         if (left == null) return Sent.Played
-                        // 牌还在动的那几帧认不出,接着看
-                        DdzCards.hand(frame, after)?.let { return if (it.sorted() == left.sorted()) Sent.Played else Sent.Drift }
+                        val afterHand = DdzCards.hand(frame, after)
+                        when {
+                            // 牌还在动的那几帧认不出,接着看
+                            afterHand == null -> mismatch = null
+                            // 只要有一帧和预期相符就是出去了
+                            afterHand.sorted() == left.sorted() -> return Sent.Played
+                            // 连续两帧认成同一手错的(都和预期不符)才是真的出错了
+                            afterHand.sorted() == mismatch?.sorted() -> return Sent.Drift
+                            else -> mismatch = afterHand
+                        }
                     }
                     // 认得出的画面上手牌一张没少、还轮到我:过了 [VERDICT_MS] 才是这一下游戏没认,再按一次;
-                    // 之前只是动画还没走完,接着看
-                    after.handCount == view.handCount && after.phase == view.phase -> if (waited >= VERDICT_MS) return null
+                    // 之前只是动画还没走完,接着看。这一帧不是「少了几张」的读数,打断上面的连续两帧
+                    after.handCount == view.handCount && after.phase == view.phase -> {
+                        mismatch = null
+                        if (waited >= VERDICT_MS) return null
+                    }
+                    else -> mismatch = null
                 }
             }
             delay(POLL_MS)
@@ -1441,7 +1480,11 @@ internal object PhoneDdzTurn : PhoneTool {
                     turn.bid = false
                     turn.callMisses = 0
                 }
-                if (view.phase != DdzPhase.Double) turn.declined = false
+                if (view.phase != DdzPhase.Double) {
+                    turn.declined = false
+                    turn.doubleSeenAt = null
+                    turn.doubleMisses = 0
+                }
                 dealt(turn, view)
                 // 真正的加倍只出现在叫完分、任何人出第一手之前,而且每局只会决定一次。已经决定过加倍、或已经有人
                 // 出过牌之后读到的 Double 是动画(飞机、炸弹)盖住了按钮行:[DdzScreen.read] 把跟牌的
@@ -1529,46 +1572,50 @@ internal object PhoneDdzTurn : PhoneTool {
                             // 手牌和底牌对不上(同一张超过 4 张、王重复)就是认错了:不送服务,直接不加倍
                             val clash = hand != null && bottom != null && doubleCardsClash(hand, bottom)
                             val seat = if (clash) null else doubleSeat(hand, bottom, view.handCount, frame)
-                            // 手牌、底牌、座位都认全才问服务;连不上/超时/认不全就不加倍,不暂停。
-                            val advice = if (hand != null && bottom != null && seat != null) {
-                                turn.advisor?.let { url -> runCatching { adviseDouble(url, seat, hand, bottom) }.getOrNull() }
-                            } else null
-                            // 地主:服务说加才加;服务不可用时退回保守规则,但它满足时也只点黄色「加倍」。
-                            // 农民:只有服务明确说加才加,连不上/超时/报错/认不全一律蓝色「不加倍」,绝不退回规则。
-                            val double = when {
-                                hand == null || bottom == null || seat == null -> false
-                                seat == "landlord" -> advice?.double ?: HumanDdzPolicy.shouldDouble(hand, bottom)
-                                else -> advice?.double == true
-                            }
-                            // 只有地主、服务说 super、且画面上有绿色「超级加倍」(不是灰的)才点绿色;
-                            // 没有绿色(没卡)就退回黄色「加倍」。农民永远不点绿色;服务不可用时只可能点黄色。
-                            val superDouble = seat == "landlord" && advice?.superDouble == true
-                            val green = if (superDouble) view.buttons.lastOrNull { it.color == DdzColor.Green } else null
-                            val yellow = if (green == null && double) view.buttons.lastOrNull { it.color == DdzColor.Yellow } else null
-                            val button = green ?: yellow ?: view.buttons.firstOrNull { it.color == DdzColor.Blue }
-                            when {
-                                button == null -> {
-                                    traceDouble(seat, hand, bottom, advice, "no")
-                                    humanPause(turn, DdzSessionReason.UNKNOWN_SCENE)
+                            // 刚当上地主时三张底牌插进手牌并抬起来,这一帧手牌认不出来。加倍约有 5 秒:
+                            // 认不全就先不决定(一下都不点),接着读后面的帧;到截止时间还认不全才按老规矩不加倍。
+                            if (!(hand == null || bottom == null || seat == null) || !keepReadingDouble(turn)) {
+                                // 手牌、底牌、座位都认全才问服务;连不上/超时/认不全就不加倍,不暂停。
+                                val advice = if (hand != null && bottom != null && seat != null) {
+                                    turn.advisor?.let { url -> runCatching { adviseDouble(url, seat, hand, bottom) }.getOrNull() }
+                                } else null
+                                // 地主:服务说加才加;服务不可用时退回保守规则,但它满足时也只点黄色「加倍」。
+                                // 农民:只有服务明确说加才加,连不上/超时/报错/认不全一律蓝色「不加倍」,绝不退回规则。
+                                val double = when {
+                                    hand == null || bottom == null || seat == null -> false
+                                    seat == "landlord" -> advice?.double ?: HumanDdzPolicy.shouldDouble(hand, bottom)
+                                    else -> advice?.double == true
                                 }
-                                button.color == DdzColor.Gray -> {
-                                    traceDouble(seat, hand, bottom, advice, "no")
-                                    humanPause(turn, DdzSessionReason.REJECTED_ACTION)
-                                }
-                                press(button, ctx, turn).moved -> {
-                                    val pressed = when (button.color) {
-                                        DdzColor.Green -> "super"
-                                        DdzColor.Yellow -> "double"
-                                        else -> "no"
+                                // 只有地主、服务说 super、且画面上有绿色「超级加倍」(不是灰的)才点绿色;
+                                // 没有绿色(没卡)就退回黄色「加倍」。农民永远不点绿色;服务不可用时只可能点黄色。
+                                val superDouble = seat == "landlord" && advice?.superDouble == true
+                                val green = if (superDouble) view.buttons.lastOrNull { it.color == DdzColor.Green } else null
+                                val yellow = if (green == null && double) view.buttons.lastOrNull { it.color == DdzColor.Yellow } else null
+                                val button = green ?: yellow ?: view.buttons.firstOrNull { it.color == DdzColor.Blue }
+                                when {
+                                    button == null -> {
+                                        traceDouble(seat, hand, bottom, advice, "no")
+                                        humanPause(turn, DdzSessionReason.UNKNOWN_SCENE)
                                     }
-                                    traceDouble(seat, hand, bottom, advice, pressed)
-                                    turn.declined = pressed == "no"
-                                    turn.humanActionSeen = true
-                                    turn.doubleDecided = true
-                                }
-                                else -> {
-                                    traceDouble(seat, hand, bottom, advice, "no")
-                                    humanPause(turn, DdzSessionReason.REJECTED_ACTION)
+                                    button.color == DdzColor.Gray -> {
+                                        traceDouble(seat, hand, bottom, advice, "no")
+                                        humanPause(turn, DdzSessionReason.REJECTED_ACTION)
+                                    }
+                                    press(button, ctx, turn).moved -> {
+                                        val pressed = when (button.color) {
+                                            DdzColor.Green -> "super"
+                                            DdzColor.Yellow -> "double"
+                                            else -> "no"
+                                        }
+                                        traceDouble(seat, hand, bottom, advice, pressed)
+                                        turn.declined = pressed == "no"
+                                        turn.humanActionSeen = true
+                                        turn.doubleDecided = true
+                                    }
+                                    else -> {
+                                        traceDouble(seat, hand, bottom, advice, "no")
+                                        humanPause(turn, DdzSessionReason.REJECTED_ACTION)
+                                    }
                                 }
                             }
                         } else {
