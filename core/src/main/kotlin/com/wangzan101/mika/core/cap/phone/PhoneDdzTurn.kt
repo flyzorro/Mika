@@ -164,7 +164,10 @@ internal object PhoneDdzTurn : PhoneTool {
         var declined = false
         /** 这一局已经按过加倍/不加倍:之后再读到 Double 就是动画误读(第一手还没记进 tracker 时也一样)。 */
         var doubleDecided = false
-        /** 加倍时手牌/底牌/座位还没认全:第一次看到 Double 的时间、连着几帧还没认全;到截止时间才不加倍。 */
+        /**
+         * 加倍时手牌/底牌/座位还没认全:第一次看到 Double 的时间、连着几帧还没认全;到截止时间才不加倍。
+         * 主循环每见到一帧不是 Double 就清零,换局、恢复、叫分都由它盖住,别处不再各清一遍。
+         */
         var doubleSeenAt: Long? = null
         var doubleMisses = 0
         /** 连着一帧帧认出段位弹窗的次数:两帧都对上才点「确定」,过渡动画的一帧不算。 */
@@ -638,8 +641,6 @@ internal object PhoneDdzTurn : PhoneTool {
             turn.expectedHand = null
             turn.snapshot = null
             turn.doubleDecided = false
-            turn.doubleSeenAt = null
-            turn.doubleMisses = 0
             // 第一帧牌桌之前不知道这一局打到哪了:由 track 按第一帧的阶段定接不接
             turn.joining = true
         }
@@ -726,8 +727,6 @@ internal object PhoneDdzTurn : PhoneTool {
         turn.atTable = seated
         turn.tracker = null
         turn.doubleDecided = false
-        turn.doubleSeenAt = null
-        turn.doubleMisses = 0
         // 继续闯关、或者已经坐在桌上,可能是打了一半的一手:头一帧看手牌张数再定
         turn.joining = seated || stage?.second == true
         // 叫分、别家出牌都可能要等一阵:和 wait 一样等;不在牌桌上的话十来秒没手牌就回来
@@ -886,8 +885,6 @@ internal object PhoneDdzTurn : PhoneTool {
                 turn.tracker = recovered.value.tracker
                 turn.joining = false
                 turn.doubleDecided = false
-                turn.doubleSeenAt = null
-                turn.doubleMisses = 0
                 turn.humanSettling = 0
                 turn.bidHand = null
                 turn.callMisses = 0
@@ -1665,8 +1662,6 @@ internal object PhoneDdzTurn : PhoneTool {
             turn.expectedHand = null
             turn.joining = true
             turn.doubleDecided = false
-            turn.doubleSeenAt = null
-            turn.doubleMisses = 0
         }
         turn.noHand = 0
     }
@@ -1678,7 +1673,6 @@ internal object PhoneDdzTurn : PhoneTool {
     private fun track(turn: Turn, frame: com.wangzan101.mika.core.uistate.RawFrame, view: DdzView) {
         if (view.phase == DdzPhase.Call) {
             turn.tracker = null; turn.expectedHand = null; turn.joining = false; turn.doubleDecided = false
-            turn.doubleSeenAt = null; turn.doubleMisses = 0
             return
         }
         // 结算页、「当前金币可前往更高级场次」弹窗、大厅不是出牌的一刻:弹窗把两家出牌区整片盖住,读出来全是认不准,
