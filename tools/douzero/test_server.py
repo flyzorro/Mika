@@ -8,8 +8,8 @@ from unittest import mock
 from douzero.env.game import GameEnv
 
 from server import (
-    ACT_BUDGET_SAFETY_S, ACT_TOTAL_BUDGET_S, DECK, DOUBLE_WIN, NAMES, ROLLOUT_MIN_GAMES, SEATS, Advisor, Mismatch,
-    WEIGHTS, bid_level, cards, fewer_plays, resolve, should_double,
+    ACT_BUDGET_SAFETY_S, ACT_TOTAL_BUDGET_S, DECK, DOUBLE_WIN, FARMER_DOUBLE_WIN, NAMES, ROLLOUT_MIN_GAMES, SEATS,
+    Advisor, Mismatch, WEIGHTS, bid_level, cards, fewer_plays, resolve, should_double,
 )
 
 # 造局面时关掉「接近时现场模拟」:随机走一步有近一半的顶两手分差在 0.1 以内,开着会让原有测试慢到不可用。
@@ -410,10 +410,51 @@ class DoubleTest(unittest.TestCase):
         self.assertLess(ADVISOR.double("landlord", self.WEAK, ["3", "4", "5"])[0], DOUBLE_WIN)
 
     def test_a_strong_farmer_hand_is_worth_doubling(self):
-        self.assertGreaterEqual(ADVISOR.double("landlord_up", self.STRONG[:17], ["3", "4", "5"])[0], DOUBLE_WIN)
+        # 农民有自己的门槛:条件抽样之后赢面比无条件低,但强牌仍然过门槛
+        self.assertGreaterEqual(ADVISOR.double("landlord_up", self.STRONG[:17], ["3", "4", "5"])[0], FARMER_DOUBLE_WIN)
 
     def test_a_weak_farmer_hand_is_not_worth_doubling(self):
-        self.assertLess(ADVISOR.double("landlord_down", self.WEAK[:17], ["2", "A", "K"])[0], DOUBLE_WIN)
+        self.assertLess(ADVISOR.double("landlord_down", self.WEAK[:17], ["2", "A", "K"])[0], FARMER_DOUBLE_WIN)
+
+    def test_farmer_threshold_is_separate_from_the_landlord_one(self):
+        # 地主仍用 0.8;农民用 FARMER_DOUBLE_WIN
+        self.assertFalse(should_double(FARMER_DOUBLE_WIN - 0.01, "landlord_up"))
+        self.assertTrue(should_double(FARMER_DOUBLE_WIN, "landlord_up"))
+        self.assertFalse(should_double(DOUBLE_WIN - 0.01, "landlord"))
+        self.assertTrue(should_double(DOUBLE_WIN, "landlord"))
+
+    def test_conditioning_on_a_landlord_who_would_call_lowers_the_farmer_estimate(self):
+        # 同一手农民牌、同一个种子:只留地主会叫的牌,农民赢面只会更低
+        hand, bottom = self.STRONG[:17], ["3", "4", "5"]
+        unconditional, _ = ADVISOR.double("landlord_up", hand, bottom, games=40, budget=30, condition=False)
+        conditional, played = ADVISOR.double("landlord_up", hand, bottom, games=40, budget=30, condition=True)
+        self.assertEqual(40, played)
+        self.assertLessEqual(conditional, unconditional)
+
+    def test_only_deals_whose_landlord_would_call_are_played_out(self):
+        hand, bottom = self.STRONG[:17], ["3", "4", "5"]
+        accepted = []
+        win, played = ADVISOR.double("landlord_up", hand, bottom, games=20, budget=30, min_games=5,
+                                     on_accept=lambda hands: accepted.append(hands["landlord"]))
+        self.assertEqual(played, len(accepted))
+        self.assertTrue(accepted)
+        for lord in accepted:
+            self.assertTrue(ADVISOR.landlord_would_call(lord, cards(bottom)), lord)
+        self.assertGreaterEqual(win, 0.0)
+
+    def test_the_farmer_seat_returns_the_lower_of_the_two_farmers(self):
+        hand, bottom = self.STRONG[:17], ["3", "4", "5"]
+        up, _ = ADVISOR.double("landlord_up", hand, bottom, games=20, budget=30, min_games=5)
+        down, _ = ADVISOR.double("landlord_down", hand, bottom, games=20, budget=30, min_games=5)
+        both, played = ADVISOR.double("farmer", hand, bottom, games=20, budget=30, min_games=5)
+        self.assertEqual(20, played)
+        self.assertEqual(min(up, down), both)
+
+    def test_a_farmer_deal_that_cannot_be_accepted_is_not_doubled(self):
+        # 预算为 0 时一局都采纳不到:返回 0 局、赢面 0,端点据此点「不加倍」
+        win, played = ADVISOR.double("landlord_up", self.STRONG[:17], ["3", "4", "5"], budget=0)
+        self.assertEqual(0, played)
+        self.assertEqual(0.0, win)
 
     def test_a_wrong_hand_count_is_an_error(self):
         with self.assertRaises(Mismatch) as caught:

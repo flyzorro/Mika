@@ -2923,12 +2923,123 @@ class PhoneDdzTurnTest {
     }
 
     /**
-     * 农民绝不加倍(2026-11-14 12:01 精英场:农民 0.93 加倍,地主两个炸弹,一局输光 219 万)。
-     * 农民的加倍画面三个按钮:蓝「不加倍」、黄「加倍」、绿「超级加倍」:不问服务,点蓝色。
+     * 农民也能加倍:2026-11-16 土豪场 10 局实测,农民加倍只翻自己这一行,真实赢面 > 0.5 就是正期望。
+     * double.jpg 是农民 17 张、右边地主 20 张的加倍画面(底牌 K Q 8):服务说加就点黄色「加倍」,
+     * 座位按认出的地主位置给 landlord_up。
      */
-    @Test fun humanFarmerNeverDoubles() = runTest {
+    @Test fun humanFarmerDoublesOnTheYellowButtonWhenDouZeroSaysSo() = runTest {
         val call = full("call")
         val double = full("double")
+        val view = DdzScreen.read(double, classic = true)
+        val asked = mutableListOf<Triple<String, List<String>, List<String>>>()
+        val savedBid = PhoneDdzTurn.adviseBid
+        val savedDouble = PhoneDdzTurn.adviseDouble
+        PhoneDdzTurn.adviseBid = { _, _ -> PhoneDdzTurn.BidAdvice(3) }
+        PhoneDdzTurn.adviseDouble = { _, seat, hand, bottom ->
+            asked += Triple(seat, hand, bottom)
+            PhoneDdzTurn.DoubleAdvice(true, 0.78)
+        }
+        val out = ByteArrayOutputStream()
+        val old = System.out
+        try {
+            System.setOut(PrintStream(out))
+            val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(call, call, call, double)))
+            val result = PhoneDdzTurn.execute(
+                Args(PhoneDdzTurn.def, Json.parseToJsonElement(
+                    """{"action":"start","mode":"human","auto":true,"advisor":"http://mac:3426"}"""
+                ).jsonObject),
+                toolDispatcher(game).ctx,
+            )
+            assertEquals(result.content.toString(), "double", result.text("phase"))
+            assertNull("加倍时不暂停: ${result.content}", result.text("reason"))
+            val yellow = view.buttons.single { it.color == DdzColor.Yellow }
+            assertEquals("农民点黄色的「加倍」", yellow.x to yellow.y, game.taps[1])
+            assertEquals(1, asked.size)
+            assertEquals("地主在右边,我是他的上家", "landlord_up", asked.single().first)
+            assertEquals(17, asked.single().second.size)
+            assertEquals(listOf("K", "Q", "8"), asked.single().third)
+            val log = out.toString()
+            assertTrue(log, log.lines().any { it.contains("DDZTRACE double") && it.contains("seat=landlord_up ") })
+        } finally {
+            System.setOut(old)
+            PhoneDdzTurn.adviseBid = savedBid
+            PhoneDdzTurn.adviseDouble = savedDouble
+        }
+    }
+
+    /**
+     * 认不出地主坐哪边(两个对手的张数都读不出)时座位交 "farmer":服务两个农民座位各算一遍、取较低的赢面。
+     * 这里把 double.jpg 右边地主的 20 张盖掉,手牌和底牌仍然认得出。
+     */
+    @Test fun humanFarmerAsksTheFarmerSeatWhenTheLandlordPositionIsUnknown() = runTest {
+        val call = full("call")
+        val double = full("double_no_seat")
+        val view = DdzScreen.read(double, classic = true)
+        val asked = mutableListOf<String>()
+        val savedBid = PhoneDdzTurn.adviseBid
+        val savedDouble = PhoneDdzTurn.adviseDouble
+        PhoneDdzTurn.adviseBid = { _, _ -> PhoneDdzTurn.BidAdvice(3) }
+        PhoneDdzTurn.adviseDouble = { _, seat, _, _ -> asked += seat; PhoneDdzTurn.DoubleAdvice(true, 0.78) }
+        try {
+            val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(call, call, call, double)))
+            val result = PhoneDdzTurn.execute(
+                Args(PhoneDdzTurn.def, Json.parseToJsonElement(
+                    """{"action":"start","mode":"human","auto":true,"advisor":"http://mac:3426"}"""
+                ).jsonObject),
+                toolDispatcher(game).ctx,
+            )
+            assertEquals(result.content.toString(), "double", result.text("phase"))
+            assertNull("不暂停: ${result.content}", result.text("reason"))
+            val yellow = view.buttons.single { it.color == DdzColor.Yellow }
+            assertEquals("服务说加就点黄色", yellow.x to yellow.y, game.taps[1])
+            assertEquals(listOf("farmer"), asked)
+        } finally {
+            PhoneDdzTurn.adviseBid = savedBid
+            PhoneDdzTurn.adviseDouble = savedDouble
+        }
+    }
+
+    /**
+     * 农民 + 服务说不加倍 → 蓝色「不加倍」。double.jpg 的地主在右边,座位是 landlord_up。
+     */
+    @Test fun humanFarmerDeclinesOnTheBlueButtonWhenDouZeroSaysNotToDouble() = runTest {
+        val call = full("call")
+        val double = full("double")
+        val view = DdzScreen.read(double, classic = true)
+        val asked = mutableListOf<String>()
+        val savedBid = PhoneDdzTurn.adviseBid
+        val savedDouble = PhoneDdzTurn.adviseDouble
+        PhoneDdzTurn.adviseBid = { _, _ -> PhoneDdzTurn.BidAdvice(3) }
+        PhoneDdzTurn.adviseDouble = { _, seat, _, _ -> asked += seat; PhoneDdzTurn.DoubleAdvice(false, 0.42) }
+        try {
+            val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(call, call, call, double)))
+            val result = PhoneDdzTurn.execute(
+                Args(PhoneDdzTurn.def, Json.parseToJsonElement(
+                    """{"action":"start","mode":"human","auto":true,"advisor":"http://mac:3426"}"""
+                ).jsonObject),
+                toolDispatcher(game).ctx,
+            )
+            assertEquals(result.content.toString(), "double", result.text("phase"))
+            assertNull("服务说不加也不暂停: ${result.content}", result.text("reason"))
+            val blue = view.buttons.single { it.color == DdzColor.Blue }
+            val green = view.buttons.single { it.color == DdzColor.Green }
+            assertEquals("农民点蓝色的「不加倍」", blue.x to blue.y, game.taps[1])
+            assertTrue("绝不点绿色的「超级加倍」: ${game.taps}", (green.x to green.y) !in game.taps)
+            assertEquals(listOf("landlord_up"), asked)
+        } finally {
+            PhoneDdzTurn.adviseBid = savedBid
+            PhoneDdzTurn.adviseDouble = savedDouble
+        }
+    }
+
+    /**
+     * 2026-11-16 15:16 那局:底牌把一张牌认成 3,和手里 3333 冲突,服务报 more_cards_than_exist。
+     * 手牌 + 底牌里同一张超过 4 张就直接点蓝色,不问服务。这里用地主 20 张的画面:
+     * 底牌认成 2 2 2,手里还有三个 2,一共六个 2。老逻辑会问服务、服务说加就点黄色。
+     */
+    @Test fun humanDeclinesWithoutAskingWhenTheBottomConflictsWithTheHand() = runTest {
+        val call = full("call")
+        val double = full("double_landlord_conflict")
         val view = DdzScreen.read(double, classic = true)
         var asked = 0
         val savedBid = PhoneDdzTurn.adviseBid
@@ -2944,10 +3055,10 @@ class PhoneDdzTurnTest {
                 toolDispatcher(game).ctx,
             )
             assertEquals(result.content.toString(), "double", result.text("phase"))
-            assertNull("加倍时不暂停: ${result.content}", result.text("reason"))
+            assertNull("冲突也不暂停: ${result.content}", result.text("reason"))
             val blue = view.buttons.single { it.color == DdzColor.Blue }
-            assertEquals("农民点蓝色的「不加倍」", blue.x to blue.y, game.taps[1])
-            assertEquals("农民不问加倍服务", 0, asked)
+            assertEquals("冲突就点蓝色的「不加倍」", blue.x to blue.y, game.taps[1])
+            assertEquals("冲突不问服务", 0, asked)
         } finally {
             PhoneDdzTurn.adviseBid = savedBid
             PhoneDdzTurn.adviseDouble = savedDouble
@@ -3053,10 +3164,16 @@ class PhoneDdzTurnTest {
         }
     }
 
-    @Test fun humanDeclinesOnTheBlueButtonWhenTheDoubleServiceIsUnreachable() = runTest {
+    /**
+     * 农民 + 服务连不上 → 蓝色「不加倍」,绝不退回 HumanDdzPolicy 规则。这手农民牌有 3 的炸弹、两个王,
+     * 旧规则 shouldDouble 会返回 true;退回规则就会点黄色,所以这条测试能抓住退回。
+     */
+    @Test fun humanFarmerDeclinesOnTheBlueButtonWhenTheDoubleServiceIsUnreachable() = runTest {
         val call = full("call")
-        val double = full("double")
+        val double = full("double_farmer_rule_double")
         val view = DdzScreen.read(double, classic = true)
+        val hand = listOf("BJ", "SJ", "2", "2", "2", "A", "A", "K", "Q", "10", "9", "4", "4", "3", "3", "3", "3")
+        assertTrue("这手牌旧规则会加倍,才能证明农民没退回规则", HumanDdzPolicy.shouldDouble(hand, listOf("K", "Q", "8")))
         val savedBid = PhoneDdzTurn.adviseBid
         val savedDouble = PhoneDdzTurn.adviseDouble
         PhoneDdzTurn.adviseBid = { _, _ -> PhoneDdzTurn.BidAdvice(3) }
