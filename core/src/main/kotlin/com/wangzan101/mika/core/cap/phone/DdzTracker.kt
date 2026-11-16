@@ -90,8 +90,13 @@ internal class DdzTracker(private val settling: DdzSettlingPolicy = DdzSettlingP
             count[seat] = now.takeIf { it != null && it == countSeen[seat] }
             countSeen[seat] = now
         }
-        // 底牌只是给 DouZero 的参考,认不出(比如里面有张王,竖着写的字太小)也照样记;叫分、加倍时出牌区只有字,不会当成牌
-        if (this.bottom == null) this.bottom = bottom()
+        // 底牌只是给 DouZero 的参考,认不出(比如里面有张王,竖着写的字太小)也照样记;叫分、加倍时出牌区只有字,不会当成牌。
+        // 翻开/动画的某一帧可能只认出两张:后面读到完整三张、而且包含先前那两张时换成三张,别整局锁成两张。
+        val readBottom = bottom()
+        if (readBottom != null) {
+            val known = this.bottom
+            if (known == null || (known.size < 3 && readBottom.size == 3 && containsAll(readBottom, known))) this.bottom = readBottom
+        }
         // 轮到自己先出、手里 20 张,一定是地主、还没人出过牌:之前认成别家出的牌(比如翻底牌的动画)作废
         if (leadingWith20 && landlord != DdzSeat.Me) {
             landlord = null
@@ -460,6 +465,13 @@ internal class DdzTracker(private val settling: DdzSettlingPolicy = DdzSettlingP
 
     /** 这家最近两帧都一样的剩牌张数;读不到为 null。这一局记不下去了也可能还留着上一次的读数。 */
     internal fun seatCount(seat: DdzSeat): Int? = count[seat]
+
+    /** [cards] 里有没有 [known] 这几张(同点数按张数算,底牌里有对子也一样)。 */
+    private fun containsAll(cards: List<String>, known: List<String>): Boolean {
+        val left = cards.toMutableList()
+        for (card in known) if (!left.remove(card)) return false
+        return true
+    }
 
     /** Install a complete, already validated visible history without observing a new frame. */
     internal fun restore(landlord: DdzSeat, bottom: List<String>, moves: List<List<String>>, current: DdzSeat = landlord) {

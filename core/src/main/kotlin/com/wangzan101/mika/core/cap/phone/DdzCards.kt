@@ -176,8 +176,7 @@ internal object DdzCards {
 
     private const val COUNTER_GAP_Y = 80
     private const val COUNTER_RANK_Y0 = 18
-    /** 王是竖着写的,比点数高;底下 86 行还是牌背,花色从 87 行才开始。 */
-    private const val COUNTER_RANK_H = 69
+    private const val COUNTER_RANK_H = 66
     private const val COUNTER_INK = 120
     private const val COUNTER_SURE = 0.3
     private const val COUNTER_MARGIN = 0.05

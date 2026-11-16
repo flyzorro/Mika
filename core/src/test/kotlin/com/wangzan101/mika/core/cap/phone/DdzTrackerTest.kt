@@ -24,6 +24,28 @@ class DdzTrackerTest {
         assertNull(tracker.bottom)
     }
 
+    /**
+     * 2026-11-16 真人局农民:底牌翻开/动画的某一帧只认出两张,后面读到完整三张时要换成三张,
+     * 别整局锁成两张(两张只是给 DouZero 的参考,三张才是这一局的底牌)。
+     */
+    @Test fun aTwoCardBottomIsReplacedByTheFullThreeWhenTheOldTwoAreInIt() {
+        var read: List<String>? = listOf("9", "8")
+        repeat(2) { tracker.observe(DdzSeat.Me, { DdzSeen.Empty }, { read }, leadingWith20 = true) }
+        assertEquals(listOf("9", "8"), tracker.bottom)
+        read = listOf("9", "8", "3")
+        repeat(2) { tracker.observe(DdzSeat.Me, { DdzSeen.Empty }, { read }, leadingWith20 = true) }
+        assertEquals(listOf("9", "8", "3"), tracker.bottom)
+    }
+
+    /** 后读到的三张里没有先前那两张:多半是另一帧认错了,不能拿它换掉已经认出的两张。 */
+    @Test fun aThreeCardBottomWithoutTheOldTwoIsNotAdopted() {
+        var read: List<String>? = listOf("9", "8")
+        repeat(2) { tracker.observe(DdzSeat.Me, { DdzSeen.Empty }, { read }, leadingWith20 = true) }
+        read = listOf("9", "K", "Q")
+        repeat(2) { tracker.observe(DdzSeat.Me, { DdzSeen.Empty }, { read }, leadingWith20 = true) }
+        assertEquals(listOf("9", "8"), tracker.bottom)
+    }
+
     @Test fun playGoesMeThenRightThenLeft() {
         assertEquals(DdzSeat.Right, DdzSeat.Me.next)
         assertEquals(DdzSeat.Left, DdzSeat.Right.next)
