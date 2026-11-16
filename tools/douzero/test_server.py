@@ -1,6 +1,7 @@
 """用 DouZero 自己的牌局随机发牌打到中途:只凭看得见的信息重建,出的牌要和拿完整牌局时一模一样。"""
 import random
 import unittest
+from types import SimpleNamespace
 
 from douzero.env.game import GameEnv
 
@@ -210,6 +211,54 @@ class JokerKickerTest(unittest.TestCase):
         self.assertIn(tuple(sorted(cards(["4", "4", "4", "5", "5", "5", "SJ", "9"]))), found)
         self.assertIn(tuple(sorted(cards(["4", "4", "4", "5", "5", "5"]))), found)
         self.assertIn(tuple(sorted(cards(["SJ", "BJ"]))), found)
+
+
+class KickerTest(unittest.TestCase):
+    """三带一/飞机带单的带牌是 A 或 2 时,换成手里最小的零散小单张。按公开入口测。"""
+
+    # 2026-11-16 10:04 实机的一局:地主先出 6 6 6 + 3,下家 8 8 8 + 5,地主再出 10 10 10 + 7
+    HISTORY = [["6", "6", "6", "3"], ["8", "8", "8", "5"], [], ["10", "10", "10", "7"], []]
+    BOTTOM = ["6", "Q", "Q"]
+
+    def test_the_single_a_kicker_is_replaced_with_the_smallest_loose_card(self):
+        # 我 K K K + A:A 当带牌丢了控制牌,地主随后 2 2 2 + J 压住走完。3 是剩下的 3..Q 顺子的低端,
+        # 拿走它顺子还有 4..Q,换成最小的 3
+        hand = ["A", "K", "K", "K", "Q", "J", "J", "10", "9", "8", "7", "7", "6", "5", "4", "4", "3"]
+        self.assertEqual(["K", "K", "K", "3"],
+                         [NAMES[c] for c in ADVISOR.act("landlord_up", hand, self.BOTTOM, self.HISTORY)])
+
+    def test_no_loose_single_keeps_the_a_kicker(self):
+        # 5/6/8/9/10 都在 4..Q 顺子的中间,4 和 Q 成对:没有能换的零散小单张,照原样带 A
+        hand = ["A", "K", "K", "K", "Q", "Q", "J", "J", "10", "9", "8", "7", "7", "6", "5", "4", "4"]
+        self.assertEqual(["K", "K", "K", "A"],
+                         [NAMES[c] for c in ADVISOR.act("landlord_up", hand, self.BOTTOM, self.HISTORY)])
+
+    def test_a_triple_of_aces_is_not_a_kicker(self):
+        # 三条本身是 A A A、带牌是 3:A 是三条用的,不是带牌,不动
+        hand = ["A", "A", "A", "4", "4", "4", "5", "5", "7", "7", "9", "9", "J", "J", "Q", "Q", "3"]
+        self.assertEqual(["3", "A", "A", "A"],
+                         [NAMES[c] for c in ADVISOR.act("landlord_up", hand, self.BOTTOM, self.HISTORY)])
+
+    def test_a_joker_kicker_is_left_alone(self):
+        # 规则只管 A/2:单张王当带牌不换(大小王一起当带牌已在 without_double_joker_kickers 里剔掉)
+        info = SimpleNamespace(player_hand_cards=cards(["K", "K", "K", "SJ", "3", "4"]),
+                               legal_actions=[cards(["K", "K", "K", "SJ"]), cards(["K", "K", "K", "3"])])
+        move = cards(["K", "K", "K", "SJ"])
+        self.assertEqual(["K", "K", "K", "SJ"],
+                         [NAMES[c] for c in ADVISOR.agents["landlord_up"].swap_high_kickers(info, move, lambda m: True)])
+
+    def test_the_endgame_verdict_keeps_the_a_kicker(self):
+        # 残局只剩 15 张,搜索算出来 K K K + A 在 4 种分法下都赢、K K K + 3 只赢 2 种:搜索说带 A 更好,
+        # 不合规的那手不进 allowed,规则不换
+        hand = ["K", "K", "K", "A", "3", "4", "5", "6", "7", "8", "8"]
+        env = GameEnv({s: None for s in SEATS})
+        env.card_play_init({"landlord": cards(["Q"]), "landlord_up": cards(hand),
+                            "landlord_down": cards(["8", "SJ", "BJ"]), "three_landlord_cards": []})
+        env.acting_player_position = "landlord_up"
+        env.last_pid = "landlord"
+        env.card_play_action_seq = [cards(["10", "10", "10", "7"]), []]
+        info = env.get_infoset()
+        self.assertEqual(["K", "K", "K", "A"], [NAMES[c] for c in ADVISOR.agents["landlord_up"].act(info)])
 
 
 class EndgameTest(unittest.TestCase):
