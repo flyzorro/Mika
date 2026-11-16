@@ -26,7 +26,6 @@ POST /double {"seat": "landlord" | "landlord_down" | "landlord_up" | "farmer",
 # farmer 是认不出地主坐哪边时用的:两个农民座位各算一遍(共用时间预算),取较低的赢面
 """
 import json
-import math
 import os
 import random
 import sys
@@ -113,11 +112,16 @@ ACT_TOTAL_BUDGET_S = 3.2
 ACT_BUDGET_SAFETY_S = 0.1
 ACT_ROLLOUT_MIN_S = 0.8
 ACT_ENDGAME_BUDGET_S = 1.5
-# 残局分法似然的温度:对手最近一手在他当时那副牌上的 DouZero 分数做 softmax 时除以它。
-# 2026-11-16 20:51:41 土豪场那一手(地主 BJ SJ 2 Q 9 9,下家刚出 7 7 只剩两张)离线扫过
-# 0.02~1.0:温度越低越只看模型的首选,0.2 时王炸的加权赢面 34% 高于 9 9 的 21%、不出 18%,
-# 温度再高(0.4 以上)三手就拉不开、又回到 9 9。取 0.2 留出余量。
-LIKELIHOOD_TEMPERATURE = 0.2
+# 残局分法似然:每家对手取最近 [LIKELIHOOD_MOVES] 手不是不出的出牌,各手概率相乘。取 2 是因为
+# 2026-11-16 20:51:41 土豪场那一手,下家倒数第二手 10 10 10 + Q:如果手里还留着 4、9 这种低单张,
+# 正常会拿小牌当带牌而不是 Q。只看最近一手 7 7 看不出这点,两手里的三带一才把「剩零散小牌」的分法压下去。
+# 温度见 LIKELIHOOD_TEMPERATURE;对每手都用动作 softmax(该手在当时所有合法出牌里的概率),不掺绝对分值。
+LIKELIHOOD_MOVES = 2
+# 残局分法似然的温度:对手当时那副牌上,对那一手所有合法出牌的 DouZero 分数做 softmax 时除以它。
+# 2026-11-16 20:51:41 土豪场那一手(地主 BJ SJ 2 Q 9 9,下家刚出 7 7 只剩两张)离线扫过 0.005~1.0:
+# 0.2(只看最近一手时的温度)这一手仍是 9 9;取最近两手后 0.03 以下才翻成王炸,0.05 又回到 9 9。
+# 0.02 时王炸的加权权重是 9 9 的 6.6 倍、不出的 16 倍;0.01 更极端,0.03 只剩 2 倍。取 0.02 留余量。
+LIKELIHOOD_TEMPERATURE = 0.02
 # 后半局不管分差都现场模拟:三家手里合起来只剩 LATE_CARDS 张时,DouZero 分数最高的 LATE_TOP 手(不出也算一手)都模拟一遍。
 # 2026-11-16 11:43:53 土豪场,我是地主下家,手里 2 2 K Q J 10 9 8 8 8 4 3 3,三家还剩 33 张。
 # DouZero 给 8 9 10 J Q K +0.736、8 9 10 J Q +0.627,只差 0.109,按 CLOSE_MARGIN 不模拟,信分数出了 8..K,输了。
@@ -933,62 +937,43 @@ class Advisor:
         return min(rates.values()), played
 
     def likelihood(self, history, me):
-        """给 endgame.best 的似然回调:按两家对手最近一手不是不出的出牌,判断一种分法像不像他们当时会这么出。
+        """给 endgame.best 的似然回调:按两家对手最近 [LIKELIHOOD_MOVES] 手不是不出的出牌,判断一种分法像不像他们当时会这么出。
 
-        每个对手取他最近一手出牌,把他当时的手牌和局面用 history 倒推出来,用他自己座位的 DouZero 模型给
-        当时所有合法出牌打分。最近出牌的那家(残局里通常就是刚出完只剩两张的人)把 exp(分/温度) 在这些分法上
-        做 softmax(等价于按分值绝对值加权,归一化只为数值稳定):这手牌的价值本身就带着他留下那两张牌的强弱;
-        另一家只比动作 softmax,不然同一批没露面的牌分给一家会让另一家的绝对价值变差,两头都挨罚。
-        两家相乘就是这种分法的似然。
-        一次把所有分法攒成一批前向;到 [deadline] 就抛 Timeout,best 退回不加权的摆法数。
+        每个对手的每一手都把他当时的手牌和局面用 history 倒推出来,用他自己座位的 DouZero 模型给当时所有
+        合法出牌打分,取这一手的 softmax 概率 P(那手 | 当时手牌);同一对手各手概率相乘,两家对手再相乘。
+        只看最近一手不够:下家倒数第二手 10 10 10 + Q 才是「他手里没有 4/9 这种零散小牌」的证据。
+        一次把同一手的全部分法攒成一批前向;到 [deadline] 就抛 Timeout,best 退回不加权的摆法数。
         回调第一次被调用时才去翻 history:不是残局时 endgame.best 根本不叫它,这一手就没有额外开销。
         """
         def callback(splits_hands, deadline):
             indices = {}
             for i in range(len(history) - 1, -1, -1):
                 if history[i] and SEATS[i % 3] != me:
-                    indices.setdefault(SEATS[i % 3], i)
-            latest = SEATS[max(indices.values()) % 3] if indices else None
-            frames = {seat: (index, history_frame(history, index)) for seat, index in indices.items()}
+                    seat = SEATS[i % 3]
+                    moves = indices.setdefault(seat, [])
+                    if len(moves) < LIKELIHOOD_MOVES:
+                        moves.append(i)
             likes = [1.0] * len(splits_hands)
-            for seat, (index, frame) in frames.items():
-                states = []
-                for n, hands in enumerate(splits_hands):
-                    if n % 32 == 0 and time.monotonic() > deadline:
+            for seat, moves in indices.items():
+                for index in moves:
+                    frame = history_frame(history, index)
+                    states = []
+                    for n, hands in enumerate(splits_hands):
+                        if n % 32 == 0 and time.monotonic() > deadline:
+                            raise endgame.Timeout()
+                        states.append(history_state(history, hands, seat, index, frame))
+                    scores = self.state_values(seat, states, deadline)
+                    observed = tuple(sorted(history[index]))
+                    for k, (state, values) in enumerate(zip(states, scores)):
+                        if not splits_hands[k][seat]:
+                            continue
+                        actions = [tuple(sorted(m)) for m in state.legal_actions]
+                        if observed not in actions:
+                            continue
+                        j = actions.index(observed)
+                        likes[k] *= float(torch.softmax(values / LIKELIHOOD_TEMPERATURE, dim=0)[j])
+                    if time.monotonic() > deadline:
                         raise endgame.Timeout()
-                    states.append(history_state(history, hands, seat, index, frame))
-                scores = self.state_values(seat, states, deadline)
-                observed = tuple(sorted(history[index]))
-                factors = []
-                for k, (state, values) in enumerate(zip(states, scores)):
-                    if not splits_hands[k][seat]:
-                        factors.append(None)
-                        continue
-                    actions = [tuple(sorted(m)) for m in state.legal_actions]
-                    if observed not in actions:
-                        factors.append(float("-inf") if seat == latest else 0.0)
-                        continue
-                    j = actions.index(observed)
-                    if seat == latest:
-                        factors.append(float(values[j] / LIKELIHOOD_TEMPERATURE))
-                    else:
-                        factors.append(float(torch.softmax(values / LIKELIHOOD_TEMPERATURE, dim=0)[j]))
-                if seat == latest:
-                    # 最近出牌那家的分值本身带着手牌强弱:在这些分法上做 softmax(先减最大值,免得数值爆)。
-                    # 对所有分法同乘一个常数不改变加权后的排序,但能避免 exp 溢出成 inf。
-                    finite = [f for f in factors if f is not None and math.isfinite(f)]
-                    top = max(finite) if finite else 0.0
-                    weights = [math.exp(f - top) if f is not None and math.isfinite(f) else 0.0
-                               for f in factors]
-                    scale = sum(weights)
-                    for k, factor in enumerate(factors):
-                        if factor is not None and scale:
-                            likes[k] *= weights[k] / scale
-                else:
-                    for k, factor in enumerate(factors):
-                        likes[k] *= 1.0 if factor is None else factor
-                if time.monotonic() > deadline:
-                    raise endgame.Timeout()
             return likes
 
         return callback
