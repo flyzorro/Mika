@@ -79,6 +79,13 @@ ACT_ROLLOUT_GAMES = 300
 ACT_ROLLOUT_MIN_GAMES = 60
 OPENING_CARDS = 45
 ACT_ROLLOUT_MIN_GAMES_OPENING = 30
+# 后半局不管分差都现场模拟:三家手里合起来只剩 LATE_CARDS 张时,DouZero 分数最高的 LATE_TOP 手(不出也算一手)都模拟一遍。
+# 2026-11-16 11:43:53 土豪场,我是地主下家,手里 2 2 K Q J 10 9 8 8 8 4 3 3,三家还剩 33 张。
+# DouZero 给 8 9 10 J Q K +0.736、8 9 10 J Q +0.627,只差 0.109,按 CLOSE_MARGIN 不模拟,信分数出了 8..K,输了。
+# 离线按看得见的牌打 400 局:3 3 8 8 8 赢 0.98、8..K 只赢 0.82;明牌搜索也确认 8..K 必输。
+# 后半局每手都短、2.5 秒够每手打 60 局以上,就不再拿分差当理由;仍要高出 SWITCH_MARGIN 才换。
+LATE_CARDS = 35
+LATE_TOP = 8
 WEIGHTS = os.environ.get("DOUZERO_WEIGHTS", os.path.join(os.path.dirname(__file__), "baselines", "douzero_ADP"))
 
 
@@ -398,6 +405,7 @@ class Agent:
     def close_rollout(self, infoset, values, move):
         """顶两手的分数差不到 CLOSE_MARGIN 时,按看得见的牌随机发一批牌,每一手都用 DouZero 打分打到完,比赢面。
 
+        后半局(三家手里合起来不超过 LATE_CARDS 张)不管分差多大都模拟,取 DouZero 分数最高的 LATE_TOP 手。
         同一批发牌拿来比所有候选(控制随机性),一手都打 ACT_ROLLOUT_GAMES 局或者到 2.5 秒为止,轮着来。
         每手不够 ACT_ROLLOUT_MIN_GAMES 局就当没模拟;开局(三家手里还够 OPENING_CARDS 张)只要求
         ACT_ROLLOUT_MIN_GAMES_OPENING 局,局数不到 60 时改用 OPENING_SWITCH_MARGIN 才换。
@@ -408,7 +416,10 @@ class Agent:
         order = sorted(range(len(infoset.legal_actions)),
                        key=lambda i: (-float(values[i]), tuple(sorted(infoset.legal_actions[i])) != own))
         top = float(values[order[0]])
-        picks = [i for i in order if top - float(values[i]) < CLOSE_MARGIN][:CLOSE_TOP]
+        # 后半局不设分差门槛,直接取分数最高的 LATE_TOP 手;不出也在里面,只要它排进前 LATE_TOP
+        late = sum(infoset.num_cards_left_dict.values()) <= LATE_CARDS
+        picks = order[:LATE_TOP] if late \
+            else [i for i in order if top - float(values[i]) < CLOSE_MARGIN][:CLOSE_TOP]
         if len(picks) < 2:
             return None
         candidates = [infoset.legal_actions[i] for i in picks]
@@ -446,9 +457,12 @@ class Agent:
             margin = SWITCH_MARGIN if games >= ACT_ROLLOUT_MIN_GAMES else OPENING_SWITCH_MARGIN
             if rates[best] - rates[own] >= margin:
                 chosen = next(c for k, c in zip(keys, candidates) if k == best)
-        return chosen, {"games": games, "min_games": min_games,
-                        "rates": {labels[k]: round(rates[k], 2) for k in keys},
-                        "chosen": move_label(chosen)}
+        info = {"games": games, "min_games": min_games,
+                "rates": {labels[k]: round(rates[k], 2) for k in keys},
+                "chosen": move_label(chosen)}
+        if late:
+            info["late"] = True
+        return chosen, info
 
     def play_out(self, hands, bottom, history, me, move):
         """按 [hands] 开局把 [history] 重放到现在,我先出 [move],之后三家都按 DouZero 打分打到完。返回我这方赢没赢。"""
