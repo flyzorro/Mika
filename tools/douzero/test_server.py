@@ -455,6 +455,13 @@ class CloseCallRolloutTest(unittest.TestCase):
                  bottom=["8", "9", "A"],
                  history=[["7", "7", "7", "8", "8"], [], [], ["4", "4", "5", "5", "5"], [], []])
 
+    # 2026-11-16 10:58:14 精英场:我是地主的第一手。开局每局都长,2.5 秒只跑了 43 局,
+    # 不到 60 局就白模拟了;单张 9 赢面高 13 个点也没换成。开局下限降到 30 局后应该换成 9。
+    OPENING = dict(seat="landlord",
+                   hand=["2", "2", "A", "K", "K", "Q", "Q", "J", "9", "8", "8", "8", "7", "7", "6", "5", "5", "5", "5", "4"],
+                   bottom=["9", "4", "7"],
+                   history=[])
+
     def act(self, position, report=None):
         return ROLLOUT_ADVISOR.act(position["seat"], position["hand"], position["bottom"],
                                    position["history"], report)
@@ -477,6 +484,23 @@ class CloseCallRolloutTest(unittest.TestCase):
         self.assertIn("K", rollout["rates"])
         self.assertEqual("7", rollout["chosen"])
         self.assertGreater(rollout["rates"]["7"], rollout["rates"]["K"])
+
+    def test_an_opening_close_call_uses_the_lower_floor(self):
+        report = {}
+        move = self.act(self.OPENING, report)
+        self.assertEqual(["9"], [NAMES[c] for c in move])
+        rollout = report.get("rollout")
+        self.assertIsNotNone(rollout, "开局顶两手应该现场模拟")
+        self.assertLess(rollout["games"], 60)
+        self.assertEqual(30, rollout["min_games"])
+        self.assertEqual("9", rollout["chosen"])
+
+    def test_a_mid_game_close_call_keeps_the_sixty_floor(self):
+        report = {}
+        self.act(self.SECOND, report)
+        rollout = report.get("rollout")
+        self.assertIsNotNone(rollout, "顶两手只差 0.011,应该现场模拟")
+        self.assertEqual(60, rollout["min_games"])
 
     def test_a_clear_best_move_does_not_roll_out(self):
         report = {}
