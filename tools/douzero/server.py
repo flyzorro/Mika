@@ -310,6 +310,31 @@ def move_label(move):
     return " ".join(NAMES[c] for c in move) if move else "pass"
 
 
+def late_picks(order, actions, top=LATE_TOP):
+    """后半局候选:每种牌型先取 DouZero 分数最高的一手,名额还有剩再按分数从高到低补满。
+
+    [order] 是按 DouZero 分数从高到低排好的合法出牌下标。牌型按 DouZero 的 move_detector.get_move_type 区分,
+    「不出」也算一种。牌型种类比 [top] 还多时,只留代表手分数最高的前 [top] 种。
+    DouZero 自己那手就是 order[0],必然是它那种牌型的第一个代表,天然在候选里。
+    """
+    kinds = {i: md.get_move_type(sorted(actions[i]))["type"] for i in order}
+    seen, reps = set(), []
+    for i in order:
+        if kinds[i] in seen:
+            continue
+        seen.add(kinds[i])
+        reps.append(i)
+    picks = reps[:top]
+    if len(picks) < top:
+        taken = set(picks)
+        for i in order:
+            if len(picks) >= top:
+                break
+            if i not in taken:
+                picks.append(i)
+    return picks
+
+
 def fewer_plays(hand, keys, rates, scores, own, deadline=None):
     """模拟赢面差不多时,在赢面不低于 DouZero 那手([own])的候选里挑出完剩下手数最少的一手。
 
@@ -556,7 +581,8 @@ class Agent:
     def close_rollout(self, infoset, values, move, deadline=None, report=None):
         """顶两手的分数差不到 CLOSE_MARGIN 时,按看得见的牌随机发一批牌,每一手都用 DouZero 打分打到完,比赢面。
 
-        后半局(三家手里合起来不超过 LATE_CARDS 张)不管分差多大都模拟,取 DouZero 分数最高的 LATE_TOP 手。
+        后半局(三家手里合起来不超过 LATE_CARDS 张)不管分差多大都模拟:每种牌型先留 DouZero 分数最高的一手,
+        名额还有剩再按分数补满 LATE_TOP 手(见 late_picks)。
         模拟不把所有候选平分到最后:分几轮边打边淘汰,见 successive_halving。2026-11-16 13:10:11 土豪场,
         我是地主下家,三家还剩 35 张,回复 rollout games 27、min_games 60:8 手轮着模拟,2.5 秒下来每手只打了
         27 局,不到 60 局整个模拟作废,仍出 DouZero 的 6;可 8 的模拟赢面 0.75 比 6 的 0.68 高 7 个点。
@@ -577,9 +603,9 @@ class Agent:
         order = sorted(range(len(infoset.legal_actions)),
                        key=lambda i: (-float(values[i]), tuple(sorted(infoset.legal_actions[i])) != own))
         top = float(values[order[0]])
-        # 后半局不设分差门槛,直接取分数最高的 LATE_TOP 手;不出也在里面,只要它排进前 LATE_TOP
+        # 后半局不设分差门槛:每种牌型先留分数最高的一手,再按分数补满 LATE_TOP 手;不出也算一种牌型
         late = sum(infoset.num_cards_left_dict.values()) <= LATE_CARDS
-        picks = order[:LATE_TOP] if late \
+        picks = late_picks(order, infoset.legal_actions) if late \
             else [i for i in order if top - float(values[i]) < CLOSE_MARGIN][:CLOSE_TOP]
         if len(picks) < 2:
             return None
