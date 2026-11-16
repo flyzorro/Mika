@@ -376,6 +376,22 @@ class DdzCardsTest {
         assertNull(DdzCards.bottom(fullFrame("counter_call_2")))
     }
 
+    /**
+     * 2026-11-16 真人局农民:底牌里有王(小王)时 DouZero 收到 bottom=[]。王那张牌的牌面把记牌器底牌条的
+     * 浅灰牌背切开,三张只认出两张;原来只要有一张认不出就整份丢掉。现在至少把认得出的两张交出去,
+     * DouZero 服务会把对不上的那张从看不见的牌里补上。
+     */
+    @Test fun aBottomWithOneUnreadableCardStillGivesTheOtherTwo() {
+        val base = fullFrame("counter_bottom_36A")
+        // 第一张底牌(3)的牌面换成一块黑:记牌器条上这张牌背被切开,认不出是哪一张
+        val rows = (DdzScreen.ROWS + DdzCards.ROWS + DdzCards.LOBBY_ROWS).distinct().associateWith { y ->
+            base.row(y)!!.copyOf().also { row ->
+                if (y in 24..84) for (x in 1275..1295) row[x] = 0xFF000000.toInt()
+            }
+        }
+        assertEquals(listOf("6", "A"), DdzCards.bottom(RawFrame(base.width, base.height, rows)))
+    }
+
     @Test fun readsTheBottomCardsRevealedAtDoubling() {
         // 加倍时三张底牌放大摆在牌桌上方正中(2026-11-14 的 double.jpg:K Q 8)
         assertEquals(listOf("K", "Q", "8"), DdzCards.bottom(fullFrame("double")))
