@@ -134,11 +134,13 @@ internal object DdzCards {
     /**
      * 叫完地主、加倍时,三张底牌会放大摆在牌桌上方正中(K Q 8 这一帧):牌面从 120 行到约 290 行,
      * 三张牌宽约 123、间距约 135,整排以内容区居中。认不出为 null。
+     * 放大牌的竖排「JOKER」顶饰紧贴牌顶(不像桌面上的牌留出几行),字形窗口从牌顶起才认得出王;普通点数仍在
+     * 牌顶下 4 行更干净(牌顶那道灰边会混进字形),所以两个起点都试,取更像的那个。
      */
     private fun revealedBottom(frame: RawFrame, bar: Int, k: Double): List<String>? {
         val cards = strip(frame, bar + (953 * k).toInt(), bar + (1347 * k).toInt(), 120, 310, pitch = 135 * k, width = 123 * k,
             glyphRows = 60, glyphWidth = (56 * k).toInt(), k = k, minRows = 60, sure = BOTTOM_SURE, margin = BOTTOM_MARGIN,
-            probeNearBottom = true, gap = 20, spanAll = true) ?: return null
+            probeNearBottom = true, gap = 20, spanAll = true, glyphTops = listOf(0, 4)) ?: return null
         return cards.map { it.rank }.filterNotNull().takeIf { it.size >= 2 }
     }
 
@@ -902,7 +904,7 @@ internal object DdzCards {
         k: Double, minRows: Int = 100, sure: Double = SURE, margin: Double = MARGIN, probeNearBottom: Boolean = false,
         wideLast: Int? = null, wrapDy: Int? = null, tailDy: Int? = null, wrapBelow: Int = WRAP_BELOW,
         wrapFull: Boolean = false, wrapWhite: Int = 100, probeTop: Int? = null,
-        gap: Int = 12, spanAll: Boolean = false,
+        gap: Int = 12, spanAll: Boolean = false, glyphTops: List<Int> = listOf(4),
     ): List<Read>? {
         val right = minOf(x1, frame.width)
         fun white(x: Int, y: Int) = frame.pixel(x, y).let { p -> min(p) > 190 && spread(p) < 45 }
@@ -930,7 +932,7 @@ internal object DdzCards {
         }.maxByOrNull { it.last - it.first } ?: return null
         val n = ((span.last - span.first + 1 - width) / pitch).roundToInt() + 1
         if (n !in 1..20) return null
-        val first = row(frame, x0 + span.first, top, n, pitch, glyphRows, glyphWidth, k, sure, margin, wideLast)
+        val first = row(frame, x0 + span.first, top, n, pitch, glyphRows, glyphWidth, k, sure, margin, wideLast, glyphTops)
         // 真人右家最后一张带绶带时会下移,横向宽度仍和上一张重叠,不能靠牌面总宽计数
         if (tailDy != null) {
             val tailLeft = x0 + span.first + ((n - 1) * pitch).toInt()
@@ -941,7 +943,7 @@ internal object DdzCards {
                 }
             } } >= 45
             if (ribbon) {
-                val tail = row(frame, tailLeft, tailTop, 1, pitch, glyphRows, glyphWidth, k, sure, margin, wideLast ?: 72)
+                val tail = row(frame, tailLeft, tailTop, 1, pitch, glyphRows, glyphWidth, k, sure, margin, wideLast ?: 72, glyphTops)
                 return first + tail
             }
         }
@@ -958,13 +960,13 @@ internal object DdzCards {
         // 右家的贴着右边(2074),第二排接着从最后一张下面摆(真人右家的十张飞机带对子)。
         // 九张没摆满不会有第二排,也别把真人右家掉下去那张绶带牌(在右边)当成第二排
         if (wrapFull && (n != 9 || !wrapsUnder(span, span2))) return first
-        return first + row(frame, x0 + span2.first, top + wrapDy, n2, pitch, glyphRows, glyphWidth, k, sure, margin, wideLast)
+        return first + row(frame, x0 + span2.first, top + wrapDy, n2, pitch, glyphRows, glyphWidth, k, sure, margin, wideLast, glyphTops)
     }
 
     /** 一排 [n] 张牌,最左一张从 [left] 起、牌顶在 [top]:每张的点数。 */
     private fun row(
         frame: RawFrame, left: Int, top: Int, n: Int, pitch: Double, glyphRows: Int, glyphWidth: Int, k: Double,
-        sure: Double, margin: Double, wideLast: Int?,
+        sure: Double, margin: Double, wideLast: Int?, glyphTops: List<Int> = listOf(4),
     ): List<Read> {
         return (0 until n).map { i ->
             val cx = left + (i * pitch).toInt() + 3
@@ -991,14 +993,14 @@ internal object DdzCards {
                     (p shr 16 and 0xff) > RIBBON_RED && (p shr 8 and 0xff) < 110 && (p and 0xff) < 110
                 } }?.minus(RIBBON_EDGE) ?: Int.MAX_VALUE
             }
-            widths.mapNotNull { wide ->
+            widths.flatMap { wide -> glyphTops.mapNotNull { glyphTop ->
                 val ink = Array(glyphRows) { r -> BooleanArray(wide) { c ->
-                    (edge == null || (c < RIBBON_COL + RIBBON_SLOPE * r && c < edge[r])) && textInk(frame.pixel(cx + c, top + 4 + r))
+                    (edge == null || (c < RIBBON_COL + RIBBON_SLOPE * r && c < edge[r])) && textInk(frame.pixel(cx + c, top + glyphTop + r))
                 } }
                 val box = rankBox(ink) ?: return@mapNotNull null
-                val red = share(frame, cx, top + 4, ink) { r, g, _ -> r - g > 50 } > 0.5
+                val red = share(frame, cx, top + glyphTop, ink) { r, g, _ -> r - g > 50 } > 0.5
                 ranked(tableGlyphs, boxSig(box, TABLE_W, TABLE_H)).map { joker(it.first, red) to it.second }
-            }.minByOrNull { it.first().second }
+            } }.minByOrNull { it.first().second }
                 ?.let { ranked -> Read(sure(ranked, sure, margin), ranked.take(GUESSES).map { it.first }) }
                 ?: Read(null, emptyList())
         }
