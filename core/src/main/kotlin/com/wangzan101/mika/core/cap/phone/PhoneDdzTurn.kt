@@ -212,7 +212,7 @@ internal object PhoneDdzTurn : PhoneTool {
 
     /** 问 DouZero 服务这手牌叫几分(它自己跟自己打几十局看当地主的赢面);测试里换掉。连不上为 null。 */
     internal var adviseBid: suspend (url: String, hand: List<String>) -> BidAdvice? = { url, hand ->
-        DdzAdvisor.post(url, buildJsonObject { put("hand", JsonArray(hand.map(::JsonPrimitive))) }.toString(), "bid")
+        DdzAdvisor.postRollout(url, buildJsonObject { put("hand", JsonArray(hand.map(::JsonPrimitive))) }.toString(), "bid")
             ?.let { runCatching { kotlinx.serialization.json.Json.parseToJsonElement(it) as? JsonObject }.getOrNull() }
             ?.let { obj ->
                 val level = (obj["level"] as? JsonPrimitive)?.contentOrNull?.toIntOrNull()?.takeIf { it in 0..3 }
@@ -229,7 +229,7 @@ internal object PhoneDdzTurn : PhoneTool {
      */
     internal var adviseDouble: suspend (url: String, seat: String, hand: List<String>, bottom: List<String>) -> DoubleAdvice? =
         { url, seat, hand, bottom ->
-            DdzAdvisor.post(url, buildJsonObject {
+            DdzAdvisor.postRollout(url, buildJsonObject {
                 put("seat", seat)
                 put("hand", JsonArray(hand.map(::JsonPrimitive)))
                 put("bottom", JsonArray(bottom.map(::JsonPrimitive)))

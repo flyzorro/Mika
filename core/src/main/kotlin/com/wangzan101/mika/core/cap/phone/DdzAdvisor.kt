@@ -9,14 +9,20 @@ import java.net.URI
 internal object DdzAdvisor {
     private const val TIMEOUT_MS = 2_000
 
+    /** 叫分、加倍:服务最多模拟 3 秒(tools/douzero ROLLOUT_BUDGET_S),加倍只有约 5 秒,等 4 秒、不重试。 */
+    const val ROLLOUT_TIMEOUT_MS = 4_000
+
     /** 连不上再试一次:手机解析 .local 主机名、Wi-Fi 省电偶尔会让头一次超时,一手有 15 秒。 */
     suspend fun post(url: String, body: String, path: String = "act"): String? = once(url, body, path) ?: once(url, body, path)
 
-    private suspend fun once(url: String, body: String, path: String): String? = withContext(Dispatchers.IO) {
+    /** 叫分、加倍只问一次,等 [ROLLOUT_TIMEOUT_MS]:连不上就按老规则走。 */
+    suspend fun postRollout(url: String, body: String, path: String): String? = once(url, body, path, ROLLOUT_TIMEOUT_MS)
+
+    private suspend fun once(url: String, body: String, path: String, timeoutMs: Int = TIMEOUT_MS): String? = withContext(Dispatchers.IO) {
         runCatching {
             val conn = URI("${url.trimEnd('/')}/$path").toURL().openConnection() as HttpURLConnection
-            conn.connectTimeout = TIMEOUT_MS
-            conn.readTimeout = TIMEOUT_MS
+            conn.connectTimeout = timeoutMs
+            conn.readTimeout = timeoutMs
             conn.requestMethod = "POST"
             conn.doOutput = true
             conn.setRequestProperty("Content-Type", "application/json")

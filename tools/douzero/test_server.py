@@ -5,7 +5,7 @@ import unittest
 from douzero.env.game import GameEnv
 
 from server import (
-    DECK, DOUBLE_WIN, NAMES, SEATS, Advisor, Mismatch, WEIGHTS, bid_level, cards, resolve, should_double,
+    DECK, DOUBLE_WIN, NAMES, ROLLOUT_MIN_GAMES, SEATS, Advisor, Mismatch, WEIGHTS, bid_level, cards, resolve, should_double,
 )
 
 ADVISOR = Advisor(WEIGHTS)
@@ -273,15 +273,15 @@ class RibbonMisreadTest(unittest.TestCase):
 
 class BidTest(unittest.TestCase):
     def test_bid_level_threshold(self):
-        # 0.69 还不到门槛不叫,0.70 到了就叫三分(门槛 0.7)
-        self.assertEqual(0, bid_level(0.69))
-        self.assertEqual(3, bid_level(0.70))
+        # 0.54 还不到门槛不叫,0.55 到了就叫三分(门槛 0.55)
+        self.assertEqual(0, bid_level(0.54))
+        self.assertEqual(3, bid_level(0.55))
 
     def test_a_strong_hand_is_worth_more_as_landlord_than_a_weak_one(self):
         strong = ["BJ", "SJ", "2", "2", "2", "A", "A", "K", "K", "Q", "Q", "J", "10", "9", "8", "7", "6"]
         weak = ["3", "3", "4", "5", "6", "6", "7", "8", "9", "9", "10", "J", "J", "Q", "4", "5", "8"]
-        self.assertGreater(ADVISOR.bid(strong, games=20), 0.7)
-        self.assertLess(ADVISOR.bid(weak, games=20), 0.3)
+        self.assertGreater(ADVISOR.bid(strong, games=20)[0], 0.7)
+        self.assertLess(ADVISOR.bid(weak, games=20)[0], 0.3)
 
 
 class DoubleTest(unittest.TestCase):
@@ -295,17 +295,23 @@ class DoubleTest(unittest.TestCase):
         self.assertFalse(should_double(0.79))
         self.assertTrue(should_double(0.80))
 
+    def test_rollouts_stop_at_the_time_budget_after_the_minimum_games(self):
+        # 时限一到就停,但至少打满 ROLLOUT_MIN_GAMES 局;手机只等 4 秒
+        self.assertEqual(ADVISOR.double("landlord", self.STRONG, ["2", "A", "K"], budget=0)[1], ROLLOUT_MIN_GAMES)
+        self.assertEqual(ADVISOR.bid(self.STRONG[:17], budget=0)[1], ROLLOUT_MIN_GAMES)
+        self.assertEqual(ADVISOR.bid(self.STRONG[:17], games=5)[1], 5)
+
     def test_a_strong_landlord_hand_is_worth_doubling(self):
-        self.assertGreaterEqual(ADVISOR.double("landlord", self.STRONG, ["2", "A", "K"]), DOUBLE_WIN)
+        self.assertGreaterEqual(ADVISOR.double("landlord", self.STRONG, ["2", "A", "K"])[0], DOUBLE_WIN)
 
     def test_a_weak_landlord_hand_is_not_worth_doubling(self):
-        self.assertLess(ADVISOR.double("landlord", self.WEAK, ["3", "4", "5"]), DOUBLE_WIN)
+        self.assertLess(ADVISOR.double("landlord", self.WEAK, ["3", "4", "5"])[0], DOUBLE_WIN)
 
     def test_a_strong_farmer_hand_is_worth_doubling(self):
-        self.assertGreaterEqual(ADVISOR.double("landlord_up", self.STRONG[:17], ["3", "4", "5"]), DOUBLE_WIN)
+        self.assertGreaterEqual(ADVISOR.double("landlord_up", self.STRONG[:17], ["3", "4", "5"])[0], DOUBLE_WIN)
 
     def test_a_weak_farmer_hand_is_not_worth_doubling(self):
-        self.assertLess(ADVISOR.double("landlord_down", self.WEAK[:17], ["2", "A", "K"]), DOUBLE_WIN)
+        self.assertLess(ADVISOR.double("landlord_down", self.WEAK[:17], ["2", "A", "K"])[0], DOUBLE_WIN)
 
     def test_a_wrong_hand_count_is_an_error(self):
         with self.assertRaises(Mismatch) as caught:
