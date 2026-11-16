@@ -1,5 +1,6 @@
 """用 DouZero 自己的牌局随机发牌打到中途:只凭看得见的信息重建,出的牌要和拿完整牌局时一模一样。"""
 import random
+import time
 import unittest
 from types import SimpleNamespace
 
@@ -9,7 +10,10 @@ from server import (
     DECK, DOUBLE_WIN, NAMES, ROLLOUT_MIN_GAMES, SEATS, Advisor, Mismatch, WEIGHTS, bid_level, cards, resolve, should_double,
 )
 
-ADVISOR = Advisor(WEIGHTS)
+# 造局面时关掉「接近时现场模拟」:随机走一步有近一半的顶两手分差在 0.1 以内,开着会让原有测试慢到不可用。
+# 模拟本身由下面 CloseCallRolloutTest 用开着模拟的 ROLLOUT_ADVISOR 按公开入口测。
+ADVISOR = Advisor(WEIGHTS, rollout=False)
+ROLLOUT_ADVISOR = Advisor(WEIGHTS)
 
 
 def names(cards):
@@ -424,6 +428,75 @@ class GuessTest(unittest.TestCase):
         # 头一个猜的是自己手里的王,别人不可能出,说不通;第二个才对
         got = sorted(ADVISOR.act(seat, hand, bottom, [["?" + jokers[0] + "," + truth]] + history[1:]))
         self.assertEqual(want, got)
+
+
+class CloseCallRolloutTest(unittest.TestCase):
+    """顶两手分数差不到 CLOSE_MARGIN 时,按看得见的牌随机发几百副、三家都用 DouZero 打分打到底,赢面见真章再定。
+    按公开入口 ROLLOUT_ADVISOR.act 测(模拟默认开着)。"""
+
+    # 2026-11-16 10:16 精英场:我是地主,下家农民单张 2 顶住。DouZero 给不出 +0.121、BJ +0.060,
+    # 只差 0.06;实机信了分数选不出。模拟几百局后不出仍更好,这一手必须继续不出。
+    LIVE = dict(seat="landlord",
+                hand=["BJ", "2", "A", "A", "A", "K", "K", "Q", "J", "10", "10", "8", "6", "5", "5", "5", "5", "3", "3"],
+                bottom=["7", "K", "6"],
+                history=[["7"], ["10"], ["2"]])
+
+    # 离线从随机牌局里搜到的一手:DouZero 最高分是单张 K、第二是单张 7,只差 0.011;
+    # 模拟几百局后 7 的赢面明显更高(0.61 对 0.52),要换成第二手。
+    SECOND = dict(seat="landlord",
+                  hand=["3", "3", "3", "6", "6", "7", "K", "A", "A", "2", "2"],
+                  bottom=["6", "A", "2"],
+                  history=[["10"], [], ["A"], ["2"], [], [], ["4"], [], ["7"], ["J"], [], ["2"], [], [],
+                           ["9", "9", "9", "10", "10"], ["8", "8", "Q", "Q", "Q"], [], []])
+
+    # 最高分和第二名差 0.306,远超 CLOSE_MARGIN:不模拟,照旧出那手六张顺子。
+    CLEAR = dict(seat="landlord",
+                 hand=["9", "10", "10", "J", "Q", "K", "K", "A", "SJ", "BJ"],
+                 bottom=["8", "9", "A"],
+                 history=[["7", "7", "7", "8", "8"], [], [], ["4", "4", "5", "5", "5"], [], []])
+
+    def act(self, position, report=None):
+        return ROLLOUT_ADVISOR.act(position["seat"], position["hand"], position["bottom"],
+                                   position["history"], report)
+
+    def test_the_live_close_call_keeps_pass(self):
+        report = {}
+        self.assertEqual([], self.act(self.LIVE, report))
+        rollout = report.get("rollout")
+        self.assertIsNotNone(rollout, "顶两手只差 0.06,应该现场模拟")
+        self.assertIn("pass", rollout["rates"])
+        self.assertIn("BJ", rollout["rates"])
+        self.assertEqual("pass", rollout["chosen"])
+
+    def test_a_close_call_the_rollout_prefers_the_second_move(self):
+        report = {}
+        move = self.act(self.SECOND, report)
+        self.assertEqual(["7"], [NAMES[c] for c in move])
+        rollout = report.get("rollout")
+        self.assertIsNotNone(rollout, "顶两手只差 0.011,应该现场模拟")
+        self.assertIn("K", rollout["rates"])
+        self.assertEqual("7", rollout["chosen"])
+        self.assertGreater(rollout["rates"]["7"], rollout["rates"]["K"])
+
+    def test_a_clear_best_move_does_not_roll_out(self):
+        report = {}
+        move = self.act(self.CLEAR, report)
+        self.assertNotIn("rollout", report)
+        self.assertEqual(["9", "10", "J", "Q", "K", "A"], [NAMES[c] for c in move])
+        # 不模拟时与关掉模拟的 advisor 完全一样
+        self.assertEqual(sorted(ADVISOR.act(self.CLEAR["seat"], self.CLEAR["hand"], self.CLEAR["bottom"],
+                                            self.CLEAR["history"])), sorted(move))
+
+    def test_a_close_call_answers_within_the_turn_clock(self):
+        started = time.monotonic()
+        self.act(self.LIVE)
+        self.assertLess(time.monotonic() - started, 3.0)
+
+    def test_the_same_request_gets_the_same_move(self):
+        first, second = {}, {}
+        a, b = self.act(self.SECOND, first), self.act(self.SECOND, second)
+        self.assertEqual(sorted(a), sorted(b))
+        self.assertEqual(first["rollout"]["chosen"], second["rollout"]["chosen"])
 
 
 if __name__ == "__main__":

@@ -61,6 +61,17 @@ DOUBLE_WIN = 0.8
 # 几手分数几乎一样时 DouZero 基本是随手挑:差不到这个数就优先不拆三条/对子/炸弹。
 # 实机那手拆 10 10 10 去顶队友的 6 只比单张 9 高 0.009;再大就会盖住真正该拆的一手,0.05 只收真正的平局。
 KEEP_MARGIN = 0.05
+# 分数接近时现场模拟:2026-11-16 10:16 精英场,我是地主(BJ 2 A A A K K Q J 10 10 8 6 5 5 5 5 3 3),
+# 下家农民用单张 2 顶住。DouZero 给不出不出的 +0.121 对 BJ 的 +0.060,只差 0.06 就信了分数选了不出。
+# 按看得见的牌随机发几百副、三家都用 DouZero 打分打到底:不出赢 0.79、BJ 赢 0.69,分数那点差距并不可靠。
+# 所以顶两手的分数差不到 CLOSE_MARGIN 就现场模拟:取 CLOSE_MARGIN 以内最多 CLOSE_TOP 手,同一批发牌比出牌,
+# 赢面高出 SWITCH_MARGIN 才换,否则仍听 DouZero。2.5 秒内每手至少打 ACT_ROLLOUT_MIN_GAMES 局,手机这一手等 4 秒够。
+CLOSE_MARGIN = 0.1
+CLOSE_TOP = 3
+SWITCH_MARGIN = 0.05
+ACT_ROLLOUT_BUDGET_S = 2.5
+ACT_ROLLOUT_GAMES = 300
+ACT_ROLLOUT_MIN_GAMES = 60
 WEIGHTS = os.environ.get("DOUZERO_WEIGHTS", os.path.join(os.path.dirname(__file__), "baselines", "douzero_ADP"))
 
 
@@ -243,6 +254,30 @@ def deal(seat, hand, bottom, history):
     return {s: sorted(hands[s] + played[s]) for s in SEATS}
 
 
+def move_label(move):
+    """一手牌在诊断里的名字:不出叫 pass,其余按点数从小到大写出来(如 "5 5 5 5")。"""
+    return " ".join(NAMES[c] for c in move) if move else "pass"
+
+
+def sample_hands(infoset, rng):
+    """只按看得见的信息随机发牌:别人两家合起来的手牌分给两家、张数对得上。
+    我是农民时地主没打出去的底牌一定还在他手里,先把这几张留出来(sample 与 deal 是同一个意思)。"""
+    me = infoset.player_position
+    left = infoset.num_cards_left_dict
+    unseen = list(infoset.other_hand_cards)
+    rng.shuffle(unseen)
+    hands = {me: list(infoset.player_hand_cards)}
+    if me != "landlord":
+        kept = list((Counter(infoset.three_landlord_cards) & Counter(unseen)).elements())
+        hands["landlord"] = kept
+        unseen = list((Counter(unseen) - Counter(kept)).elements())
+    for s in [s for s in SEATS if s != me]:
+        need = left[s] - len(hands.get(s, []))
+        hands[s] = hands.get(s, []) + unseen[:need]
+        unseen = unseen[need:]
+    return {s: sorted(hands[s] + list(infoset.played_cards[s])) for s in SEATS}
+
+
 class Agent:
     """同 DouZero 的 DeepAgent,只是权重按纯张量加载:checkpoint 是 pickle,不按张量读会执行文件里的代码。"""
 
@@ -250,8 +285,12 @@ class Agent:
         self.model = model_dict[seat]()
         self.model.load_state_dict(torch.load(path, map_location="cpu", weights_only=True))
         self.model.eval()
+        # 分数接近时要不要现场模拟;测试里造局面时关掉,免得每走一步都花 2.5 秒
+        self.rollout = True
+        # 三家「只按 DouZero 打分」的对手,现场模拟时用;由 Advisor 建好后填进来
+        self.plain = {}
 
-    def act(self, infoset):
+    def act(self, infoset, report=None):
         # 斗地主经典版不允许大小王一起当带牌(飞机带单的翅膀、四带二的两张单牌):DouZero 的合法出牌里有,
         # 先剔掉,后面 DouZero 打分、残局搜索、两手出完都只看这份
         infoset.legal_actions = endgame.without_double_joker_kickers(infoset.legal_actions)
@@ -280,8 +319,15 @@ class Agent:
                                           sorted(infoset.other_hand_cards), left[others[0]], left[others[1]])
             if quick is not None and tuple(sorted(move)) != quick[0]:
                 return list(quick[0])
-            # 分数几乎一样的几手里优先不拆牌:DouZero 常常随手拆三条、对子去顶一张小牌
-            move = self.keep_combos(infoset, values, move)
+            # 分数只差一点点时,现场按看得见的牌模拟几百局再定;模拟了就以它为准,不再走下面那条不拆牌的规则
+            rolled = self.close_rollout(infoset, values, move) if self.rollout else None
+            if rolled is not None:
+                move, info = rolled
+                if report is not None:
+                    report["rollout"] = info
+            else:
+                # 分数几乎一样的几手里优先不拆牌:DouZero 常常随手拆三条、对子去顶一张小牌
+                move = self.keep_combos(infoset, values, move)
         ok = lambda m: allowed is None or tuple(sorted(m)) in allowed
         # 地主只剩一张、桌上是他的牌、我是他前面最后一个能管的农民:不管就是让他出完。DouZero 残局偶尔会选不出,
         # 能管就挑管得上的里面分最高的
@@ -342,6 +388,66 @@ class Agent:
                 best, best_score = action, score
         return move if best is None else best
 
+    def close_rollout(self, infoset, values, move):
+        """顶两手的分数差不到 CLOSE_MARGIN 时,按看得见的牌随机发一批牌,每一手都用 DouZero 打分打到完,比赢面。
+
+        同一批发牌拿来比所有候选(控制随机性),一手都打 ACT_ROLLOUT_GAMES 局或者到 2.5 秒为止,轮着来。
+        每手不够 ACT_ROLLOUT_MIN_GAMES 局就当没模拟;赢面高出 DouZero 那手 SWITCH_MARGIN 才换。
+        返回 (选定的一手, 写进回复的诊断);分数差得开、不用模拟时返回 None。
+        """
+        # 分数从高到低;同分时把 DouZero 挑的那手放最前,后面「仍听 DouZero」才有确定的参照
+        own = tuple(sorted(move))
+        order = sorted(range(len(infoset.legal_actions)),
+                       key=lambda i: (-float(values[i]), tuple(sorted(infoset.legal_actions[i])) != own))
+        top = float(values[order[0]])
+        picks = [i for i in order if top - float(values[i]) < CLOSE_MARGIN][:CLOSE_TOP]
+        if len(picks) < 2:
+            return None
+        candidates = [infoset.legal_actions[i] for i in picks]
+        keys = [tuple(sorted(c)) for c in candidates]
+        labels = {k: move_label(c) for k, c in zip(keys, candidates)}
+        # 同一手牌、同一段历史每次拿到同一个种子:手机重发同一手,答案也不变
+        rng = random.Random(hash((tuple(sorted(infoset.player_hand_cards)),
+                                  tuple(tuple(m) for m in infoset.card_play_action_seq))))
+        history = [list(m) for m in infoset.card_play_action_seq]
+        wins = {k: 0 for k in keys}
+        played = {k: 0 for k in keys}
+        deadline = time.perf_counter() + ACT_ROLLOUT_BUDGET_S
+        while time.perf_counter() < deadline and any(played[k] < ACT_ROLLOUT_GAMES for k in keys):
+            hands = sample_hands(infoset, rng)  # 这一批发牌所有候选都用
+            for k, candidate in zip(keys, candidates):
+                if played[k] >= ACT_ROLLOUT_GAMES:
+                    continue
+                if time.perf_counter() >= deadline:
+                    break
+                played[k] += 1
+                if self.play_out(hands, infoset.three_landlord_cards, history, infoset.player_position, candidate):
+                    wins[k] += 1
+        games = min(played.values())
+        if games == 0:
+            return None
+        rates = {k: wins[k] / played[k] for k in keys}
+        chosen = move
+        if games >= ACT_ROLLOUT_MIN_GAMES:
+            best = keys[0]
+            for k in keys[1:]:
+                if rates[k] > rates[best]:
+                    best = k
+            if rates[best] - rates[own] >= SWITCH_MARGIN:
+                chosen = next(c for k, c in zip(keys, candidates) if k == best)
+        return chosen, {"games": games, "rates": {labels[k]: round(rates[k], 2) for k in keys},
+                        "chosen": move_label(chosen)}
+
+    def play_out(self, hands, bottom, history, me, move):
+        """按 [hands] 开局把 [history] 重放到现在,我先出 [move],之后三家都按 DouZero 打分打到完。返回我这方赢没赢。"""
+        replay = Replay(history)
+        players = {s: _RolloutAgent(replay, self.plain[s], move if s == me else None) for s in SEATS}
+        env = GameEnv(players)
+        env.card_play_init({**{s: list(hands[s]) for s in SEATS}, "three_landlord_cards": list(bottom)})
+        while not env.game_over:
+            env.step()
+        return bool(env.num_wins["landlord" if me == "landlord" else "farmer"])
+
     def values(self, infoset):
         obs = get_obs(infoset)
         with torch.no_grad():
@@ -361,10 +467,30 @@ class Plain:
         return infoset.legal_actions[int(torch.argmax(self.agent.values(infoset)))]
 
 
+class _RolloutAgent:
+    """现场模拟里的玩家:重放历史时照抄历史;重放完我先出指定的那一手(只一次),之后都按 DouZero 打分。"""
+
+    def __init__(self, replay, plain, forced=None):
+        self.replay = replay
+        self.plain = plain
+        self.forced = forced
+
+    def act(self, infoset):
+        if self.replay.moves:
+            return self.replay.act(infoset)
+        if self.forced is not None:
+            move, self.forced = self.forced, None
+            return list(move)
+        return self.plain.act(infoset)
+
+
 class Advisor:
-    def __init__(self, weights):
+    def __init__(self, weights, rollout=True):
         self.agents = {s: Agent(s, os.path.join(weights, f"{s}.ckpt")) for s in SEATS}
         self.plain = {s: Plain(self.agents[s]) for s in SEATS}
+        for agent in self.agents.values():
+            agent.rollout = rollout
+            agent.plain = self.plain
 
     def bid(self, hand, games=BID_GAMES, budget=ROLLOUT_BUDGET_S):
         """拿这 17 张当地主能赢几成:看不见的牌随机发成底牌和两家,DouZero 自己跟自己打 [games] 局。
@@ -433,7 +559,7 @@ class Advisor:
             wins += bool(env.num_wins["landlord" if seat == "landlord" else "farmer"])
         return wins / played, played
 
-    def act(self, seat, hand, bottom, history):
+    def act(self, seat, hand, bottom, history, report=None):
         hand, bottom = cards(hand), cards(bottom)
         history = resolve(hand, [[str(c) if str(c).startswith("?") else cards([c])[0] for c in m] for m in history])
         if len(history) % 3 != SEATS.index(seat):
@@ -448,7 +574,7 @@ class Advisor:
                 raise Mismatch("game_already_over")
         if env.acting_player_position != seat:
             raise Mismatch("not_your_turn")
-        return self.agents[seat].act(env.game_infoset)
+        return self.agents[seat].act(env.game_infoset, report)
 
 
 def handler(advisor):
@@ -466,8 +592,9 @@ def handler(advisor):
                 if self.path == "/double":
                     win, games = advisor.double(body["seat"], body["hand"], body["bottom"])
                     return self.reply(200, {"double": should_double(win), "win": round(win, 2), "games": games, "ms": ms()}, body)
-                move = advisor.act(body["seat"], body["hand"], body.get("bottom", []), body.get("history", []))
-                self.reply(200, {"play": [NAMES[c] for c in move], "ms": ms()}, body)
+                report = {}
+                move = advisor.act(body["seat"], body["hand"], body.get("bottom", []), body.get("history", []), report)
+                self.reply(200, {"play": [NAMES[c] for c in move], "ms": ms(), **report}, body)
             except Mismatch as e:
                 self.reply(200, {"error": str(e)}, body)
             except (KeyError, ValueError, TypeError) as e:
