@@ -635,6 +635,37 @@ class CloseCallRolloutTest(unittest.TestCase):
         self.assertEqual(sorted(ADVISOR.act(self.LATE_CLEAR["seat"], self.LATE_CLEAR["hand"],
                                             self.LATE_CLEAR["bottom"], self.LATE_CLEAR["history"])), sorted(move))
 
+    # 2026-11-16 13:10:11 土豪场:我是地主下家,三家还剩 35 张。8 手平分 2.5 秒每手只打了 27 局,
+    # 不到 60 局整个模拟作废,仍出 DouZero 的 6。改成边打边淘汰后最后两手都要打满 60 局以上。
+    # 本机实测:8 赢 0.80、6 赢 0.76,差 0.04 没到 0.05 的门槛,所以仍保留 6;300 局时两者打平(0.75 对 0.75),
+    # 13:10 那手 8 领先 7 个点只是 27 局的运气,60 局以上就分不开了。
+    HALVING = dict(seat="landlord_down",
+                   hand=["2", "A", "Q", "Q", "Q", "J", "J", "10", "10", "9", "9", "8", "6"],
+                   bottom=["K", "9", "A"],
+                   history=[["3", "3"], ["4", "4"], ["5", "5"], ["K", "K"], [], ["2", "2"], [], [], ["3", "3"], [], [],
+                            ["6", "6"], [], ["7", "7"], [], ["A", "A"], [], [], ["5"]])
+
+    def test_the_logged_eight_way_call_halves_the_field_and_uses_sixty_games(self):
+        report = {}
+        move = self.act(self.HALVING, report)
+        rollout = report.get("rollout")
+        self.assertIsNotNone(rollout, "后半局不管分差都要现场模拟")
+        self.assertTrue(rollout.get("late"))
+        self.assertGreaterEqual(rollout["games"], 60, "最后两手都要打满 60 局")
+        self.assertGreaterEqual(len(rollout["rates"]), 8, "每个候选的赢面都要留在诊断里")
+        # 8 -> 4 -> 2:第一轮淘汰前每手至少打 12 局,最后两手再打完剩下的时间
+        self.assertEqual([4, 2, 2], [len(alive) for alive, _ in rollout["rounds"]])
+        self.assertGreaterEqual(rollout["rounds"][0][1], 12, "7 局就淘汰太靠运气")
+        finalists = rollout["rounds"][-1][0]
+        self.assertEqual(2, len(finalists))
+        self.assertIn("8", finalists, "模拟赢面最高的 8 要活到最后两手")
+        # 最后只在 8 和 DouZero 的 6 里定:8 要比 6 高出 SWITCH_MARGIN(0.05)才换。
+        # 本机这次 60 多局 8 只高约 0.04(300 局时打平),所以按规则保留 6;真要换也只能换成 8。
+        rates = rollout["rates"]
+        self.assertEqual("8", max(finalists, key=lambda label: rates[label]))
+        self.assertIn(rollout["chosen"], ("6", "8"))
+        self.assertEqual([NAMES[c] for c in move], rollout["chosen"].split())
+
     def test_a_clear_move_over_the_late_window_does_not_roll_out(self):
         # CLEAR 三家还剩 44 张、顶两手差 0.306:不在后半局,不模拟
         report = {}
@@ -645,6 +676,56 @@ class CloseCallRolloutTest(unittest.TestCase):
         started = time.monotonic()
         self.act(self.LATE)
         self.assertLess(time.monotonic() - started, 3.0)
+
+
+class HalvingScheduleTest(unittest.TestCase):
+    """边打边淘汰的排期:假时钟 + 假出牌函数,不跑 DouZero,所以每次结果都一样。"""
+
+    KEYS = ["pass", "8", "6", "J", "2", "A", "Q", "10"]
+    PROBS = {"8": 0.9, "J": 0.75, "6": 0.6, "A": 0.5, "Q": 0.4, "10": 0.3, "2": 0.2, "pass": 0.1}
+
+    def run_halving(self, own, probs=None, budget=2.5, per_game=0.01, seed=7):
+        import server
+        probs = probs or self.PROBS
+        now = [0.0]
+        rng = random.Random(seed)
+
+        def clock():
+            return now[0]
+
+        def deal():
+            return None
+
+        def play(_, key):
+            now[0] += per_game  # 每局 10 毫秒,和这台机器上后半局的实测差不多
+            return rng.random() < probs[key]
+
+        scores = {k: len(self.KEYS) - i for i, k in enumerate(self.KEYS)}
+        result = server.successive_halving(self.KEYS, own, scores, deal, play, budget,
+                                          cap=10 ** 9, clock=clock)
+        return result, now
+
+    def test_the_worse_half_is_dropped_and_the_final_two_get_most_games(self):
+        ((wins, played, rounds, finalists), _) = (self.run_halving("pass"))
+        # 8 -> 4 -> 2,最后一轮只剩两手不再淘汰
+        self.assertEqual([4, 2, 2], [len(alive) for alive, _ in rounds])
+        self.assertGreaterEqual(rounds[0][1], 12, "第一轮淘汰前每手至少打满 12 局")
+        self.assertGreaterEqual(rounds[1][1], 12, "第二轮淘汰前也要打满 12 局")
+        rates = {k: wins[k] / played[k] for k in self.KEYS}
+        best = max(self.KEYS, key=lambda k: rates[k])
+        self.assertEqual("8", best)
+        self.assertIn("8", finalists)
+        # 最后两手打了最多局,淘汰掉的候选在淘汰那一轮就停手了
+        self.assertGreater(min(played[k] for k in finalists),
+                           max(played[k] for k in self.KEYS if k not in finalists))
+
+    def test_the_douzero_move_is_never_dropped(self):
+        # own 的假赢面最低,按赢面会被淘汰;它必须每一轮都在,而且换进来顶掉的只是最后一名
+        ((wins, played, rounds, finalists), _) = self.run_halving("pass")
+        for alive, _ in rounds:
+            self.assertIn("pass", alive)
+        self.assertIn("pass", finalists)
+        self.assertEqual(2, len(rounds[-1][0]))
 
 
 class ActBudgetTest(unittest.TestCase):
