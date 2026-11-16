@@ -74,6 +74,12 @@ internal object PhoneDdzTurn : PhoneTool {
     private const val HUMAN_SHOP_BACK_Y = 82
     /** 连点几次返回还停在商店页就交还模型,不再点。 */
     private const val HUMAN_SHOP_BACK_TAPS = 3
+    /**
+     * 真人局出牌键的中心(2026-11-15 真机 37 次先出都在 1256);别的牌桌截图上出牌键在 1205~1340。
+     * 加倍画面的黄「加倍」在 1454,差 198:允许差 120 以内。
+     */
+    private const val HUMAN_LEAD_X = 1256
+    private const val HUMAN_LEAD_SLACK = 120
     /** Mika 屏上真人场次页绿色「普通场」卡片的中心(5 万-200 万金豆)。 */
     private const val HUMAN_NORMAL_ROOM_X = 872
     private const val HUMAN_NORMAL_ROOM_Y = 400
@@ -1315,7 +1321,7 @@ internal object PhoneDdzTurn : PhoneTool {
             }
             // 经典牌桌按经典读:游戏轮到我时把提示的牌(如王炸)抬起,不按经典读会把这手牌当成闯关的高一截来数,少数一张
             // 闯关刚开的第一帧 turn.stage 还没记上:这一帧本身是闯关牌桌就不按经典读
-            val view = frame?.let { DdzScreen.read(it, classic = classicTable(turn) && !(turn.single && DdzCards.singleStageTable(it))) }
+            val view = frame?.let { humanLead(turn, DdzScreen.read(it, classic = classicTable(turn) && !(turn.single && DdzCards.singleStageTable(it)))) }
             if (view != null) {
                 last = view
                 // 上一次自动出牌之后画面变过没有:手牌张数变了、或者局面离开了这一手(phase 变了)才算真的出去了,
@@ -2308,8 +2314,17 @@ internal object PhoneDdzTurn : PhoneTool {
             turn.humanEligible = true
             turn.popupSightings = 0
         }
-        return DdzScreen.read(frame, classic = classicTable(turn))
+        return humanLead(turn, DdzScreen.read(frame, classic = classicTable(turn)))
     }
+
+    /**
+     * 真人局「轮到我先出」只有一个按钮,出牌键在 [HUMAN_LEAD_X]。地主加倍画面上蓝「不加倍」那一帧没认出来时只剩
+     * 黄「加倍」(x≈1454),也是一个按钮:不在出牌键那儿的就当过渡帧,一下都不点(2026-11-15 23:10 按成了加倍)。
+     */
+    private fun humanLead(turn: Turn?, view: DdzView): DdzView =
+        if (turn?.mode == DdzMode.Human && view.phase == DdzPhase.Lead &&
+            view.buttons.singleOrNull()?.x?.let { kotlin.math.abs(it - HUMAN_LEAD_X) <= HUMAN_LEAD_SLACK } != true
+        ) view.copy(phase = DdzPhase.Other, buttons = emptyList()) else view
 
     /**
      * 按经典牌桌读([DdzScreen.read] 的 classic):真人局永远是经典牌桌;单机局看这一轮是不是闯关,
