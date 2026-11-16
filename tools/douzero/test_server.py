@@ -462,6 +462,23 @@ class CloseCallRolloutTest(unittest.TestCase):
                    bottom=["9", "4", "7"],
                    history=[])
 
+    # 2026-11-16 11:43:53 土豪场:我是地主下家,手里 2 2 K Q J 10 9 8 8 8 4 3 3,三家还剩 33 张。
+    # DouZero 给 8 9 10 J Q K +0.736、8 9 10 J Q +0.627,只差 0.109,按 CLOSE_MARGIN 不模拟就输了;
+    # 按看得见的牌打 400 局 3 3 8 8 8 赢 0.98、8..K 只赢 0.82。后半局要模拟分数最高的 8 手。
+    LATE = dict(seat="landlord_down",
+                hand=["2", "2", "K", "Q", "J", "10", "9", "8", "8", "8", "4", "3", "3"],
+                bottom=["8", "2", "4"],
+                history=[["5"], ["6"], ["9"], ["Q"], ["K"], [], ["SJ"], [], ["BJ"], [], [],
+                         ["K", "Q", "J", "10", "9"], ["A", "K", "Q", "J", "10"], [], [], ["3", "3"], ["7", "7"], [], []])
+
+    # 后半局但顶两手差得开(0.44)、最高分那手也确实最好:照样模拟一遍,仍出原来那手。
+    # 三家正好还剩 35 张,是后半局的上边界。
+    LATE_CLEAR = dict(seat="landlord",
+                      hand=["4", "4", "4", "A", "A"],
+                      bottom=[],
+                      history=[["5", "6", "7", "8", "9", "10", "J", "Q", "K"], [], [], ["10"], ["J"], ["Q"], ["SJ"], [], ["BJ"], [], [],
+                               ["A"], ["2"], [], [], ["Q", "Q"], [], [], ["2"], [], []])
+
     def act(self, position, report=None):
         return ROLLOUT_ADVISOR.act(position["seat"], position["hand"], position["bottom"],
                                    position["history"], report)
@@ -521,6 +538,40 @@ class CloseCallRolloutTest(unittest.TestCase):
         a, b = self.act(self.SECOND, first), self.act(self.SECOND, second)
         self.assertEqual(sorted(a), sorted(b))
         self.assertEqual(first["rollout"]["chosen"], second["rollout"]["chosen"])
+
+    def test_the_late_live_call_rolls_out_the_top_eight(self):
+        # 顶两手只差 0.109,平时不模拟;后半局(33 张)模拟分数最高的 8 手,3 3 8 8 8 该赢
+        report = {}
+        self.assertEqual(["3", "3", "8", "8", "8"], [NAMES[c] for c in self.act(self.LATE, report)])
+        rollout = report.get("rollout")
+        self.assertIsNotNone(rollout, "后半局不管分差都要现场模拟")
+        self.assertTrue(rollout.get("late"))
+        self.assertGreaterEqual(rollout["games"], 60)
+        self.assertEqual("3 3 8 8 8", rollout["chosen"])
+        self.assertGreaterEqual(len(rollout["rates"]), 8, "后半局要模拟分数最高的 8 手")
+
+    def test_a_late_clear_call_still_rolls_out_and_keeps_the_top_move(self):
+        # 44 张的 CLEAR 分差 0.306 不模拟;这里正好 35 张、分差 0.44,照样模拟,但最高分那手本来就最好,不换
+        report = {}
+        move = self.act(self.LATE_CLEAR, report)
+        self.assertEqual(["4", "4", "4", "A", "A"], [NAMES[c] for c in move])
+        rollout = report.get("rollout")
+        self.assertIsNotNone(rollout, "后半局分差再大也要现场模拟")
+        self.assertTrue(rollout.get("late"))
+        self.assertEqual("4 4 4 A A", rollout["chosen"])
+        self.assertEqual(sorted(ADVISOR.act(self.LATE_CLEAR["seat"], self.LATE_CLEAR["hand"],
+                                            self.LATE_CLEAR["bottom"], self.LATE_CLEAR["history"])), sorted(move))
+
+    def test_a_clear_move_over_the_late_window_does_not_roll_out(self):
+        # CLEAR 三家还剩 44 张、顶两手差 0.306:不在后半局,不模拟
+        report = {}
+        self.act(self.CLEAR, report)
+        self.assertNotIn("rollout", report)
+
+    def test_the_late_call_answers_within_the_turn_clock(self):
+        started = time.monotonic()
+        self.act(self.LATE)
+        self.assertLess(time.monotonic() - started, 3.0)
 
 
 if __name__ == "__main__":
