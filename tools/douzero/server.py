@@ -79,6 +79,9 @@ ACT_ROLLOUT_GAMES = 300
 ACT_ROLLOUT_MIN_GAMES = 60
 OPENING_CARDS = 45
 ACT_ROLLOUT_MIN_GAMES_OPENING = 30
+# 边打边淘汰时,淘汰轮每个候选至少打这么多局才淘汰:8 手按 1/4 预算在这台机器上只分到 7 局,
+# 7 局里 0.76 和 0.62 的差距一半是运气(见 close_rollout 里 13:10:11 那一手,8 就是被 7 局淘汰掉的)。
+HALVING_MIN_ROUND_GAMES = 12
 # 一手牌总共只给这么多秒:手机 /act 最多等 4 秒(连接 2 秒 + 读 4 秒,失败还重试一次),超了就当服务挂了。
 # 2026-11-16 12:18:11 土豪场,我是地主下家,手里 A 5 4 4 4,三家还剩 19 张:残局搜索先花掉 1.5 秒没结论,
 # 现场模拟又打满 2.5 秒,回复 4903 毫秒;手机 4 秒超时,标成 douzero_unreachable 重发同一手,三次各约 4020 毫秒,
@@ -327,6 +330,91 @@ def sample_hands(infoset, rng):
     return {s: sorted(hands[s] + list(infoset.played_cards[s])) for s in SEATS}
 
 
+def halve(alive, own, rates, scores):
+    """一轮打完:按累计赢面去掉较差的一半(向上取整),DouZero 选的那手 [own] 永远留着。
+
+    留几名向上取整:8 手留 4、5~7 手留 3~4、3 手留 2、2 手不再淘汰。
+    [own] 排在淘汰区时把它换进来、顶掉落选名次最高的那个,留的人数不变。返回按赢面从高到低排好的名单。
+    """
+    keep = (len(alive) + 1) // 2
+    ranked = sorted(alive, key=lambda k: (-rates[k], -scores[k], k))
+    if len(ranked) <= 2:
+        return ranked
+    survivors = ranked[:keep]
+    if own in alive and own not in survivors:
+        survivors = ranked[:keep - 1] + [own]
+    return survivors
+
+
+def round_shares(count):
+    """每个候选时每一轮拿多少预算:淘汰轮各拿 1/(淘汰轮数+2),最后两手拿剩下的。
+
+    8 手是 [1/4, 1/4, 1/2]:第一轮每手约 0.6 秒,按每局 4 毫秒够打 12~15 局,先把差的 4 手筛掉;
+    4 手再筛到 2 手;最后两手用掉剩下的一半时间。4~7 手有两次淘汰,也是 [1/4, 1/4, 1/2];
+    4 手只有一次淘汰,给 [1/3, 2/3]。2~3 手淘汰和不淘汰差不多,原有的顶两手/开局行为就是三手用全部时间
+    轮着打完,为了不动这些结果直接一轮打完(最多一次淘汰,这里取零次)。
+    """
+    if count <= 3:
+        return [1.0]
+    cuts, n = 0, count
+    while n > 2:
+        n = (n + 1) // 2
+        cuts += 1
+    share = 1 / (cuts + 2)
+    return [share] * cuts + [1 - share * cuts]
+
+
+def successive_halving(keys, own, scores, deal, play, budget, cap=ACT_ROLLOUT_GAMES,
+                      min_round_games=HALVING_MIN_ROUND_GAMES, clock=time.monotonic):
+    """把 [budget] 秒分成几轮边打边淘汰:每轮还活着的候选都打同一批新发的牌,轮末去掉较差的一半。
+
+    [deal]() 发一批牌(这一轮里所有还活着的候选共用),[play](hands, key) 拿这批牌打一局、返回赢了没有。
+    淘汰轮按 round_shares 分到的时间收手,但每个候选至少打满 [min_round_games] 局才淘汰——
+    8 手按 1/4 预算只分到七八局,七八局的赢面差一半是运气,不能拿来淘汰。每个候选最多打 [cap] 局;
+    最后一轮(只剩两手)用掉剩下的全部时间。轮末按累计赢面淘汰,见 halve。
+    返回 (每个候选累计的 wins/played, 每轮 [留下的候选, 这一轮每个候选至少打了几局], 最后还活着的候选)。
+    [clock] 只为测试换成假时钟,线上就是 time.monotonic。
+    """
+    started = clock()
+    rollout_deadline = started + budget
+    wins = {k: 0 for k in keys}
+    played = {k: 0 for k in keys}
+    alive = list(keys)
+    shares = round_shares(len(keys))
+    rounds = []
+    for i, _ in enumerate(shares):
+        # 淘汰轮按预算的固定比例收手(但先打满下限);最后一轮把剩下的时间全用掉
+        last = i == len(shares) - 1
+        round_deadline = rollout_deadline if last \
+            else min(rollout_deadline, started + budget * sum(shares[:i + 1]))
+        floor = 0 if last else min_round_games
+        before = {k: played[k] for k in alive}
+
+        def round_over():
+            if clock() >= rollout_deadline:
+                return True
+            return clock() >= round_deadline and all(played[k] - before[k] >= floor for k in alive)
+
+        while not round_over() and any(played[k] < cap for k in alive):
+            hands = deal()  # 这一批发牌,这一轮里所有候选都用
+            for k in alive:
+                if played[k] >= cap:
+                    continue
+                if clock() >= rollout_deadline:
+                    break
+                played[k] += 1
+                if play(hands, k):
+                    wins[k] += 1
+        games = min(played[k] - before[k] for k in alive)
+        if len(alive) <= 2:
+            rounds.append([list(alive), games])
+            break
+        rates = {k: (wins[k] / played[k] if played[k] else 0.0) for k in keys}
+        alive = halve(alive, own, rates, scores)
+        rounds.append([list(alive), games])
+    return wins, played, rounds, alive
+
+
 class Agent:
     """同 DouZero 的 DeepAgent,只是权重按纯张量加载:checkpoint 是 pickle,不按张量读会执行文件里的代码。"""
 
@@ -445,7 +533,12 @@ class Agent:
         """顶两手的分数差不到 CLOSE_MARGIN 时,按看得见的牌随机发一批牌,每一手都用 DouZero 打分打到完,比赢面。
 
         后半局(三家手里合起来不超过 LATE_CARDS 张)不管分差多大都模拟,取 DouZero 分数最高的 LATE_TOP 手。
-        同一批发牌拿来比所有候选(控制随机性),一手都打 ACT_ROLLOUT_GAMES 局或者到时限为止,轮着来。
+        模拟不把所有候选平分到最后:分几轮边打边淘汰,见 successive_halving。2026-11-16 13:10:11 土豪场,
+        我是地主下家,三家还剩 35 张,回复 rollout games 27、min_games 60:8 手轮着模拟,2.5 秒下来每手只打了
+        27 局,不到 60 局整个模拟作废,仍出 DouZero 的 6;可 8 的模拟赢面 0.75 比 6 的 0.68 高 7 个点。
+        现在第一轮 8 手各打十来局、淘汰差的 4 手,第二轮 4 手再淘汰 2 手,最后两手用掉剩下的时间(一半预算),
+        每手打满 60 局以上,8 才换得出来。同一批发牌拿来比所有还活着的候选(控制随机性)。
+        最后的赢面按每个候选打过的全部局数累计算,一手最多打 ACT_ROLLOUT_GAMES 局,或者到时限为止。
         时限是 min(ACT_ROLLOUT_BUDGET_S, [deadline] 剩下的 − ACT_BUDGET_SAFETY_S − endgame.MIN_PLAYS_BUDGET_S):
         一手牌总共只有 ACT_TOTAL_BUDGET_S 秒,残局搜索花掉的要从这里扣,还要给比手数留出 0.2 秒。
         剩下的不到 ACT_ROLLOUT_MIN_S 就整个不模拟(回复里记 rollout_skipped: no_time),直接听 DouZero 的。
@@ -477,56 +570,50 @@ class Agent:
         budget = min(ACT_ROLLOUT_BUDGET_S, left - ACT_BUDGET_SAFETY_S - endgame.MIN_PLAYS_BUDGET_S)
         candidates = [infoset.legal_actions[i] for i in picks]
         keys = [tuple(sorted(c)) for c in candidates]
+        by_key = dict(zip(keys, candidates))
         labels = {k: move_label(c) for k, c in zip(keys, candidates)}
+        scores = {k: float(values[i]) for k, i in zip(keys, picks)}
         # 同一手牌、同一段历史每次拿到同一个种子:手机重发同一手,答案也不变
         rng = random.Random(hash((tuple(sorted(infoset.player_hand_cards)),
                                   tuple(tuple(m) for m in infoset.card_play_action_seq))))
         history = [list(m) for m in infoset.card_play_action_seq]
-        wins = {k: 0 for k in keys}
-        played = {k: 0 for k in keys}
-        rollout_deadline = time.monotonic() + budget
-        while time.monotonic() < rollout_deadline and any(played[k] < ACT_ROLLOUT_GAMES for k in keys):
-            hands = sample_hands(infoset, rng)  # 这一批发牌所有候选都用
-            for k, candidate in zip(keys, candidates):
-                if played[k] >= ACT_ROLLOUT_GAMES:
-                    continue
-                if time.monotonic() >= rollout_deadline:
-                    break
-                played[k] += 1
-                if self.play_out(hands, infoset.three_landlord_cards, history, infoset.player_position, candidate):
-                    wins[k] += 1
-        games = min(played.values())
+        # 边打边淘汰:每个还活着的候选打同一批新发的牌,轮末去掉较差的一半,最后只剩两手用掉剩下的时间
+        wins, played, rounds, finalists = successive_halving(
+            keys, own, scores, lambda: sample_hands(infoset, rng),
+            lambda hands, k: self.play_out(hands, infoset.three_landlord_cards, history,
+                                           infoset.player_position, by_key[k]),
+            budget)
+        games = min(played[k] for k in finalists)
         if games == 0:
             return None
-        rates = {k: wins[k] / played[k] for k in keys}
+        rates = {k: (wins[k] / played[k] if played[k] else 0.0) for k in keys}
         chosen = move
         tie = None
         min_games = ACT_ROLLOUT_MIN_GAMES_OPENING if sum(infoset.num_cards_left_dict.values()) >= OPENING_CARDS \
             else ACT_ROLLOUT_MIN_GAMES
         if games >= min_games:
-            best = keys[0]
-            for k in keys[1:]:
-                if rates[k] > rates[best]:
-                    best = k
+            # 只在最后两手(淘汰掉的不再参选)里挑赢面最高的;同分仍按 DouZero 分数顺序
+            best = max((k for k in keys if k in finalists), key=lambda k: rates[k])
             margin = SWITCH_MARGIN if games >= ACT_ROLLOUT_MIN_GAMES else OPENING_SWITCH_MARGIN
             if rates[best] - rates[own] >= margin:
-                chosen = next(c for k, c in zip(keys, candidates) if k == best)
+                chosen = by_key[best]
             else:
                 # 差不到门槛时挑出完剩下手数更少的:2026-11-16 11:58:20 土豪场,我是地主上家领出,
                 # 手里 BJ 2 J 9 8 7 6 5 5 5 5 4。DouZero 出 5 6 7 8 9,模拟 152 局 5..9 赢 0.59、4..9 赢 0.64,
                 # 差不到 0.1 的门槛仍出 5..9;可 4..9 出完剩 BJ 2 J 5 5 5 三手,5..9 剩 BJ 2 J 5 5 5 4 四手。
-                # 赢面不低于 DouZero 那手的候选里手数更少就换;min_plays 算不完(超时)就照旧。
+                # 赢面不低于 DouZero 那手的候选里手数更少就换;淘汰掉的候选也不再参选。
                 # 手数比较也吃一手牌的总预算:截止时刻取 min(自己的 0.2 秒, 总预算剩下的 − 0.1),
                 # 总预算没余量就不比了(模拟截止时间已经先给它留出 0.2 秒)。
-                scores = {k: float(values[i]) for k, i in zip(keys, picks)}
                 tie_left = deadline - time.monotonic() - ACT_BUDGET_SAFETY_S
                 if tie_left > 0:
-                    tie = fewer_plays(infoset.player_hand_cards, keys, rates, scores, own,
+                    tie = fewer_plays(infoset.player_hand_cards, [k for k in keys if k in finalists],
+                                      rates, scores, own,
                                       time.monotonic() + min(endgame.MIN_PLAYS_BUDGET_S, tie_left))
                 if tie is not None:
-                    chosen = next(c for k, c in zip(keys, candidates) if k == tie[0])
+                    chosen = by_key[tie[0]]
         info = {"games": games, "min_games": min_games, "budget_left": round(left, 2),
                 "rates": {labels[k]: round(rates[k], 2) for k in keys},
+                "rounds": [[[labels[k] for k in alive], n] for alive, n in rounds],
                 "chosen": move_label(chosen)}
         if late:
             info["late"] = True
