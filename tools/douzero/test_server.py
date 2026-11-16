@@ -9,7 +9,7 @@ from douzero.env.game import GameEnv
 
 from server import (
     ACT_BUDGET_SAFETY_S, ACT_TOTAL_BUDGET_S, DECK, DOUBLE_WIN, FARMER_DOUBLE_WIN, NAMES, ROLLOUT_MIN_GAMES, SEATS,
-    Advisor, Mismatch, WEIGHTS, bid_level, cards, fewer_plays, resolve, should_double,
+    SUPER_DOUBLE_WIN, Advisor, Mismatch, WEIGHTS, bid_level, cards, fewer_plays, handler, resolve, should_double,
 )
 
 # 造局面时关掉「接近时现场模拟」:随机走一步有近一半的顶两手分差在 0.1 以内,开着会让原有测试慢到不可用。
@@ -396,6 +396,54 @@ class DoubleTest(unittest.TestCase):
         # 0.79 还不到门槛不加倍,0.80 到了就加倍(门槛 0.8)
         self.assertFalse(should_double(0.79))
         self.assertTrue(should_double(0.80))
+
+    def double_reply(self, seat, win, hand=None, bottom=None):
+        """按 /double 的公开入口走一遍:假服务只回固定的赢面,拿到 handler 实际写出的回复。"""
+        import io
+        import json
+        import server as server_module
+        hand = self.STRONG if hand is None else hand
+        bottom = ["2", "A", "K"] if bottom is None else bottom
+        captured = {}
+
+        class FakeAdvisor:
+            def double(self, seat, hand, bottom):
+                return win, 100
+
+        class Handler(server_module.handler(FakeAdvisor())):
+            def reply(self, code, data, request=None):
+                captured["code"] = code
+                captured["data"] = data
+
+        request = Handler.__new__(Handler)
+        request.path = "/double"
+        body = json.dumps({"seat": seat, "hand": hand, "bottom": bottom}).encode()
+        request.rfile = io.BytesIO(body)
+        request.headers = {"Content-Length": str(len(body))}
+        request.do_POST()
+        return captured["data"]
+
+    def test_a_landlord_at_the_super_threshold_gets_super(self):
+        reply = self.double_reply("landlord", SUPER_DOUBLE_WIN)
+        self.assertTrue(reply["double"])
+        self.assertTrue(reply["super"])
+
+    def test_a_landlord_between_the_double_and_super_thresholds_does_not_super(self):
+        self.assertGreater(SUPER_DOUBLE_WIN, DOUBLE_WIN, "超级加倍门槛不能低于普通加倍")
+        reply = self.double_reply("landlord", (DOUBLE_WIN + SUPER_DOUBLE_WIN) / 2)
+        self.assertTrue(reply["double"])
+        self.assertFalse(reply["super"])
+
+    def test_a_farmer_never_gets_super(self):
+        # 农民赢面再高也只回 double,super 永远 false
+        reply = self.double_reply("landlord_up", 0.99, hand=self.STRONG[:17], bottom=["3", "4", "5"])
+        self.assertTrue(reply["double"])
+        self.assertFalse(reply["super"])
+
+    def test_a_weak_landlord_gets_neither_double_nor_super(self):
+        reply = self.double_reply("landlord", DOUBLE_WIN - 0.01)
+        self.assertFalse(reply["double"])
+        self.assertFalse(reply["super"])
 
     def test_rollouts_stop_at_the_time_budget_after_the_minimum_games(self):
         # 时限一到就停,但至少打满 ROLLOUT_MIN_GAMES 局;手机只等 4 秒

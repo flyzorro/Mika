@@ -171,3 +171,92 @@ PhoneDdzTurnTest > humanFarmerDoublesOnTheYellowButtonWhenDouZeroSaysSo FAILED
   `SelectorPolicyTest` 解析不了输出；默认 512M 的 test worker 跑到 `PhoneDdzTurnTest` 还会 OOM。
   用 `NODE_NO_WARNINGS=1` 加一个 `maxHeapSize = "3g"` 的 init script 后全绿（`BUILD SUCCESSFUL`，
   0 failed）。这两点都是本机环境，和本次改动无关。
+
+# 超级加倍（地主，2026-11-16）
+
+## 改了什么
+
+- `/double` 返回里新增 `super`：只有 `seat="landlord"` 且赢面 >= `SUPER_DOUBLE_WIN` 才为 true；
+  农民（`landlord_up` / `landlord_down` / `farmer`）永远 false。
+- 新常量 `SUPER_DOUBLE_WIN = 0.85`（下表校准）。普通加倍门槛 `DOUBLE_WIN = 0.8` 不变。
+- 手机端：地主在服务回 `super=true` 且画面上有绿色「超级加倍」（`DdzColor.Green`，不是灰色）时点绿色；
+  没有绿色（没卡）就退回黄色「加倍」。服务不可用时照旧退回 `HumanDdzPolicy.shouldDouble`，只可能点蓝色或黄色。
+  农民永远不点绿色，即使服务（伪造地）回了 `super=true`。
+- `DDZTRACE double` 新增 `super=<服务回的 super>`，`pressed` 新增取值 `super`。
+
+## 校准方法
+
+`calibrate_double.py --mode landlord --deals 1000 --workers 8 --games 12 --budget 0.8 --min-games 8`：
+
+- 随机发牌，只留地主那 20 张（17 张随机 + 3 张底牌）会叫三分的牌。判断用 #99 的条件抽样估值
+  `landlords_would_call`（DouZero 地主模型对开局第一手所有合规出牌的最高估值 >= `BID_VALUE`），
+  没有逐副跑 `bid`；和 `/bid` 的口径一致，但快得多。
+- 每副用 `double("landlord", ...)` 估地主这一方的赢面（每副 12 局、最多 0.8 秒、少于 8 局跳过），
+  再让三家 DouZero 把真实那副牌打完，记录地主实际输赢。
+- 共 1000 副、1000 行；估值按 0.05 一档（四舍五入）分桶：
+
+| 估值 | 实际胜率 | 样本数 |
+|---|---|---|
+| 0.10 | 0.000 | 1 |
+| 0.15 | 0.000 | 1 |
+| 0.25 | 0.600 | 10 |
+| 0.35 | 0.667 | 12 |
+| 0.40 | 0.742 | 31 |
+| 0.50 | 0.592 | 71 |
+| 0.60 | 0.618 | 102 |
+| 0.65 | 0.692 | 133 |
+| 0.75 | 0.681 | 141 |
+| 0.85 | 0.858 | 155 |
+| 0.90 | 0.871 | 178 |
+| 1.00 | 0.921 | 165 |
+
+实际胜率 >= 0.85 的最低估值档是 0.85（155 副，实际 0.858），且不低于 `DOUBLE_WIN = 0.8`。
+所以取 `SUPER_DOUBLE_WIN = 0.85`。原始行在 `/tmp/cal_landlord_1000.json`（校准产物不提交）。
+
+## 测试素材
+
+现有素材里没有「地主 20 张 + 绿色超级加倍按钮」的帧。用 `double_landlord_20.png`（2026-11-14 真机，
+地主 20 张、底牌 7 2 J、只有蓝/黄两个按钮）做底，把 `double.jpg`（农民 17 张、蓝/黄/绿三个按钮）
+的按钮行 y=430..559 按像素移植过来，得到 `double_landlord_super.png`。手牌、底牌都在这一带之外，
+读数不变；`DdzScreen.read` 认成 `Double`、三个按钮 Blue/Yellow/Green。
+
+## TDD 红 → 绿
+
+### 服务端
+
+改前先加测试，跑 `python -m unittest test_server.DoubleTest`，红在导入：
+
+```
+ImportError: cannot import name 'SUPER_DOUBLE_WIN' from 'server'
+```
+
+新增测试走 `/double` 公开入口（假 Advisor 固定赢面，调 handler 的 `do_POST`）：
+`test_a_landlord_at_the_super_threshold_gets_super`、
+`test_a_landlord_between_the_double_and_super_thresholds_does_not_super`、
+`test_a_farmer_never_gets_super`、`test_a_weak_landlord_gets_neither_double_nor_super`。
+改后 4 手全绿。
+
+### 手机端
+
+改前 5 手红（`./gradlew :core:test`），先是编译错误：
+
+```
+e: PhoneDdzTurnTest.kt:2901:51 Too many arguments for 'constructor(double: Boolean, win: Double? = ...): PhoneDdzTurn.DoubleAdvice'.
+e: PhoneDdzTurnTest.kt:2941:91 Too many arguments for 'constructor(...): PhoneDdzTurn.DoubleAdvice'.
+e: PhoneDdzTurnTest.kt:2971:91 Too many arguments for 'constructor(...): PhoneDdzTurn.DoubleAdvice'.
+e: PhoneDdzTurnTest.kt:3032:51 Too many arguments for 'constructor(...): PhoneDdzTurn.DoubleAdvice'.
+```
+
+新增测试：
+
+- `humanLandlordSuperDoublesOnTheGreenButton`：地主 + `super=true` + 有绿色 → 点绿色，trace
+  `pressed=super super=true`。
+- `humanLandlordFallsBackToYellowWhenSuperIsAdvisedButThereIsNoGreenButton`：地主 + `super=true`
+  + 没有绿色（`double_landlord_20.png`）→ 点黄色。
+- `humanLandlordDoesNotSuperDoubleWhenTheServiceSaysOnlyDouble`：地主 + `super=false` + `double=true`
+  → 有绿色也只点黄色。
+- `humanLandlordNeverTouchesGreenWhenTheServiceIsUnavailable`：服务不可用 → 只点蓝色/黄色，不点绿色。
+- `humanFarmerNeverSuperDoublesEvenIfTheServiceSaysSuper`：农民 + 伪造 `super=true` → 只点黄色。
+
+改后这 5 手加原有的 `humanLandlordDoublesOnTheYellowButton`、
+`humanFarmerDoublesOnTheYellowButtonWhenDouZeroSaysSo` 共 7 手全绿。
