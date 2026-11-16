@@ -21,7 +21,8 @@ POST /bid  {"hand": [17 张]}  -> {"level": 3 | 0, "win": 0.62, "games": 300}   
 POST /double {"seat": "landlord" | "landlord_down" | "landlord_up" | "farmer",
               "hand": [...],                     # 地主 20 张(含底牌),农民 17 张
               "bottom": [三张]}                  # 三张明牌,归地主
--> {"double": true | false, "win": 0.83, "games": 300}     # 自己这一方的赢面,够了才建议加倍
+-> {"double": true | false, "super": true | false, "win": 0.83, "games": 300}
+   # 自己这一方的赢面,够了才建议加倍;只有地主、且赢面到 SUPER_DOUBLE_WIN 才回 super
 # farmer 是认不出地主坐哪边时用的:两个农民座位各算一遍(共用时间预算),取较低的赢面
 """
 import json
@@ -63,6 +64,11 @@ DOUBLE_WIN = 0.8
 # 但估值有误差,留余量。2026-11-16 用 calibrate_double.py 跑了 2000 副地主会叫的牌、两个农民座位共 4000 行:
 # 估值 >= 0.65 的 135 行实际赢 0.607(0.60 档只有 1 行,0.70 以上 62 行赢 0.581),所以取 0.65。
 FARMER_DOUBLE_WIN = 0.65
+# 超级加倍:只有地主、且赢面到 SUPER_DOUBLE_WIN 才建议点绿色「超级加倍」,农民永远不点。
+# 2026-11-16 用 calibrate_double.py 的地主模式跑了 1000 副地主会叫的牌(条件抽样用 landlords_would_call 估值):
+# 估值 0.85 档 155 副实际赢 0.858,0.90 档 178 副赢 0.871,1.00 档 165 副赢 0.921;
+# 实际胜率 >= 0.85 的最低估值档就是 0.85(见 double-calibration-2026-11-16.md)。
+SUPER_DOUBLE_WIN = 0.85
 # 条件抽样:地主这 20 张(17 张随机 + 3 张底牌)会不会叫。用 DouZero 地主模型对开局第一手所有合规出牌的
 # 最高估值:单副一次前向约 3 毫秒,按 BID_BATCH 副攒成一批一次前向约 0.5 毫秒一副。
 # 门槛和 BID_WIN 同口径:估值是这副牌在 DouZero 眼里的期望得分,
@@ -123,6 +129,11 @@ def bid_level(win):
 def should_double(win, seat="landlord"):
     """赢面到了门槛才建议加倍:地主 0.8,农民用单独的门槛。"""
     return win >= (DOUBLE_WIN if seat == "landlord" else FARMER_DOUBLE_WIN)
+
+
+def should_super(win, seat="landlord"):
+    """只有地主、赢面到 SUPER_DOUBLE_WIN 才建议超级加倍;农民永远不点绿色。"""
+    return seat == "landlord" and win >= SUPER_DOUBLE_WIN
 
 
 class Mismatch(Exception):
@@ -863,7 +874,8 @@ def handler(advisor):
                 if self.path == "/double":
                     seat = body["seat"]
                     win, games = advisor.double(seat, body["hand"], body["bottom"])
-                    return self.reply(200, {"double": should_double(win, seat), "win": round(win, 2), "games": games, "ms": ms()}, body)
+                    return self.reply(200, {"double": should_double(win, seat), "super": should_super(win, seat),
+                                            "win": round(win, 2), "games": games, "ms": ms()}, body)
                 report = {}
                 move = advisor.act(body["seat"], body["hand"], body.get("bottom", []), body.get("history", []), report)
                 self.reply(200, {"play": [NAMES[c] for c in move], "ms": ms(), **report}, body)

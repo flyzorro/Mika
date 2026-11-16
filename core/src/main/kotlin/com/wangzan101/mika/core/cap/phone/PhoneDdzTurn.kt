@@ -241,8 +241,8 @@ internal object PhoneDdzTurn : PhoneTool {
             }
     }
 
-    /** DouZero 服务的加倍建议:这手牌值不值得加倍,和它自己算的赢面。连不上为 null。 */
-    internal data class DoubleAdvice(val double: Boolean, val win: Double? = null)
+    /** DouZero 服务的加倍建议:这手牌值不值得加倍、要不要超级加倍,和它自己算的赢面。连不上为 null。 */
+    internal data class DoubleAdvice(val double: Boolean, val win: Double? = null, val superDouble: Boolean = false)
 
     /**
      * 问 DouZero 服务这手牌加倍值不值(它自己跟自己打几十局看赢面);测试里换掉。
@@ -258,7 +258,11 @@ internal object PhoneDdzTurn : PhoneTool {
                 ?.let { runCatching { kotlinx.serialization.json.Json.parseToJsonElement(it) as? JsonObject }.getOrNull() }
                 ?.let { obj ->
                     val double = (obj["double"] as? JsonPrimitive)?.contentOrNull?.toBooleanStrictOrNull()
-                    if (double == null) null else DoubleAdvice(double, (obj["win"] as? JsonPrimitive)?.contentOrNull?.toDoubleOrNull())
+                    if (double == null) null else DoubleAdvice(
+                        double,
+                        (obj["win"] as? JsonPrimitive)?.contentOrNull?.toDoubleOrNull(),
+                        (obj["super"] as? JsonPrimitive)?.contentOrNull?.toBooleanStrictOrNull() ?: false,
+                    )
                 }
         }
 
@@ -277,11 +281,11 @@ internal object PhoneDdzTurn : PhoneTool {
         println("DDZTRACE bid mode=$mode hand=${hand?.joinToString(",") ?: ""} " +
             "source=${if (advice != null) "douzero" else "rules"} win=${advice?.win} level=$level pressed=$pressed")
 
-    /** 记下这一次加倍:座位、手牌、底牌、来源、赢面、实际按了「加倍」还是「不加倍」。 */
+    /** 记下这一次加倍:座位、手牌、底牌、来源、赢面、服务回的 super、实际按了「超级加倍」「加倍」还是「不加倍」。 */
     private fun traceDouble(seat: String?, hand: List<String>?, bottom: List<String>?, advice: DoubleAdvice?, pressed: String) =
         println("DDZTRACE double seat=${seat ?: ""} hand=${hand?.joinToString(",") ?: ""} " +
             "bottom=${bottom?.joinToString(",") ?: ""} source=${if (advice != null) "douzero" else "rules"} " +
-            "win=${advice?.win} pressed=$pressed")
+            "win=${advice?.win} super=${advice?.superDouble} pressed=$pressed")
 
     /**
      * 加倍时自己在 DouZero 里的座位:手里 20 张(含底牌)是地主;17 张是农民,地主在右边我是他的上家
@@ -1519,9 +1523,12 @@ internal object PhoneDdzTurn : PhoneTool {
                                 seat == "landlord" -> advice?.double ?: HumanDdzPolicy.shouldDouble(hand, bottom)
                                 else -> advice?.double == true
                             }
-                            // 只按颜色找黄色「加倍」:绝不点绿色「超级加倍」。该加但找不到黄色、或本就不该加,都点蓝色「不加倍」。
-                            val yellow = if (double) view.buttons.lastOrNull { it.color == DdzColor.Yellow } else null
-                            val button = yellow ?: view.buttons.firstOrNull { it.color == DdzColor.Blue }
+                            // 只有地主、服务说 super、且画面上有绿色「超级加倍」(不是灰的)才点绿色;
+                            // 没有绿色(没卡)就退回黄色「加倍」。农民永远不点绿色;服务不可用时只可能点黄色。
+                            val superDouble = seat == "landlord" && advice?.superDouble == true
+                            val green = if (superDouble) view.buttons.lastOrNull { it.color == DdzColor.Green } else null
+                            val yellow = if (green == null && double) view.buttons.lastOrNull { it.color == DdzColor.Yellow } else null
+                            val button = green ?: yellow ?: view.buttons.firstOrNull { it.color == DdzColor.Blue }
                             when {
                                 button == null -> {
                                     traceDouble(seat, hand, bottom, advice, "no")
@@ -1532,9 +1539,13 @@ internal object PhoneDdzTurn : PhoneTool {
                                     humanPause(turn, DdzSessionReason.REJECTED_ACTION)
                                 }
                                 press(button, ctx, turn).moved -> {
-                                    val doubled = double && button.color == DdzColor.Yellow
-                                    traceDouble(seat, hand, bottom, advice, if (doubled) "double" else "no")
-                                    turn.declined = !doubled
+                                    val pressed = when (button.color) {
+                                        DdzColor.Green -> "super"
+                                        DdzColor.Yellow -> "double"
+                                        else -> "no"
+                                    }
+                                    traceDouble(seat, hand, bottom, advice, pressed)
+                                    turn.declined = pressed == "no"
                                     turn.humanActionSeen = true
                                     turn.doubleDecided = true
                                 }

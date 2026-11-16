@@ -2923,6 +2923,173 @@ class PhoneDdzTurnTest {
     }
 
     /**
+     * 地主 + 服务说超级加倍 + 画面有绿色「超级加倍」:点绿色,不是黄色。素材是 double_landlord_20.png
+     * 的 20 张地主牌,把 double.jpg 的按钮行(蓝/黄/绿)移植过来。
+     */
+    @Test fun humanLandlordSuperDoublesOnTheGreenButton() = runTest {
+        val call = full("call")
+        val double = full("double_landlord_super")
+        val view = DdzScreen.read(double, classic = true)
+        assertEquals(DdzPhase.Double, view.phase)
+        val green = view.buttons.single { it.color == DdzColor.Green }
+        val savedBid = PhoneDdzTurn.adviseBid
+        val savedDouble = PhoneDdzTurn.adviseDouble
+        PhoneDdzTurn.adviseBid = { _, _ -> PhoneDdzTurn.BidAdvice(3) }
+        PhoneDdzTurn.adviseDouble = { _, seat, _, _ ->
+            assertEquals("landlord", seat)
+            PhoneDdzTurn.DoubleAdvice(true, 0.95, true)
+        }
+        val out = ByteArrayOutputStream()
+        val old = System.out
+        try {
+            System.setOut(PrintStream(out))
+            val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(call, call, call, double)))
+            val result = PhoneDdzTurn.execute(
+                Args(PhoneDdzTurn.def, Json.parseToJsonElement(
+                    """{"action":"start","mode":"human","auto":true,"advisor":"http://mac:3426"}"""
+                ).jsonObject),
+                toolDispatcher(game).ctx,
+            )
+            assertEquals(result.content.toString(), "double", result.text("phase"))
+            assertNull("超级加倍时不暂停: ${result.content}", result.text("reason"))
+            assertEquals("地主点绿色的「超级加倍」", green.x to green.y, game.taps[1])
+            val log = out.toString()
+            assertTrue(log, log.lines().any {
+                it.contains("DDZTRACE double") && it.contains("pressed=super") && it.contains("super=true")
+            })
+        } finally {
+            System.setOut(old)
+            PhoneDdzTurn.adviseBid = savedBid
+            PhoneDdzTurn.adviseDouble = savedDouble
+        }
+    }
+
+    /**
+     * 服务说超级加倍,但画面没有绿色按钮(没卡):退回黄色「加倍」。
+     * double_landlord_20.png 是 2026-11-14 真机地主加倍画面,只有蓝、黄两个按钮。
+     */
+    @Test fun humanLandlordFallsBackToYellowWhenSuperIsAdvisedButThereIsNoGreenButton() = runTest {
+        val call = full("call")
+        val double = full("double_landlord_20")
+        val view = DdzScreen.read(double, classic = true)
+        assertEquals(DdzPhase.Double, view.phase)
+        assertTrue("这一帧没有绿色按钮", view.buttons.none { it.color == DdzColor.Green })
+        val savedBid = PhoneDdzTurn.adviseBid
+        val savedDouble = PhoneDdzTurn.adviseDouble
+        PhoneDdzTurn.adviseBid = { _, _ -> PhoneDdzTurn.BidAdvice(3) }
+        PhoneDdzTurn.adviseDouble = { _, _, _, _ -> PhoneDdzTurn.DoubleAdvice(true, 0.95, true) }
+        try {
+            val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(call, call, call, double)))
+            val result = PhoneDdzTurn.execute(
+                Args(PhoneDdzTurn.def, Json.parseToJsonElement(
+                    """{"action":"start","mode":"human","auto":true,"advisor":"http://mac:3426"}"""
+                ).jsonObject),
+                toolDispatcher(game).ctx,
+            )
+            assertEquals(result.content.toString(), "double", result.text("phase"))
+            assertNull("不暂停: ${result.content}", result.text("reason"))
+            val yellow = view.buttons.single { it.color == DdzColor.Yellow }
+            assertEquals("没有绿色就点黄色的「加倍」", yellow.x to yellow.y, game.taps[1])
+        } finally {
+            PhoneDdzTurn.adviseBid = savedBid
+            PhoneDdzTurn.adviseDouble = savedDouble
+        }
+    }
+
+    /**
+     * 地主 + 服务只回 double=true、super=false:即使画面有绿色也只点黄色「加倍」。
+     */
+    @Test fun humanLandlordDoesNotSuperDoubleWhenTheServiceSaysOnlyDouble() = runTest {
+        val call = full("call")
+        val double = full("double_landlord_super")
+        val view = DdzScreen.read(double, classic = true)
+        val green = view.buttons.single { it.color == DdzColor.Green }
+        val savedBid = PhoneDdzTurn.adviseBid
+        val savedDouble = PhoneDdzTurn.adviseDouble
+        PhoneDdzTurn.adviseBid = { _, _ -> PhoneDdzTurn.BidAdvice(3) }
+        PhoneDdzTurn.adviseDouble = { _, _, _, _ -> PhoneDdzTurn.DoubleAdvice(true, 0.85, false) }
+        try {
+            val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(call, call, call, double)))
+            val result = PhoneDdzTurn.execute(
+                Args(PhoneDdzTurn.def, Json.parseToJsonElement(
+                    """{"action":"start","mode":"human","auto":true,"advisor":"http://mac:3426"}"""
+                ).jsonObject),
+                toolDispatcher(game).ctx,
+            )
+            assertEquals(result.content.toString(), "double", result.text("phase"))
+            assertNull("不暂停: ${result.content}", result.text("reason"))
+            val yellow = view.buttons.single { it.color == DdzColor.Yellow }
+            assertEquals("super=false 只点黄色", yellow.x to yellow.y, game.taps[1])
+            assertTrue("绝不点绿色: ${game.taps}", (green.x to green.y) !in game.taps)
+        } finally {
+            PhoneDdzTurn.adviseBid = savedBid
+            PhoneDdzTurn.adviseDouble = savedDouble
+        }
+    }
+
+    /**
+     * 服务不可用:地主照旧退回 HumanDdzPolicy 规则,只可能点蓝色或黄色,绝不因为规则点绿色。
+     */
+    @Test fun humanLandlordNeverTouchesGreenWhenTheServiceIsUnavailable() = runTest {
+        val call = full("call")
+        val double = full("double_landlord_super")
+        val view = DdzScreen.read(double, classic = true)
+        val green = view.buttons.single { it.color == DdzColor.Green }
+        val savedBid = PhoneDdzTurn.adviseBid
+        PhoneDdzTurn.adviseBid = { _, _ -> PhoneDdzTurn.BidAdvice(3) }
+        try {
+            val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(call, call, call, double)))
+            val result = PhoneDdzTurn.execute(
+                Args(PhoneDdzTurn.def, Json.parseToJsonElement(
+                    """{"action":"start","mode":"human","auto":true,"advisor":"http://mac:3426"}"""
+                ).jsonObject),
+                toolDispatcher(game).ctx,
+            )
+            assertEquals(result.content.toString(), "double", result.text("phase"))
+            assertNull("不暂停: ${result.content}", result.text("reason"))
+            assertEquals("叫分 + 加倍各点一下: ${game.taps}", 2, game.taps.size)
+            assertTrue("服务不可用绝不点绿色: ${game.taps}", (green.x to green.y) !in game.taps)
+        } finally {
+            PhoneDdzTurn.adviseBid = savedBid
+        }
+    }
+
+    /**
+     * 农民永远不点绿色:即使服务(伪造地)回了 super=true,也只点黄色「加倍」。
+     * double.jpg 是农民 17 张、右边地主 20 张的加倍画面。
+     */
+    @Test fun humanFarmerNeverSuperDoublesEvenIfTheServiceSaysSuper() = runTest {
+        val call = full("call")
+        val double = full("double")
+        val view = DdzScreen.read(double, classic = true)
+        val green = view.buttons.single { it.color == DdzColor.Green }
+        val savedBid = PhoneDdzTurn.adviseBid
+        val savedDouble = PhoneDdzTurn.adviseDouble
+        PhoneDdzTurn.adviseBid = { _, _ -> PhoneDdzTurn.BidAdvice(3) }
+        PhoneDdzTurn.adviseDouble = { _, seat, _, _ ->
+            assertEquals("landlord_up", seat)
+            PhoneDdzTurn.DoubleAdvice(true, 0.99, true)
+        }
+        try {
+            val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(call, call, call, double)))
+            val result = PhoneDdzTurn.execute(
+                Args(PhoneDdzTurn.def, Json.parseToJsonElement(
+                    """{"action":"start","mode":"human","auto":true,"advisor":"http://mac:3426"}"""
+                ).jsonObject),
+                toolDispatcher(game).ctx,
+            )
+            assertEquals(result.content.toString(), "double", result.text("phase"))
+            assertNull("不暂停: ${result.content}", result.text("reason"))
+            val yellow = view.buttons.single { it.color == DdzColor.Yellow }
+            assertEquals("农民只点黄色", yellow.x to yellow.y, game.taps[1])
+            assertTrue("农民绝不点绿色: ${game.taps}", (green.x to green.y) !in game.taps)
+        } finally {
+            PhoneDdzTurn.adviseBid = savedBid
+            PhoneDdzTurn.adviseDouble = savedDouble
+        }
+    }
+
+    /**
      * 农民也能加倍:2026-11-16 土豪场 10 局实测,农民加倍只翻自己这一行,真实赢面 > 0.5 就是正期望。
      * double.jpg 是农民 17 张、右边地主 20 张的加倍画面(底牌 K Q 8):服务说加就点黄色「加倍」,
      * 座位按认出的地主位置给 landlord_up。
