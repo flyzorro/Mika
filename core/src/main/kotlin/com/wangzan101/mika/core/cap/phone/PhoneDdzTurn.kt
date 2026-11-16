@@ -1509,6 +1509,7 @@ internal object PhoneDdzTurn : PhoneTool {
                             val hand = DdzCards.hand(frame, view)
                             // 底牌在加倍时通常已经翻开;认不出就不加倍(和手牌认不出一样保守),不停下。
                             val bottom = DdzCards.bottom(frame)
+                            if (bottom?.size == 2) DdzFrameDump.dump("bottom_partial", frame, FULL_ROWS) // TEMP diagnostics: 抓底牌带王的帧; remove after.
                             // 手牌和底牌对不上(同一张超过 4 张、王重复)就是认错了:不送服务,直接不加倍
                             val clash = hand != null && bottom != null && doubleCardsClash(hand, bottom)
                             val seat = if (clash) null else doubleSeat(hand, bottom, view.handCount, frame)
