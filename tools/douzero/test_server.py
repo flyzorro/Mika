@@ -5,6 +5,7 @@ import unittest
 from types import SimpleNamespace
 from unittest import mock
 
+from douzero.env import move_detector as md
 from douzero.env.game import GameEnv
 
 from server import (
@@ -752,6 +753,26 @@ class CloseCallRolloutTest(unittest.TestCase):
         self.assertIn("6", finalists, "DouZero 自己的 6 要活到最后两手")
         self.assertIn(rollout["chosen"], finalists)
         self.assertEqual([NAMES[c] for c in move], rollout["chosen"].split())
+
+    # 2026-11-16 21:10:00 土豪场:我是地主上家(农民)首出,地主只剩 5 张 2 2 K Q SJ,专吃单张。
+    # 按明牌求解首出单张全输,对子(3 3/4 4/6 6/7 7/10 10)、顺子(6-10、6-J、7-J)都能赢;
+    # 可后半局只取 DouZero 分数最高的 8 手,这一手前 8 名全是单张,对子和顺子根本没进模拟。
+    # 候选里每种牌型至少留一手(该牌型分数最高的),才可能挑出对子/顺子。
+    TYPES = dict(seat="landlord_up",
+                 hand=["BJ", "2", "A", "J", "10", "10", "9", "8", "7", "7", "6", "6", "4", "4", "3", "3"],
+                 bottom=["K", "8", "2"],
+                 history=[["9", "8", "7", "6", "5", "4", "3"], ["Q", "J", "10", "9", "8", "7", "6"], [],
+                          ["A", "K", "Q", "J", "10", "9", "8"], [], [], ["4"], ["J"], ["A"], [], []])
+
+    def test_late_candidates_cover_every_move_type(self):
+        report = {}
+        self.act(self.TYPES, report)
+        rollout = report.get("rollout")
+        self.assertIsNotNone(rollout, "后半局不管分差都要现场模拟")
+        kinds = {md.get_move_type(cards(label.split()))["type"]
+                 for label in rollout["rates"] if label != "pass"}
+        self.assertIn(md.TYPE_2_PAIR, kinds, "候选里要有一手对子")
+        self.assertIn(md.TYPE_8_SERIAL_SINGLE, kinds, "候选里要有一手顺子")
 
     def test_a_clear_move_over_the_late_window_does_not_roll_out(self):
         # CLEAR 三家还剩 44 张、顶两手差 0.306:不在后半局,不模拟
