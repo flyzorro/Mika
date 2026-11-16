@@ -82,8 +82,8 @@ ACT_ROLLOUT_MIN_GAMES_OPENING = 30
 # 一手牌总共只给这么多秒:手机 /act 最多等 4 秒(连接 2 秒 + 读 4 秒,失败还重试一次),超了就当服务挂了。
 # 2026-11-16 12:18:11 土豪场,我是地主下家,手里 A 5 4 4 4,三家还剩 19 张:残局搜索先花掉 1.5 秒没结论,
 # 现场模拟又打满 2.5 秒,回复 4903 毫秒;手机 4 秒超时,标成 douzero_unreachable 重发同一手,三次各约 4020 毫秒,
-# 最后按简单规则打完这一局。所以从 Agent.act 进来起总共只给 3.2 秒,残局搜索、两手出完、现场模拟都在这一个预算里分:
-# 残局搜索最多 ACT_ENDGAME_BUDGET_S 秒(原来就是 1.5),现场模拟用 min(2.5, 剩下的 − 0.1) 秒;
+# 最后按简单规则打完这一局。所以从 Agent.act 进来起总共只给 3.2 秒,残局搜索、两手出完、现场模拟、比手数都在这一个预算里分:
+# 残局搜索最多 ACT_ENDGAME_BUDGET_S 秒(原来就是 1.5),现场模拟用 min(2.5, 剩下的 − 0.1 − 比手数的 0.2) 秒,
 # 剩下的不到 ACT_ROLLOUT_MIN_S 就整个不模拟,直接听 DouZero 的。
 ACT_TOTAL_BUDGET_S = 3.2
 ACT_BUDGET_SAFETY_S = 0.1
@@ -340,8 +340,8 @@ class Agent:
         self.plain = {}
 
     def act(self, infoset, report=None):
-        # 一手牌的总预算从这里开始算:下面 DouZero 打分、残局搜索、两手出完、现场模拟都只能用剩下的时间
-        deadline = time.perf_counter() + ACT_TOTAL_BUDGET_S
+        # 一手牌的总预算从这里开始算:下面 DouZero 打分、残局搜索、两手出完、现场模拟、比手数都只能用剩下的时间
+        deadline = time.monotonic() + ACT_TOTAL_BUDGET_S
         # 斗地主经典版不允许大小王一起当带牌(飞机带单的翅膀、四带二的两张单牌):DouZero 的合法出牌里有,
         # 先剔掉,后面 DouZero 打分、残局搜索、两手出完都只看这份
         infoset.legal_actions = endgame.without_double_joker_kickers(infoset.legal_actions)
@@ -351,7 +351,7 @@ class Agent:
         move = infoset.legal_actions[int(torch.argmax(values))]
         # 剩的牌少时按明牌把各种分法算到底:有赢面更大的一手就换成它(赢面一样大的里挑 DouZero 打分最高的)。
         # 下面几条硬规则只在搜索也认为不吃亏时才换。搜索最多 1.5 秒,总预算不够时只给剩下的
-        left_s = deadline - time.perf_counter()
+        left_s = deadline - time.monotonic()
         solved = endgame.best(infoset, budget=min(ACT_ENDGAME_BUDGET_S, left_s)) if left_s > 0 else None
         allowed = None
         if solved is not None:
@@ -468,8 +468,8 @@ class Agent:
             return None
         # 总预算快用完了:模拟来不及打满下限,不如直接听 DouZero 的,别让手机等到超时
         if deadline is None:
-            deadline = time.perf_counter() + ACT_TOTAL_BUDGET_S
-        left = deadline - time.perf_counter()
+            deadline = time.monotonic() + ACT_TOTAL_BUDGET_S
+        left = deadline - time.monotonic()
         if left < ACT_ROLLOUT_MIN_S:
             if report is not None:
                 report["rollout_skipped"] = "no_time"
@@ -484,13 +484,13 @@ class Agent:
         history = [list(m) for m in infoset.card_play_action_seq]
         wins = {k: 0 for k in keys}
         played = {k: 0 for k in keys}
-        rollout_deadline = time.perf_counter() + budget
-        while time.perf_counter() < rollout_deadline and any(played[k] < ACT_ROLLOUT_GAMES for k in keys):
+        rollout_deadline = time.monotonic() + budget
+        while time.monotonic() < rollout_deadline and any(played[k] < ACT_ROLLOUT_GAMES for k in keys):
             hands = sample_hands(infoset, rng)  # 这一批发牌所有候选都用
             for k, candidate in zip(keys, candidates):
                 if played[k] >= ACT_ROLLOUT_GAMES:
                     continue
-                if time.perf_counter() >= rollout_deadline:
+                if time.monotonic() >= rollout_deadline:
                     break
                 played[k] += 1
                 if self.play_out(hands, infoset.three_landlord_cards, history, infoset.player_position, candidate):
@@ -519,10 +519,10 @@ class Agent:
                 # 手数比较也吃一手牌的总预算:截止时刻取 min(自己的 0.2 秒, 总预算剩下的 − 0.1),
                 # 总预算没余量就不比了(模拟截止时间已经先给它留出 0.2 秒)。
                 scores = {k: float(values[i]) for k, i in zip(keys, picks)}
-                if deadline - time.perf_counter() > ACT_BUDGET_SAFETY_S:
+                tie_left = deadline - time.monotonic() - ACT_BUDGET_SAFETY_S
+                if tie_left > 0:
                     tie = fewer_plays(infoset.player_hand_cards, keys, rates, scores, own,
-                                      min(time.perf_counter() + endgame.MIN_PLAYS_BUDGET_S,
-                                          deadline - ACT_BUDGET_SAFETY_S))
+                                      time.monotonic() + min(endgame.MIN_PLAYS_BUDGET_S, tie_left))
                 if tie is not None:
                     chosen = next(c for k, c in zip(keys, candidates) if k == tie[0])
         info = {"games": games, "min_games": min_games, "budget_left": round(left, 2),

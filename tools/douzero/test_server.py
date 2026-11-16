@@ -8,8 +8,8 @@ from unittest import mock
 from douzero.env.game import GameEnv
 
 from server import (
-    DECK, DOUBLE_WIN, NAMES, ROLLOUT_MIN_GAMES, SEATS, Advisor, Mismatch, WEIGHTS, bid_level, cards, fewer_plays, resolve,
-    should_double,
+    ACT_BUDGET_SAFETY_S, ACT_TOTAL_BUDGET_S, DECK, DOUBLE_WIN, NAMES, ROLLOUT_MIN_GAMES, SEATS, Advisor, Mismatch,
+    WEIGHTS, bid_level, cards, fewer_plays, resolve, should_double,
 )
 
 # 造局面时关掉「接近时现场模拟」:随机走一步有近一半的顶两手分差在 0.1 以内,开着会让原有测试慢到不可用。
@@ -714,6 +714,40 @@ class ActBudgetTest(unittest.TestCase):
         self.assertIsNotNone(rollout, "残局搜索用掉 1.5 秒后还剩 1.6 秒,应该照常现场模拟")
         self.assertGreater(rollout["budget_left"], 1.2)
         self.assertLess(rollout["budget_left"], 1.8)
+
+    def test_a_full_search_still_leaves_room_for_the_tiebreak(self):
+        # 残局搜索睡满 1.5 秒、现场模拟再吃掉剩下的:比手数(最多 0.2 秒)也要在 3.5 秒内收尾。
+        # 模拟截止时间要先给比手数留出 0.2 秒,比手数的 deadline 也不能超过总预算剩下的。
+        import endgame
+        import server
+        real_best, real_min_plays = endgame.best, endgame.min_plays
+        seen = []
+
+        def slow_best(*args, **kwargs):
+            time.sleep(1.5)
+            return None
+
+        def recording_min_plays(hand, deadline=None):
+            seen.append((time.monotonic(), deadline))
+            return 3
+
+        endgame.best = slow_best
+        endgame.min_plays = recording_min_plays
+        try:
+            # 只有模拟赢面差不到门槛才比手数;把门槛调大,固定走比手数那条路
+            with mock.patch.object(server, "SWITCH_MARGIN", 2.0), \
+                    mock.patch.object(server, "OPENING_SWITCH_MARGIN", 2.0):
+                report = {}
+                started = time.monotonic()
+                self.act(CloseCallRolloutTest.TIEBREAK, report)
+                elapsed = time.monotonic() - started
+        finally:
+            endgame.best, endgame.min_plays = real_best, real_min_plays
+        self.assertLess(elapsed, 3.5)
+        self.assertTrue(seen, "模拟没换手时应该比手数")
+        called_at, deadline = seen[0]
+        self.assertGreater(deadline - called_at, 0.1, "模拟截止时间要给比手数留出余量")
+        self.assertLessEqual(deadline, started + ACT_TOTAL_BUDGET_S - ACT_BUDGET_SAFETY_S + 0.01)
 
 
 if __name__ == "__main__":
