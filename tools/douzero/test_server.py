@@ -658,12 +658,10 @@ class CloseCallRolloutTest(unittest.TestCase):
         self.assertGreaterEqual(rollout["rounds"][0][1], 12, "7 局就淘汰太靠运气")
         finalists = rollout["rounds"][-1][0]
         self.assertEqual(2, len(finalists))
-        self.assertIn("8", finalists, "模拟赢面最高的 8 要活到最后两手")
-        # 最后只在 8 和 DouZero 的 6 里定:8 要比 6 高出 SWITCH_MARGIN(0.05)才换。
-        # 本机这次 60 多局 8 只高约 0.04(300 局时打平),所以按规则保留 6;真要换也只能换成 8。
-        rates = rollout["rates"]
-        self.assertEqual("8", max(finalists, key=lambda label: rates[label]))
-        self.assertIn(rollout["chosen"], ("6", "8"))
+        # 8 和 6 的真实赢面差不多(都约 0.75),谁进决赛、决赛里谁赢面最高都是采样运气,
+        # 所以这里只看结构:DouZero 自己那手不能被淘汰,最后也只能出决赛两手之一。
+        self.assertIn("6", finalists, "DouZero 自己的 6 要活到最后两手")
+        self.assertIn(rollout["chosen"], finalists)
         self.assertEqual([NAMES[c] for c in move], rollout["chosen"].split())
 
     def test_a_clear_move_over_the_late_window_does_not_roll_out(self):
