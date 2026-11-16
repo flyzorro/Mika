@@ -18,10 +18,11 @@ POST /act  {"seat": "landlord" | "landlord_down" | "landlord_up",
 
 POST /bid  {"hand": [17 张]}  -> {"level": 3 | 0, "win": 0.62, "games": 300}   # 当地主的赢面,够了就叫三分;games 是 3 秒内实际打了几局
 
-POST /double {"seat": "landlord" | "landlord_down" | "landlord_up",
+POST /double {"seat": "landlord" | "landlord_down" | "landlord_up" | "farmer",
               "hand": [...],                     # 地主 20 张(含底牌),农民 17 张
               "bottom": [三张]}                  # 三张明牌,归地主
 -> {"double": true | false, "win": 0.83, "games": 300}     # 自己这一方的赢面,够了才建议加倍
+# farmer 是认不出地主坐哪边时用的:两个农民座位各算一遍(共用时间预算),取较低的赢面
 """
 import json
 import os
@@ -58,6 +59,18 @@ ROLLOUT_BUDGET_S = 3.0
 ROLLOUT_MIN_GAMES = 40
 # 赢面到了这个门槛才加倍。只点黄色「加倍」,绝不点绿色的「超级加倍」,金豆省着用。
 DOUBLE_WIN = 0.8
+# 农民单独的门槛:农民加倍只翻自己这一行(底分 × 炸弹 × 地主加倍 × 自己加倍),真实赢面 > 0.5 就是正期望;
+# 但估值有误差,留余量。2026-11-16 用 calibrate_double.py 跑了 2000 副地主会叫的牌、两个农民座位共 4000 行:
+# 估值 >= 0.65 的 135 行实际赢 0.607(0.60 档只有 1 行,0.70 以上 62 行赢 0.581),所以取 0.65。
+FARMER_DOUBLE_WIN = 0.65
+# 条件抽样:地主这 20 张(17 张随机 + 3 张底牌)会不会叫。用 DouZero 地主模型对开局第一手所有合规出牌的
+# 最高估值:单副一次前向约 3 毫秒,按 BID_BATCH 副攒成一批一次前向约 0.5 毫秒一副。
+# 门槛和 BID_WIN 同口径:估值是这副牌在 DouZero 眼里的期望得分,
+# 2026-11-16 用 260 副随机 20 张牌、每副 40 局自对弈标定:估值 0 附近实际赢面 0.56,和 BID_WIN 0.55 对齐,
+# 所以 BID_VALUE 取 0(估值每高 0.25,实测赢面约高 0.1)。
+BID_VALUE = 0.0
+# 条件抽样一次判多少副:攒成一批前向,弱地主牌被丢掉时也不至于把 3 秒预算全花在判断上
+BID_BATCH = 32
 # 几手分数几乎一样时 DouZero 基本是随手挑:差不到这个数就优先不拆三条/对子/炸弹。
 # 实机那手拆 10 10 10 去顶队友的 6 只比单张 9 高 0.009;再大就会盖住真正该拆的一手,0.05 只收真正的平局。
 KEEP_MARGIN = 0.05
@@ -107,9 +120,9 @@ def bid_level(win):
     return 3 if win >= BID_WIN else 0
 
 
-def should_double(win):
-    """赢面到了门槛才建议加倍。"""
-    return win >= DOUBLE_WIN
+def should_double(win, seat="landlord"):
+    """赢面到了门槛才建议加倍:地主 0.8,农民用单独的门槛。"""
+    return win >= (DOUBLE_WIN if seat == "landlord" else FARMER_DOUBLE_WIN)
 
 
 class Mismatch(Exception):
@@ -700,10 +713,43 @@ class Advisor:
             wins += bool(env.num_wins["landlord"])
         return wins / played, played
 
-    def double(self, seat, hand, bottom, games=DOUBLE_GAMES, budget=ROLLOUT_BUDGET_S):
+    def landlord_would_call(self, hand, bottom):
+        """地主这 20 张(含底牌)会不会叫地主:DouZero 地主模型对开局第一手所有合规出牌的最高估值到 BID_VALUE 就算会叫。
+        只看地主的牌和三家张数,另外两家随便凑够 17 张(不影响地主观测)。"""
+        return self.landlords_would_call([hand], bottom)[0]
+
+    def landlords_would_call(self, hands, bottom):
+        """一次判多副地主牌会不会叫:每副的观测攒成一批只前向一次。返回和 [hands] 一样长的布尔列表。"""
+        zs, xs, sizes = [], [], []
+        for hand in hands:
+            rest = minus(DECK, hand)
+            env = GameEnv(self.plain)
+            env.card_play_init({"landlord": sorted(hand), "landlord_up": sorted(rest[:17]),
+                                "landlord_down": sorted(rest[17:]), "three_landlord_cards": sorted(bottom)})
+            obs = get_obs(env.game_infoset)
+            zs.append(torch.from_numpy(obs["z_batch"]).float())
+            xs.append(torch.from_numpy(obs["x_batch"]).float())
+            sizes.append(len(env.game_infoset.legal_actions))
+        if not zs:
+            return []
+        with torch.no_grad():
+            values = self.agents["landlord"].model.forward(
+                torch.cat(zs), torch.cat(xs), return_value=True)["values"].flatten()
+        out, start = [], 0
+        for size in sizes:
+            out.append(float(values[start:start + size].max()) >= BID_VALUE)
+            start += size
+        return out
+
+    def double(self, seat, hand, bottom, games=DOUBLE_GAMES, budget=ROLLOUT_BUDGET_S,
+               condition=True, min_games=ROLLOUT_MIN_GAMES, on_accept=None):
         """这手牌加倍值不值:地主按 20 张(含底牌)、农民按 17 张加三张明牌,看不见的牌随机分给另外两家,
-        DouZero 自己跟自己打 [games] 局,返回 (自己这一方的赢面(地主或农民), 实际打了几局):超过 [budget] 秒就停。"""
-        if seat not in SEATS:
+        DouZero 自己跟自己打 [games] 局,返回 (自己这一方的赢面(地主或农民), 实际打了几局):超过 [budget] 秒就停。
+
+        农民默认做条件抽样:每副随机发牌先看地主那 20 张会不会叫(landlord_would_call),不会叫就丢掉重发;
+        地主座位的算法不变。seat="farmer" 时两个农民座位各算一遍、共用预算,返回较低的赢面。
+        condition=False 只给校准/对照用;min_games 给校准降低局数用。on_accept 每采纳一局回调三家手牌。"""
+        if seat not in SEATS and seat != "farmer":
             raise Mismatch("bad_seat")
         hand, bottom = cards(hand), cards(bottom)
         if len(bottom) != 3:
@@ -713,35 +759,76 @@ class Advisor:
                 raise Mismatch("hand_count_mismatch")
             fixed = {"landlord": list(hand)}
             unseen = minus(DECK, hand)
-        else:
-            if len(hand) != 17:
-                raise Mismatch("hand_count_mismatch")
-            # 底牌归地主;看不见的 34 张随机分成地主另外的 17 张和队友的 17 张
-            fixed = {seat: list(hand), "landlord": list(bottom)}
-            unseen = minus(minus(DECK, hand), bottom)
-        # 同一副牌每次问都一样:底牌也参与种子,地主和农民看到的是同一副
+            # 同一副牌每次问都一样:底牌也参与种子
+            rng = random.Random(hash(tuple(sorted(hand + bottom))))
+            wins = played = 0
+            deadline = time.perf_counter() + budget
+            for _ in range(games):
+                if played >= ROLLOUT_MIN_GAMES and time.perf_counter() > deadline:
+                    break
+                played += 1
+                rng.shuffle(unseen)
+                hands = {s: list(fixed.get(s, [])) for s in SEATS}
+                pool = list(unseen)
+                for s in SEATS:
+                    need = (20 if s == "landlord" else 17) - len(hands[s])
+                    hands[s] = sorted(hands[s] + pool[:need])
+                    pool = pool[need:]
+                if pool:
+                    raise Mismatch("card_count_mismatch")
+                env = GameEnv(self.plain)
+                env.card_play_init({**hands, "three_landlord_cards": sorted(bottom)})
+                while not env.game_over:
+                    env.step()
+                wins += bool(env.num_wins["landlord"])
+            return wins / played, played
+        if len(hand) != 17:
+            raise Mismatch("hand_count_mismatch")
+        seats = ["landlord_up", "landlord_down"] if seat == "farmer" else [seat]
+        return self._farmers_double(seats, hand, bottom, games, budget, condition, min_games, on_accept)
+
+    def _farmers_double(self, seats, hand, bottom, games, budget, condition, min_games, on_accept):
+        """农民座位:底牌归地主;看不见的 34 张随机分成地主的 17 张和队友的 17 张。
+        条件抽样只看地主那 20 张会不会叫。两个座位用同一批发牌(只差我坐地主的上家还是下家)。"""
+        unseen = minus(minus(DECK, hand), bottom)
         rng = random.Random(hash(tuple(sorted(hand + bottom))))
-        wins = played = 0
+        wins = {s: 0 for s in seats}
+        played = 0
         deadline = time.perf_counter() + budget
-        for _ in range(games):
-            if played >= ROLLOUT_MIN_GAMES and time.perf_counter() > deadline:
+        while played < games:
+            if time.perf_counter() > deadline:
                 break
-            played += 1
-            rng.shuffle(unseen)
-            hands = {s: list(fixed.get(s, [])) for s in SEATS}
-            pool = list(unseen)
-            for s in SEATS:
-                need = (20 if s == "landlord" else 17) - len(hands[s])
-                hands[s] = sorted(hands[s] + pool[:need])
-                pool = pool[need:]
-            if pool:
-                raise Mismatch("card_count_mismatch")
-            env = GameEnv(self.plain)
-            env.card_play_init({**hands, "three_landlord_cards": sorted(bottom)})
-            while not env.game_over:
-                env.step()
-            wins += bool(env.num_wins["landlord" if seat == "landlord" else "farmer"])
-        return wins / played, played
+            # 一次抽一批再判:弱地主牌被丢掉的概率不低,一副一副判会把预算全花在判断上
+            batch = []
+            for _ in range(BID_BATCH):
+                rng.shuffle(unseen)
+                batch.append((sorted(bottom + unseen[:17]), sorted(unseen[17:])))
+            keep = self.landlords_would_call([lord for lord, _ in batch], bottom) if condition else [True] * len(batch)
+            for (landlord, teammate), accepted in zip(batch, keep):
+                if not accepted:
+                    continue
+                if played >= games or time.perf_counter() > deadline:
+                    break
+                played += 1
+                # 我坐地主上家:上家是我、下家是队友;我坐下家:下家是我、上家是队友。地主和队友的牌两边一样。
+                # 牌局会就地删牌,每家每局都给一份新的列表
+                deal = {"landlord": list(landlord), "landlord_up": list(hand), "landlord_down": list(teammate)}
+                if on_accept is not None:
+                    on_accept({k: list(v) for k, v in deal.items()})
+                for s in seats:
+                    hands = {k: list(v) for k, v in deal.items()}
+                    if s == "landlord_down":
+                        hands["landlord_up"], hands["landlord_down"] = list(teammate), list(hand)
+                    env = GameEnv(self.plain)
+                    env.card_play_init({**hands, "three_landlord_cards": sorted(bottom)})
+                    while not env.game_over:
+                        env.step()
+                    wins[s] += bool(env.num_wins["farmer"])
+        if played < min_games:
+            # 预算内采纳不到下限:不知道赢面,按不加倍处理
+            return 0.0, played
+        rates = {s: wins[s] / played for s in seats}
+        return min(rates.values()), played
 
     def act(self, seat, hand, bottom, history, report=None):
         hand, bottom = cards(hand), cards(bottom)
@@ -774,8 +861,9 @@ def handler(advisor):
                     win, games = advisor.bid(body["hand"])
                     return self.reply(200, {"level": bid_level(win), "win": round(win, 2), "games": games, "ms": ms()}, body)
                 if self.path == "/double":
-                    win, games = advisor.double(body["seat"], body["hand"], body["bottom"])
-                    return self.reply(200, {"double": should_double(win), "win": round(win, 2), "games": games, "ms": ms()}, body)
+                    seat = body["seat"]
+                    win, games = advisor.double(seat, body["hand"], body["bottom"])
+                    return self.reply(200, {"double": should_double(win, seat), "win": round(win, 2), "games": games, "ms": ms()}, body)
                 report = {}
                 move = advisor.act(body["seat"], body["hand"], body.get("bottom", []), body.get("history", []), report)
                 self.reply(200, {"play": [NAMES[c] for c in move], "ms": ms(), **report}, body)

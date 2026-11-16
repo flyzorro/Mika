@@ -263,11 +263,30 @@ internal object PhoneDdzTurn : PhoneTool {
             "win=${advice?.win} pressed=$pressed")
 
     /**
-     * 只有地主才加倍:手里认全 20 张(含底牌)、底牌认全才是 "landlord",别的(农民、认不全)为 null,不问服务也不加倍。
-     * 农民不加倍:2026-11-14 精英场农民赢面 0.93 加倍,地主两个炸弹,一局输光 219 万。
+     * 加倍时自己在 DouZero 里的座位:手里 20 张(含底牌)是地主;17 张是农民,地主在右边我是他的上家
+     * (landlord_up)、在左边我是他的下家(landlord_down)。地主的位置看对手牌背上的张数:加倍时地主 20 张、农民 17 张;
+     * 认不出地主坐哪边就交 "farmer",让服务两个农民座位都算。手牌或底牌认不全为 null,不问服务。
      */
-    private fun doubleSeat(hand: List<String>?, bottom: List<String>?, handCount: Int): String? =
-        "landlord".takeIf { hand != null && bottom?.size == 3 && hand.size == handCount && hand.size == 20 }
+    private fun doubleSeat(hand: List<String>?, bottom: List<String>?, handCount: Int, frame: com.wangzan101.mika.core.uistate.RawFrame): String? {
+        if (hand == null || bottom?.size != 3 || hand.size != handCount) return null
+        if (hand.size == 20) return "landlord"
+        if (hand.size != 17) return null
+        val counts = DdzCards.counts(frame)
+        val left = counts[DdzSide.Left] == 20
+        val right = counts[DdzSide.Right] == 20
+        return when {
+            left && !right -> "landlord_down"
+            right && !left -> "landlord_up"
+            else -> "farmer"
+        }
+    }
+
+    /**
+     * 手牌 + 底牌里有没有不可能的张数:同一张超过 4 张,或者大小王重复。
+     * 2026-11-16 15:16 那局底牌把一张牌认成 3,和手里 3333 冲突,服务报 more_cards_than_exist:这种牌不送服务,直接不加倍。
+     */
+    private fun doubleCardsClash(hand: List<String>, bottom: List<String>): Boolean =
+        (hand + bottom).groupingBy { it }.eachCount().any { (rank, n) -> n > 4 || (rank == "SJ" || rank == "BJ") && n > 1 }
 
     override val verb = Verb.PhoneGame
     override val risk = Risk.Write
@@ -1450,13 +1469,20 @@ internal object PhoneDdzTurn : PhoneTool {
                             val hand = DdzCards.hand(frame, view)
                             // 底牌在加倍时通常已经翻开;认不出就不加倍(和手牌认不出一样保守),不停下。
                             val bottom = DdzCards.bottom(frame)
-                            val seat = doubleSeat(hand, bottom, view.handCount)
+                            // 手牌和底牌对不上(同一张超过 4 张、王重复)就是认错了:不送服务,直接不加倍
+                            val clash = hand != null && bottom != null && doubleCardsClash(hand, bottom)
+                            val seat = if (clash) null else doubleSeat(hand, bottom, view.handCount, frame)
                             // 手牌、底牌、座位都认全才问服务;连不上/超时/认不全就不加倍,不暂停。
                             val advice = if (hand != null && bottom != null && seat != null) {
                                 turn.advisor?.let { url -> runCatching { adviseDouble(url, seat, hand, bottom) }.getOrNull() }
                             } else null
-                            // 只有地主才加倍。服务说加才加;服务不可用时退回保守规则,但它满足时也只点黄色「加倍」。
-                            val double = hand != null && bottom != null && seat != null && (advice?.double ?: HumanDdzPolicy.shouldDouble(hand, bottom))
+                            // 地主:服务说加才加;服务不可用时退回保守规则,但它满足时也只点黄色「加倍」。
+                            // 农民:只有服务明确说加才加,连不上/超时/报错/认不全一律蓝色「不加倍」,绝不退回规则。
+                            val double = when {
+                                hand == null || bottom == null || seat == null -> false
+                                seat == "landlord" -> advice?.double ?: HumanDdzPolicy.shouldDouble(hand, bottom)
+                                else -> advice?.double == true
+                            }
                             // 只按颜色找黄色「加倍」:绝不点绿色「超级加倍」。该加但找不到黄色、或本就不该加,都点蓝色「不加倍」。
                             val yellow = if (double) view.buttons.lastOrNull { it.color == DdzColor.Yellow } else null
                             val button = yellow ?: view.buttons.firstOrNull { it.color == DdzColor.Blue }
