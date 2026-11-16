@@ -33,6 +33,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import torch
 from douzero.dmc.models import model_dict
+from douzero.env import move_detector as md
 from douzero.env.env import get_obs
 from douzero.env.game import GameEnv
 
@@ -111,6 +112,36 @@ def is_simple_combo(move):
     """单张、对子、三条,以及带牌的三带一/三带二。顺子、连对、飞机、炸弹、王炸都不算。"""
     counts = tuple(sorted(Counter(move).values()))
     return counts in ((1,), (2,), (3,), (1, 3), (2, 3))
+
+
+def single_kickers(move):
+    """三带一/飞机带单里当带牌的单张;三条本身(哪怕三条是 A/2)不算。飞机带对不在其中。"""
+    kind = md.get_move_type(sorted(move))["type"]
+    if kind not in (md.TYPE_6_3_1, md.TYPE_11_SERIAL_3_1):
+        return []
+    return [rank for rank, n in Counter(move).items() if n == 1]
+
+
+def straight_runs(hand):
+    """手里的点数连成的顺子段(3 到 A;2 和王不连):[[3, 4, 5, ...], ...]。"""
+    runs = []
+    for rank in sorted({r for r in hand if r < RANKS["2"]}):
+        if runs and rank == runs[-1][-1] + 1:
+            runs[-1].append(rank)
+        else:
+            runs.append([rank])
+    return runs
+
+
+def loose_single(rank, hand, rest):
+    """[rank] 能不能当换带牌的零散小单张:手里只有一张、不超过 K;顺子看 [rest](出完当前的牌以后剩下的手牌),
+    在里面 5 张以上的顺子中,只有当拿走它顺子还剩 5 张(在顺子两头且顺子至少 6 张)时才拿得走。"""
+    if Counter(hand)[rank] != 1 or rank > RANKS["K"]:
+        return False
+    for run in straight_runs(rest):
+        if rank in run and len(run) >= 5:
+            return len(run) >= 6 and rank in (run[0], run[-1])
+    return True
 
 
 def legal(move, before):
@@ -225,16 +256,17 @@ class Agent:
         values = self.values(infoset)
         move = infoset.legal_actions[int(torch.argmax(values))]
         # 剩的牌少时按明牌把各种分法算到底:有赢面更大的一手就换成它(赢面一样大的里挑 DouZero 打分最高的)。
-        # 下面两条硬规则只在搜索也认为不吃亏时才换
+        # 下面几条硬规则只在搜索也认为不吃亏时才换
         solved = endgame.best(infoset)
         allowed = None
         if solved is not None:
             wins, _ = solved
             score = {tuple(sorted(a)): float(values[i]) for i, a in enumerate(infoset.legal_actions)}
             top = max(wins.get(m, 0) for m in score)
-            if wins.get(tuple(sorted(move)), 0) < top:
-                return list(max((m for m in score if wins.get(m, 0) == top), key=score.get))
             allowed = {m for m in score if wins.get(m, 0) == top}
+            if wins.get(tuple(sorted(move)), 0) < top:
+                move = list(max(allowed, key=score.get))
+                return self.swap_high_kickers(infoset, move, ok=lambda m: tuple(sorted(m)) in allowed)
         if solved is None:
             # 剩的牌多、搜不动:自己能两手出完、第一手很难被压时,先出那手再出完(DouZero 偶尔先出一张会被王压的单张)
             others = [p for p in endgame.SEATS if p != infoset.player_position]
@@ -260,7 +292,34 @@ class Agent:
         if move and mate and infoset.last_pid == mate and infoset.num_cards_left_dict[mate] <= 3 \
                 and len(move) < len(infoset.player_hand_cards) and [] in infoset.legal_actions and ok([]):
             move = []
-        return move
+        return self.swap_high_kickers(infoset, move, ok)
+
+    def swap_high_kickers(self, infoset, move, ok):
+        """三带一/飞机带单的带牌里有 A 或 2 时,换成手里最小的零散小单张:带牌只是凑数,留着 A/2 当控制牌。
+
+        2026-11-16 10:04 实机:地主出 10 10 10 + 7,我 K K K + A;丢掉的 A 正是后来被 2 2 2 + J 压住的关键。
+        没有能换的小牌、换完不合规、或者残局搜索认为原来那手更好时,保持 DouZero 的选择。
+        """
+        if not move or len(move) == len(infoset.player_hand_cards):
+            return move
+        high = [r for r in single_kickers(move) if r in (RANKS["A"], RANKS["2"])]
+        if not high:
+            return move
+        hand = infoset.player_hand_cards
+        rest = list(hand)
+        for r in move:
+            rest.remove(r)
+        swapped = list(move)
+        for rank in sorted(high):
+            pick = next((c for c in sorted(set(rest)) if loose_single(c, hand, rest)), None)
+            if pick is None:
+                return move
+            rest.remove(pick)
+            swapped.remove(rank)
+            swapped.append(pick)
+        if sorted(swapped) not in [sorted(a) for a in infoset.legal_actions] or not ok(swapped):
+            return move
+        return swapped
 
     def keep_combos(self, infoset, values, move):
         """最高分那手是单张/对子/三条(含三带一/三带二)且拆牌时,在 KEEP_MARGIN 以内的不拆出牌里挑分数最高的。
