@@ -66,12 +66,19 @@ KEEP_MARGIN = 0.05
 # 按看得见的牌随机发几百副、三家都用 DouZero 打分打到底:不出赢 0.79、BJ 赢 0.69,分数那点差距并不可靠。
 # 所以顶两手的分数差不到 CLOSE_MARGIN 就现场模拟:取 CLOSE_MARGIN 以内最多 CLOSE_TOP 手,同一批发牌比出牌,
 # 赢面高出 SWITCH_MARGIN 才换,否则仍听 DouZero。2.5 秒内每手至少打 ACT_ROLLOUT_MIN_GAMES 局,手机这一手等 4 秒够。
+# 但开局每局都长:2026-11-16 10:58:14 精英场,我当地主的第一手(2 2 A K K Q Q J 9 8 8 8 7 7 6 5 5 5 5 4),
+# 2.5 秒只跑了 43 局,不到 60 局就白模拟了;单张 9 赢面 0.4 比单张 6 的 0.27 高 13 个点也换不掉。
+# 三家手里还有 OPENING_CARDS 张以上算开局,下限降到 ACT_ROLLOUT_MIN_GAMES_OPENING 局;
+# 局数少更吵,不到 60 局时改用 OPENING_SWITCH_MARGIN 才换。
 CLOSE_MARGIN = 0.1
 CLOSE_TOP = 3
 SWITCH_MARGIN = 0.05
+OPENING_SWITCH_MARGIN = 0.1
 ACT_ROLLOUT_BUDGET_S = 2.5
 ACT_ROLLOUT_GAMES = 300
 ACT_ROLLOUT_MIN_GAMES = 60
+OPENING_CARDS = 45
+ACT_ROLLOUT_MIN_GAMES_OPENING = 30
 WEIGHTS = os.environ.get("DOUZERO_WEIGHTS", os.path.join(os.path.dirname(__file__), "baselines", "douzero_ADP"))
 
 
@@ -392,7 +399,8 @@ class Agent:
         """顶两手的分数差不到 CLOSE_MARGIN 时,按看得见的牌随机发一批牌,每一手都用 DouZero 打分打到完,比赢面。
 
         同一批发牌拿来比所有候选(控制随机性),一手都打 ACT_ROLLOUT_GAMES 局或者到 2.5 秒为止,轮着来。
-        每手不够 ACT_ROLLOUT_MIN_GAMES 局就当没模拟;赢面高出 DouZero 那手 SWITCH_MARGIN 才换。
+        每手不够 ACT_ROLLOUT_MIN_GAMES 局就当没模拟;开局(三家手里还够 OPENING_CARDS 张)只要求
+        ACT_ROLLOUT_MIN_GAMES_OPENING 局,局数不到 60 时改用 OPENING_SWITCH_MARGIN 才换。
         返回 (选定的一手, 写进回复的诊断);分数差得开、不用模拟时返回 None。
         """
         # 分数从高到低;同分时把 DouZero 挑的那手放最前,后面「仍听 DouZero」才有确定的参照
@@ -428,14 +436,18 @@ class Agent:
             return None
         rates = {k: wins[k] / played[k] for k in keys}
         chosen = move
-        if games >= ACT_ROLLOUT_MIN_GAMES:
+        min_games = ACT_ROLLOUT_MIN_GAMES_OPENING if sum(infoset.num_cards_left_dict.values()) >= OPENING_CARDS \
+            else ACT_ROLLOUT_MIN_GAMES
+        if games >= min_games:
             best = keys[0]
             for k in keys[1:]:
                 if rates[k] > rates[best]:
                     best = k
-            if rates[best] - rates[own] >= SWITCH_MARGIN:
+            margin = SWITCH_MARGIN if games >= ACT_ROLLOUT_MIN_GAMES else OPENING_SWITCH_MARGIN
+            if rates[best] - rates[own] >= margin:
                 chosen = next(c for k, c in zip(keys, candidates) if k == best)
-        return chosen, {"games": games, "rates": {labels[k]: round(rates[k], 2) for k in keys},
+        return chosen, {"games": games, "min_games": min_games,
+                        "rates": {labels[k]: round(rates[k], 2) for k in keys},
                         "chosen": move_label(chosen)}
 
     def play_out(self, hands, bottom, history, me, move):
