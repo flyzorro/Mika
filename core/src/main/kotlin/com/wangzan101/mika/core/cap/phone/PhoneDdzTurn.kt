@@ -307,11 +307,27 @@ internal object PhoneDdzTurn : PhoneTool {
     }
 
     /**
-     * 手牌 + 底牌里有没有不可能的张数:同一张超过 4 张,或者大小王重复。
-     * 2026-11-16 15:16 那局底牌把一张牌认成 3,和手里 3333 冲突,服务报 more_cards_than_exist:这种牌不送服务,直接不加倍。
+     * 手牌和底牌对不对得上,对不上就是认错了:不送服务,直接不加倍。
+     * 农民 17 张:手牌 + 底牌里同一张超过 4 张,或者大小王重复。2026-11-16 15:16 那局底牌把一张牌认成 3,
+     * 和手里 3333 冲突,服务报 more_cards_than_exist。
+     * 地主 20 张已经含底牌:底牌再和手牌重样是正常的,只按这 20 张自己查不可能的张数,
+     * 再要求三张底牌都能在手里按张数找到——少一张、或者手里张数不够才是底牌认错。
      */
-    private fun doubleCardsClash(hand: List<String>, bottom: List<String>): Boolean =
-        (hand + bottom).groupingBy { it }.eachCount().any { (rank, n) -> n > 4 || (rank == "SJ" || rank == "BJ") && n > 1 }
+    private fun doubleCardsClash(hand: List<String>, bottom: List<String>): Boolean {
+        if (impossibleCards(if (hand.size == 20) hand else hand + bottom)) return true
+        if (hand.size != 20) return false
+        val counts = hand.groupingBy { it }.eachCount().toMutableMap()
+        for (card in bottom) {
+            val left = counts[card] ?: return true
+            if (left == 0) return true
+            counts[card] = left - 1
+        }
+        return false
+    }
+
+    /** 这些牌里有不可能的张数:同一张超过 4 张,或者大小王重复。 */
+    private fun impossibleCards(cards: List<String>): Boolean =
+        cards.groupingBy { it }.eachCount().any { (rank, n) -> n > 4 || (rank == "SJ" || rank == "BJ") && n > 1 }
 
     override val verb = Verb.PhoneGame
     override val risk = Risk.Write
