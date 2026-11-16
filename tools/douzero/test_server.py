@@ -290,6 +290,39 @@ class EndgameTest(unittest.TestCase):
         self.assertIn(tuple(sorted(cards(["SJ", "BJ"]))), endgame.moves(hand, cards(["4"])))
         self.assertNotIn((), endgame.moves(hand, []))
 
+    def test_the_last_pair_is_not_treated_as_a_random_pair(self):
+        # 2026-11-16 20:51:41 土豪场,我是地主:手里 BJ SJ 2 Q 9 9,下家四张时先出 7 7 只剩两张,
+        # 上家剩六张,没露面的是 4 9 K K A A 2 2。搜索把任意两张当成一样可能,算出 9 9 赢的分法最多;
+        # 可刚主动出过对子的人最后两张多半还是一对,只有王炸能赢 KK。应该出王炸。
+        history = [["3", "3"], ["4", "4"], ["Q", "Q"], ["K", "K"], ["A", "A"], [], [],
+                   ["5", "5", "5", "3"], ["6", "6", "6", "5"], ["4", "J", "J", "J"], [], [],
+                   ["6", "7", "8", "9", "10"], [], [], ["7"], ["J"], ["2"], [], [],
+                   ["8", "8", "8", "3"], [], ["10", "10", "10", "Q"], [], [], ["7", "7"], []]
+        play = ADVISOR.act("landlord", ["BJ", "SJ", "2", "Q", "9", "9"], ["9", "10", "Q"], history)
+        self.assertEqual(["SJ", "BJ"], [NAMES[c] for c in play])
+
+    def test_a_single_lead_does_not_talk_the_search_into_a_pair(self):
+        # 同样的残局,但下家最后不是出对子,而是把对子拆开出了一张单 7:这时他手里不太可能还留着对子。
+        # 加权不能变成「永远猜对子」:王炸在 9 张(4 9 K K A A 2 2 7)的分法里只赢 65%,
+        # 单张/不出每一种都赢,所以仍按不加权时的选择出单张 2,而不是王炸。2026-11-16 20:51:41 土豪场同局的推断。
+        history = [["3", "3"], ["4", "4"], ["Q", "Q"], ["K", "K"], ["A", "A"], [], [],
+                   ["5", "5", "5", "3"], ["6", "6", "6", "5"], ["4", "J", "J", "J"], [], [],
+                   ["6", "7", "8", "9", "10"], [], [], ["7"], ["J"], ["2"], [], [],
+                   ["8", "8", "8", "3"], [], ["10", "10", "10", "Q"], [], [], ["7"], []]
+        play = ADVISOR.act("landlord", ["BJ", "SJ", "2", "Q", "9", "9"], ["9", "10", "Q"], history)
+        self.assertEqual(["2"], [NAMES[c] for c in play])
+
+    def test_a_terrible_opponent_move_does_not_turn_off_the_search(self):
+        # 2026-11-16 人工构造(用 plain DouZero 随机打到残局,再让地主在倒数第 2 手故意出一张
+        # DouZero 分数比最优低 3.64 的单 K):这张 K 在温度 0.02 下 float32 概率下溢成 0,
+        # 4 手概率相乘后所有分法权重都是 0。旧实现 total=0、wins 全 0,act 不换牌,退回 DouZero
+        # 原本的 pass;可不加权的残局搜索这手会换成 8 8。加权必须仍按搜索换牌。
+        history = [['9'], ['K'], [], ['2'], [], [], ['4', '4'], [], ['10', '10'], ['J', 'J'], ['Q', 'Q'], [], ['A', 'A'], [], [],
+                   ['10'], [], ['Q'], ['2'], [], [], ['6', '6'], [], ['9', '9'], [], [], ['K'], [], [], ['K'], [], ['A'], [], [],
+                   ['6'], ['2'], [], [], ['5', '5'], ['8', '8'], [], [], ['SJ', 'BJ'], [], [], ['K'], ['2'], [], [], ['5', '5']]
+        play = ADVISOR.act("landlord_up", ["3", "6", "8", "8", "9", "J", "A"], ["9", "J", "2"], history)
+        self.assertEqual(["8", "8"], [NAMES[c] for c in play])
+
     def test_a_landlord_with_a_pair_left_who_leads_wins(self):
         import endgame, time
         solver = endgame.Solver(time.monotonic() + 1)

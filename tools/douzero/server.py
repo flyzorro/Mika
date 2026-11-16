@@ -26,12 +26,14 @@ POST /double {"seat": "landlord" | "landlord_down" | "landlord_up" | "farmer",
 # farmer 是认不出地主坐哪边时用的:两个农民座位各算一遍(共用时间预算),取较低的赢面
 """
 import json
+import math
 import os
 import random
 import sys
 import time
 from collections import Counter
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from types import SimpleNamespace
 
 import torch
 from douzero.dmc.models import model_dict
@@ -111,6 +113,16 @@ ACT_TOTAL_BUDGET_S = 3.2
 ACT_BUDGET_SAFETY_S = 0.1
 ACT_ROLLOUT_MIN_S = 0.8
 ACT_ENDGAME_BUDGET_S = 1.5
+# 残局分法似然:每家对手取最近 [LIKELIHOOD_MOVES] 手不是不出的出牌,各手概率相乘。取 2 是因为
+# 2026-11-16 20:51:41 土豪场那一手,下家倒数第二手 10 10 10 + Q:如果手里还留着 4、9 这种低单张,
+# 正常会拿小牌当带牌而不是 Q。只看最近一手 7 7 看不出这点,两手里的三带一才把「剩零散小牌」的分法压下去。
+# 温度见 LIKELIHOOD_TEMPERATURE;对每手都用动作 softmax(该手在当时所有合法出牌里的概率),不掺绝对分值。
+LIKELIHOOD_MOVES = 2
+# 残局分法似然的温度:对手当时那副牌上,对那一手所有合法出牌的 DouZero 分数做 softmax 时除以它。
+# 2026-11-16 20:51:41 土豪场那一手(地主 BJ SJ 2 Q 9 9,下家刚出 7 7 只剩两张)离线扫过 0.005~1.0:
+# 0.2(只看最近一手时的温度)这一手仍是 9 9;取最近两手后 0.03 以下才翻成王炸,0.05 又回到 9 9。
+# 0.02 时王炸的加权权重是 9 9 的 6.6 倍、不出的 16 倍;0.01 更极端,0.03 只剩 2 倍。取 0.02 留余量。
+LIKELIHOOD_TEMPERATURE = 0.02
 # 后半局不管分差都现场模拟:三家手里合起来只剩 LATE_CARDS 张时,DouZero 分数最高的 LATE_TOP 手(不出也算一手)都模拟一遍。
 # 2026-11-16 11:43:53 土豪场,我是地主下家,手里 2 2 K Q J 10 9 8 8 8 4 3 3,三家还剩 33 张。
 # DouZero 给 8 9 10 J Q K +0.736、8 9 10 J Q +0.627,只差 0.109,按 CLOSE_MARGIN 不模拟,信分数出了 8..K,输了。
@@ -335,6 +347,63 @@ def late_picks(order, actions, top=LATE_TOP):
     return picks
 
 
+def history_frame(history, index):
+    """第 [index] 手之前那些不随分法变的东西:每家从那手起又出了哪些牌、之前出过哪些、要压的牌。
+
+    返回 (after, before, last_move_dict, bomb_num, last):[after] 是每家在第 [index] 手及以后出的牌
+    (倒推当时手牌用),[before] 是之前出过的(模型的 played_cards),[last] 是当时要压的那手。
+    """
+    after = {s: [] for s in SEATS}
+    before = {s: [] for s in SEATS}
+    last_move_dict = {s: [] for s in SEATS}
+    bomb_num = 0
+    for j, move in enumerate(history):
+        seat = SEATS[j % 3]
+        if j >= index:
+            after[seat] += move
+            continue
+        before[seat] += move
+        last_move_dict[seat] = list(move)
+        if md.get_move_type(list(move))["type"] in (md.TYPE_4_BOMB, md.TYPE_5_KING_BOMB):
+            bomb_num += 1
+    if index == 0:
+        last = []
+    elif history[index - 1]:
+        last = list(history[index - 1])
+    elif index >= 2:
+        last = list(history[index - 2])
+    else:
+        last = []
+    return after, before, last_move_dict, bomb_num, last
+
+
+def history_state(history, hands, seat, index, frame):
+    """把 [history] 重放到第 [index] 手之前,用三家此刻剩的 [hands] 倒推出当时的手牌,造出 [seat] 那时的 info set。
+
+    第 [index] 手是 [seat] 出的:他当时的手牌 = 此刻剩的牌 + 他在这手及以后出的牌。别的两家同理。
+    legal_actions 用 endgame.moves 生成(同样剔掉大小王一起当带牌),模型在自己的席位上打分。
+    """
+    after, before, last_move_dict, bomb_num, last = frame
+    hand_before = {s: sorted(list(hands[s]) + after[s]) for s in SEATS}
+    legal = endgame.moves(tuple(hand_before[seat]), list(last))
+    return SimpleNamespace(
+        player_position=seat,
+        player_hand_cards=list(hand_before[seat]),
+        other_hand_cards=sorted(sum((hand_before[s] for s in SEATS if s != seat), [])),
+        num_cards_left_dict={s: len(hand_before[s]) for s in SEATS},
+        three_landlord_cards=[],
+        card_play_action_seq=[list(m) for m in history[:index]],
+        legal_actions=[list(m) for m in sorted(legal)],
+        last_move=list(last),
+        last_two_moves=[list(m) for m in history[max(0, index - 2):index]],
+        last_move_dict=last_move_dict,
+        played_cards=before,
+        bomb_num=bomb_num,
+        last_pid=None,
+        all_handcards=None,
+    )
+
+
 def fewer_plays(hand, keys, rates, scores, own, deadline=None):
     """模拟赢面差不多时,在赢面不低于 DouZero 那手([own])的候选里挑出完剩下手数最少的一手。
 
@@ -476,7 +545,7 @@ class Agent:
         # 三家「只按 DouZero 打分」的对手,现场模拟时用;由 Advisor 建好后填进来
         self.plain = {}
 
-    def act(self, infoset, report=None):
+    def act(self, infoset, report=None, likelihood=None):
         # 一手牌的总预算从这里开始算:下面 DouZero 打分、残局搜索、两手出完、现场模拟、比手数都只能用剩下的时间
         deadline = time.monotonic() + ACT_TOTAL_BUDGET_S
         # 斗地主经典版不允许大小王一起当带牌(飞机带单的翅膀、四带二的两张单牌):DouZero 的合法出牌里有,
@@ -489,7 +558,8 @@ class Agent:
         # 剩的牌少时按明牌把各种分法算到底:有赢面更大的一手就换成它(赢面一样大的里挑 DouZero 打分最高的)。
         # 下面几条硬规则只在搜索也认为不吃亏时才换。搜索最多 1.5 秒,总预算不够时只给剩下的
         left_s = deadline - time.monotonic()
-        solved = endgame.best(infoset, budget=min(ACT_ENDGAME_BUDGET_S, left_s)) if left_s > 0 else None
+        solved = endgame.best(infoset, budget=min(ACT_ENDGAME_BUDGET_S, left_s), likelihood=likelihood) \
+            if left_s > 0 else None
         allowed = None
         if solved is not None:
             wins, _ = solved
@@ -867,6 +937,79 @@ class Advisor:
         rates = {s: wins[s] / played for s in seats}
         return min(rates.values()), played
 
+    def likelihood(self, history, me):
+        """给 endgame.best 的似然回调:按两家对手最近 [LIKELIHOOD_MOVES] 手不是不出的出牌,判断一种分法像不像他们当时会这么出。
+
+        每个对手的每一手都把他当时的手牌和局面用 history 倒推出来,用他自己座位的 DouZero 模型给当时所有
+        合法出牌打分,取这一手的 log softmax 概率 P(那手 | 当时手牌);同一对手各手 log 概率相加,两家对手
+        再相加。只看最近一手不够:下家倒数第二手 10 10 10 + Q 才是「他手里没有 4/9 这种零散小牌」的证据。
+        用 float64 在对数空间算,再减去所有分法里最大的 log 似然后 exp:相对权重不变,但对手真出过一手
+        模型觉得极差的牌时不会像 float32 概率相乘那样下溢成 0(那会让 total=0、残局搜索整个退回 DouZero)。
+        某个观测出法在这种分法的合法出牌里找不到时(正常历史不该发生)这种分法权重记 0;
+        如果所有分法都这样(全 -inf),这次退回不加权,不能把搜索关掉。
+        一次把同一手的全部分法攒成一批前向;到 [deadline] 就抛 Timeout,best 退回不加权的摆法数。
+        回调第一次被调用时才去翻 history:不是残局时 endgame.best 根本不叫它,这一手就没有额外开销。
+        """
+        def callback(splits_hands, deadline):
+            indices = {}
+            for i in range(len(history) - 1, -1, -1):
+                if history[i] and SEATS[i % 3] != me:
+                    seat = SEATS[i % 3]
+                    moves = indices.setdefault(seat, [])
+                    if len(moves) < LIKELIHOOD_MOVES:
+                        moves.append(i)
+            logs = [0.0] * len(splits_hands)
+            for seat, moves in indices.items():
+                for index in moves:
+                    frame = history_frame(history, index)
+                    states = []
+                    for n, hands in enumerate(splits_hands):
+                        if n % 32 == 0 and time.monotonic() > deadline:
+                            raise endgame.Timeout()
+                        states.append(history_state(history, hands, seat, index, frame))
+                    scores = self.state_values(seat, states, deadline)
+                    observed = tuple(sorted(history[index]))
+                    for k, (state, values) in enumerate(zip(states, scores)):
+                        if not splits_hands[k][seat]:
+                            continue
+                        actions = [tuple(sorted(m)) for m in state.legal_actions]
+                        if observed not in actions:
+                            logs[k] = float("-inf")
+                            continue
+                        j = actions.index(observed)
+                        logs[k] += float(torch.log_softmax(
+                            values.double() / LIKELIHOOD_TEMPERATURE, dim=0)[j])
+                    if time.monotonic() > deadline:
+                        raise endgame.Timeout()
+            finite = [x for x in logs if x != float("-inf")]
+            if not finite:
+                return [1.0] * len(splits_hands)
+            top = max(finite)
+            return [math.exp(x - top) if x != float("-inf") else 0.0 for x in logs]
+
+        return callback
+
+    def state_values(self, seat, states, deadline):
+        """一批 [seat] 的 info set 攒成一次前向,返回每个 info set 各手的 DouZero 分数。"""
+        zs, xs, sizes = [], [], []
+        for state in states:
+            if time.monotonic() > deadline:
+                raise endgame.Timeout()
+            obs = get_obs(state)
+            zs.append(torch.from_numpy(obs["z_batch"]).float())
+            xs.append(torch.from_numpy(obs["x_batch"]).float())
+            sizes.append(len(state.legal_actions))
+        with torch.no_grad():
+            values = self.agents[seat].model.forward(
+                torch.cat(zs), torch.cat(xs), return_value=True)["values"].flatten()
+        if time.monotonic() > deadline:
+            raise endgame.Timeout()
+        out, start = [], 0
+        for size in sizes:
+            out.append(values[start:start + size])
+            start += size
+        return out
+
     def act(self, seat, hand, bottom, history, report=None):
         hand, bottom = cards(hand), cards(bottom)
         history = resolve(hand, [[str(c) if str(c).startswith("?") else cards([c])[0] for c in m] for m in history])
@@ -882,7 +1025,7 @@ class Advisor:
                 raise Mismatch("game_already_over")
         if env.acting_player_position != seat:
             raise Mismatch("not_your_turn")
-        return self.agents[seat].act(env.game_infoset, report)
+        return self.agents[seat].act(env.game_infoset, report, likelihood=self.likelihood(history, seat))
 
 
 def handler(advisor):
