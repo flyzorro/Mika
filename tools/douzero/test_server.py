@@ -647,5 +647,74 @@ class CloseCallRolloutTest(unittest.TestCase):
         self.assertLess(time.monotonic() - started, 3.0)
 
 
+class ActBudgetTest(unittest.TestCase):
+    """一手牌总共只给 ACT_TOTAL_BUDGET_S 秒:残局搜索、两手出完、现场模拟都在里面分,手机 4 秒不会超时。
+    按公开入口 ROLLOUT_ADVISOR.act 测(模拟默认开着)。"""
+
+    # 2026-11-16 12:18:11 土豪场实机:我是地主下家,手里 A 5 4 4 4,三家还剩 19 张。
+    # 残局搜索 1.5 秒没结论、现场模拟又 2.5 秒,回复 4903 毫秒;手机 4 秒超时,标成 douzero_unreachable
+    # 重发同一手,三次各约 4020 毫秒,最后按简单规则打完这一局。
+    LOGGED = dict(seat="landlord_up",
+                  hand=["A", "5", "4", "4", "4"],
+                  bottom=["4", "7", "J"],
+                  history=[["7", "7", "7", "4"], [], [], ["8", "8"], [], ["Q", "Q"], ["K", "K"], [], ["2", "2"], [], [],
+                           ["8"], ["9"], ["J"], ["K"], [], [], ["6", "6", "6", "10", "10"], ["J", "J", "J", "10", "10"],
+                           ["A", "A", "A", "5", "5"], [], [], ["6"], ["9"], ["Q"], ["K"]])
+
+    def act(self, position, report=None):
+        return ROLLOUT_ADVISOR.act(position["seat"], position["hand"], position["bottom"],
+                                   position["history"], report)
+
+    def test_the_logged_request_answers_inside_the_phone_clock(self):
+        # 实机那一手回复 4903 毫秒,手机 4 秒就超时;总预算封顶后要在 3.5 秒内答完
+        started = time.monotonic()
+        self.act(self.LOGGED)
+        self.assertLess(time.monotonic() - started, 3.5)
+
+    def test_a_search_that_burns_the_clock_leaves_no_time_for_the_rollout(self):
+        # 残局搜索睡掉 2.6 秒、又没有结论:剩下的时间不到 ACT_ROLLOUT_MIN_S,现场模拟整个跳过,保留 DouZero 那一手
+        import endgame
+        real = endgame.best
+
+        def slow_best(*args, **kwargs):
+            time.sleep(2.6)
+            return None
+
+        endgame.best = slow_best
+        try:
+            report = {}
+            started = time.monotonic()
+            self.act(CloseCallRolloutTest.LATE, report)
+            elapsed = time.monotonic() - started
+        finally:
+            endgame.best = real
+        self.assertLess(elapsed, 3.5)
+        self.assertEqual("no_time", report.get("rollout_skipped"))
+        self.assertNotIn("rollout", report)
+
+    def test_a_search_that_uses_its_own_budget_still_leaves_room_for_the_rollout(self):
+        # 残局搜索睡满自己的 1.5 秒:总预算还剩 1.6 秒左右,现场模拟照常跑,只是模拟得少些
+        import endgame
+        real = endgame.best
+
+        def slow_best(*args, **kwargs):
+            time.sleep(1.5)
+            return None
+
+        endgame.best = slow_best
+        try:
+            report = {}
+            started = time.monotonic()
+            self.act(CloseCallRolloutTest.LIVE, report)
+            elapsed = time.monotonic() - started
+        finally:
+            endgame.best = real
+        self.assertLess(elapsed, 3.5)
+        rollout = report.get("rollout")
+        self.assertIsNotNone(rollout, "残局搜索用掉 1.5 秒后还剩 1.6 秒,应该照常现场模拟")
+        self.assertGreater(rollout["budget_left"], 1.2)
+        self.assertLess(rollout["budget_left"], 1.8)
+
+
 if __name__ == "__main__":
     unittest.main()
