@@ -397,6 +397,15 @@ class DdzCardsTest {
         assertEquals(listOf("K", "Q", "8"), DdzCards.bottom(fullFrame("double")))
     }
 
+    /**
+     * 2026-11-16 23:04 普通场:底牌是「大王 + A + A」,放大摆出来时大王那张只认出两张里的 A,
+     * DouZero 收到 bottom=A,A;地主后来打出王炸。大王牌左边竖排红字「JOKER」(字母 J 的顶饰紧贴牌顶),
+     * 原来的字形窗口从牌顶下 4 行起,切掉了 J 的顶饰,和样本差 0.33,刚好越过底牌门槛 0.3。
+     */
+    @Test fun readsTheBigJokerInTheBottomRevealedAtDoubling() {
+        assertEquals(listOf("BJ", "A", "A"), DdzCards.bottom(fullFrame("double_bottom_joker")))
+    }
+
     @Test fun seesWhoseTurnItIs() {
         assertEquals(DdzSide.Right, DdzCards.clock(frame("table_left55")))
         assertEquals(DdzSide.Left, DdzCards.clock(frame("table_rightKK")))
