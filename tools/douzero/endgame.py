@@ -74,6 +74,49 @@ def minus(hand, move):
     return tuple(left)
 
 
+# 出完一手以后还剩几手(自己每次都先出)是「这手干不干净」的尺子。拆分组合多,一次决策最多算 MIN_PLAYS_BUDGET_S 秒;
+# 算过的牌型留着,同一手牌反复问不用重算;服务是长跑进程,攒到上限就整个清掉,免得越积越多
+MIN_PLAYS_BUDGET_S = 0.2
+MIN_PLAYS_MEMO_MAX = 50000
+_MIN_PLAYS = {}
+
+
+def min_plays(hand, deadline=None):
+    """[hand] 自己每次先出时最少几手出完:把牌拆成最少的几手合规牌(牌型同 DouZero,大小王不当带牌)。
+
+    2026-11-16 11:58:20 土豪场那手 BJ 2 J 9 8 7 6 5 5 5 5 4:出 4..9 剩 BJ 2 J 5 5 5 三手(555 带 J、2、BJ),
+    出 5..9 剩 BJ 2 J 5 5 5 4 四手。算不完([deadline] 到了,默认 MIN_PLAYS_BUDGET_S 秒)返回 None,调用方就不比手数。
+    """
+    if deadline is None:
+        deadline = time.monotonic() + MIN_PLAYS_BUDGET_S
+    if len(_MIN_PLAYS) > MIN_PLAYS_MEMO_MAX:
+        _MIN_PLAYS.clear()
+    try:
+        return _min_plays(tuple(sorted(hand)), deadline)
+    except Timeout:
+        return None
+
+
+def _min_plays(hand, deadline):
+    if not hand:
+        return 0
+    if hand in _MIN_PLAYS:
+        return _MIN_PLAYS[hand]
+    if time.monotonic() > deadline:
+        raise Timeout()
+    best = None
+    for move in moves(hand, ()):
+        if not move:
+            continue
+        plays = 1 + _min_plays(minus(hand, move), deadline)
+        if best is None or plays < best:
+            best = plays
+            if best == 1:
+                break
+    _MIN_PLAYS[hand] = best
+    return best
+
+
 class Solver:
     """明牌下地主一方赢不赢。[deadline] 到了就抛 Timeout。"""
 
