@@ -331,8 +331,8 @@ internal object PhoneDdzTurn : PhoneTool {
         if (turn.mode != DdzMode.Human) return
         if (turn.auctionClosed) return
         // 第一手已经摆进出牌区、但这一帧还没记进 history:按第一手已出处理,不读这一帧的标签。
-        // 出牌的金红特效会压在头像下沿,把「顺子」之类认成加倍。
-        if (DdzSide.entries.any { DdzCards.play(frame, it) is DdzSeen.Cards }) {
+        // 出牌的金红特效会压在头像下沿,把「顺子」之类认成加倍。牌刚落下认不全(Unsure)也算已经出了。
+        if (DdzSide.entries.any { DdzCards.play(frame, it).let { s -> s is DdzSeen.Cards || s is DdzSeen.Unsure } }) {
             closeAuction(turn)
             return
         }
