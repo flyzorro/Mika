@@ -81,13 +81,34 @@ class DdzDoubleBadgeTest {
         restore(DdzSeat.Left, listOf("J", "9", "3"), emptyList(), current = DdzSeat.Me)
     }
 
+    /** 右家是地主(2026-11-17 13:30 素材):右家是 landlord,左家是 landlord_down。 */
+    private fun rightLandlordTracker() = DdzTracker(DdzSettlingPolicy.HUMAN).apply {
+        restore(DdzSeat.Right, listOf("J", "9", "3"), emptyList(), current = DdzSeat.Me)
+    }
+
+    /** 没有按钮的一帧(别家还在想):phase 是 Other,不会马上问 DouZero。 */
+    private fun withoutButtons(frame: RawFrame): RawFrame {
+        val rows = (DdzScreen.ROWS + DdzCards.ROWS + DdzCards.LOBBY_ROWS + DdzPopups.SCAN_ROWS + DdzCards.DOUBLE_ROWS).distinct()
+        return RawFrame(frame.width, frame.height, rows.associateWith { y ->
+            if (y in 440..525) IntArray(frame.width) else frame.row(y)!!.copyOf()
+        })
+    }
+
     /** 走一遍 start(human) → 装上这一局的 tracker → wait,返回 DouZero 收到的 /act 请求体。 */
-    private suspend fun askAt(table: RawFrame, tracker: DdzTracker = landlordMeTracker()): Pair<List<String>, ToolExecution> {
+    private suspend fun askAt(
+        table: RawFrame,
+        tracker: DdzTracker = landlordMeTracker(),
+        first: RawFrame? = null,
+    ): Pair<List<String>, ToolExecution> {
         val asked = mutableListOf<String>()
         val saved = PhoneDdzTurn.advise
         PhoneDdzTurn.advise = { _, body -> asked += body; """{"play":[]}""" }
         try {
-            val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(full("human_left_10_10_10_3"), table)))
+            val frames = ArrayDeque<RawFrame>()
+            frames += full("human_left_10_10_10_3")
+            first?.let { frames += it }
+            frames += table
+            val game = Game(PhoneDdzTurn.PACKAGE, frames)
             val dispatcher = toolDispatcher(game)
             PhoneDdzTurn.execute(
                 Args(PhoneDdzTurn.def, Json.parseToJsonElement(
@@ -121,6 +142,16 @@ class DdzDoubleBadgeTest {
             val badges = DdzCards.doubleBadges(trimmed(name))
             assertEquals("$name 左家: $badges", true, badges[DdzSide.Left])
             assertEquals("$name 右家: $badges", false, badges[DdzSide.Right])
+        }
+    }
+
+    @Test fun theRightLandlordsBadgeIsRead() {
+        // 2026-11-17 13:30 精英场:右家是地主、加了倍;左家是牌背占位图,没加倍。
+        // during_double 是刚加倍、after 是加倍结束出牌前、follow 是已经在出牌阶段(标签还留着)。
+        for (name in listOf("double_badge_right", "double_badge_right_during", "double_badge_right_follow")) {
+            val badges = DdzCards.doubleBadges(trimmed(name))
+            assertEquals("$name 左家: $badges", false, badges[DdzSide.Left])
+            assertEquals("$name 右家: $badges", true, badges[DdzSide.Right])
         }
     }
 
@@ -183,6 +214,27 @@ class DdzDoubleBadgeTest {
         val double = Json.parseToJsonElement(asked.first()).jsonObject["auction"]!!.jsonObject["double"]!!.jsonObject
         assertEquals("左家: $double", true, double["landlord"]!!.jsonPrimitive.boolean)
         assertEquals("右家: $double", false, double["landlord_up"]!!.jsonPrimitive.boolean)
+    }
+
+    @Test fun theRightLandlordSeatIsNamedLandlord() = runTest {
+        // 2026-11-17 13:30 素材:右家是地主、加了倍;左家是牌背占位图,没加倍。
+        val (asked, result) = askAt(tableWithBadges("double_badge_right"), rightLandlordTracker())
+        assertTrue("要问 DouZero: ${result.content}", asked.isNotEmpty())
+        val double = Json.parseToJsonElement(asked.first()).jsonObject["auction"]!!.jsonObject["double"]!!.jsonObject
+        assertEquals("右家: $double", true, double["landlord"]!!.jsonPrimitive.boolean)
+        assertEquals("左家: $double", false, double["landlord_down"]!!.jsonPrimitive.boolean)
+    }
+
+    @Test fun aBadgeThatShowsUpAfterTheFirstPlayIsStillConfirmed() = runTest {
+        // follow 素材:已经在出牌阶段、标签还在。第一手出来后先把「没有」定下来,后面又看到标签仍要改成 true。
+        val first = withoutButtons(tableWithBadges("double_badge_none"))
+        assertTrue("构造:第一帧还是牌桌", DdzCards.classicHumanTable(first))
+        assertEquals("构造:第一帧没有按钮", DdzPhase.Other, DdzScreen.read(first, classic = true).phase)
+        val (asked, result) = askAt(tableWithBadges("double_badge_right_follow"), rightLandlordTracker(), first = first)
+        assertTrue("要问 DouZero: ${result.content}", asked.isNotEmpty())
+        val double = Json.parseToJsonElement(asked.first()).jsonObject["auction"]!!.jsonObject["double"]!!.jsonObject
+        assertEquals("右家后来看到标签: $double", true, double["landlord"]!!.jsonPrimitive.boolean)
+        assertEquals("左家一直没标签: $double", false, double["landlord_down"]!!.jsonPrimitive.boolean)
     }
 
     @Test fun theActRequestSendsFalseWhenNobodyDoubled() = runTest {

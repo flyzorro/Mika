@@ -936,11 +936,11 @@ internal object DdzCards {
     private const val RIGHT_AVATAR_X1 = 2341
     private const val RIGHT_AVATAR_Y0 = 239
     private const val RIGHT_AVATAR_Y1 = 375
-    /** 红标签在头像框下沿居中:左家 118..168/364..386,右家按对称位置。 */
+    /** 红标签在头像框下沿:左家实测 118..168/364..386,右家实测 2255..2301/366..389;框各留几像素余量。 */
     private const val LEFT_BADGE_X0 = 110
     private const val LEFT_BADGE_X1 = 176
-    private const val RIGHT_BADGE_X0 = 2236
-    private const val RIGHT_BADGE_X1 = 2302
+    private const val RIGHT_BADGE_X0 = 2247
+    private const val RIGHT_BADGE_X1 = 2309
     private const val BADGE_Y0 = 355
     private const val BADGE_Y1 = 395
     /** 有标签时红底约 360 个像素;没有标签的帧里最多 170(右家头像里的红头发)。 */
