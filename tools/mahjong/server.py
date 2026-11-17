@@ -1,32 +1,90 @@
 """四川麻将血战到底出牌建议服务:给 Mika 的安卓端用。只在本机或局域网里跑,没有鉴权。
 
+按期望得分推荐:每种打法对「快胡 / 清一色 / 碰碰胡 / 七对」各估一次
+「能胡的概率 × 胡了值几倍」,取期望最高的目标。默认端口 3428。
+
 POST /discard
   {"hand": ["1m", "2m", ...],                 # 自己此刻的手牌,14 张(或还没摸牌时 13 张)
    "melds": [{"type": "pon", "tile": "5p"}],  # 可选,碰/杠;可省略或为空;没有吃
-   "que": "s"}                                # 定缺,m/p/s 之一
+   "que": "s",                                # 定缺,m/p/s 之一
+   "draws": 8}                                # 可选,自己还能摸几张,1–30,默认 8
 # 碰算 3 张、杠算 4 张;手牌张数 + 3 × 副露组数 = 14
 
 成功(14 张、合法):
-  {"win": false, "discard": "9p", "shanten": 0, "ukeire": 4, "waits": ["5p"], "queLeft": 0,
-   "options": [{"discard": "9p", "shanten": 0, "ukeire": 4, "waits": ["5p"]}, ...]}
+  {"win": false, "discard": "5s", "target": "qingyise", "fan": 2, "value": 1.35,
+   "shanten": 2, "ukeire": 12, "waits": ["1m", ...], "queLeft": 0,
+   "options": [{"discard": "5s", "target": "qingyise", "fan": 2, "value": 1.35,
+                "shanten": 2, "ukeire": 12, "waits": ["1m", ...]}, ...]}
   options 最多 3 个,第一个就是推荐;已胡时只返回 {"win": true}。
-  waits/ukeire 是理论进张:只扣自己手牌和副露,不扣场上已经打出去的牌。
-  queLeft 是切牌前手里还有几张定缺牌;有定缺牌时 shanten/ukeire 只按非定缺门的牌算。
+  target 是 fast(快胡,普通型或七对)、qingyise(清一色)、pengpeng(碰碰胡)或 qidui(七对)。
+  fan 是这个目标胡了的番数;value 是期望倍数(赢牌概率 × 番数倍数,保留 2 位)。
+  shanten/ukeire/waits 指的是这个目标的向听、理论进张和进张牌。
+  waits/ukeire 只扣自己手牌和副露,不扣场上已经打出去的牌。
+  queLeft 是切牌前手里还有几张定缺牌;有定缺牌时先切定缺牌,shanten/ukeire 只按非定缺门算。
+
+POST /que
+  {"hand": ["1m", ... 13 或 14 张 ...], "draws": 8}   # 开局定缺建议;没有碰杠
+成功:
+  {"que": "s", "options": [{"que": "s", "target": "qingyise", "value": 1.2},
+                          {"que": "p", "target": "fast", "value": 0.9},
+                          {"que": "m", "target": "fast", "value": 0.4}]}
+  三门都列出,按期望从高到低;期望一样时选张数少的那门,再一样按 m<p<s。
 
 校验错误(HTTP 200,安卓端把非 2xx 当成连不上):
-  {"error": "bad_tile" | "bad_que" | "bad_meld" | "not_drawn" | "wrong_count" | "too_many",
+  {"error": "bad_tile" | "bad_que" | "bad_meld" | "not_drawn" | "wrong_count"
+            | "too_many" | "bad_draws",
    "detail": "人话"}
 只有请求体不是 JSON、路径不对这类才用 4xx/404。
 """
 import json
+import os
 import re
 import sys
+from math import comb
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from mahjong.shanten import Shanten
 
 TILE_RE = re.compile(r"^([1-9])([mps])$")
 SUIT_OFFSET = {"m": 0, "p": 9, "s": 18}
+
+DEFAULT_DRAWS = 8
+MIN_DRAWS = 1
+MAX_DRAWS = 30
+PROB_TABLE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "prob_table.json")
+
+
+def _load_prob_table():
+    try:
+        with open(PROB_TABLE_PATH, encoding="utf-8") as file:
+            return json.load(file)
+    except (OSError, ValueError):
+        return None
+
+
+PROB_TABLE = _load_prob_table()
+
+
+def win_probability(shanten, ukeire, draws):
+    """这个目标还能赢的概率:向听、进张、还能摸几张,三项都不减则概率不减。
+
+    表来自 calibrate_prob.py 的随机模拟校准;表不在时退回未校准的二项估计。
+    """
+    if shanten < 0:
+        return 1.0
+    if draws <= 0:
+        return 0.0
+    if PROB_TABLE is not None:
+        s = min(shanten, PROB_TABLE["max_shanten"])
+        u = min(max(ukeire, 0), PROB_TABLE["max_ukeire"])
+        d = min(draws, PROB_TABLE["max_draws"])
+        return PROB_TABLE["milli"][s][u][d] / 1000.0
+    coefficient = 1.0
+    need = shanten + 1
+    if need > draws:
+        return 0.0
+    q = min(1.0, coefficient * ukeire / 94.0)
+    return sum(comb(draws, k) * q ** k * (1 - q) ** (draws - k) for k in range(need, draws + 1))
 
 
 class RequestError(Exception):
@@ -53,20 +111,13 @@ def regular_shanten(tiles):
     return Shanten.calculate_shanten_for_regular_hand(to_counts(tiles))
 
 
-def seven_pairs_shanten(tiles):
-    # 4 张相同算 2 对;按 spec 不扣「种类不足」
-    return 6 - sum(count // 2 for count in to_counts(tiles))
-
-
 def tile_order(tile):
     return (SUIT_OFFSET[tile[1]] // 9, int(tile[0]))
 
 
-def shanten_of(tiles, melds):
-    regular = regular_shanten(tiles)
-    if melds:
-        return regular
-    return min(regular, seven_pairs_shanten(tiles))
+SUIT_INDEX = {"m": 0, "p": 1, "s": 2}
+INDEX_SUIT = "mps"
+TARGET_PRIORITY = {"qingyise": 3, "qidui": 2, "pengpeng": 1, "fast": 0}
 
 
 def filtered_regular_shanten(useful, melds_count):
@@ -85,56 +136,313 @@ def filtered_regular_shanten(useful, melds_count):
     return max(Shanten.calculate_shanten_for_regular_hand(counts), missing)
 
 
-def filtered_shanten(useful, melds):
-    regular = filtered_regular_shanten(useful, len(melds))
-    if melds:
+def qidui_need(tiles):
+    """七对还差几张:每 4 张相同算 2 对(龙七对),取 7 个「对子单位」里最值钱的。"""
+    counts = to_counts(tiles)
+    units = []
+    for index in range(27):
+        count = counts[index]
+        if count >= 2:
+            units.append(2)
+        elif count == 1:
+            units.append(1)
+        if count >= 4:
+            units.append(2)
+        elif count == 3:
+            units.append(1)
+    units.sort(reverse=True)
+    return 14 - sum(units[:7])
+
+
+def qidui_shanten(tiles):
+    return qidui_need(tiles) - 1
+
+
+def fast_shanten(tiles, melds_count):
+    regular = filtered_regular_shanten(tiles, melds_count)
+    if melds_count:
         return regular
-    pairs = sum(count // 2 for count in to_counts(useful))
-    return min(regular, 6 - pairs)
+    return min(regular, qidui_shanten(tiles))
 
 
-def analyze(hand13, melds, que, shanten):
-    base = shanten(hand13, melds)
-    counts = {}
-    for tile in hand13:
-        counts[tile] = counts.get(tile, 0) + 1
-    meld_counts = {}
+def pengpeng_need(tiles, melds_count, que):
+    """碰碰胡还差几张:(4 - 碰杠组数) 个刻子 + 1 个对子,选最省的类型。"""
+    counts = to_counts(tiles)
+    sets_needed = 4 - melds_count
+    allowed = [index for index in range(27) if INDEX_SUIT[index // 9] != que]
+    triplet_cost = {index: 3 - min(counts[index], 3) for index in allowed}
+    pair_cost = {index: 2 - min(counts[index], 2) for index in allowed}
+    best = None
+    for pair in allowed:
+        total = pair_cost[pair] + sum(sorted(triplet_cost[index] for index in allowed if index != pair)[:sets_needed])
+        if best is None or total < best:
+            best = total
+    return best
+
+
+def pengpeng_shanten(tiles, melds_count, que):
+    return pengpeng_need(tiles, melds_count, que) - 1
+
+
+def meld_tiles(meld):
+    return [meld["tile"]] * (4 if meld["type"] == "kan" else 3)
+
+
+def _counts_with_melds(tiles, melds):
+    counts = to_counts(tiles)
     for meld in melds:
-        meld_counts[meld["tile"]] = meld_counts.get(meld["tile"], 0) + (3 if meld["type"] == "pon" else 4)
+        counts[SUIT_OFFSET[meld["tile"][1]] + int(meld["tile"][0]) - 1] += (4 if meld["type"] == "kan" else 3)
+    return counts
+
+
+def _gen_count(tiles, melds, suits=None):
+    counts = _counts_with_melds(tiles, melds)
+    return sum(
+        1
+        for index in range(27)
+        if counts[index] == 4 and (suits is None or INDEX_SUIT[index // 9] in suits)
+    )
+
+
+def _all_tiles(tiles, melds):
+    return list(tiles) + [tile for meld in melds for tile in meld_tiles(meld)]
+
+
+def _duanyao(existing, waits):
+    # 只有「已经有的牌 + 所有能进的牌」都是 2–8,断幺九才是必然的番。
+    return bool(existing) and all(tile[0] not in "19" for tile in existing) and all(
+        tile[0] not in "19" for tile in waits
+    )
+
+
+def _fast_fan(useful, melds, shape, waits):
+    if shape == "qidui":
+        qingyise = bool(useful) and len({tile[1] for tile in useful}) == 1
+        duanyao = _duanyao(useful, waits)
+        return 2 + (2 if qingyise else 0) + (1 if duanyao else 0) + _gen_count(useful, melds)
+    existing = _all_tiles(useful, melds)
+    return (1 if _duanyao(existing, waits) else 0) + _gen_count(useful, melds)
+
+
+def _qingyise_fan(x_tiles, melds, suit, waits):
+    existing = _all_tiles(x_tiles, melds)
+    duanyao = bool(x_tiles) and _duanyao(existing, waits)
+    return 2 + (1 if duanyao else 0) + _gen_count(x_tiles, melds, {suit})
+
+
+def _pengpeng_fan(useful, melds, waits):
+    existing = _all_tiles(useful, melds)
+    qingyise = bool(useful) and len({tile[1] for tile in existing}) == 1
+    return (
+        (2 if len(melds) == 4 else 1)
+        + (2 if qingyise else 0)
+        + (1 if _duanyao(existing, waits) else 0)
+        + _gen_count(useful, melds)
+    )
+
+
+def _qidui_fan(useful, waits):
+    qingyise = bool(useful) and len({tile[1] for tile in useful}) == 1
+    return 2 + (2 if qingyise else 0) + (1 if _duanyao(useful, waits) else 0) + _gen_count(useful, [])
+
+
+def win_multiplier(fan):
+    """番数 → 胡牌倍数:0→1、1→2、2→4、3→8,之后每番 +4(规则页 2026-11-17)。"""
+    if fan <= 3:
+        return 2 ** fan
+    return 8 + 4 * (fan - 3)
+
+
+def is_pengpeng(hand, melds_count):
+    """手牌部分能否拆成 (4 - 碰杠组数) 个刻子 + 1 个对子。"""
+    counts = to_counts(hand)
+    sets_needed = 4 - melds_count
+    if sets_needed == 0:
+        return sum(counts) == 2 and any(count == 2 for count in counts)
+    for index, count in enumerate(counts):
+        if count < 2:
+            continue
+        rest = list(counts)
+        rest[index] -= 2
+        if sum(rest) == 3 * sets_needed and all(value % 3 == 0 for value in rest):
+            return True
+    return False
+
+
+def win_fan(hand, melds=None):
+    """一手胡牌的番数:牌型番 + 清一色 + 断幺九 + 根(规则页 2026-11-17)。"""
+    melds = melds or []
+    counts = to_counts(hand)
+    total = _counts_with_melds(hand, melds)
+    seven_pairs = not melds and len(hand) == 14 and all(count % 2 == 0 for count in counts)
+    regular = sum(counts) in (2, 5, 8, 11, 14) and Shanten.calculate_shanten_for_regular_hand(counts) == -1
+    if seven_pairs:
+        pattern = 2
+    elif regular:
+        pattern = (2 if len(melds) == 4 else 1) if is_pengpeng(hand, len(melds)) else 0
+    else:
+        raise ValueError(f"不是胡牌：{hand!r}")
+    tiles = _all_tiles(hand, melds)
+    qingyise = len({tile[1] for tile in tiles}) == 1
+    duanyao = all(tile[0] not in "19" for tile in tiles)
+    gen = sum(1 for count in total if count == 4)
+    return pattern + (2 if qingyise else 0) + (1 if duanyao else 0) + gen
+
+
+def _finish(target, fan, shanten, ukeire, waits, draws, order=0):
+    return {
+        "target": target,
+        "fan": fan,
+        "shanten": shanten,
+        "ukeire": ukeire,
+        "waits": waits,
+        "value": win_probability(shanten, ukeire, draws) * win_multiplier(fan),
+        "order": order,
+    }
+
+
+def _copies_left(tile, hand_counts, meld_counts):
+    return 4 - hand_counts.get(tile, 0) - meld_counts.get(tile, 0)
+
+
+def _meld_counts(melds):
+    counts = {}
+    for meld in melds:
+        counts[meld["tile"]] = counts.get(meld["tile"], 0) + (4 if meld["type"] == "kan" else 3)
+    return counts
+
+
+def _ukeire(useful, melds, que, base, shanten_of, suits=None):
+    """按非定缺门的牌数进张;只扣自己手牌和副露,不扣场上已见。"""
+    hand_counts = {}
+    for tile in useful:
+        hand_counts[tile] = hand_counts.get(tile, 0) + 1
+    meld_counts = _meld_counts(melds)
     waits = []
     ukeire = 0
-    for suit in ("m", "p", "s"):
+    for suit in (suits or ("m", "p", "s")):
         if suit == que:
             continue
         for number in range(1, 10):
             tile = f"{number}{suit}"
-            left = 4 - counts.get(tile, 0) - meld_counts.get(tile, 0)
+            left = _copies_left(tile, hand_counts, meld_counts)
             if left <= 0:
                 continue
-            if shanten(hand13 + [tile], melds) < base:
+            if shanten_of(useful + [tile]) < base:
                 waits.append(tile)
                 ukeire += left
-    return base, ukeire, waits
+    return ukeire, waits
 
 
-def is_win(hand, melds, que):
-    if any(tile[1] == que for tile in hand):
-        return False
-    if regular_shanten(hand) == -1:
-        return True
-    return not melds and len(hand) == 14 and all(count % 2 == 0 for count in to_counts(hand))
+def fast_result(hand13, melds, que, draws):
+    useful = [tile for tile in hand13 if tile[1] != que]
+    regular = filtered_regular_shanten(useful, len(melds))
+    shape = "regular"
+    base = regular
+    if not melds:
+        qidui = qidui_shanten(useful)
+        if qidui < regular:
+            shape = "qidui"
+            base = qidui
+    ukeire, waits = _ukeire(useful, melds, que, base, lambda tiles: fast_shanten(tiles, len(melds)))
+    return _finish("fast", _fast_fan(useful, melds, shape, waits), base, ukeire, waits, draws)
 
 
-def advise(hand, melds, que):
+def qingyise_result(hand13, melds, que, suit, draws):
+    if any(meld["tile"][1] != suit for meld in melds):
+        return None
+    useful = [tile for tile in hand13 if tile[1] != que]
+    x_tiles = [tile for tile in useful if tile[1] == suit]
+    base = filtered_regular_shanten(x_tiles, len(melds))
+    ukeire, waits = _ukeire(x_tiles, melds, que, base,
+                            lambda tiles: filtered_regular_shanten(tiles, len(melds)), (suit,))
+    return _finish("qingyise", _qingyise_fan(x_tiles, melds, suit, waits), base, ukeire, waits, draws,
+                   SUIT_INDEX[suit])
+
+
+def pengpeng_result(hand13, melds, que, draws):
+    if any(meld["tile"][1] == que for meld in melds):
+        return None
+    useful = [tile for tile in hand13 if tile[1] != que]
+    base = pengpeng_shanten(useful, len(melds), que)
+    ukeire, waits = _ukeire(useful, melds, que, base,
+                            lambda tiles: pengpeng_shanten(tiles, len(melds), que))
+    return _finish("pengpeng", _pengpeng_fan(useful, melds, waits), base, ukeire, waits, draws)
+
+
+def qidui_result(hand13, melds, que, draws):
+    if melds:
+        return None
+    useful = [tile for tile in hand13 if tile[1] != que]
+    base = qidui_shanten(useful)
+    ukeire, waits = _ukeire(useful, melds, que, base, qidui_shanten)
+    return _finish("qidui", _qidui_fan(useful, waits), base, ukeire, waits, draws)
+
+
+def evaluate_hand(hand13, melds, que, draws):
+    """13 张(切完一张)时每种目标的向听、进张、番数和期望倍数。"""
+    if any(meld["tile"][1] == que for meld in melds):
+        # 碰/杠了定缺门,永远胡不了;留给调用方一个零期望的结果
+        return [_finish("fast", 0, 8, 0, [], draws)]
+    results = [fast_result(hand13, melds, que, draws)]
+    for suit in ("m", "p", "s"):
+        if suit != que:
+            result = qingyise_result(hand13, melds, que, suit, draws)
+            if result is not None:
+                results.append(result)
+    result = pengpeng_result(hand13, melds, que, draws)
+    if result is not None:
+        results.append(result)
+    result = qidui_result(hand13, melds, que, draws)
+    if result is not None:
+        results.append(result)
+    return results
+
+
+def best_target(results):
+    return max(
+        results,
+        key=lambda result: (
+            result["value"],
+            -result["shanten"],
+            result["ukeire"],
+            TARGET_PRIORITY[result["target"]],
+            -result["order"],
+        ),
+    )
+
+
+def _option(tile, best):
+    return {
+        "discard": tile,
+        "target": best["target"],
+        "fan": best["fan"],
+        "value": round(best["value"], 2),
+        "shanten": best["shanten"],
+        "ukeire": best["ukeire"],
+        "waits": best["waits"],
+    }
+
+
+def parse_draws(value):
+    if value is None:
+        return DEFAULT_DRAWS
+    if isinstance(value, bool) or not isinstance(value, int) or not (MIN_DRAWS <= value <= MAX_DRAWS):
+        raise RequestError("bad_draws", f"draws 必须是 {MIN_DRAWS}–{MAX_DRAWS} 的整数，收到 {value!r}")
+    return value
+
+
+def _validate_hand(hand):
     if not isinstance(hand, list):
         raise TypeError("hand 必须是数组")
     for tile in hand:
         parse_tile(tile)
-    if que not in ("m", "p", "s"):
-        raise RequestError("bad_que", f"定缺只能是 m、p、s，收到 {que!r}")
+
+
+def _parse_melds(melds):
     if not isinstance(melds, list):
         raise TypeError("melds 必须是数组")
-    parsed_melds = []
+    parsed = []
     for meld in melds:
         if not isinstance(meld, dict):
             raise RequestError("bad_meld", f"副露必须是对象，收到 {meld!r}")
@@ -145,20 +453,43 @@ def advise(hand, melds, que):
             tile = parse_tile(meld.get("tile"))
         except RequestError:
             raise RequestError("bad_meld", f"副露的牌不认识：{meld.get('tile')!r}") from None
-        parsed_melds.append({"type": kind, "tile": tile})
-    total = len(hand) + 3 * len(melds)
-    if total == 13:
-        raise RequestError("not_drawn", f"手牌 {len(hand)} 张 + 副露 {len(melds)} 组 = 13 张，还没摸牌")
-    if total != 14:
-        raise RequestError("wrong_count", f"手牌 {len(hand)} 张 + 副露 {len(melds)} 组，不是 14 张")
+        parsed.append({"type": kind, "tile": tile})
+    return parsed
+
+
+def _check_copies(hand, melds):
     used = {}
     for tile in hand:
         used[tile] = used.get(tile, 0) + 1
-    for meld in parsed_melds:
+    for meld in melds:
         used[meld["tile"]] = used.get(meld["tile"], 0) + (3 if meld["type"] == "pon" else 4)
     for tile, count in used.items():
         if count > 4:
             raise RequestError("too_many", f"{tile} 一共 {count} 张，超过 4 张")
+
+
+def is_win(hand, melds, que):
+    if any(tile[1] == que for tile in hand):
+        return False
+    if any(meld["tile"][1] == que for meld in melds):
+        return False
+    if regular_shanten(hand) == -1:
+        return True
+    return not melds and len(hand) == 14 and all(count % 2 == 0 for count in to_counts(hand))
+
+
+def advise(hand, melds, que, draws=None):
+    _validate_hand(hand)
+    if que not in ("m", "p", "s"):
+        raise RequestError("bad_que", f"定缺只能是 m、p、s，收到 {que!r}")
+    parsed_melds = _parse_melds(melds)
+    draws = parse_draws(draws)
+    total = len(hand) + 3 * len(parsed_melds)
+    if total == 13:
+        raise RequestError("not_drawn", f"手牌 {len(hand)} 张 + 副露 {len(parsed_melds)} 组 = 13 张，还没摸牌")
+    if total != 14:
+        raise RequestError("wrong_count", f"手牌 {len(hand)} 张 + 副露 {len(parsed_melds)} 组，不是 14 张")
+    _check_copies(hand, parsed_melds)
     if is_win(hand, parsed_melds, que):
         return {"win": True}
     que_tiles = [tile for tile in hand if tile[1] == que]
@@ -171,26 +502,53 @@ def advise(hand, melds, que):
         for tile in candidates[:3]:
             remaining = list(hand)
             remaining.remove(tile)
-            useful = [item for item in remaining if item[1] != que]
-            base, ukeire, waits = analyze(useful, parsed_melds, que, filtered_shanten)
-            options.append({"discard": tile, "shanten": base, "ukeire": ukeire, "waits": waits})
+            best = best_target(evaluate_hand(remaining, parsed_melds, que, draws))
+            options.append(_option(tile, best))
         return {"win": False, **options[0], "queLeft": len(que_tiles), "options": options}
-    options = []
+    scored = []
     for tile in sorted(set(hand), key=tile_order):
         remaining = list(hand)
         remaining.remove(tile)
-        base, ukeire, waits = analyze(remaining, parsed_melds, que, shanten_of)
-        options.append({"discard": tile, "shanten": base, "ukeire": ukeire, "waits": waits})
-    options.sort(key=lambda option: (option["shanten"], -option["ukeire"], tile_order(option["discard"])))
-    options = options[:3]
+        best = best_target(evaluate_hand(remaining, parsed_melds, que, draws))
+        scored.append((best["value"], _option(tile, best)))
+    scored.sort(key=lambda item: (-item[0], item[1]["shanten"], -item[1]["ukeire"],
+                                  tile_order(item[1]["discard"])))
+    options = [option for _, option in scored[:3]]
     return {"win": False, **options[0], "queLeft": 0, "options": options}
 
 
-def handle(body):
+def advise_que(hand, draws=None):
+    _validate_hand(hand)
+    draws = parse_draws(draws)
+    if len(hand) not in (13, 14):
+        raise RequestError("wrong_count", f"定缺需要 13 或 14 张手牌，收到 {len(hand)} 张")
+    _check_copies(hand, [])
+    options = []
+    for que in ("m", "p", "s"):
+        best = None
+        if len(hand) == 13:
+            best = best_target(evaluate_hand(hand, [], que, draws))
+        else:
+            for tile in sorted(set(hand), key=tile_order):
+                remaining = list(hand)
+                remaining.remove(tile)
+                candidate = best_target(evaluate_hand(remaining, [], que, draws))
+                if best is None or candidate["value"] > best["value"]:
+                    best = candidate
+        count = sum(1 for tile in hand if tile[1] == que)
+        options.append((best["value"], count, que, {"que": que, "target": best["target"],
+                                                   "value": round(best["value"], 2)}))
+    options.sort(key=lambda item: (-item[0], item[1], SUIT_INDEX[item[2]]))
+    return {"que": options[0][3]["que"], "options": [item[3] for item in options]}
+
+
+def handle(body, path="/discard"):
     if not isinstance(body, dict):
         return 400, {"error": "bad_request", "detail": "请求体必须是 JSON 对象"}
     try:
-        return 200, advise(body["hand"], body.get("melds") or [], body["que"])
+        if path == "/que":
+            return 200, advise_que(body["hand"], body.get("draws"))
+        return 200, advise(body["hand"], body.get("melds") or [], body["que"], body.get("draws"))
     except RequestError as e:
         return 200, {"error": e.code, "detail": e.detail}
     except (KeyError, TypeError, ValueError) as e:
@@ -200,13 +558,13 @@ def handle(body):
 def handler():
     class Handler(BaseHTTPRequestHandler):
         def do_POST(self):
-            if self.path != "/discard":
+            if self.path not in ("/discard", "/que"):
                 return self.reply(404, {"error": "not_found"})
             try:
                 body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))))
             except ValueError as e:
                 return self.reply(400, {"error": f"bad_request:{e}"})
-            code, data = handle(body)
+            code, data = handle(body, self.path)
             self.reply(code, data, body)
 
         def reply(self, code, data, request=None):
@@ -225,5 +583,5 @@ def handler():
 
 
 if __name__ == "__main__":
-    port = int(sys.argv[1]) if len(sys.argv) > 1 else 3427
+    port = int(sys.argv[1]) if len(sys.argv) > 1 else 3428
     ThreadingHTTPServer(("0.0.0.0", port), handler()).serve_forever()
