@@ -15,8 +15,16 @@ from douzero.env.move_generator import MovesGener
 
 SEATS = ["landlord", "landlord_down", "landlord_up"]
 NEXT = {"landlord": "landlord_down", "landlord_down": "landlord_up", "landlord_up": "landlord"}
-# 三家手里合起来最多这么多张才算;分法最多这么多种
+# 三家手里合起来最多这么多张才算残局。自己手里牌多时另算:两家对手手里合起来不超过 MAX_UNKNOWN 张、
+# 分法不超过 MAX_SPLITS 时也搜——看不见的牌少,分法就少,算得完。
+# 2026-11-17 13:05:08 精英场,我是地主下家 17 张,地主 7 张 + 队友 2 张(共 9 张),23 种分法:
+# 三家合计 26 张原来直接不跑,退回现场模拟按均匀发牌出了 pass(地主第 7 张正好凑成顺子走完);
+# 放开后带 likelihood 实测 0.14 秒算完,搜出 5 5 5 5 必赢。
+# 阈值:40 局随机牌局里,三家合计 > 20、自己 ≥ 15 张、至少两手能出的位置,两家 ≤ 12 张时 17 个里
+# 10 个在 2.5 秒内算完,9 张以内 10 个里 8 个;再放宽多出来的大多是算不完的,所以取 12。
+# 算不完仍由 Solver 的 deadline 抛 Timeout,best 返回 None 退回原来的流程,整手不超过 ACT_TOTAL_BUDGET_S。
 MAX_CARDS = 20
+MAX_UNKNOWN = 12
 MAX_SPLITS = 400
 
 
@@ -179,9 +187,10 @@ def best(infoset, budget=1.5, likelihood=None):
     """
     me = infoset.player_position
     left = infoset.num_cards_left_dict
-    if sum(left.values()) > MAX_CARDS:
-        return None
     others = [s for s in SEATS if s != me]
+    # 三家合计多、但两家对手手里合起来没几张时也值得算:看不见的牌少,分法就少(见 MAX_UNKNOWN)
+    if sum(left.values()) > MAX_CARDS and sum(left[s] for s in others) > MAX_UNKNOWN:
+        return None
     unknown = sorted(infoset.other_hand_cards)
     if len(unknown) != left[others[0]] + left[others[1]]:
         return None
