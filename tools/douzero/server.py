@@ -8,7 +8,14 @@
 POST /act  {"seat": "landlord" | "landlord_down" | "landlord_up",
             "hand": ["3", "3", ..., "BJ"],         # 自己此刻的手牌
             "bottom": ["9", "8", "7"],              # 三张底牌
-            "history": [["3"], [], ["5", "?"], ...]} # 从地主第一手起每一手,[] 是不出,? 是认不准的一张
+            "history": [["3"], [], ["5", "?"], ...],# 从地主第一手起每一手,[] 是不出,? 是认不准的一张
+            "auction": {"bid": {"landlord": 3},     # 可选:各座位最后叫的分(0..3),没有 / null = 不知道
+                        "double": {"landlord": true, # 可选:各座位加没加倍,没有 / null = 不知道
+                                   "landlord_down": false,
+                                   "landlord_up": null}}}
+# auction 是这一局的叫分 / 加倍结果,只用来给「看不见的牌怎么分」加权:叫了三分、加了倍的那家更可能拿到强牌,
+# 现场模拟的发牌和残局搜索的分法都按这份证据偏一点。v1 只看地主的叫分(叫三分),加倍按座位看;
+# 我自己的叫分 / 加倍不参与。字段格式不对(座位名不认识、叫分不在 0..3、类型不对)就整块当没带,照常出牌,不报错。
 
 ? 是地主出的最后一张:右上角压着绶带,手机上常认不准。按牌规补:15 种点数挨个代进去,
 凑得成合规牌型、压得过上家、牌还有剩的只有一种就补上;有几种都说得通时(单张、三带一的那一张),
@@ -123,6 +130,22 @@ LIKELIHOOD_MOVES = 2
 # 0.2(只看最近一手时的温度)这一手仍是 9 9;取最近两手后 0.03 以下才翻成王炸,0.05 又回到 9 9。
 # 0.02 时王炸的加权权重是 9 9 的 6.6 倍、不出的 16 倍;0.01 更极端,0.03 只剩 2 倍。取 0.02 留余量。
 LIKELIHOOD_TEMPERATURE = 0.02
+# 叫分 / 加倍先验:每家牌力 s = 用自己座位的 DouZero 模型给开局整手牌(手里剩的 + 出过的,地主含底牌)
+# 打分,取所有合法出牌里的最高分。每条已知证据乘一个 logistic 似然因子:P = sigmoid((s - T) / AUCTION_TAU)。
+# 2026-11-17 用 calibrate_auction.py 随机发 4000 副牌(seed 20261117,地主 4000 手、两个农民座位共 8000 手)
+# 标定:地主牌力的 q35 / q65 / q80 = -0.933 / -0.021 / 0.595,农民牌力的 q80 = 0.237。
+# T_bid 取地主 q65(叫三分的手牌约占 35%),T_dbl 取 q80(加倍约占 20%),τ 取地主 q35~q65 分位间距的
+# 一半 0.456。按这组值在随机牌上的边际概率:P(叫三分)=0.385、P(地主加倍)=0.242、P(农民加倍)=0.291
+# (T 由分位数定,logistic 较宽时边际会偏离 35% / 20%,但方向与门槛不变)。
+# 现场模拟有 auction 时一次发这么多手候选做 importance resampling:按证据座位把这 K 手攒成一批前向。
+# 2026-11-17 实测(2.5 秒模拟预算):K=8 时中局 72~75 局、后半局 88~100 局;K=4 时中局 80~86、
+# 后半局 123~127;K=2 时中局 82~99、后半局 150~158。K=8/4 要把 8/4 手都算一遍,比旧拒绝采样平均
+# 只算的 2.48 手(中局)还贵,模拟局数反而比改前更少;K=2 才回到改前的中局水平(最终 3 次 92~94),
+# 后半局还从 115 涨到 150 左右,所以取 2。
+AUCTION_MAX_TRIES = 2
+AUCTION_BID_T = -0.021
+AUCTION_DOUBLE_T = {"landlord": 0.595, "farmer": 0.237}
+AUCTION_TAU = 0.456
 # 后半局不管分差都现场模拟:三家手里合起来只剩 LATE_CARDS 张时,DouZero 分数最高的 LATE_TOP 手(不出也算一手)都模拟一遍。
 # 2026-11-16 11:43:53 土豪场,我是地主下家,手里 2 2 K Q J 10 9 8 8 8 4 3 3,三家还剩 33 张。
 # DouZero 给 8 9 10 J Q K +0.736、8 9 10 J Q +0.627,只差 0.109,按 CLOSE_MARGIN 不模拟,信分数出了 8..K,输了。
@@ -150,6 +173,92 @@ def should_super(win, seat="landlord"):
 
 class Mismatch(Exception):
     pass
+
+
+class Auction:
+    """一局的叫分 / 加倍结果:只留下确定知道的座位;没有任何证据时 parse_auction 返回 None。"""
+
+    def __init__(self, bid, double):
+        self.bid = dict(bid)
+        self.double = dict(double)
+
+    def __repr__(self):
+        return f"Auction(bid={self.bid!r}, double={self.double!r})"
+
+    def evidence(self, seat):
+        """这个座位有哪些已知证据:("bid", 3) / ("double", True/False)。叫分 v1 只看地主叫三分。"""
+        out = []
+        if seat == "landlord" and self.bid.get("landlord") == 3:
+            out.append(("bid", 3))
+        if seat in self.double:
+            out.append(("double", self.double[seat]))
+        return out
+
+    def seats(self, me):
+        """要按证据加权的对手:有证据、又不是我自己(我自己的叫分 / 加倍不参与)。"""
+        return [s for s in SEATS if s != me and self.evidence(s)]
+
+    def log_weight(self, me, strength):
+        """这一局的证据在 [strength] 这种分法下的对数似然(<=0);[strength] 是 {座位: 开局整手牌的牌力}。"""
+        total = 0.0
+        for seat in self.seats(me):
+            for kind, value in self.evidence(seat):
+                p = auction_probability(seat, kind, value, strength[seat])
+                total += math.log(min(max(p, 1e-9), 1 - 1e-9))
+        return total
+
+
+def _sigmoid(x):
+    """数值稳定的 sigmoid:太负的 exp 会溢出。"""
+    if x >= 0:
+        return 1.0 / (1.0 + math.exp(-x))
+    e = math.exp(x)
+    return e / (1.0 + e)
+
+
+def auction_probability(seat, kind, value, strength):
+    """一家牌力 [strength] 时出现这条证据的概率:叫三分 / 加倍是 P,没加过倍是 1-P。"""
+    if kind == "bid":
+        return _sigmoid((strength - AUCTION_BID_T) / AUCTION_TAU)
+    threshold = AUCTION_DOUBLE_T["landlord" if seat == "landlord" else "farmer"]
+    p = _sigmoid((strength - threshold) / AUCTION_TAU)
+    return p if value else 1.0 - p
+
+
+def parse_auction(raw):
+    """把 /act 的 auction 字段规范化成 Auction;没带、全是不知道、或者格式不对都返回 None。
+
+    格式不对就整块忽略(照常出牌,不报错):bid / double 必须是对象,座位名必须是 SEATS 里的,
+    bid 的值是 0..3 的整数(不是 bool),double 的值是 bool;单个座位的 null 表示那个座位不知道。
+    """
+    if not isinstance(raw, dict):
+        return None
+    bids, doubles = raw.get("bid"), raw.get("double")
+    bids = {} if bids is None else bids
+    doubles = {} if doubles is None else doubles
+    if not isinstance(bids, dict) or not isinstance(doubles, dict):
+        return None
+    bid = {}
+    for seat, value in bids.items():
+        if seat not in SEATS:
+            return None
+        if value is None:
+            continue
+        if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 3:
+            return None
+        bid[seat] = value
+    double = {}
+    for seat, value in doubles.items():
+        if seat not in SEATS:
+            return None
+        if value is None:
+            continue
+        if not isinstance(value, bool):
+            return None
+        double[seat] = value
+    if not bid and not double:
+        return None
+    return Auction(bid, double)
 
 
 def cards(names):
@@ -347,6 +456,31 @@ def late_picks(order, actions, top=LATE_TOP):
     return picks
 
 
+def opening_state(seat, hand):
+    """[seat] 开局时拿着整手 [hand] 的 info set:自己领出,其他两家只按张数算。
+
+    给牌力打分用。三家开局时互相看不见,other_hand_cards 就是「除了我这手牌以外的全部牌」,
+    不掺这种分法里对手具体拿了什么,所以同一手牌的牌力只由它自己决定,换个分法也不变。
+    """
+    hand = sorted(hand)
+    return SimpleNamespace(
+        player_position=seat,
+        player_hand_cards=hand,
+        other_hand_cards=sorted(minus(DECK, hand)),
+        num_cards_left_dict={s: (20 if s == "landlord" else 17) for s in SEATS},
+        three_landlord_cards=[],
+        card_play_action_seq=[],
+        legal_actions=[list(m) for m in sorted(endgame.moves(tuple(hand), ()))],
+        last_move=[],
+        last_two_moves=[[], []],
+        last_move_dict={s: [] for s in SEATS},
+        played_cards={s: [] for s in SEATS},
+        bomb_num=0,
+        last_pid=None,
+        all_handcards=None,
+    )
+
+
 def history_frame(history, index):
     """第 [index] 手之前那些不随分法变的东西:每家从那手起又出了哪些牌、之前出过哪些、要压的牌。
 
@@ -537,6 +671,7 @@ class Agent:
     """同 DouZero 的 DeepAgent,只是权重按纯张量加载:checkpoint 是 pickle,不按张量读会执行文件里的代码。"""
 
     def __init__(self, seat, path):
+        self.seat = seat
         self.model = model_dict[seat]()
         self.model.load_state_dict(torch.load(path, map_location="cpu", weights_only=True))
         self.model.eval()
@@ -544,8 +679,10 @@ class Agent:
         self.rollout = True
         # 三家「只按 DouZero 打分」的对手,现场模拟时用;由 Advisor 建好后填进来
         self.plain = {}
+        # 带 auction 时现场模拟要按对手牌力加权;由 Advisor 建好后填进来
+        self.advisor = None
 
-    def act(self, infoset, report=None, likelihood=None):
+    def act(self, infoset, report=None, likelihood=None, auction=None):
         # 一手牌的总预算从这里开始算:下面 DouZero 打分、残局搜索、两手出完、现场模拟、比手数都只能用剩下的时间
         deadline = time.monotonic() + ACT_TOTAL_BUDGET_S
         # 斗地主经典版不允许大小王一起当带牌(飞机带单的翅膀、四带二的两张单牌):DouZero 的合法出牌里有,
@@ -580,7 +717,7 @@ class Agent:
             if quick is not None and tuple(sorted(move)) != quick[0]:
                 return list(quick[0])
             # 分数只差一点点时,现场按看得见的牌模拟几百局再定;模拟了就以它为准,不再走下面那条不拆牌的规则
-            rolled = self.close_rollout(infoset, values, move, deadline, report) if self.rollout else None
+            rolled = self.close_rollout(infoset, values, move, deadline, report, auction) if self.rollout else None
             if rolled is not None:
                 move, info = rolled
                 if report is not None:
@@ -648,7 +785,7 @@ class Agent:
                 best, best_score = action, score
         return move if best is None else best
 
-    def close_rollout(self, infoset, values, move, deadline=None, report=None):
+    def close_rollout(self, infoset, values, move, deadline=None, report=None, auction=None):
         """顶两手的分数差不到 CLOSE_MARGIN 时,按看得见的牌随机发一批牌,每一手都用 DouZero 打分打到完,比赢面。
 
         后半局(三家手里合起来不超过 LATE_CARDS 张)不管分差多大都模拟:每种牌型先留 DouZero 分数最高的一手,
@@ -697,9 +834,16 @@ class Agent:
         rng = random.Random(hash((tuple(sorted(infoset.player_hand_cards)),
                                   tuple(tuple(m) for m in infoset.card_play_action_seq))))
         history = [list(m) for m in infoset.card_play_action_seq]
-        # 边打边淘汰:每个还活着的候选打同一批新发的牌,轮末去掉较差的一半,最后只剩两手用掉剩下的时间
+        # 边打边淘汰:每个还活着的候选打同一批新发的牌,轮末去掉较差的一半,最后只剩两手用掉剩下的时间。
+        # 带 auction 时发牌按证据加权(拒绝采样),拒绝采样的时间也算在这份预算里;没有 auction 时一手不差地走原来的发牌
+        if auction is None:
+            sampler = lambda: sample_hands(infoset, rng)  # noqa: E731
+        else:
+            sampler_deadline = time.monotonic() + budget
+            sampler = lambda: self.advisor.sample_hands(  # noqa: E731
+                infoset, rng, auction, deadline=sampler_deadline)
         wins, played, rounds, finalists = successive_halving(
-            keys, own, scores, lambda: sample_hands(infoset, rng),
+            keys, own, scores, sampler,
             lambda hands, k: self.play_out(hands, infoset.three_landlord_cards, history,
                                            infoset.player_position, by_key[k]),
             budget)
@@ -758,6 +902,35 @@ class Agent:
             return self.model.forward(torch.from_numpy(obs["z_batch"]).float(),
                                       torch.from_numpy(obs["x_batch"]).float(), return_value=True)["values"].flatten()
 
+    def state_values(self, states, deadline=None):
+        """一批 [seat] 的 info set 攒成一次前向,返回每个 info set 各手的 DouZero 分数。"""
+        zs, xs, sizes = [], [], []
+        for state in states:
+            if deadline is not None and time.monotonic() > deadline:
+                raise endgame.Timeout()
+            obs = get_obs(state)
+            zs.append(torch.from_numpy(obs["z_batch"]).float())
+            xs.append(torch.from_numpy(obs["x_batch"]).float())
+            sizes.append(len(state.legal_actions))
+        with torch.no_grad():
+            values = self.model.forward(
+                torch.cat(zs), torch.cat(xs), return_value=True)["values"].flatten()
+        if deadline is not None and time.monotonic() > deadline:
+            raise endgame.Timeout()
+        out, start = [], 0
+        for size in sizes:
+            out.append(values[start:start + size])
+            start += size
+        return out
+
+    def opening_strengths(self, hands, deadline=None):
+        """一批开局整手牌在这家模型眼里的牌力:所有合法出牌里的最高分。
+
+        [hands] 是每家开局时的整手牌(手里剩的 + 已经出过的,地主含底牌)。只用一次前向,可以攒成一批。
+        """
+        return [float(v.max()) for v in self.state_values(
+            [opening_state(self.seat, hand) for hand in hands], deadline)]
+
 
 class Plain:
     """只按 DouZero 打分出牌,不做残局搜索:叫分时自己跟自己打几十局,要快。"""
@@ -795,6 +968,48 @@ class Advisor:
         for agent in self.agents.values():
             agent.rollout = rollout
             agent.plain = self.plain
+            agent.advisor = self
+
+    def sample_hands(self, infoset, rng, auction=None, deadline=None):
+        """现场模拟发牌:没有 auction 时完全走原来的 sample_hands(同一个种子一手不差)。
+
+        有证据时一次发 K 手候选(K = [AUCTION_MAX_TRIES]),按证据座位把这 K 手的开局牌力攒成一批前向
+        (每个座位一次,不再一手一手串行),再按权重从这 K 手里抽一手:权重是各条证据的似然相乘,在 0..1,
+        即 importance resampling。权重全 0 / 牌力算不出来(例如到 [deadline])时收下第一手,不能让模拟卡死。
+        只给我看不见的对手加权:我自己的叫分 / 加倍不算证据。
+        """
+        me = infoset.player_position
+        seats = auction.seats(me) if auction is not None else []
+        if not seats:
+            return sample_hands(infoset, rng)
+        hands = [sample_hands(infoset, rng) for _ in range(AUCTION_MAX_TRIES)]
+        try:
+            strength = [dict() for _ in hands]
+            for seat in seats:
+                values = self.agents[seat].opening_strengths([h[seat] for h in hands], deadline)
+                for k, value in enumerate(values):
+                    strength[k][seat] = value
+            logs = [auction.log_weight(me, s) for s in strength]
+        except (endgame.Timeout, Mismatch):
+            return hands[0]
+        top = max(logs)
+        if top == float("-inf"):
+            return hands[0]
+        # 减去最大值再 exp:权重再小也至少有一个是 1,不会整批下溢成 0;总权重为 0 只是防御
+        weights = [math.exp(x - top) for x in logs]
+        total = sum(weights)
+        if total <= 0:
+            return hands[0]
+        pick = rng.random() * total
+        for hand, weight in zip(hands, weights):
+            pick -= weight
+            if pick <= 0:
+                return hand
+        return hands[-1]
+
+    def opening_strength(self, seat, hand):
+        """[seat] 开局拿着 [hand] 的牌力:DouZero 这家模型给所有合法出牌打分的最高分。"""
+        return self.agents[seat].opening_strengths([hand])[0]
 
     def bid(self, hand, games=BID_GAMES, budget=ROLLOUT_BUDGET_S):
         """拿这 17 张当地主能赢几成:看不见的牌随机发成底牌和两家,DouZero 自己跟自己打 [games] 局。
@@ -937,7 +1152,7 @@ class Advisor:
         rates = {s: wins[s] / played for s in seats}
         return min(rates.values()), played
 
-    def likelihood(self, history, me):
+    def likelihood(self, history, me, auction=None):
         """给 endgame.best 的似然回调:按两家对手最近 [LIKELIHOOD_MOVES] 手不是不出的出牌,判断一种分法像不像他们当时会这么出。
 
         每个对手的每一手都把他当时的手牌和局面用 history 倒推出来,用他自己座位的 DouZero 模型给当时所有
@@ -949,6 +1164,9 @@ class Advisor:
         如果所有分法都这样(全 -inf),这次退回不加权,不能把搜索关掉。
         一次把同一手的全部分法攒成一批前向;到 [deadline] 就抛 Timeout,best 退回不加权的摆法数。
         回调第一次被调用时才去翻 history:不是残局时 endgame.best 根本不叫它,这一手就没有额外开销。
+        [auction] 是这一局的叫分 / 加倍:每家对手的开局整手牌(这种分法下剩的 + 已经出过的)用他自己座位的
+        模型打分,把证据的 log 似然加进同一个对数空间;没有出牌历史、只有 auction 时也生效。
+        我自己的叫分 / 加倍不算证据(auction.seats 已经把我排除)。
         """
         def callback(splits_hands, deadline):
             indices = {}
@@ -981,6 +1199,21 @@ class Advisor:
                             values.double() / LIKELIHOOD_TEMPERATURE, dim=0)[j])
                     if time.monotonic() > deadline:
                         raise endgame.Timeout()
+            seats = auction.seats(me) if auction is not None else []
+            if seats:
+                # 每种分法的对手开局整手牌 = 这种分法下他还剩的 + 他已经出过的;按证据座位各攒一批前向
+                played = {s: [] for s in SEATS}
+                for i, move in enumerate(history):
+                    played[SEATS[i % 3]] += move
+                strength = [dict() for _ in splits_hands]
+                for seat in seats:
+                    states = [opening_state(seat, sorted(list(hands[seat]) + played[seat]))
+                              for hands in splits_hands]
+                    values = self.state_values(seat, states, deadline)
+                    for k, value in enumerate(values):
+                        strength[k][seat] = float(value.max())
+                for k in range(len(logs)):
+                    logs[k] += auction.log_weight(me, strength[k])
             finite = [x for x in logs if x != float("-inf")]
             if not finite:
                 return [1.0] * len(splits_hands)
@@ -991,26 +1224,9 @@ class Advisor:
 
     def state_values(self, seat, states, deadline):
         """一批 [seat] 的 info set 攒成一次前向,返回每个 info set 各手的 DouZero 分数。"""
-        zs, xs, sizes = [], [], []
-        for state in states:
-            if time.monotonic() > deadline:
-                raise endgame.Timeout()
-            obs = get_obs(state)
-            zs.append(torch.from_numpy(obs["z_batch"]).float())
-            xs.append(torch.from_numpy(obs["x_batch"]).float())
-            sizes.append(len(state.legal_actions))
-        with torch.no_grad():
-            values = self.agents[seat].model.forward(
-                torch.cat(zs), torch.cat(xs), return_value=True)["values"].flatten()
-        if time.monotonic() > deadline:
-            raise endgame.Timeout()
-        out, start = [], 0
-        for size in sizes:
-            out.append(values[start:start + size])
-            start += size
-        return out
+        return self.agents[seat].state_values(states, deadline)
 
-    def act(self, seat, hand, bottom, history, report=None):
+    def act(self, seat, hand, bottom, history, report=None, auction=None):
         hand, bottom = cards(hand), cards(bottom)
         history = resolve(hand, [[str(c) if str(c).startswith("?") else cards([c])[0] for c in m] for m in history])
         if len(history) % 3 != SEATS.index(seat):
@@ -1025,7 +1241,8 @@ class Advisor:
                 raise Mismatch("game_already_over")
         if env.acting_player_position != seat:
             raise Mismatch("not_your_turn")
-        return self.agents[seat].act(env.game_infoset, report, likelihood=self.likelihood(history, seat))
+        return self.agents[seat].act(env.game_infoset, report,
+                                     likelihood=self.likelihood(history, seat, auction), auction=auction)
 
 
 def handler(advisor):
@@ -1046,7 +1263,8 @@ def handler(advisor):
                     return self.reply(200, {"double": should_double(win, seat), "super": should_super(win, seat),
                                             "win": round(win, 2), "games": games, "ms": ms()}, body)
                 report = {}
-                move = advisor.act(body["seat"], body["hand"], body.get("bottom", []), body.get("history", []), report)
+                move = advisor.act(body["seat"], body["hand"], body.get("bottom", []), body.get("history", []),
+                                   report, auction=parse_auction(body.get("auction")))
                 self.reply(200, {"play": [NAMES[c] for c in move], "ms": ms(), **report}, body)
             except Mismatch as e:
                 self.reply(200, {"error": str(e)}, body)
