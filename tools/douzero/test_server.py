@@ -365,6 +365,43 @@ class EndgameBudgetTest(unittest.TestCase):
         self.assertLess(elapsed, ACT_TOTAL_BUDGET_S + 0.2)
 
 
+class EndgameUnknownTest(unittest.TestCase):
+    """自己手里牌多、两家对手手里没几张时也跑残局搜索:看不见的牌少,分法就少,照样算得完。"""
+
+    # 2026-11-17 13:05:08 精英场,我是地主下家(农民):手里 17 张一张没出过,地主剩 7 张、队友剩 2 张。
+    # 三家合计 26 > MAX_CARDS,原来直接不搜;现场模拟按均匀发牌给 pass 1.0、5 5 5 5 1.0,打平按 DouZero 出了 pass,
+    # 地主 K Q J 10 9 8 7 一手顺子走完。看不见的只有 9 张、23 种分法,残局搜索 0.14 秒就算完:5 5 5 5 必赢还多 ×2。
+    LIVE = dict(seat="landlord_down",
+                hand=["2", "A", "K", "Q", "Q", "9", "9", "8", "8", "7", "5", "5", "5", "5", "4", "4", "4"],
+                bottom=["K", "7", "7"],
+                history=[["3", "3", "3", "7"], [], ["6", "6", "6", "3"], ["J", "J", "J", "10"], [], [], ["A", "A"], [],
+                         ["2", "2"], [], [], ["10", "9", "8", "7", "6"], [], [], ["10"], ["K"], [], ["A"], ["SJ"], [],
+                         ["BJ"], [], [], ["4"], ["2"]])
+
+    def act(self, position, report=None):
+        return ROLLOUT_ADVISOR.act(position["seat"], position["hand"], position["bottom"],
+                                   position["history"], report)
+
+    def test_the_search_runs_when_only_the_opponents_are_short(self):
+        report = {}
+        move = self.act(self.LIVE, report)
+        self.assertEqual(["5", "5", "5", "5"], names(move))
+        self.assertNotIn("rollout", report, "残局搜索算完了就以它为准,不再现场模拟")
+
+    def test_an_existing_endgame_result_is_unchanged(self):
+        # 三家合计 18(7/6/5)本来就走残局搜索:门槛只放宽,结果还是 6 6
+        report = {}
+        live = EndgameBudgetTest.LIVE
+        move = ROLLOUT_ADVISOR.act(live["seat"], live["hand"], live["bottom"], live["history"], report)
+        self.assertEqual(["6", "6"], names(move))
+        self.assertNotIn("rollout", report)
+
+    def test_the_turn_stays_inside_the_budget(self):
+        started = time.monotonic()
+        self.act(self.LIVE)
+        self.assertLess(time.monotonic() - started, ACT_TOTAL_BUDGET_S)
+
+
 class MinPlaysTest(unittest.TestCase):
     """出完一手以后还剩几手:自己每次都先出,把牌拆成最少的几手合规牌(同 DouZero 的牌型,大小王不当带牌)。"""
 
