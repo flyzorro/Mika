@@ -340,23 +340,20 @@ internal object PhoneDdzTurn : PhoneTool {
     /**
      * 加倍决定完到第一手牌之前,每帧读一次两家头像下沿的红「加倍」标签:某家读到有就记 true;
      * 第一手出来时看清过、还没读到有标签的记 false。一直看不清的不记,不发这个座位。
+     * 第一手出来以后读数就定了,后面的帧(出牌特效压在头像下沿也会被认成标签)不再改。
      */
     private fun readAuction(turn: Turn, frame: com.wangzan101.mika.core.uistate.RawFrame) {
         if (turn.mode != DdzMode.Human) return
+        if (turn.auctionClosed) return
         for ((side, doubled) in DdzCards.doubleBadges(frame)) {
             if (doubled == null) continue
             // TEMP diagnostics: 只留可能读错的帧——某家第一次判成加倍、或者判过加倍又读成没有; remove after.
             if (doubled && turn.auctionDouble[side] != true) DdzFrameDump.dump("auction_true_${side.name}", frame, FULL_ROWS)
             if (!doubled && turn.auctionDouble[side] == true) DdzFrameDump.dump("auction_flip_${side.name}", frame, FULL_ROWS)
-            if (turn.auctionClosed) {
-                // 第一手以后标签还留着:仍可确认「有」,但不再新记「没有」
-                if (doubled) turn.auctionDouble[side] = true
-            } else {
-                turn.auctionSeen += side
-                if (doubled) turn.auctionDouble[side] = true
-            }
+            turn.auctionSeen += side
+            if (doubled) turn.auctionDouble[side] = true
         }
-        if (!turn.auctionClosed && playedSinceDeal(turn)) closeAuction(turn)
+        if (playedSinceDeal(turn)) closeAuction(turn)
     }
 
     /** 第一手出来了:看清过的座位里还没读到标签的定成 false。 */
