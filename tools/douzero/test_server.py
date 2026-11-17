@@ -486,6 +486,50 @@ class TeammateFinishInTwoTest(unittest.TestCase):
         self.assertNotIn("rollout", report)
 
 
+class FinishInTwoBombTest(unittest.TestCase):
+    """捷径把炸弹拆成四带二时会少一次 ×2:不直接走捷径,回到正常流程让炸弹能单独炸出去。"""
+
+    # 2026-11-17 12:58:35 精英场,我是地主下家(农民),先出:手里 BJ A A A A 9 4,地主剩 5 张、队友 15 张。
+    # DouZero 自己选 4(2.073;9 2.067、A A A A 2.055、BJ 1.920),捷径却出 BJ,再拿 A A A A 当四带二带走,
+    # 炸弹没单独炸、少一次 ×2。先出 4 或 9,有人管就 BJ 收回,再 AAAA 单独炸,同样必赢还翻倍。
+    LIVE = dict(seat="landlord_down",
+                hand=["BJ", "A", "A", "A", "A", "9", "4"],
+                bottom=["5", "6", "10"],
+                history=[["K", "Q", "J", "10", "9", "8", "7", "6", "5", "4", "3"], [], [], ["7", "7"], ["Q", "Q"], [],
+                         [], ["5"], ["Q"], [], ["K"], [], [], ["3"], ["K"], [], ["2"], [], [], ["8", "8"], [], ["9", "9"],
+                         ["J", "J"], [], []])
+
+    def act(self, position, report=None):
+        return ROLLOUT_ADVISOR.act(position["seat"], position["hand"], position["bottom"],
+                                   position["history"], report)
+
+    def test_a_bomb_split_shortcut_is_not_taken(self):
+        report = {}
+        move = self.act(self.LIVE, report)
+        self.assertNotEqual(["BJ"], [NAMES[c] for c in move], "捷径拆了炸弹,不该直接出 BJ")
+        self.assertIn("rollout", report, "拆炸弹的捷径不 return,交给现场模拟")
+
+    def test_a_bomb_split_does_not_win_the_fewer_plays_tiebreak(self):
+        # 四带二 A A A A + 4 + 9 出完只剩一对 8(一手),单张 4 出完还剩两手,手数上确实更少;
+        # 可它把炸弹拆了,不该靠「手数更少」胜出
+        hand = cards(["A", "A", "A", "A", "9", "8", "8", "4"])
+        own = tuple(cards(["4"]))
+        split = tuple(cards(["4", "9", "A", "A", "A", "A"]))
+        self.assertIsNone(fewer_plays(hand, [own, split], {own: 0.8, split: 0.8},
+                                      {own: 2.0, split: 0.7}, own))
+
+    def test_a_shortcut_without_a_bomb_is_still_taken(self):
+        # 不拆炸弹时行为不变:照旧直接出捷径那一手,不模拟
+        report = {}
+        play = ROLLOUT_ADVISOR.act(
+            "landlord", ["2", "2", "6"], ["5", "6", "7"],
+            [["4", "4"], ["8", "8"], [], ["9", "9"], [], [], ["Q", "Q"], [], [],
+             ["5", "7", "10", "10", "10", "J", "J", "J"], ["3", "3", "3", "3"], [], [], ["5"], ["2"], ["BJ"], [], [],
+             ["A", "A"], [], []], report)
+        self.assertEqual(["2", "2"], [NAMES[c] for c in play])
+        self.assertNotIn("rollout", report)
+
+
 class RibbonMisreadTest(unittest.TestCase):
     def test_an_illegal_landlord_play_gets_its_ribboned_card_refilled(self):
         # 实机上的一手:地主出 44433,最后一张带绶带的 3 在落下时认成了 J;只有补成 3 才合规
