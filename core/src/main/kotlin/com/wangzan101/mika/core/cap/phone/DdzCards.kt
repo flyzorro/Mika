@@ -876,6 +876,76 @@ internal object DdzCards {
     private const val COUNT_SURE = 0.15
     private const val COUNT_MARGIN = 0.04
 
+    /** 读左右两家的加倍标签要的行(头像框和头像下沿);真机取帧和测试素材都要带上。 */
+    val DOUBLE_ROWS: List<Int> = (239 until 396).toList()
+
+    /**
+     * 左右两家头像下沿有没有红底「加倍」小标签:true 有,false 没有,null 看不清(头像不在或被挡住)。
+     * 只按红底的颜色和面积认,不认字。位置按 Mika 的屏(真人局只在这块屏上跑)量:主屏左边有黑边,头像和标签都挪了位置,
+     * 这里返回看不清,不按错的坐标猜。
+     */
+    fun doubleBadges(frame: RawFrame): Map<DdzSide, Boolean?> {
+        val unknown = mapOf<DdzSide, Boolean?>(DdzSide.Left to null, DdzSide.Right to null)
+        if (frame.width != 2412 || frame.height != 1080) return unknown
+        // blackBar 要看手牌那一行;素材只留了读标签的行时,缺行就当看不清,不能抛
+        if (frame.row(DdzScreen.HAND_ROW) == null || DOUBLE_ROWS.any { frame.row(it) == null }) return unknown
+        if (DdzScreen.blackBar(frame) != 0) return unknown
+        return mapOf(
+            DdzSide.Left to badge(frame, LEFT_AVATAR_X0, LEFT_AVATAR_X1, LEFT_AVATAR_Y0, LEFT_AVATAR_Y1, LEFT_BADGE_X0, LEFT_BADGE_X1),
+            DdzSide.Right to badge(frame, RIGHT_AVATAR_X0, RIGHT_AVATAR_X1, RIGHT_AVATAR_Y0, RIGHT_AVATAR_Y1, RIGHT_BADGE_X0, RIGHT_BADGE_X1),
+        )
+    }
+
+    /** 头像框在(白边没被弹窗盖住)才判得了;红底占够 [BADGE_MIN_AREA] 个像素就是有标签。 */
+    private fun badge(
+        frame: RawFrame,
+        avatarX0: Int, avatarX1: Int, avatarY0: Int, avatarY1: Int,
+        badgeX0: Int, badgeX1: Int,
+    ): Boolean? {
+        fun white(p: Int): Boolean {
+            val r = p shr 16 and 0xff
+            val g = p shr 8 and 0xff
+            val b = p and 0xff
+            return minOf(r, g, b) > 235 && maxOf(r, g, b) - minOf(r, g, b) < 20
+        }
+        // 头像框是四边纯白的圆角方框,下沿会被红标签压住,只看左右两条竖边和上沿
+        val left = (avatarY0 + 4 until avatarY1 - 4).count { white(frame.pixel(avatarX0 + 2, it)) }
+        val right = (avatarY0 + 4 until avatarY1 - 4).count { white(frame.pixel(avatarX1 - 2, it)) }
+        val top = (avatarX0 + 6 until avatarX1 - 6).count { white(frame.pixel(it, avatarY0 + 2)) }
+        if (left < 100 || right < 100 || top < 100) return null
+        val area = (BADGE_Y0 until BADGE_Y1).sumOf { y ->
+            (badgeX0 until badgeX1).count { badgeRed(frame.pixel(it, y)) }
+        }
+        return area >= BADGE_MIN_AREA
+    }
+
+    /** 「加倍」标签的红底:比头像里的红(皮肤、头发)更纯、更暗。 */
+    private fun badgeRed(p: Int): Boolean {
+        val r = p shr 16 and 0xff
+        val g = p shr 8 and 0xff
+        val b = p and 0xff
+        return r > 170 && g < 90 && b < 100 && r - g > 90 && r - b > 90
+    }
+
+    /** 真人经典牌桌两家的头像框(实测 2026-11-17):左家 76..206/246..381,右家 2211..2341/239..375。 */
+    private const val LEFT_AVATAR_X0 = 76
+    private const val LEFT_AVATAR_X1 = 206
+    private const val LEFT_AVATAR_Y0 = 246
+    private const val LEFT_AVATAR_Y1 = 381
+    private const val RIGHT_AVATAR_X0 = 2211
+    private const val RIGHT_AVATAR_X1 = 2341
+    private const val RIGHT_AVATAR_Y0 = 239
+    private const val RIGHT_AVATAR_Y1 = 375
+    /** 红标签在头像框下沿居中:左家 118..168/364..386,右家按对称位置。 */
+    private const val LEFT_BADGE_X0 = 110
+    private const val LEFT_BADGE_X1 = 176
+    private const val RIGHT_BADGE_X0 = 2236
+    private const val RIGHT_BADGE_X1 = 2302
+    private const val BADGE_Y0 = 355
+    private const val BADGE_Y1 = 395
+    /** 有标签时红底约 360 个像素;没有标签的帧里最多 170(右家头像里的红头发)。 */
+    private const val BADGE_MIN_AREA = 250
+
     /** 闹钟在谁桌前;在自己这里或者没有为 null。 */
     fun clock(frame: RawFrame): DdzSide? {
         val (bar, k) = content(frame)

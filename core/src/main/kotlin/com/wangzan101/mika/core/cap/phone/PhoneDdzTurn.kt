@@ -176,6 +176,14 @@ internal object PhoneDdzTurn : PhoneTool {
          */
         var doubleSeenAt: Long? = null
         var doubleMisses = 0
+        /** 这一局读到的左右两家加倍标签:true 有,false 没有;第一手出来前没读清的不记。 */
+        val auctionDouble = mutableMapOf<DdzSide, Boolean>()
+        /** 至少有一帧清楚看到过这一家的头像:能判断有没有标签。 */
+        val auctionSeen = mutableSetOf<DdzSide>()
+        /** 第一手牌已经出来:看清过、还没读到有标签的定成 false。 */
+        var auctionClosed = false
+        /** 这一局的 auction trace 已经打过。 */
+        var auctionTraced = false
         /** 连着一帧帧认出段位弹窗的次数:两帧都对上才点「确定」,过渡动画的一帧不算。 */
         var rankSightings = 0
         /** 连着一帧帧认出「至尊特权升级」弹窗的次数:同样两帧都对上才点蓝色「我知道了」。 */
@@ -313,6 +321,67 @@ internal object PhoneDdzTurn : PhoneTool {
             else -> "farmer"
         }
     }
+
+    /**
+     * 加倍决定完到第一手牌之前,每帧读一次两家头像下沿的红「加倍」标签:某家读到有就记 true;
+     * 第一手出来时看清过、还没读到有标签的记 false。一直看不清的不记,不发这个座位。
+     */
+    private fun readAuction(turn: Turn, frame: com.wangzan101.mika.core.uistate.RawFrame) {
+        if (turn.mode != DdzMode.Human) return
+        for ((side, doubled) in DdzCards.doubleBadges(frame)) {
+            if (doubled == null) continue
+            if (turn.auctionClosed) {
+                // 第一手以后标签还留着:仍可确认「有」,但不再新记「没有」
+                if (doubled) turn.auctionDouble[side] = true
+            } else {
+                turn.auctionSeen += side
+                if (doubled) turn.auctionDouble[side] = true
+            }
+        }
+        if (!turn.auctionClosed && playedSinceDeal(turn)) closeAuction(turn)
+    }
+
+    /** 第一手出来了:看清过的座位里还没读到标签的定成 false。 */
+    private fun closeAuction(turn: Turn) {
+        if (turn.auctionClosed) return
+        for (side in turn.auctionSeen) turn.auctionDouble.putIfAbsent(side, false)
+        turn.auctionClosed = true
+    }
+
+    /** 换新一局:上一局的加倍读数作废。 */
+    private fun clearAuction(turn: Turn) {
+        turn.auctionDouble.clear()
+        turn.auctionSeen.clear()
+        turn.auctionClosed = false
+        turn.auctionTraced = false
+    }
+
+    /**
+     * `/act` 的 auction.double:只放读到的对手座位,换成 DouZero 的座位名(规则同 [doubleSeat]);
+     * 自己不发。一个都没读到就是空,请求体里不加这个字段。
+     */
+    private fun auctionDouble(turn: Turn): List<Pair<String, Boolean>> {
+        val landlord = turn.tracker?.landlord ?: return emptyList()
+        closeAuction(turn)
+        val seats = DdzSide.entries.mapNotNull { side ->
+            val doubled = turn.auctionDouble[side] ?: return@mapNotNull null
+            opponentSeat(landlord, side) to doubled
+        }.sortedBy { SEAT_ORDER.indexOf(it.first) }
+        if (seats.isNotEmpty() && !turn.auctionTraced) {
+            turn.auctionTraced = true
+            println("DDZTRACE auction double=" + seats.joinToString(",") { "${it.first}:${it.second}" })
+        }
+        return seats
+    }
+
+    /** 对手在左边/右边时，他在 DouZero 里是地主、地主下家还是地主上家。 */
+    private fun opponentSeat(landlord: DdzSeat, side: DdzSide): String = when (landlord) {
+        DdzSeat.Me -> if (side == DdzSide.Left) "landlord_up" else "landlord_down"
+        DdzSeat.Left -> if (side == DdzSide.Left) "landlord" else "landlord_up"
+        DdzSeat.Right -> if (side == DdzSide.Right) "landlord" else "landlord_down"
+    }
+
+    private val SEAT_ORDER = listOf("landlord", "landlord_down", "landlord_up")
 
     /**
      * 手牌和底牌对不对得上,对不上就是认错了:不送服务,直接不加倍。
@@ -492,6 +561,8 @@ internal object PhoneDdzTurn : PhoneTool {
         // 结算页写的是刚打完那一局,不是这一局要进的场,不算。
         if (turn.mode == DdzMode.Human && !DdzCards.humanResult(frame) && roomMismatch(frame, turn)) return roomMismatchResult(turn)
         if (turn.mode == DdzMode.Human) turn.humanEligible = true
+        // 这一帧也读一次加倍标签:模型两次调用之间可能正好是加倍决定完、第一手之前
+        if (turn.mode == DdzMode.Human) readAuction(turn, frame)
         // 回大厅了(和在等待循环里一样):单机标记作废,下一局可能进的是真人场
         if (turn.single && turn.atTable && initialView.phase == DdzPhase.Other && DdzCards.singleLobby(frame)) turn.single = false
         // 单机经典场不在牌桌上(比如结算上盖着礼包广告):白块会被读成轮到我出、手里两张,点下去就点在广告上。
@@ -676,6 +747,7 @@ internal object PhoneDdzTurn : PhoneTool {
             turn.expectedHand = null
             turn.snapshot = null
             turn.doubleDecided = false
+            clearAuction(turn)
             // 第一帧牌桌之前不知道这一局打到哪了:由 track 按第一帧的阶段定接不接
             turn.joining = true
         }
@@ -762,6 +834,7 @@ internal object PhoneDdzTurn : PhoneTool {
         turn.atTable = seated
         turn.tracker = null
         turn.doubleDecided = false
+        clearAuction(turn)
         // 继续闯关、或者已经坐在桌上,可能是打了一半的一手:头一帧看手牌张数再定
         turn.joining = seated || stage?.second == true
         // 叫分、别家出牌都可能要等一阵:和 wait 一样等;不在牌桌上的话十来秒没手牌就回来
@@ -920,6 +993,7 @@ internal object PhoneDdzTurn : PhoneTool {
                 turn.tracker = recovered.value.tracker
                 turn.joining = false
                 turn.doubleDecided = false
+                clearAuction(turn)
                 turn.humanSettling = 0
                 turn.bidHand = null
                 turn.callMisses = 0
@@ -1408,6 +1482,8 @@ internal object PhoneDdzTurn : PhoneTool {
                     turn.humanEligible = true
                     // 底部场次和 room 对不上:一下都不点(不叫分、不出牌),设好暂停后交给调用方报 room_mismatch
                     if (frame != null && roomMismatch(frame, turn)) return view
+                    // 加倍决定完到第一手之前:读两家头像下沿的「加倍」标签,下一手 /act 带上
+                    readAuction(turn, frame)
                     // 牌桌上的 Other 是别家在叫分、出牌(一家最多 15 秒):不停,照常往下记历史、接着等,总时长由 polls 管
                     if (humanPhase != view.phase) {
                         humanPhase = view.phase
@@ -1708,6 +1784,7 @@ internal object PhoneDdzTurn : PhoneTool {
             turn.expectedHand = null
             turn.joining = true
             turn.doubleDecided = false
+            clearAuction(turn)
         }
         turn.noHand = 0
     }
@@ -1719,6 +1796,7 @@ internal object PhoneDdzTurn : PhoneTool {
     private fun track(turn: Turn, frame: com.wangzan101.mika.core.uistate.RawFrame, view: DdzView) {
         if (view.phase == DdzPhase.Call) {
             turn.tracker = null; turn.expectedHand = null; turn.joining = false; turn.doubleDecided = false
+            clearAuction(turn)
             return
         }
         // 结算页、「当前金币可前往更高级场次」弹窗、大厅不是出牌的一刻:弹窗把两家出牌区整片盖住,读出来全是认不准,
@@ -1821,8 +1899,8 @@ internal object PhoneDdzTurn : PhoneTool {
             return fallback(ctx, turn, tracker, frame, view)
         }
         // A transient service failure gets one quick retry; a replay mismatch is deterministic.
-        val play = askDouZero(advisor, tracker, played).let { first ->
-            if (first.exceptionOrNull()?.message in TRANSIENT_ADVISOR_ERRORS) askDouZero(advisor, tracker, played) else first
+        val play = askDouZero(advisor, tracker, played, turn).let { first ->
+            if (first.exceptionOrNull()?.message in TRANSIENT_ADVISOR_ERRORS) askDouZero(advisor, tracker, played, turn) else first
         }
         val cards = play.getOrElse {
             // DouZero 连不上、不认这段历史:这一局剩下的按简单规则打完,下一局再交给它
@@ -2274,7 +2352,7 @@ internal object PhoneDdzTurn : PhoneTool {
             tracker.landlord == DdzSeat.Me && tracker.history.isEmpty() && hand.size != 20 -> "landlord_mismatch"
             else -> null
         }
-        val play = if (reason == null) askDouZero(advisor, tracker, hand!!) else null
+        val play = if (reason == null) askDouZero(advisor, tracker, hand!!, turn) else null
         val failure = reason ?: play?.exceptionOrNull()?.message
         if (failure == null && play != null) {
             val cards = play.getOrThrow()
@@ -2320,12 +2398,17 @@ internal object PhoneDdzTurn : PhoneTool {
         return Auto.Off
     }
 
-    private suspend fun askDouZero(url: String, tracker: DdzTracker, hand: List<String>): Result<List<String>> {
+    private suspend fun askDouZero(url: String, tracker: DdzTracker, hand: List<String>, turn: Turn): Result<List<String>> {
+        val auction = auctionDouble(turn)
         val body = buildJsonObject {
             put("seat", tracker.seat())
             put("hand", JsonArray(hand.map(::JsonPrimitive)))
             put("bottom", JsonArray(tracker.bottom.orEmpty().map(::JsonPrimitive)))
             put("history", JsonArray(tracker.history.map { m -> JsonArray(m.map(::JsonPrimitive)) }))
+            // 一个都没读到就不加这个字段:请求体和以前逐字一样
+            if (auction.isNotEmpty()) put("auction", buildJsonObject {
+                put("double", buildJsonObject { for ((seat, doubled) in auction) put(seat, doubled) })
+            })
         }.toString()
         val reply = runCatching { advise(url, body) }.getOrNull()?.let { runCatching { kotlinx.serialization.json.Json.parseToJsonElement(it) as? JsonObject }.getOrNull() }
             ?: return Result.failure(IllegalStateException("douzero_unreachable"))
@@ -2384,7 +2467,7 @@ internal object PhoneDdzTurn : PhoneTool {
     }
 
     /** 单机局里每一帧都要认牌,一次把这些行读全。 */
-    private val FULL_ROWS = (DdzScreen.ROWS + DdzCards.ROWS + DdzCards.LOBBY_ROWS + DdzPopups.SCAN_ROWS + DdzRoomLabel.ROWS).distinct()
+    private val FULL_ROWS = (DdzScreen.ROWS + DdzCards.ROWS + DdzCards.LOBBY_ROWS + DdzPopups.SCAN_ROWS + DdzRoomLabel.ROWS + DdzCards.DOUBLE_ROWS).distinct()
     private val TRANSIENT_ADVISOR_ERRORS = setOf("douzero_unreachable", "douzero_bad_reply")
     private val SNAPSHOT_PHASES = setOf("call", "double", "lead", "follow")
     private val SNAPSHOT_SEATS = setOf("landlord", "landlord_up", "landlord_down")
