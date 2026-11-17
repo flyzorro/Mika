@@ -33,20 +33,47 @@ POST /que
   三门都列出,按期望从高到低;期望一样时选张数少的那门,再一样按 m<p<s。
   value 同样是每门做固定种子蒙特卡洛得到的(draws≤14 70 局,>14 50 局)。
 
+POST /hint
+  {"image": "<2412×1080 整屏 PNG 的 base64>"}   # JJ麻将主屏截图
+成功 state 取 turn / win / que_select / wait / unsure:
+  turn:       {"state":"turn","hand":[...],"melds":[...],"que":"p","left":31,"draws":8,
+               "jian":"9s"或 null,"advice":{…/discard 的返回…}}
+  win:        {"state":"win",同上的识别字段,没有 advice}
+  que_select: {"state":"que_select","hand":[...],"advice":{…/que 的返回…}}
+              # 屏上出现「请选择定缺的花色」时,建议定缺哪门
+  wait:       {"state":"wait",...}  # 不是用户出牌;牌桌画面会带上认得出的
+              # hand / melds / que / left,大厅、结算只有 state
+  unsure:     {"state":"unsure","reason":"tile"|"meld"|"que"|"left"}
+              # 认不出就不给建议;认不出的牌面存进 unsure/,方便以后补模板
+  draws = max(1, ⌈left ÷ 4⌉),即自己还能摸几张。
+  手牌张数 + 3 × 碰杠组数 = 14 且没胡才算 turn;之前(13 张)是 wait。
+  手牌每张和 templates/hand/ 的模板比 40×64 归一化点积,≥0.95 才算认出;
+  自己的碰杠用 templates/meld/,牌墙剩余用 templates/digit/,定缺角标用
+  templates/que/。只支持这台手机的 2412×1080 横屏。
+
+/hint 错误(HTTP 200,同第一期约定):
+  {"error": "bad_image" | "unsupported_screen", "detail": "人话"}
+
 校验错误(HTTP 200,安卓端把非 2xx 当成连不上):
   {"error": "bad_tile" | "bad_que" | "bad_meld" | "not_drawn" | "wrong_count"
             | "too_many" | "bad_draws",
    "detail": "人话"}
 只有请求体不是 JSON、路径不对这类才用 4xx/404。
 """
+import base64
+import glob
+import io
 import json
 import os
 import random
 import re
 import sys
+import time
 from math import comb
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+import numpy as np
+from PIL import Image
 from mahjong.shanten import Shanten
 
 TILE_RE = re.compile(r"^([1-9])([mps])$")
@@ -735,9 +762,421 @@ def advise_que(hand, draws=None):
     return {"que": options[0][3]["que"], "options": [item[3] for item in options]}
 
 
+# ---- /hint:识别一张 2412×1080 的主屏截图 ----
+# 手牌区右对齐到 x=2004,每张宽 123.5px;刚摸的那张单独在 x=2043–2166。
+# 手牌和模板比 40×64 的归一化点积,>= 0.95 才算认出;自己的碰杠、牌墙剩余、
+# 定缺角标和「荐」都用同一套模板/几何。认不出返回 unsure,并把牌面存进 unsure/。
+SCREEN_SIZE = (2412, 1080)
+HAND_RIGHT = 2004.0
+HAND_PITCH = 123.5
+DRAWN_X = (2043.0, 2166.0)
+HAND_TOP, HAND_BOTTOM = 820, 1075
+HAND_FACE_TOP, HAND_FACE_BOTTOM = 885, 1057
+HAND_MIN_FACE = 150
+HAND_MATCH = 0.95
+MELD_MATCH = 0.9
+QUE_MATCH = 0.9
+DIGIT_MATCH = 0.9
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+TEMPLATE_DIR = os.path.join(BASE_DIR, "templates")
+UNSURE_DIR = os.path.join(BASE_DIR, "unsure")
+MELD_GROUP_X = 456
+MELD_GROUP_STEP = 320
+MELD_GROUP_WIDTH = 276
+MELD_COLUMN = 92
+
+
+def _feature(image, size=(40, 64)):
+    values = np.asarray(image.convert("RGB").resize(size, Image.LANCZOS), float).ravel()
+    values -= values.mean()
+    return values / (np.linalg.norm(values) + 1e-9)
+
+
+def _load_features(pattern, size=(40, 64)):
+    table = {}
+    for path in sorted(glob.glob(os.path.join(TEMPLATE_DIR, pattern))):
+        name = os.path.splitext(os.path.basename(path))[0]
+        table[name] = _feature(Image.open(path), size)
+    return table
+
+
+def _load_digits():
+    table = {}
+    for path in sorted(glob.glob(os.path.join(TEMPLATE_DIR, "digit", "*.png"))):
+        name = os.path.splitext(os.path.basename(path))[0]
+        image = Image.open(path).convert("L")
+        values = np.asarray(image, float).ravel()
+        values -= values.mean()
+        table.setdefault(name[0], []).append(values / (np.linalg.norm(values) + 1e-9))
+    return table
+
+
+HAND_TEMPLATES = _load_features(os.path.join("hand", "*.png"))
+MELD_TEMPLATES = _load_features(os.path.join("meld", "*.png"))
+QUE_TEMPLATES = _load_features(os.path.join("que", "*.png"), (32, 32))
+DIGIT_TEMPLATES = _load_digits()
+
+
+def _best(feature, table):
+    best = (0.0, None)
+    for name, template in table.items():
+        score = float(feature @ template)
+        if score > best[0]:
+            best = (score, name)
+    return best
+
+
+def _decode_screen(value):
+    if not isinstance(value, str) or not value:
+        raise RequestError("bad_image", "image 必须是整屏 PNG 的 base64 字符串")
+    try:
+        raw = base64.b64decode(value, validate=True)
+    except (ValueError, TypeError):
+        raise RequestError("bad_image", "image 不是合法的 base64") from None
+    try:
+        image = Image.open(io.BytesIO(raw))
+        image.load()
+    except Exception:
+        raise RequestError("bad_image", "图片解不开") from None
+    if image.format != "PNG":
+        raise RequestError("bad_image", f"只认 PNG，收到 {image.format}")
+    if image.size != SCREEN_SIZE:
+        raise RequestError(
+            "unsupported_screen", f"只支持 {SCREEN_SIZE[0]}×{SCREEN_SIZE[1]}，收到 {image.width}×{image.height}"
+        )
+    return image.convert("RGB")
+
+
+def _is_hand_tile(array, x0, x1):
+    region = array[930:1050, int(x0 + 0.2 * (x1 - x0)):int(x1 - 0.2 * (x1 - x0))]
+    return (region[..., 0] > 150).mean() > 0.5
+
+
+def _face_rows(array, x0, x1):
+    region = array[HAND_TOP:HAND_BOTTOM, int(x0 + 10):int(x1 - 10)]
+    bright = (region.min(axis=2) > 150).mean(axis=1) > 0.5
+    rows = np.where(bright)[0]
+    if not len(rows):
+        return None
+    return (HAND_TOP + int(rows[0]), HAND_TOP + int(rows[-1]))
+
+
+def _hand_slots(array, fixed=False):
+    """返回 [(x0, x1, y0, y1, drawn)],从左到右。fixed 用于定缺阶段(牌面被黄光罩住)。"""
+    slots = []
+    for index in range(14):
+        x1 = HAND_RIGHT - HAND_PITCH * index
+        x0 = x1 - HAND_PITCH
+        if not _is_hand_tile(array, x0, x1):
+            break
+        if fixed:
+            slots.append((x0, x1, HAND_FACE_TOP, HAND_FACE_BOTTOM, False))
+            continue
+        rows = _face_rows(array, x0, x1)
+        if not rows or rows[1] - rows[0] < HAND_MIN_FACE:
+            break
+        slots.append((x0, x1, rows[0], rows[1], False))
+    slots.reverse()
+    if _is_hand_tile(array, *DRAWN_X):
+        if fixed:
+            slots.append((*DRAWN_X, HAND_FACE_TOP, HAND_FACE_BOTTOM, True))
+        else:
+            rows = _face_rows(array, *DRAWN_X)
+            if rows:
+                slots.append((*DRAWN_X, rows[0], rows[1], True))
+    return slots
+
+
+def _tile_crop(image, slot):
+    x0, x1, y0, y1, _ = slot
+    return image.crop((int(x0) + 4, int(y0), int(x1) - 4, int(y1)))
+
+
+def _recognize_hand(image, array, slots=None, fixed=False):
+    records = []
+    if slots is None:
+        slots = _hand_slots(array, fixed)
+    for slot in slots:
+        crop = _tile_crop(image, slot)
+        score, tile = _best(_feature(crop), HAND_TEMPLATES)
+        records.append({
+            "slot": slot,
+            "crop": crop,
+            "tile": tile if score >= HAND_MATCH else None,
+            "score": score,
+        })
+    return records
+
+
+def _white_fraction(array, x0, x1, y0, y1):
+    region = array[y0:y1, x0:x1]
+    white = (region.min(axis=2) > 150) & ((region.max(axis=2) - region.min(axis=2)) < 60)
+    return float(white.mean())
+
+
+def _recognize_melds(image, array, hand_start):
+    """自己的碰杠:每组固定 276px 宽,按白面/绿背和抬起的那张判断碰、明杠、暗杠。"""
+    melds = []
+    if hand_start is None or hand_start <= 740:
+        return melds
+    for group in range(4):
+        start = MELD_GROUP_X + MELD_GROUP_STEP * group
+        if start + MELD_GROUP_WIDTH > hand_start - 20:
+            break
+        flat = []
+        raised = []
+        for column in range(3):
+            x0 = start + MELD_COLUMN * column + 8
+            x1 = start + MELD_COLUMN * column + 84
+            flat.append(_white_fraction(array, x0, x1, 950, 1020))
+            raised.append(_white_fraction(array, x0, x1, 870, 905))
+        lifted = sum(value > 0.4 for value in raised)
+        if lifted:
+            if flat[0] > 0.5 and flat[2] > 0.5:
+                kind, dark = "kan", False
+            elif flat[0] < 0.2 and flat[2] < 0.2:
+                kind, dark = "kan", True
+            else:
+                melds.append(None)
+                continue
+        elif all(value > 0.5 for value in flat):
+            kind, dark = "pon", False
+        else:
+            melds.append(None)
+            continue
+        if dark:
+            region = array[820:1080, start + 40:start + 230]
+            white = (region.min(axis=2) > 150) & ((region.max(axis=2) - region.min(axis=2)) < 60)
+            columns = white[80:130].mean(axis=0)
+            xs = np.where(columns > 0.5)[0]
+            if not len(xs):
+                melds.append(None)
+                continue
+            left_x, right_x = start + 40 + int(xs.min()), start + 40 + int(xs.max()) + 1
+            rows = white[:, xs.min():xs.max() + 1].mean(axis=1) > 0.5
+            ys = np.where(rows)[0]
+            if not len(ys):
+                melds.append(None)
+                continue
+            face = image.crop((left_x + 3, 820 + int(ys.min()) + 3, right_x - 3, 820 + int(ys.max()) - 2))
+            prefix = "ankong_"
+        else:
+            face = image.crop((start + 6, 921, start + 86, 1026))
+            prefix = "flat_"
+        templates = {name: value for name, value in MELD_TEMPLATES.items() if name.startswith(prefix)}
+        score, name = _best(_feature(face), templates)
+        if score < MELD_MATCH or name is None:
+            melds.append(None)
+            continue
+        melds.append({"type": kind, "tile": name.split("_", 1)[1]})
+    return melds
+
+
+def _recognize_que(image, array, records):
+    """先读左下角头像旁的万/筒/条角标;读不到再看手里哪门有粉小猪头。"""
+    score, name = _best(_feature(image.crop((203, 958, 257, 1017)), (32, 32)), QUE_TEMPLATES)
+    if score >= QUE_MATCH:
+        return name
+    suits = {}
+    for record in records:
+        tile = record["tile"]
+        if tile is None:
+            continue
+        x0, x1, y0, y1, _ = record["slot"]
+        region = array[y0:y0 + 55, int(x1) - 60:int(x1) - 2]
+        red, green, blue = region[..., 0], region[..., 1], region[..., 2]
+        pink = ((red > 200) & (red - green > 30) & (red - blue > 30) & (green > 120)).sum()
+        if pink > 100:
+            suits[tile[1]] = suits.get(tile[1], 0) + 1
+    if suits:
+        return max(suits, key=lambda suit: (suits[suit], suit))
+    return None
+
+
+def _dilate(mask):
+    out = mask.copy()
+    out[1:, :] |= mask[:-1, :]
+    out[:-1, :] |= mask[1:, :]
+    out[:, 1:] |= mask[:, :-1]
+    out[:, :-1] |= mask[:, 1:]
+    return out
+
+
+def _left_digits(array):
+    """左上角绿框里的白色数字,按列切成 1–2 个字形。"""
+    red, green, blue = array[..., 0], array[..., 1], array[..., 2]
+    box = (green > 130) & (green - red > 50) & (green - blue > 50)
+    box[:20] = False
+    box[100:] = False
+    box[:, :340] = False
+    box[:, 450:] = False
+    ys, xs = np.where(box)
+    if len(xs) < 300:
+        return None
+    x0, x1, y0, y1 = int(xs.min()), int(xs.max()) + 1, int(ys.min()), int(ys.max()) + 1
+    digits = array[y0:y1, x0:x1]
+    white = (digits.min(axis=2) > 150) & ((digits.max(axis=2) - digits.min(axis=2)) < 40)
+    white[:, :3] = False  # 绿框左边 1px 的白边
+    columns = _dilate(white).mean(axis=0) > 0.05
+    runs = []
+    start = None
+    for index, on in enumerate(columns):
+        if on and start is None:
+            start = index
+        if not on and start is not None:
+            runs.append((start, index))
+            start = None
+    if start is not None:
+        runs.append((start, len(columns)))
+    runs = [run for run in runs if run[1] - run[0] >= 3]
+    if not runs or len(runs) > 2:
+        return None
+    glyphs = []
+    for run0, run1 in runs:
+        glyph = white[:, run0:run1]
+        rows = np.where(glyph.mean(axis=1) > 0.1)[0]
+        if len(rows) < 8:
+            return None
+        glyph = glyph[rows[0]:rows[-1] + 1]
+        cols = np.where(glyph.mean(axis=0) > 0.05)[0]
+        glyphs.append(glyph[:, cols.min():cols.max() + 1])
+    return glyphs
+
+
+def _read_left(array):
+    """牌墙剩余:逐位和 templates/digit/ 的 0–9 小模板比;个位数渲染略小,阈值放宽。"""
+    glyphs = _left_digits(array)
+    if glyphs is None:
+        return None
+    threshold = 0.75 if len(glyphs) == 1 else DIGIT_MATCH
+    value = ""
+    for glyph in glyphs:
+        small = Image.fromarray((glyph * 255).astype("uint8")).resize((16, 24), Image.LANCZOS)
+        values = np.asarray(small, float).ravel()
+        values -= values.mean()
+        values /= np.linalg.norm(values) + 1e-9
+        score, digit = 0.0, None
+        for candidate, templates in DIGIT_TEMPLATES.items():
+            for template in templates:
+                current = float(values @ template)
+                if current > score:
+                    score, digit = current, candidate
+        if score < threshold:
+            return None
+        value += digit
+    return int(value)
+
+
+def _is_que_select(array):
+    """定缺阶段屏幕中间有「请选择定缺的花色」深蓝横幅,别的时候那一带没有。"""
+    region = array[600:670, 600:1800]
+    red, green, blue = region[..., 0], region[..., 1], region[..., 2]
+    dark = (blue > red + 10) & (blue > green + 5) & (blue < 110) & (red < 70)
+    return int(dark.sum()) > 1000
+
+
+def _recognize_jian(array, slots):
+    """橙色「荐」在推荐那张牌正上方,按 x 找最近的牌。"""
+    region = array[830:905, 380:2220]
+    red, green, blue = region[..., 0], region[..., 1], region[..., 2]
+    orange = (red > 200) & (green > 120) & (green < 210) & (blue < 120)
+    ys, xs = np.where(orange)
+    if len(xs) < 100:
+        return None
+    center = (int(xs.min()) + int(xs.max())) / 2 + 380
+    nearest = None
+    distance = 1e9
+    for slot in slots:
+        x0, x1 = slot[0], slot[1]
+        current = abs((x0 + x1) / 2 - center)
+        if current < distance:
+            distance, nearest = current, slot
+    if distance > 60:
+        return None
+    return nearest
+
+
+def _save_unsure(crop, reason):
+    try:
+        os.makedirs(UNSURE_DIR, exist_ok=True)
+        crop.save(os.path.join(UNSURE_DIR, f"{time.time_ns()}_{reason}.png"))
+    except OSError:
+        pass
+
+
+def _tile_at(records, slot):
+    if slot is None:
+        return None
+    for record in records:
+        if abs(record["slot"][0] - slot[0]) < 1:
+            return record["tile"]
+    return None
+
+
+def advise_hint(image_value):
+    try:
+        image = _decode_screen(image_value)
+    except RequestError as error:
+        return {"error": error.code, "detail": error.detail}
+    array = np.asarray(image).astype(int)
+    if not _hand_slots(array):
+        return {"state": "wait"}
+    if _is_que_select(array):
+        records = _recognize_hand(image, array, _hand_slots(array, fixed=True))
+        hand = [record["tile"] for record in records]
+        if any(tile is None for tile in hand):
+            for record in records:
+                if record["tile"] is None:
+                    _save_unsure(record["crop"], "tile")
+            return {"state": "unsure", "reason": "tile"}
+        return {"state": "que_select", "hand": hand, "advice": advise_que(hand)}
+    slots = _hand_slots(array)
+    records = _recognize_hand(image, array, slots)
+    hand = [record["tile"] for record in records]
+    melds = _recognize_melds(image, array, slots[0][0])
+    que = _recognize_que(image, array, records)
+    left = _read_left(array)
+    total = len(hand) + 3 * len(melds)
+    fields = {}
+    if all(tile is not None for tile in hand):
+        fields["hand"] = hand
+    if all(meld is not None for meld in melds):
+        fields["melds"] = melds
+    if que is not None:
+        fields["que"] = que
+    if left is not None:
+        fields["left"] = left
+    if total == 14:
+        if any(tile is None for tile in hand):
+            for record in records:
+                if record["tile"] is None:
+                    _save_unsure(record["crop"], "tile")
+            return {"state": "unsure", "reason": "tile"}
+        if any(meld is None for meld in melds):
+            return {"state": "unsure", "reason": "meld"}
+        if que is None:
+            return {"state": "unsure", "reason": "que"}
+        if left is None:
+            return {"state": "unsure", "reason": "left"}
+        draws = max(1, (left + 3) // 4)
+        if is_win(hand, melds, que):
+            return {"state": "win", **fields, "draws": draws}
+        jian = _tile_at(records, _recognize_jian(array, slots))
+        return {
+            "state": "turn",
+            **fields,
+            "draws": draws,
+            "jian": jian,
+            "advice": advise(hand, melds, que, draws),
+        }
+    return {"state": "wait", **fields}
+
+
 def handle(body, path="/discard"):
     if not isinstance(body, dict):
         return 400, {"error": "bad_request", "detail": "请求体必须是 JSON 对象"}
+    if path == "/hint":
+        return 200, advise_hint(body.get("image"))
     try:
         if path == "/que":
             return 200, advise_que(body["hand"], body.get("draws"))
@@ -751,7 +1190,7 @@ def handle(body, path="/discard"):
 def handler():
     class Handler(BaseHTTPRequestHandler):
         def do_POST(self):
-            if self.path not in ("/discard", "/que"):
+            if self.path not in ("/discard", "/que", "/hint"):
                 return self.reply(404, {"error": "not_found"})
             try:
                 body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))))
@@ -761,6 +1200,9 @@ def handler():
             self.reply(code, data, body)
 
         def reply(self, code, data, request=None):
+            if isinstance(request, dict) and "image" in request:
+                # /hint 的请求体是整屏 PNG 的 base64,别把几 MB 打进日志
+                request = {**request, "image": f"<PNG base64 {len(str(request['image']))} chars>"}
             print(json.dumps({"request": request, "reply": data}, ensure_ascii=False), flush=True)
             raw = json.dumps(data, ensure_ascii=False).encode()
             self.send_response(code)

@@ -1,11 +1,16 @@
 """按公开入口测:handle(body) 返回 (HTTP 状态码, JSON);另有一条走真实 HTTP 锁状态码。"""
+import base64
+import io
 import json
+import os
 import threading
 import time
 import unittest
 import urllib.error
 import urllib.request
 from http.server import ThreadingHTTPServer
+
+from PIL import Image, ImageDraw
 
 from server import handle, handler, win_fan, win_multiplier, win_probability
 
@@ -397,3 +402,306 @@ class StabilityTest(unittest.TestCase):
         for _ in range(5):
             post(hand)
         self.assertLess((time.perf_counter() - started) / 5, 1.0)
+
+
+# ---- /hint:一张主屏截图 → 局面 + 建议 ----
+FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures")
+FRAME_DIR = os.path.join(FIXTURES, "frames")
+
+
+def png_base64(path):
+    with open(path, "rb") as file:
+        return base64.b64encode(file.read()).decode()
+
+
+def hint_frame(name):
+    return handle({"image": png_base64(os.path.join(FRAME_DIR, name + ".png"))}, "/hint")
+
+
+def hint_bytes(raw):
+    return handle({"image": base64.b64encode(raw).decode()}, "/hint")
+
+
+class HintImageTest(unittest.TestCase):
+    def test_not_a_png_is_bad_image(self):
+        for raw in (b"", b"not a png", b"\x89PNG\r\n\x1a\n-but-truncated"):
+            with self.subTest(raw=raw[:12]):
+                status, body = hint_bytes(raw)
+                self.assertEqual(status, 200)
+                self.assertEqual(body["error"], "bad_image")
+
+    def test_wrong_size_is_unsupported_screen(self):
+        buffer = io.BytesIO()
+        Image.new("RGB", (800, 600), (0, 0, 0)).save(buffer, format="PNG")
+        status, body = hint_bytes(buffer.getvalue())
+        self.assertEqual(status, 200)
+        self.assertEqual(body["error"], "unsupported_screen")
+
+    def test_a_jpeg_is_bad_image_even_at_the_right_size(self):
+        buffer = io.BytesIO()
+        Image.new("RGB", (2412, 1080), (0, 0, 0)).save(buffer, format="JPEG")
+        status, body = hint_bytes(buffer.getvalue())
+        self.assertEqual(status, 200)
+        self.assertEqual(body["error"], "bad_image")
+
+    def test_lobby_and_settlement_are_wait(self):
+        for name in ("shots_204245", "shots_205135"):
+            with self.subTest(name=name):
+                status, body = hint_frame(name)
+                self.assertEqual(status, 200)
+                self.assertEqual(body, {"state": "wait"})
+
+
+def load_frame(name):
+    return Image.open(os.path.join(FRAME_DIR, name + ".png")).convert("RGB")
+
+
+class HintTurnTest(unittest.TestCase):
+    def test_turn_frame_recognizes_the_whole_table(self):
+        status, body = hint_frame("shots_204809")
+        self.assertEqual(status, 200)
+        self.assertEqual(body["state"], "turn")
+        self.assertEqual(body["hand"], ["1m", "2m", "4m", "7m", "7m", "8m", "8m",
+                                        "2s", "3s", "5s", "6s", "7s", "8s", "8m"])
+        self.assertEqual(body["melds"], [])
+        self.assertEqual(body["que"], "p")
+        self.assertEqual(body["left"], 39)
+        self.assertEqual(body["draws"], 10)  # ceil(39 / 4)
+        self.assertIsNone(body["jian"])
+        self.assertIn("discard", body["advice"])
+        self.assertFalse(body["advice"]["win"])
+
+    def test_que_badge_reads_all_three_suits(self):
+        for name, que in (("shots_204809", "p"), ("shots2_210336", "m"), ("shots3_211829", "s")):
+            with self.subTest(name=name):
+                _, body = hint_frame(name)
+                self.assertEqual(body["que"], que)
+
+    def test_left_digits_are_read(self):
+        cases = {
+            "shots_204809": 39,
+            "shots_204850": 20,
+            "shots2_210336": 24,
+            "shots3_211829": 28,
+            "shots4_212932_0057": 27,
+        }
+        for name, left in cases.items():
+            with self.subTest(name=name):
+                _, body = hint_frame(name)
+                self.assertEqual(body["left"], left)
+
+    def test_a_tile_without_a_template_is_unsure(self):
+        # 用测试图模拟:把 2m 的牌面水平翻转,模板库里没有这种花纹,不能被认成别的牌。
+        unsure_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "unsure")
+        before = set(os.listdir(unsure_dir)) if os.path.isdir(unsure_dir) else set()
+        image = load_frame("shots_204809")
+        x0, x1, y0, y1 = 522, 646, 885, 1057
+        image.paste(image.crop((x0 + 4, y0, x1 - 4, y1)).transpose(Image.FLIP_LEFT_RIGHT), (x0 + 4, y0))
+        buffer = io.BytesIO()
+        image.save(buffer, format="PNG")
+        status, body = hint_bytes(buffer.getvalue())
+        self.assertEqual(status, 200)
+        self.assertEqual(body, {"state": "unsure", "reason": "tile"})
+        after = set(os.listdir(unsure_dir))
+        self.assertEqual(len(after - before), 1)  # 认不出的牌面存下来,方便以后补模板
+        for name in after - before:
+            os.unlink(os.path.join(unsure_dir, name))
+
+
+class HintMeldTest(unittest.TestCase):
+    def test_pon_groups(self):
+        cases = {
+            "shots_204850": [{"type": "pon", "tile": "7m"}],
+            "shots2_210336": [{"type": "pon", "tile": "1p"}],
+            "shots3_211829": [{"type": "pon", "tile": "6m"}],
+        }
+        for name, melds in cases.items():
+            with self.subTest(name=name):
+                _, body = hint_frame(name)
+                self.assertEqual(body["state"], "turn")
+                self.assertEqual(body["melds"], melds)
+
+    def test_exposed_and_concealed_kans(self):
+        cases = {
+            "shots4_212841_0033": [{"type": "kan", "tile": "7m"}],
+            "shots4_212820_0023": [{"type": "kan", "tile": "7m"}],
+            "shots_205128": [{"type": "kan", "tile": "1m"}, {"type": "kan", "tile": "4m"}],
+        }
+        for name, melds in cases.items():
+            with self.subTest(name=name):
+                _, body = hint_frame(name)
+                self.assertEqual(body["melds"], melds)
+
+    def test_wait_frames_still_recognize_the_table(self):
+        cases = {
+            "shots_204857": {
+                "hand": ["8m", "8m", "8m", "6s", "6s", "7s", "7s", "8s", "8s", "9s"],
+                "melds": [{"type": "pon", "tile": "7m"}], "que": "p", "left": 20,
+            },
+            "shots_205128": {
+                "hand": ["5m", "7m", "7m", "8m", "9m", "2s", "2s"],
+                "melds": [{"type": "kan", "tile": "1m"}, {"type": "kan", "tile": "4m"}],
+                "que": "p", "left": 21,
+            },
+            "shots4_212820_0023": {
+                "hand": ["1m", "2m", "3m", "4m", "5m", "6m", "1s", "3s", "5s", "1p"],
+                "melds": [{"type": "kan", "tile": "7m"}], "que": "p", "left": 47,
+            },
+        }
+        for name, expected in cases.items():
+            with self.subTest(name=name):
+                _, body = hint_frame(name)
+                self.assertEqual(body["state"], "wait")
+                for key, value in expected.items():
+                    self.assertEqual(body[key], value)
+                self.assertNotIn("advice", body)
+
+
+class HintQueSelectTest(unittest.TestCase):
+    def test_que_select_returns_hand_and_que_advice(self):
+        cases = {
+            "shots_204728": ["1m", "2m", "4m", "7m", "7m", "8m", "2s", "3s", "5s", "6s", "7s", "8s", "3p"],
+            "shots2_210150": ["1p", "1p", "2p", "4p", "5p", "5p", "5p", "1s", "3s", "6s", "6s", "8s", "9s"],
+        }
+        for name, hand in cases.items():
+            with self.subTest(name=name):
+                _, body = hint_frame(name)
+                self.assertEqual(body["state"], "que_select")
+                self.assertEqual(body["hand"], hand)
+                self.assertIn(body["advice"]["que"], "mps")
+                self.assertEqual(len(body["advice"]["options"]), 3)
+                self.assertNotIn("left", body)
+
+
+class HintJianTest(unittest.TestCase):
+    def test_jian_points_at_the_tile_above_it(self):
+        cases = {"shots_204850": "9s", "shots4_212932_0057": "5m"}
+        for name, jian in cases.items():
+            with self.subTest(name=name):
+                _, body = hint_frame(name)
+                self.assertEqual(body["state"], "turn")
+                self.assertEqual(body["jian"], jian)
+
+    def test_no_jian_on_other_frames(self):
+        for name in ("shots_204809", "shots_204857", "shots4_212820_0023"):
+            with self.subTest(name=name):
+                _, body = hint_frame(name)
+                self.assertIsNone(body.get("jian"))
+
+
+class HintFixtureTest(unittest.TestCase):
+    def test_every_fixture_state_matches_the_labels(self):
+        with open(os.path.join(FIXTURES, "labels.json"), encoding="utf-8") as file:
+            labels = json.load(file)
+        for name, label in labels.items():
+            if name.startswith("_"):
+                continue
+            with self.subTest(name=name):
+                _, body = hint_frame(name)
+                self.assertEqual(body["state"], label["state"])
+
+
+class HintFixtureFieldsTest(unittest.TestCase):
+    def test_every_labelled_field_matches(self):
+        with open(os.path.join(FIXTURES, "labels.json"), encoding="utf-8") as file:
+            labels = json.load(file)
+        for name, label in labels.items():
+            if name.startswith("_"):
+                continue
+            with self.subTest(name=name):
+                _, body = hint_frame(name)
+                self.assertEqual(body["state"], label["state"])
+                for key in ("hand", "melds", "que", "left"):
+                    if key in label:
+                        self.assertEqual(body[key], label[key], key)
+                if "jian" in label:
+                    self.assertEqual(body.get("jian"), label["jian"])
+                if body["state"] == "turn" and "left" in body:
+                    self.assertEqual(body["draws"], max(1, (body["left"] + 3) // 4))
+
+
+class HintHttpTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.server = ThreadingHTTPServer(("127.0.0.1", 0), handler())
+        cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
+        cls.thread.start()
+        cls.port = cls.server.server_address[1]
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown()
+        cls.server.server_close()
+        cls.thread.join()
+
+    def test_hint_over_http(self):
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{self.port}/hint",
+            data=json.dumps({"image": png_base64(os.path.join(FRAME_DIR, "shots_204809.png"))}).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(request) as response:
+            self.assertEqual(response.status, 200)
+            body = json.loads(response.read())
+        self.assertEqual(body["state"], "turn")
+        self.assertEqual(body["hand"][0], "1m")
+
+
+class HintPerformanceTest(unittest.TestCase):
+    def test_one_hint_takes_less_than_one_and_a_half_seconds(self):
+        started = time.perf_counter()
+        status, body = hint_frame("shots_204809")
+        elapsed = time.perf_counter() - started
+        self.assertEqual(status, 200)
+        self.assertEqual(body["state"], "turn")
+        self.assertLess(elapsed, 1.5, f"{elapsed:.3f}s")
+
+
+class HintUnsureReasonTest(unittest.TestCase):
+    def test_unreadable_left_is_unsure_left(self):
+        image = load_frame("shots_204809")
+        ImageDraw.Draw(image).rectangle([340, 10, 450, 100], fill=(40, 130, 120))
+        buffer = io.BytesIO()
+        image.save(buffer, format="PNG")
+        _, body = hint_bytes(buffer.getvalue())
+        self.assertEqual(body, {"state": "unsure", "reason": "left"})
+
+    def test_unreadable_que_is_unsure_que(self):
+        image = load_frame("shots_204809")
+        ImageDraw.Draw(image).rectangle([203, 958, 257, 1017], fill=(40, 130, 120))
+        buffer = io.BytesIO()
+        image.save(buffer, format="PNG")
+        _, body = hint_bytes(buffer.getvalue())
+        self.assertEqual(body, {"state": "unsure", "reason": "que"})
+
+    def test_unreadable_meld_is_unsure_meld(self):
+        image = load_frame("shots_204850")
+        x0, x1 = 462, 542
+        image.paste(image.crop((x0, 921, x1, 1026)).transpose(Image.FLIP_LEFT_RIGHT), (x0, 921))
+        buffer = io.BytesIO()
+        image.save(buffer, format="PNG")
+        _, body = hint_bytes(buffer.getvalue())
+        self.assertEqual(body, {"state": "unsure", "reason": "meld"})
+
+
+class HintWinTest(unittest.TestCase):
+    def test_a_winning_hand_returns_win(self):
+        hand = ["1m", "2m", "3m", "4m", "5m", "6m", "7m", "8m", "9m", "1p", "2p", "3p", "5p", "5p"]
+        image = Image.new("RGB", (2412, 1080), (40, 130, 120))
+        template_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates")
+        for index, tile in enumerate(hand[:-1]):
+            x0 = int(2004 - 123.5 * (13 - index))
+            image.paste(Image.open(os.path.join(template_dir, "hand", tile + ".png")).convert("RGB"),
+                        (x0 + 4, 885))
+        image.paste(Image.open(os.path.join(template_dir, "hand", hand[-1] + ".png")).convert("RGB"),
+                    (2043 + 4, 885))
+        image.paste(load_frame("shots_204809").crop((360, 15, 440, 100)), (360, 15))
+        image.paste(Image.open(os.path.join(template_dir, "que", "s.png")).convert("RGB"), (203, 958))
+        buffer = io.BytesIO()
+        image.save(buffer, format="PNG")
+        _, body = hint_bytes(buffer.getvalue())
+        self.assertEqual(body["state"], "win")
+        self.assertEqual(body["hand"], hand)
+        self.assertEqual(body["que"], "s")
+        self.assertEqual(body["draws"], 10)
+        self.assertNotIn("advice", body)
