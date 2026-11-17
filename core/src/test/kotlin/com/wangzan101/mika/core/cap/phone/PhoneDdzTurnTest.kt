@@ -433,6 +433,48 @@ class PhoneDdzTurnTest {
     }
 
     /**
+     * 加倍帧的底牌那块抹成桌布:三张底牌认不出([DdzCards.bottom] 为 null),手牌、张数和按钮照旧。
+     */
+    private fun doubleWithoutBottom(name: String): RawFrame =
+        editedFull(name) { _, rows, _ ->
+            for ((y, px) in rows) if (y <= 320) for (x in 900..1500) px[x] = 0xFF0B2B4A.toInt()
+        }
+
+    /**
+     * 现有素材里没有「叫分 17 张 + 底牌 7 2 J 正好等于 double_landlord_20 的 20 张」这一对,
+     * 用 call.jpg 的叫分画面拼一张:从 double_landlord_20 的 20 张里去掉底牌 7 2 J,
+     * 把剩下的 17 张按叫分画面的间距抄回去。只抄每张牌露出来的那一条:最后一张右上角压着
+     * 「地主」绶带,右半边保留叫分画面原来的白牌面。
+     */
+    private fun callMatchingDoubleLandlord20(): RawFrame {
+        val baseImage = ImageIO.read(javaClass.getResourceAsStream("/ddz/call.jpg")!!)
+        val donorImage = ImageIO.read(javaClass.getResourceAsStream("/ddz/double_landlord_20.png")!!)
+        val rows = (DdzScreen.ROWS + DdzCards.ROWS + DdzCards.LOBBY_ROWS + DdzPopups.SCAN_ROWS).distinct()
+        val base = RawFrame(baseImage.width, baseImage.height, rows.associateWith { y ->
+            baseImage.getRGB(0, y, baseImage.width, 1, null, 0, baseImage.width)
+        })
+        val donor = RawFrame(donorImage.width, donorImage.height, rows.associateWith { y ->
+            donorImage.getRGB(0, y, donorImage.width, 1, null, 0, donorImage.width)
+        })
+        val baseView = DdzScreen.read(base, classic = true)
+        val donorView = DdzScreen.read(donor, classic = true)
+        // double_landlord_20 的 20 张去掉底牌 7、2、J 后剩下的 17 个位置。
+        val donorPositions = listOf(0, 1, 2, 4, 5, 6, 7, 8, 9, 10, 12, 13, 14, 15, 16, 18, 19)
+        val baseTop = if (DdzScreen.blackBar(base) > 0) 669 else 644
+        val donorTop = if (DdzScreen.blackBar(donor) > 0) 669 else 644
+        val out = rows.associateWith { base.row(it)!!.copyOf() }.toMutableMap()
+        for (i in donorPositions.indices) {
+            val tx = baseView.handLeft + (i * baseView.pitch).roundToInt()
+            val sx = donorView.handLeft + (donorPositions[i] * donorView.pitch).roundToInt()
+            val width = baseView.pitch.roundToInt()
+            for (y in baseTop..799) for (dx in 0 until width) {
+                out[y]!![tx + dx] = donor.pixel(sx + dx, y - (baseTop - donorTop))
+            }
+        }
+        return RawFrame(base.width, base.height, out)
+    }
+
+    /**
      * 手牌认不出的一帧:第一张牌的点数抹成牌面白,整手认牌返回 null,张数和按钮照旧。
      * [liftIndex] 抬起那张牌(只靠下标和几何,不靠点数);[noPlays] 抹掉两家的出牌区,让跟踪器一直认不出地主。
      */
@@ -2916,6 +2958,149 @@ class PhoneDdzTurnTest {
             assertEquals("landlord", asked.single().first)
             assertEquals(20, asked.single().second.size)
             assertEquals(listOf("7", "2", "J"), asked.single().third)
+        } finally {
+            PhoneDdzTurn.adviseBid = savedBid
+            PhoneDdzTurn.adviseDouble = savedDouble
+        }
+    }
+
+    /**
+     * 2026-11-17 10:41 普通场:叫分时 17 张认全,加倍时 20 张也认全,但摆开的三张底牌一张都没认出来。
+     * 地主 20 张按点数减去叫分时的 17 张正好剩 3 张,就拿它当底牌问 DouZero,照服务的回答点黄色「加倍」。
+     * 现有素材里没有能直接对上的叫分帧,所以用 call.jpg 和 double_landlord_20 的手牌像素拼一张。
+     */
+    @Test fun humanLandlordUsesTheBidHandDifferenceWhenTheBottomCardsAreUnreadable() = runTest {
+        val call = callMatchingDoubleLandlord20()
+        val double = doubleWithoutBottom("double_landlord_20")
+        val callView = DdzScreen.read(call, classic = true)
+        assertEquals("构造:叫分画面", DdzPhase.Call, callView.phase)
+        assertEquals(
+            "构造:叫分时的 17 张",
+            listOf("SJ", "2", "2", "A", "K", "K", "Q", "Q", "Q", "Q", "10", "10", "9", "9", "9", "6", "5"),
+            DdzCards.hand(call, callView),
+        )
+        val view = DdzScreen.read(double, classic = true)
+        assertEquals("构造:加倍画面", DdzPhase.Double, view.phase)
+        assertEquals("构造:20 张手牌认全", 20, view.handCount)
+        assertTrue("构造:底牌认不出", DdzCards.bottom(double).let { it == null || it.size < 3 })
+        val asked = mutableListOf<Triple<String, List<String>, List<String>>>()
+        val savedBid = PhoneDdzTurn.adviseBid
+        val savedDouble = PhoneDdzTurn.adviseDouble
+        PhoneDdzTurn.adviseBid = { _, _ -> PhoneDdzTurn.BidAdvice(3) }
+        PhoneDdzTurn.adviseDouble = { _, seat, hand, bottom ->
+            asked += Triple(seat, hand, bottom)
+            PhoneDdzTurn.DoubleAdvice(true, 0.93)
+        }
+        val out = ByteArrayOutputStream()
+        val old = System.out
+        try {
+            System.setOut(PrintStream(out))
+            val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(call, call, call, double)))
+            val result = PhoneDdzTurn.execute(
+                Args(PhoneDdzTurn.def, Json.parseToJsonElement(
+                    """{"action":"start","mode":"human","auto":true,"advisor":"http://mac:3426"}"""
+                ).jsonObject),
+                toolDispatcher(game).ctx,
+            )
+            assertEquals(result.content.toString(), "double", result.text("phase"))
+            assertNull("加倍时不暂停: ${result.content}", result.text("reason"))
+            val yellow = view.buttons.single { it.color == DdzColor.Yellow }
+            assertEquals("点了黄色的「加倍」", yellow.x to yellow.y, game.taps[1])
+            assertEquals("用补出来的底牌问一次服务", 1, asked.size)
+            assertEquals("landlord", asked.single().first)
+            assertEquals("hand 是 20 张", 20, asked.single().second.size)
+            assertEquals("底牌是 20 张减去叫分时的 17 张", listOf("7", "2", "J").sorted(), asked.single().third.sorted())
+        } finally {
+            System.setOut(old)
+            PhoneDdzTurn.adviseBid = savedBid
+            PhoneDdzTurn.adviseDouble = savedDouble
+        }
+        val log = out.toString()
+        assertTrue(log, log.lines().any {
+            it.contains("DDZTRACE double") && it.contains("bottomFrom=bid") && it.contains("pressed=double")
+        })
+    }
+
+    /**
+     * 2026-11-17 10:5x 普通场:叫分 17 张 SJ 2 2 A A Q Q Q Q J 10 10 10 10 6 6 5,
+     * 加倍 20 张 BJ SJ 2 2 A A Q Q Q Q J J 10 10 10 10 9 6 6 5 都认对,差值底牌是 BJ J 9;
+     * 但画面认出了 3 张 J J Q(认错,不是认不全),而且都包含在 20 张里,doubleCardsClash 抓不到。
+     * 地主差值可用时一律用差值底牌;画面认的那份只写进 trace 的 bottomFrame 便于排查。
+     * 现有素材没有这副牌,用同一手 20 张、画面底牌认成 2 2 2 的 double_landlord_conflict 覆盖这条规则。
+     */
+    @Test fun humanLandlordPrefersTheBidHandDifferenceOverMisreadBottomCards() = runTest {
+        val call = callMatchingDoubleLandlord20()
+        val double = full("double_landlord_conflict")
+        val view = DdzScreen.read(double, classic = true)
+        assertEquals("构造:加倍画面", DdzPhase.Double, view.phase)
+        assertEquals("构造:画面认全了三张(但和差值不同)", listOf("2", "2", "2"), DdzCards.bottom(double))
+        val asked = mutableListOf<Triple<String, List<String>, List<String>>>()
+        val savedBid = PhoneDdzTurn.adviseBid
+        val savedDouble = PhoneDdzTurn.adviseDouble
+        PhoneDdzTurn.adviseBid = { _, _ -> PhoneDdzTurn.BidAdvice(3) }
+        PhoneDdzTurn.adviseDouble = { _, seat, hand, bottom ->
+            asked += Triple(seat, hand, bottom)
+            PhoneDdzTurn.DoubleAdvice(true, 0.93)
+        }
+        val out = ByteArrayOutputStream()
+        val old = System.out
+        try {
+            System.setOut(PrintStream(out))
+            val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(call, call, call, double)))
+            val result = PhoneDdzTurn.execute(
+                Args(PhoneDdzTurn.def, Json.parseToJsonElement(
+                    """{"action":"start","mode":"human","auto":true,"advisor":"http://mac:3426"}"""
+                ).jsonObject),
+                toolDispatcher(game).ctx,
+            )
+            assertEquals(result.content.toString(), "double", result.text("phase"))
+            assertNull("加倍时不暂停: ${result.content}", result.text("reason"))
+            val yellow = view.buttons.single { it.color == DdzColor.Yellow }
+            assertEquals("点了黄色的「加倍」", yellow.x to yellow.y, game.taps[1])
+            assertEquals("问一次服务", 1, asked.size)
+            assertEquals("landlord", asked.single().first)
+            assertEquals("hand 是 20 张", 20, asked.single().second.size)
+            assertEquals("画面认出的 3 张和差值不同时,用差值底牌", listOf("7", "2", "J").sorted(), asked.single().third.sorted())
+        } finally {
+            System.setOut(old)
+            PhoneDdzTurn.adviseBid = savedBid
+            PhoneDdzTurn.adviseDouble = savedDouble
+        }
+        val log = out.toString()
+        assertTrue(log, log.lines().any {
+            it.contains("DDZTRACE double") && it.contains("bottomFrom=bid") &&
+                it.contains("bottomFrame=2,2,2") && it.contains("pressed=double")
+        })
+    }
+
+    /**
+     * 反例:叫分帧和加倍帧不是同一副牌(double 的 20 张里有叫分 17 张里没有的 SJ、K、Q、10、5),
+     * 差值不是 3 张,不补底牌、不问服务,到截止时间点蓝色「不加倍」。
+     */
+    @Test fun humanLandlordDoesNotUseTheBidHandDifferenceWhenTheDecksDiffer() = runTest {
+        val call = full("call")
+        val double = doubleWithoutBottom("double_landlord_20")
+        val view = DdzScreen.read(double, classic = true)
+        assertEquals("构造:加倍画面", DdzPhase.Double, view.phase)
+        assertTrue("构造:底牌认不出", DdzCards.bottom(double).let { it == null || it.size < 3 })
+        val blue = view.buttons.first { it.color == DdzColor.Blue }
+        var asked = 0
+        val savedBid = PhoneDdzTurn.adviseBid
+        val savedDouble = PhoneDdzTurn.adviseDouble
+        PhoneDdzTurn.adviseBid = { _, _ -> PhoneDdzTurn.BidAdvice(3) }
+        PhoneDdzTurn.adviseDouble = { _, _, _, _ -> asked++; PhoneDdzTurn.DoubleAdvice(true, 0.93) }
+        try {
+            val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(call, call, call) + List(60) { double }))
+            val result = PhoneDdzTurn.execute(
+                Args(PhoneDdzTurn.def, Json.parseToJsonElement(
+                    """{"action":"start","mode":"human","auto":true,"advisor":"http://mac:3426"}"""
+                ).jsonObject),
+                toolDispatcher(game).ctx,
+            )
+            assertEquals(result.content.toString(), "double", result.text("phase"))
+            assertNull("补不出底牌也不暂停: ${result.content}", result.text("reason"))
+            assertEquals("不是同一副牌就不问服务", 0, asked)
+            assertEquals("到截止时间只点一次蓝色「不加倍」", 1, game.taps.count { it == blue.x to blue.y })
         } finally {
             PhoneDdzTurn.adviseBid = savedBid
             PhoneDdzTurn.adviseDouble = savedDouble

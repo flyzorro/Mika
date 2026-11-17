@@ -406,6 +406,24 @@ class DdzCardsTest {
         assertEquals(listOf("BJ", "A", "A"), DdzCards.bottom(fullFrame("double_bottom_joker")))
     }
 
+    /**
+     * 2026-11-16 23:49 精英场:底牌是「J 5 8」(牌桌上是 J、5、8 从左到右),加倍时只认出 J 和 8,
+     * 中间那张 5 的牌面上压着地主的帽子图案,只露出 5 的顶上一横和左竖。字形窗口把帽子下面那道暗红边
+     * 也算进点数字,和 5 的样本差 0.31,刚好越过底牌门槛 0.3。底牌不满三张就不问加倍服务。
+     */
+    @Test fun readsAllThreeBottomCardsWhenTheLandlordBadgeCoversOne() {
+        assertEquals(listOf("J", "5", "8"), DdzCards.bottom(fullFrame("double_bottom_partial_5_8_J")))
+    }
+
+    /**
+     * 2026-11-16 23:56 精英场:底牌是「Q 4 10」,加倍时只认出 Q 和 4。最右那张是两位数的 10:
+     * 放大底牌的间距是 135 像素,代码按内容宽度换算成 135×1.052≈142,每张往右偏 7 像素,
+     * 第三张的字形窗口起点比 10 的「1」还靠右 12 像素,把「1」切掉了,只认出个「0」。
+     */
+    @Test fun readsATwoCharacterRankAtTheRightEndOfTheRevealedBottom() {
+        assertEquals(listOf("Q", "4", "10"), DdzCards.bottom(fullFrame("double_bottom_partial_4_10_Q")))
+    }
+
     @Test fun seesWhoseTurnItIs() {
         assertEquals(DdzSide.Right, DdzCards.clock(frame("table_left55")))
         assertEquals(DdzSide.Left, DdzCards.clock(frame("table_rightKK")))
