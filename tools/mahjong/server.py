@@ -483,13 +483,13 @@ def advise(hand, melds, que, draws=None):
     if que not in ("m", "p", "s"):
         raise RequestError("bad_que", f"定缺只能是 m、p、s，收到 {que!r}")
     parsed_melds = _parse_melds(melds)
-    draws = parse_draws(draws)
     total = len(hand) + 3 * len(parsed_melds)
     if total == 13:
         raise RequestError("not_drawn", f"手牌 {len(hand)} 张 + 副露 {len(parsed_melds)} 组 = 13 张，还没摸牌")
     if total != 14:
         raise RequestError("wrong_count", f"手牌 {len(hand)} 张 + 副露 {len(parsed_melds)} 组，不是 14 张")
     _check_copies(hand, parsed_melds)
+    draws = parse_draws(draws)
     if is_win(hand, parsed_melds, que):
         return {"win": True}
     que_tiles = [tile for tile in hand if tile[1] == que]
@@ -519,10 +519,10 @@ def advise(hand, melds, que, draws=None):
 
 def advise_que(hand, draws=None):
     _validate_hand(hand)
-    draws = parse_draws(draws)
     if len(hand) not in (13, 14):
         raise RequestError("wrong_count", f"定缺需要 13 或 14 张手牌，收到 {len(hand)} 张")
     _check_copies(hand, [])
+    draws = parse_draws(draws)
     options = []
     for que in ("m", "p", "s"):
         best = None
