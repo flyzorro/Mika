@@ -567,6 +567,22 @@ def history_state(history, hands, seat, index, frame):
     )
 
 
+def pass_frames(history, me):
+    """[me] 的对手在能一手走完时却选择了不出的那些手:[(座位, 那手之后他出的牌, 当时要压的牌)]。
+
+    不出时如果是新一轮领出(上家就是他自己,或两家都不出回到他)不算,领出不能不出。
+    """
+    out = []
+    for i, move in enumerate(history):
+        seat = SEATS[i % 3]
+        if move or seat == me:
+            continue
+        after, _, _, _, last = history_frame(history, i)
+        if last:
+            out.append((seat, after[seat], last))
+    return out
+
+
 def fewer_plays(hand, keys, rates, scores, own, deadline=None):
     """模拟赢面差不多时,在赢面不低于 DouZero 那手([own])的候选里挑出完剩下手数最少的一手。
 
@@ -1232,6 +1248,20 @@ class Advisor:
                     if len(moves) < LIKELIHOOD_MOVES:
                         moves.append(i)
             logs = [0.0] * len(splits_hands)
+            # 硬约束:能一手走完却不出的人不会存在。某家在第 i 手不出,而按这种分法他那一刻的整手牌
+            # (现在剩的 + 第 i 手之后出过的)本身就是一手能管上当时上家出牌的合法牌,这种分法权重记 0。
+            passes = pass_frames(history, me)
+            if passes:
+                for k, hands in enumerate(splits_hands):
+                    if k % 32 == 0 and time.monotonic() > deadline:
+                        raise endgame.Timeout()
+                    for seat, after, last in passes:
+                        whole = tuple(sorted(list(hands[seat]) + after))
+                        if md.get_move_type(list(whole))["type"] == md.TYPE_0_PASS:
+                            continue
+                        if whole in endgame.moves(whole, last):
+                            logs[k] = float("-inf")
+                            break
             for seat, moves in indices.items():
                 for index in moves:
                     frame = history_frame(history, index)
