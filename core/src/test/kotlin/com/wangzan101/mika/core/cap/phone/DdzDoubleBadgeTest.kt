@@ -155,6 +155,14 @@ class DdzDoubleBadgeTest {
         }
     }
 
+    @Test fun aRedAvatarWithoutABadgeIsNotDoubled() {
+        // 真机 2026-11-17 14:06 精英场:左家头像本身就是红底(红背景上一只玉龙),没加倍。
+        // 以前只数红底面积,左家读到 287 像素 > 250,误报成 landlord_up:true。
+        val badges = DdzCards.doubleBadges(trimmed("double_badge_left_red_avatar"))
+        assertEquals("左家红底头像没加倍: $badges", false, badges[DdzSide.Left])
+        assertEquals("右家没加倍: $badges", false, badges[DdzSide.Right])
+    }
+
     @Test fun nobodyDoubledHasNoBadge() {
         // none_2 的右家头像里有大片红,按面积不能认成标签;undecided 两家都还没决定。
         for (name in listOf("double_badge_none", "double_badge_none_2", "double_badge_none_undecided")) {
@@ -235,6 +243,16 @@ class DdzDoubleBadgeTest {
         val double = Json.parseToJsonElement(asked.first()).jsonObject["auction"]!!.jsonObject["double"]!!.jsonObject
         assertEquals("右家后来看到标签: $double", true, double["landlord"]!!.jsonPrimitive.boolean)
         assertEquals("左家一直没标签: $double", false, double["landlord_down"]!!.jsonPrimitive.boolean)
+    }
+
+    @Test fun theRedAvatarDoesNotSendALandlordUpDouble() = runTest {
+        // 真机 2026-11-17 14:06 的 trace 是 landlord_up:true;我是地主,左家是上家。
+        // 左家只是红底头像、没加倍,请求体里应该是 false。
+        val (asked, result) = askAt(tableWithBadges("double_badge_left_red_avatar"))
+        assertTrue("要问 DouZero: ${result.content}", asked.isNotEmpty())
+        val double = Json.parseToJsonElement(asked.first()).jsonObject["auction"]!!.jsonObject["double"]!!.jsonObject
+        assertEquals("左家红底头像: $double", false, double["landlord_up"]!!.jsonPrimitive.boolean)
+        assertEquals("右家: $double", false, double["landlord_down"]!!.jsonPrimitive.boolean)
     }
 
     @Test fun theActRequestSendsFalseWhenNobodyDoubled() = runTest {
