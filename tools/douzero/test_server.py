@@ -662,8 +662,11 @@ class DoubleTest(unittest.TestCase):
         self.assertLess(ADVISOR.double("landlord", self.WEAK, ["3", "4", "5"])[0], DOUBLE_WIN)
 
     def test_a_strong_farmer_hand_is_worth_doubling(self):
-        # 农民有自己的门槛:条件抽样之后赢面比无条件低,但强牌仍然过门槛
-        self.assertGreaterEqual(ADVISOR.double("landlord_up", self.STRONG[:17], ["3", "4", "5"])[0], FARMER_DOUBLE_WIN)
+        # 农民有自己的门槛:条件抽样之后赢面比无条件低,但强牌仍然过门槛。
+        # 这手合成牌(双王 + 四个 2)把剩下的牌压得太弱,条件抽样 1.5 秒只采纳 28 副、2 秒 38 副,
+        # 都不到 ROLLOUT_MIN_GAMES;这里显式给 3 秒,只测门槛(默认预算见 DoubleBudgetTest)。
+        self.assertGreaterEqual(ADVISOR.double("landlord_up", self.STRONG[:17], ["3", "4", "5"], budget=3.0)[0],
+                                FARMER_DOUBLE_WIN)
 
     def test_a_weak_farmer_hand_is_not_worth_doubling(self):
         self.assertLess(ADVISOR.double("landlord_down", self.WEAK[:17], ["2", "A", "K"])[0], FARMER_DOUBLE_WIN)
@@ -712,6 +715,62 @@ class DoubleTest(unittest.TestCase):
         with self.assertRaises(Mismatch) as caught:
             ADVISOR.double("landlord", self.STRONG[:19], ["2", "A", "K"])
         self.assertIn("hand_count_mismatch", str(caught.exception))
+
+
+class DoubleBudgetTest(unittest.TestCase):
+    """加倍单独的时间预算:地主加倍窗口约 5 秒,手机还要留出点按钮的时间,现场模拟只给约 1.5 秒;
+    两个农民座位共用预算时每副牌要打两局,局数不够下限,单独给到 2 秒以内。叫分仍用 [ROLLOUT_BUDGET_S]。"""
+
+    # 1.5 秒预算 + 0.3 秒余量(网络 + 点按钮);农民最多 2 秒,同样留 0.3 秒
+    LANDLORD_WINDOW = 1.5 + 0.3
+    FARMER_WINDOW = 2.0 + 0.3
+
+    def double_request(self, seat, hand, bottom):
+        """按 /double 的公开入口走一遍真服务:返回 (HTTP 状态码, 回复, 整次请求耗时秒数)。"""
+        import io
+        import json
+        import server as server_module
+        captured = {}
+
+        class Handler(server_module.handler(ADVISOR)):
+            def reply(self, code, data, request=None):
+                captured["code"] = code
+                captured["data"] = data
+
+        request = Handler.__new__(Handler)
+        request.path = "/double"
+        body = json.dumps({"seat": seat, "hand": hand, "bottom": bottom}).encode()
+        request.rfile = io.BytesIO(body)
+        request.headers = {"Content-Length": str(len(body))}
+        started = time.perf_counter()
+        request.do_POST()
+        return captured["code"], captured["data"], time.perf_counter() - started
+
+    def test_a_landlord_double_fits_the_double_window(self):
+        code, reply, elapsed = self.double_request("landlord", DoubleTest.STRONG, ["2", "A", "K"])
+        self.assertEqual(200, code)
+        self.assertLessEqual(elapsed, self.LANDLORD_WINDOW,
+                             f"/double 用了 {elapsed:.2f} 秒,超过 {self.LANDLORD_WINDOW:.1f} 秒的加倍窗口")
+        self.assertGreaterEqual(reply["games"], ROLLOUT_MIN_GAMES)
+
+    def test_a_farmer_double_fits_the_double_window(self):
+        # 用弱农民手:剩下的牌强,条件抽样几乎每批都收,局数够;强农民手剩下的牌太弱,2 秒也凑不够 40 局
+        code, reply, elapsed = self.double_request("farmer", DoubleTest.WEAK[:17], ["2", "A", "K"])
+        self.assertEqual(200, code)
+        self.assertLessEqual(elapsed, self.FARMER_WINDOW,
+                             f"/double 用了 {elapsed:.2f} 秒,超过 {self.FARMER_WINDOW:.1f} 秒的加倍窗口")
+        self.assertGreaterEqual(reply["games"], ROLLOUT_MIN_GAMES)
+
+    def test_the_double_budget_is_separate_and_the_bid_budget_is_left_alone(self):
+        import inspect
+        import server as server_module
+        self.assertEqual(server_module.ROLLOUT_BUDGET_S,
+                         inspect.signature(Advisor.bid).parameters["budget"].default)
+        # 地主 / 单个农民座位用 DOUBLE_BUDGET_S;seat="farmer" 两个座位共用,单独给到 2 秒以内
+        self.assertIsNone(inspect.signature(Advisor.double).parameters["budget"].default)
+        self.assertLess(server_module.DOUBLE_BUDGET_S, server_module.ROLLOUT_BUDGET_S)
+        self.assertGreaterEqual(server_module.FARMER_DOUBLE_BUDGET_S, server_module.DOUBLE_BUDGET_S)
+        self.assertLessEqual(server_module.FARMER_DOUBLE_BUDGET_S, 2.0)
 
 
 class OrderTest(unittest.TestCase):
