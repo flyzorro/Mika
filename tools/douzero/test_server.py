@@ -1075,6 +1075,43 @@ class AuctionSamplingTest(unittest.TestCase):
                     for _ in range(200)]
         self.assertGreater(sum(weighted) / len(weighted) - sum(plain) / len(plain), 0.05)
 
+    def forwards_per_deal(self, auction, info):
+        """发一手牌做了几次前向、每批几张:包住 Agent.opening_strengths 数一数(它是公开的批量入口)。"""
+        import server as server_module
+        calls = []
+        real = server_module.Agent.opening_strengths
+
+        def counting(agent, hands, deadline=None):
+            calls.append(len(hands))
+            return real(agent, hands, deadline)
+
+        with mock.patch.object(server_module.Agent, "opening_strengths", counting):
+            ADVISOR.sample_hands(info, random.Random(1), auction)
+        return calls
+
+    def test_a_weighted_deal_scores_all_candidates_in_one_forward_per_seat(self):
+        # 一次发 K 手候选,按证据座位各攒一批前向:证据只有地主时 1 次,地主 + 另一个对手时 2 次;
+        # 不能像拒绝采样那样每试一手就单独前向一次(最多 8 次串行)
+        import server as server_module
+        info = self.farmer_infoset()
+        one = server_module.parse_auction({"bid": {"landlord": 3},
+                                           "double": {"landlord": True}})
+        self.assertEqual([server_module.AUCTION_MAX_TRIES], self.forwards_per_deal(one, info))
+        two = server_module.parse_auction({"bid": {"landlord": 3},
+                                           "double": {"landlord": True, "landlord_up": True}})
+        self.assertEqual([server_module.AUCTION_MAX_TRIES] * 2, self.forwards_per_deal(two, info))
+
+    def test_a_scoring_failure_falls_back_to_the_first_candidate(self):
+        # 牌力算不出来(例如现场模拟的截止时刻到了)不能让发牌卡死:收下第一手候选
+        import server as server_module
+        info = self.farmer_infoset()
+        auction = server_module.parse_auction({"bid": {"landlord": 3},
+                                               "double": {"landlord": True}})
+        with mock.patch.object(server_module.Agent, "opening_strengths",
+                               side_effect=server_module.endgame.Timeout):
+            got = ADVISOR.sample_hands(info, random.Random(5), auction)
+        self.assertEqual(server_module.sample_hands(info, random.Random(5)), got)
+
     def test_without_auction_the_same_seed_deals_the_same_hands(self):
         # 没有 auction 时完全走原来的 sample_hands:同一个种子发出来的牌一手不差
         import server as server_module

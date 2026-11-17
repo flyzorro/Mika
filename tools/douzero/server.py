@@ -137,6 +137,8 @@ LIKELIHOOD_TEMPERATURE = 0.02
 # T_bid 取地主 q65(叫三分的手牌约占 35%),T_dbl 取 q80(加倍约占 20%),τ 取地主 q35~q65 分位间距的
 # 一半 0.456。按这组值在随机牌上的边际概率:P(叫三分)=0.385、P(地主加倍)=0.242、P(农民加倍)=0.291
 # (T 由分位数定,logistic 较宽时边际会偏离 35% / 20%,但方向与门槛不变)。
+# 现场模拟有 auction 时一次发这么多手候选做 importance resampling:按证据座位把这 K 手攒成一批前向。
+# K 越大权重越准,但每手要多算 K 份牌力;8 沿用原来「拒绝采样最多试几次」的数。
 AUCTION_MAX_TRIES = 8
 AUCTION_BID_T = -0.021
 AUCTION_DOUBLE_T = {"landlord": 0.595, "farmer": 0.237}
@@ -968,24 +970,39 @@ class Advisor:
     def sample_hands(self, infoset, rng, auction=None, deadline=None):
         """现场模拟发牌:没有 auction 时完全走原来的 sample_hands(同一个种子一手不差)。
 
-        有证据时按「看不见的对手的牌力」拒绝采样:随机发一手,以 weight(每条证据的似然相乘,在 0..1)
-        的概率接受,不接受就重发;单次发牌最多试 AUCTION_MAX_TRIES 次,超过就收下最后一手,
-        [deadline](monotonic)到了也收下最后一手,不能让模拟卡死。拒绝采样的时间算在现场模拟的预算里。
+        有证据时一次发 K 手候选(K = [AUCTION_MAX_TRIES]),按证据座位把这 K 手的开局牌力攒成一批前向
+        (每个座位一次,不再一手一手串行),再按权重从这 K 手里抽一手:权重是各条证据的似然相乘,在 0..1,
+        即 importance resampling。权重全 0 / 牌力算不出来(例如到 [deadline])时收下第一手,不能让模拟卡死。
         只给我看不见的对手加权:我自己的叫分 / 加倍不算证据。
         """
         me = infoset.player_position
         seats = auction.seats(me) if auction is not None else []
         if not seats:
             return sample_hands(infoset, rng)
-        last = None
-        for _ in range(AUCTION_MAX_TRIES):
-            last = sample_hands(infoset, rng)
-            strength = {s: self.opening_strength(s, last[s]) for s in seats}
-            if rng.random() < math.exp(auction.log_weight(me, strength)):
-                return last
-            if deadline is not None and time.monotonic() >= deadline:
-                return last
-        return last
+        hands = [sample_hands(infoset, rng) for _ in range(AUCTION_MAX_TRIES)]
+        try:
+            strength = [dict() for _ in hands]
+            for seat in seats:
+                values = self.agents[seat].opening_strengths([h[seat] for h in hands], deadline)
+                for k, value in enumerate(values):
+                    strength[k][seat] = value
+            logs = [auction.log_weight(me, s) for s in strength]
+        except (endgame.Timeout, Mismatch):
+            return hands[0]
+        top = max(logs)
+        if top == float("-inf"):
+            return hands[0]
+        # 减去最大值再 exp:权重再小也至少有一个是 1,不会整批下溢成 0;总权重为 0 只是防御
+        weights = [math.exp(x - top) for x in logs]
+        total = sum(weights)
+        if total <= 0:
+            return hands[0]
+        pick = rng.random() * total
+        for hand, weight in zip(hands, weights):
+            pick -= weight
+            if pick <= 0:
+                return hand
+        return hands[-1]
 
     def opening_strength(self, seat, hand):
         """[seat] 开局拿着 [hand] 的牌力:DouZero 这家模型给所有合法出牌打分的最高分。"""
