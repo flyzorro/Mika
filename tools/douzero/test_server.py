@@ -1091,7 +1091,7 @@ class AuctionSamplingTest(unittest.TestCase):
 
     def test_a_weighted_deal_scores_all_candidates_in_one_forward_per_seat(self):
         # 一次发 K 手候选,按证据座位各攒一批前向:证据只有地主时 1 次,地主 + 另一个对手时 2 次;
-        # 不能像拒绝采样那样每试一手就单独前向一次(最多 8 次串行)
+        # 不能像拒绝采样那样每试一手就单独前向一次(当时最多 AUCTION_MAX_TRIES 次串行)
         import server as server_module
         info = self.farmer_infoset()
         one = server_module.parse_auction({"bid": {"landlord": 3},
