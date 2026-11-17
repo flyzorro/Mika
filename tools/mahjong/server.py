@@ -186,24 +186,18 @@ def advise(hand, melds, que):
     return {"win": False, **options[0], "queLeft": 0, "options": options}
 
 
-class Advisor:
-    def discard(self, hand, melds=None, que=None):
-        return advise(hand, melds or [], que)
-
-
-def handle(body, advisor=None):
+def handle(body):
     if not isinstance(body, dict):
         return 400, {"error": "bad_request", "detail": "请求体必须是 JSON 对象"}
     try:
-        advisor = advisor or Advisor()
-        return 200, advisor.discard(body["hand"], body.get("melds") or [], body["que"])
+        return 200, advise(body["hand"], body.get("melds") or [], body["que"])
     except RequestError as e:
         return 200, {"error": e.code, "detail": e.detail}
     except (KeyError, TypeError, ValueError) as e:
         return 400, {"error": f"bad_request:{e}"}
 
 
-def handler(advisor):
+def handler():
     class Handler(BaseHTTPRequestHandler):
         def do_POST(self):
             if self.path != "/discard":
@@ -212,7 +206,7 @@ def handler(advisor):
                 body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))))
             except ValueError as e:
                 return self.reply(400, {"error": f"bad_request:{e}"})
-            code, data = handle(body, advisor)
+            code, data = handle(body)
             self.reply(code, data, body)
 
         def reply(self, code, data, request=None):
@@ -232,4 +226,4 @@ def handler(advisor):
 
 if __name__ == "__main__":
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 3427
-    ThreadingHTTPServer(("0.0.0.0", port), handler(Advisor())).serve_forever()
+    ThreadingHTTPServer(("0.0.0.0", port), handler()).serve_forever()

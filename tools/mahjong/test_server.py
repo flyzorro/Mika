@@ -6,7 +6,7 @@ import urllib.error
 import urllib.request
 from http.server import ThreadingHTTPServer
 
-from server import Advisor, handle, handler
+from server import handle, handler
 
 
 def post(hand, melds=None, que="s"):
@@ -148,7 +148,7 @@ class DiscardTest(unittest.TestCase):
 class HttpTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.server = ThreadingHTTPServer(("127.0.0.1", 0), handler(Advisor()))
+        cls.server = ThreadingHTTPServer(("127.0.0.1", 0), handler())
         cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
         cls.thread.start()
         cls.port = cls.server.server_address[1]
