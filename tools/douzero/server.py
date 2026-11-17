@@ -30,6 +30,7 @@ POST /double {"seat": "landlord" | "landlord_down" | "landlord_up" | "farmer",
               "bottom": [三张]}                  # 三张明牌,归地主
 -> {"double": true | false, "super": true | false, "win": 0.83, "games": 300}
    # 自己这一方的赢面,够了才建议加倍;只有地主、且赢面到 SUPER_DOUBLE_WIN 才回 super
+   # games 是预算内实际打了几局:地主 / 单个农民座位 1.5 秒,farmer 两个座位共用 2 秒
 # farmer 是认不出地主坐哪边时用的:两个农民座位各算一遍(共用时间预算),取较低的赢面
 """
 import json
@@ -63,9 +64,24 @@ BID_GAMES = 300
 BID_WIN = 0.55
 # 加倍:同一手牌自己跟自己打这么多局看这一方的赢面。80 局只能分到 ±0.06,0.8 和 0.74 分不开;
 # 300 局约 ±0.03。加倍只有约 5 秒,80 局在本机实测 0.75~1.35 秒,300 局最慢要 5 秒:
-# 叫分、加倍都最多打 [ROLLOUT_BUDGET_S] 秒,到点就按已经打完的局数算(至少 [ROLLOUT_MIN_GAMES] 局),手机等 4 秒。
+# 叫分最多打 [ROLLOUT_BUDGET_S] 秒;加倍单独用 [DOUBLE_BUDGET_S],到点就按已经打完的局数算
+# (至少 [ROLLOUT_MIN_GAMES] 局)。手机读超时 4 秒,1.5 秒的模拟还留 2.5 秒给网络和点按钮。
 DOUBLE_GAMES = 300
 ROLLOUT_BUDGET_S = 3.0
+# 地主刚定下来那 2 秒左右是底牌插进手牌的动画,手机这时还看不到加倍按钮,5 秒的加倍窗口只剩约 3 秒。
+# 2026-11-17 15:23 精英场:54.16 叫三分当上地主 → 57.85 手机第一次看到加倍画面 → 问 /double(3 秒,
+# 回 win 0.97、super)→ 00.88 游戏服务器记「不加倍」(超时)→ 01.02 手机才点下「加倍」,晚了 0.13 秒,
+# 少了一次 ×2。所以加倍只模拟 1.5 秒,叫分仍用 ROLLOUT_BUDGET_S。
+# 2026-11-17 本机(Apple M3 Max / macOS 26.7.2 / Python 3.14 venv)实测 12 手真实牌(地主都会叫):
+# 地主 1.5 秒打 65~157 局(中位 102),3 秒 130~300 局(中位 202);赢面逐手差(1.5−3.0)中位 -0.010、
+# 平均 +0.002;加倍 / 超级加倍决定 11/12 一致(一手 0.816 vs 0.765 在 0.8 门槛上翻转),
+# 另 16 手随机 20 张牌 16/16 一致。单个农民座位 1.5 秒 78~123 局(中位 94),3 秒 155~235 局,决定 12/12 一致。
+DOUBLE_BUDGET_S = 1.5
+# seat="farmer" 两个农民座位共用预算,每副牌要打两局:1.5 秒实测 12 手真实牌只有 35~57 局(中位 48),
+# 有一手不到 ROLLOUT_MIN_GAMES;2.0 秒 45~79 局(中位 67),全部过线,决定 12/12 与 3 秒一致。
+# 2 秒是上限,不再加。极端强农民手(双王 + 四个 2)剩下的牌太弱,条件抽样 2 秒只采纳 31 副,
+# 会按不加倍处理;真实牌局里地主拿剩下的牌叫三分几乎不会出现。
+FARMER_DOUBLE_BUDGET_S = 2.0
 ROLLOUT_MIN_GAMES = 40
 # 赢面到了这个门槛才加倍。只点黄色「加倍」,绝不点绿色的「超级加倍」,金豆省着用。
 DOUBLE_WIN = 0.8
@@ -84,7 +100,7 @@ SUPER_DOUBLE_WIN = 0.85
 # 2026-11-16 用 260 副随机 20 张牌、每副 40 局自对弈标定:估值 0 附近实际赢面 0.56,和 BID_WIN 0.55 对齐,
 # 所以 BID_VALUE 取 0(估值每高 0.25,实测赢面约高 0.1)。
 BID_VALUE = 0.0
-# 条件抽样一次判多少副:攒成一批前向,弱地主牌被丢掉时也不至于把 3 秒预算全花在判断上
+# 条件抽样一次判多少副:攒成一批前向,弱地主牌被丢掉时也不至于把 2 秒预算全花在判断上
 BID_BATCH = 32
 # 几手分数几乎一样时 DouZero 基本是随手挑:差不到这个数就优先不拆三条/对子/炸弹。
 # 实机那手拆 10 10 10 去顶队友的 6 只比单张 9 高 0.009;再大就会盖住真正该拆的一手,0.05 只收真正的平局。
@@ -1099,16 +1115,19 @@ class Advisor:
             start += size
         return out
 
-    def double(self, seat, hand, bottom, games=DOUBLE_GAMES, budget=ROLLOUT_BUDGET_S,
+    def double(self, seat, hand, bottom, games=DOUBLE_GAMES, budget=None,
                condition=True, min_games=ROLLOUT_MIN_GAMES, on_accept=None):
         """这手牌加倍值不值:地主按 20 张(含底牌)、农民按 17 张加三张明牌,看不见的牌随机分给另外两家,
         DouZero 自己跟自己打 [games] 局,返回 (自己这一方的赢面(地主或农民), 实际打了几局):超过 [budget] 秒就停。
+        [budget] 不传时地主 / 单个农民座位用 [DOUBLE_BUDGET_S],seat="farmer" 两个座位共用 [FARMER_DOUBLE_BUDGET_S]。
 
         农民默认做条件抽样:每副随机发牌先看地主那 20 张会不会叫(landlord_would_call),不会叫就丢掉重发;
         地主座位的算法不变。seat="farmer" 时两个农民座位各算一遍、共用预算,返回较低的赢面。
         condition=False 只给校准/对照用;min_games 给校准降低局数用。on_accept 每采纳一局回调三家手牌。"""
         if seat not in SEATS and seat != "farmer":
             raise Mismatch("bad_seat")
+        if budget is None:
+            budget = FARMER_DOUBLE_BUDGET_S if seat == "farmer" else DOUBLE_BUDGET_S
         hand, bottom = cards(hand), cards(bottom)
         if len(bottom) != 3:
             raise Mismatch("bottom_count_mismatch")
