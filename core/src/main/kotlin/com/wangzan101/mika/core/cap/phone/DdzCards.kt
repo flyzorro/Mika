@@ -896,7 +896,10 @@ internal object DdzCards {
         )
     }
 
-    /** 头像框在(白边没被弹窗盖住)才判得了;红底占够 [BADGE_MIN_AREA] 个像素就是有标签。 */
+    /**
+     * 头像框在(白边没被弹窗盖住)才判得了。标签压在头像白框的下沿上、还往下凸出几行:
+     * 下沿白边在标签的横向范围里被红底挡住,白边下面(头像外面)也有红底。头像里面再红也不算。
+     */
     private fun badge(
         frame: RawFrame,
         avatarX0: Int, avatarX1: Int, avatarY0: Int, avatarY1: Int,
@@ -913,10 +916,16 @@ internal object DdzCards {
         val right = (avatarY0 + 4 until avatarY1 - 4).count { white(frame.pixel(avatarX1 - 2, it)) }
         val top = (avatarX0 + 6 until avatarX1 - 6).count { white(frame.pixel(it, avatarY0 + 2)) }
         if (left < 100 || right < 100 || top < 100) return null
-        val area = (BADGE_Y0 until BADGE_Y1).sumOf { y ->
+        // 下沿那 4 行白边:标签会把它挡掉大半。红底头像(玉龙)的红在头像里面,白边是连续的
+        val borderWhite = (avatarY1 - 3 until avatarY1 + 1).sumOf { y ->
+            (badgeX0 until badgeX1).count { white(frame.pixel(it, y)) }
+        }
+        if (borderWhite >= BADGE_BORDER_WHITE) return false
+        // 白边下面、头像外面还有红底:标签往下凸出来的那几行
+        val below = (avatarY1 + 1 until BADGE_Y1).sumOf { y ->
             (badgeX0 until badgeX1).count { badgeRed(frame.pixel(it, y)) }
         }
-        return area >= BADGE_MIN_AREA
+        return below >= BADGE_BELOW_RED
     }
 
     /** 「加倍」标签的红底:比头像里的红(皮肤、头发)更纯、更暗。 */
@@ -941,10 +950,12 @@ internal object DdzCards {
     private const val LEFT_BADGE_X1 = 176
     private const val RIGHT_BADGE_X0 = 2247
     private const val RIGHT_BADGE_X1 = 2309
-    private const val BADGE_Y0 = 355
+    /** 标签往下凸出到这一行为止。 */
     private const val BADGE_Y1 = 395
-    /** 有标签时红底约 360 个像素;没有标签的帧里最多 170(右家头像里的红头发)。 */
-    private const val BADGE_MIN_AREA = 250
+    /** 有标签时下沿白边在标签宽度内只剩 18~39 个白像素;没标签(含红底头像)是 248~264。 */
+    private const val BADGE_BORDER_WHITE = 120
+    /** 有标签时白边下面(头像外)还有 84~178 个红像素;没标签和红底头像都是 0。 */
+    private const val BADGE_BELOW_RED = 30
 
     /** 闹钟在谁桌前;在自己这里或者没有为 null。 */
     fun clock(frame: RawFrame): DdzSide? {
