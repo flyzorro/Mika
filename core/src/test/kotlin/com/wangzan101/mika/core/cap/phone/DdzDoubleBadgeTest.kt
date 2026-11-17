@@ -103,6 +103,38 @@ class DdzDoubleBadgeTest {
         })
     }
 
+    /**
+     * 第一手之前的一帧:两家都没加倍、出牌区还空着。头像和下沿那几行用 [tableWithBadges] 的素材
+     * (底图自己的头像框不是读标签的那一版),只把两块出牌区涂黑、按钮清掉。
+     */
+    private fun beforeFirstPlay(): RawFrame {
+        val table = tableWithBadges("double_badge_none")
+        val rows = (DdzScreen.ROWS + DdzCards.ROWS + DdzCards.LOBBY_ROWS + DdzPopups.SCAN_ROWS + DdzCards.DOUBLE_ROWS).distinct()
+        return RawFrame(table.width, table.height, rows.associateWith { y ->
+            when {
+                y in 440..525 -> IntArray(table.width)
+                y in 220..420 -> IntArray(table.width) { x ->
+                    if (x in 290..930 || x in 1425..2100) 0 else table.pixel(x, y)
+                }
+                else -> table.row(y)!!.copyOf()
+            }
+        })
+    }
+
+    /**
+     * 真机 2026-11-17 16:13 精英场的第一手:右家(地主)出顺子 10 9 8 7 6 5 4,
+     * 「顺子」金红特效压在右家头像下沿。用同一张牌桌做底,出牌区那几行换成素材。
+     */
+    private fun firstPlayStraight(): RawFrame {
+        val table = image("human_left_10_10_10_3")
+        val play = image("right_straight_effect_first_play")
+        val rows = (DdzScreen.ROWS + DdzCards.ROWS + DdzCards.LOBBY_ROWS + DdzPopups.SCAN_ROWS + DdzCards.DOUBLE_ROWS).distinct()
+        return RawFrame(table.width, table.height, rows.associateWith { y ->
+            if (y in 220..420) play.getRGB(0, y, table.width, 1, null, 0, table.width)
+            else table.getRGB(0, y, table.width, 1, null, 0, table.width)
+        })
+    }
+
     /** 走一遍 start(human) → 装上这一局的 tracker → wait,返回 DouZero 收到的 /act 请求体。 */
     private suspend fun askAt(
         table: RawFrame,
@@ -294,6 +326,51 @@ class DdzDoubleBadgeTest {
         val double = Json.parseToJsonElement(asked.first()).jsonObject["auction"]!!.jsonObject["double"]!!.jsonObject
         assertEquals("左家红底头像: $double", false, double["landlord_up"]!!.jsonPrimitive.boolean)
         assertEquals("右家: $double", false, double["landlord_down"]!!.jsonPrimitive.boolean)
+    }
+
+    @Test fun theFirstPlayStraightEffectDoesNotMarkTheLandlordAsDoubled() = runTest {
+        // 真机 2026-11-17 16:13 精英场:三家都没加倍。地主(右家)第一手出顺子 10 9 8 7 6 5 4,
+        // 「顺子」特效压在他头像下沿;这一帧出牌区已经有牌,但 tracker 还没把这手记进 history,
+        // 所以 #116 的「第一手以后冻结」还没生效,旧逻辑会把特效读成加倍标签。
+        val before = beforeFirstPlay()
+        val firstPlay = firstPlayStraight()
+        assertTrue("构造:第一手之前还是牌桌", DdzCards.classicHumanTable(before))
+        assertEquals("构造:第一手之前两家都没标签: ${DdzCards.doubleBadges(before)}", mapOf(DdzSide.Left to false, DdzSide.Right to false), DdzCards.doubleBadges(before))
+        assertEquals("构造:第一手之前不会有按钮", DdzPhase.Other, DdzScreen.read(before, classic = true).phase)
+        assertEquals(
+            "构造:第一手之前出牌区是空的: ${DdzCards.play(before, DdzSide.Left)} ${DdzCards.play(before, DdzSide.Right)}",
+            listOf(DdzSeen.Empty, DdzSeen.Empty),
+            listOf(DdzCards.play(before, DdzSide.Left), DdzCards.play(before, DdzSide.Right)),
+        )
+        assertTrue(
+            "构造:右家出牌区已经摆着顺子: ${DdzCards.play(firstPlay, DdzSide.Right)}",
+            DdzCards.play(firstPlay, DdzSide.Right) is DdzSeen.Cards,
+        )
+        assertEquals(
+            "构造:单看这一帧会把右家头像下沿的特效认成标签: ${DdzCards.doubleBadges(firstPlay)}",
+            true, DdzCards.doubleBadges(firstPlay)[DdzSide.Right],
+        )
+        val asked = mutableListOf<String>()
+        val saved = PhoneDdzTurn.advise
+        PhoneDdzTurn.advise = { _, body -> asked += body; """{"play":[]}""" }
+        try {
+            val table = full("human_left_10_10_10_3")
+            val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(table, table, before, firstPlay)))
+            val dispatcher = toolDispatcher(game)
+            PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement(
+                """{"action":"start","mode":"human","advisor":"http://mac:3426"}"""
+            ).jsonObject), dispatcher.ctx)
+            PhoneDdzTurn.useTracker(dispatcher.ctx, rightLandlordTracker())
+            val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement(
+                """{"action":"start","mode":"human","auto":true,"advisor":"http://mac:3426"}"""
+            ).jsonObject), dispatcher.ctx)
+            assertTrue("要问 DouZero: ${result.content} $asked", asked.isNotEmpty())
+            val double = Json.parseToJsonElement(asked.first()).jsonObject["auction"]!!.jsonObject["double"]!!.jsonObject
+            assertEquals("第一手出牌区的顺子不能把地主读成加倍: $double", false, double["landlord"]!!.jsonPrimitive.boolean)
+            assertEquals("左家没加倍: $double", false, double["landlord_down"]!!.jsonPrimitive.boolean)
+        } finally {
+            PhoneDdzTurn.advise = saved
+        }
     }
 
     @Test fun theActRequestSendsFalseWhenNobodyDoubled() = runTest {
