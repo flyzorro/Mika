@@ -972,5 +972,217 @@ class ActBudgetTest(unittest.TestCase):
         self.assertLessEqual(deadline, started + ACT_TOTAL_BUDGET_S - ACT_BUDGET_SAFETY_S + 0.01)
 
 
+class AuctionProtocolTest(unittest.TestCase):
+    """/act 的可选 auction 字段:合法时透传给 Advisor,格式不对就整块当没带,不报错;不带时出牌和原来一样。"""
+
+    def act_through_handler(self, body):
+        """按 /act 的公开入口走一遍:假服务只记下 handler 传进来的 auction,回复固定空出牌。"""
+        import io
+        import json
+        import server as server_module
+        captured = {}
+
+        class FakeAdvisor:
+            def act(self, seat, hand, bottom, history, report=None, auction=None):
+                captured["auction"] = auction
+                return []
+
+        class Handler(server_module.handler(FakeAdvisor())):
+            def reply(self, code, data, request=None):
+                captured["code"] = code
+                captured["data"] = data
+
+        request = Handler.__new__(Handler)
+        request.path = "/act"
+        raw = json.dumps(body).encode()
+        request.rfile = io.BytesIO(raw)
+        request.headers = {"Content-Length": str(len(raw))}
+        request.do_POST()
+        return captured
+
+    def test_a_valid_auction_reaches_the_advisor(self):
+        captured = self.act_through_handler({
+            "seat": "landlord_down", "hand": ["3"], "bottom": [], "history": [],
+            "auction": {"bid": {"landlord": 3},
+                        "double": {"landlord": True, "landlord_down": False, "landlord_up": None}}})
+        auction = captured["auction"]
+        self.assertEqual({"landlord": 3}, auction.bid)
+        self.assertEqual({"landlord": True, "landlord_down": False}, auction.double)
+
+    def test_a_malformed_auction_is_ignored_without_an_error(self):
+        # 座位名不对、分数不在 0..3、类型不对:整块忽略,照常出牌(200 + play),不报错
+        for auction in (
+                {"bid": {"landlord": 4}},
+                {"bid": {"landlord": -1}},
+                {"bid": {"farm": 3}},
+                {"bid": {"landlord": "3"}},
+                {"bid": {"landlord": 1.5}},
+                {"bid": {"landlord": True}},
+                {"double": {"landlord": "yes"}},
+                {"double": {"landlord_down": 1}},
+                {"bid": [3]},
+                "landlord",
+        ):
+            captured = self.act_through_handler({
+                "seat": "landlord_up", "hand": ["3"], "bottom": [], "history": [], "auction": auction})
+            self.assertIsNone(captured["auction"], auction)
+            self.assertEqual(200, captured["code"], auction)
+
+    def test_no_or_empty_auction_is_the_same_as_none(self):
+        for body in (
+                {"seat": "landlord_up", "hand": ["3"], "bottom": [], "history": []},
+                {"seat": "landlord_up", "hand": ["3"], "bottom": [], "history": [], "auction": {}},
+                {"seat": "landlord_up", "hand": ["3"], "bottom": [], "history": [],
+                 "auction": {"bid": {"landlord": None}, "double": {"landlord_down": None}}},
+        ):
+            captured = self.act_through_handler(body)
+            self.assertIsNone(captured["auction"], body)
+        self.assertEqual(200, captured["code"])
+
+    def test_the_advisor_accepts_an_auction(self):
+        # 公开入口 Advisor.act 收下合法 auction 后照常出牌(这一手牌多,不走加权,只验证协议接通)
+        import server as server_module
+        auction = server_module.parse_auction({"bid": {"landlord": 3},
+                                               "double": {"landlord": True, "landlord_up": False}})
+        live = CloseCallRolloutTest.LATE
+        play = ADVISOR.act(live["seat"], live["hand"], live["bottom"], live["history"], auction=auction)
+        self.assertIsInstance(play, list)
+        self.assertTrue(all(c in cards(live["hand"]) for c in play))
+
+
+class AuctionSamplingTest(unittest.TestCase):
+    """叫分 / 加倍给看不见的牌加权:地主叫 3 分 + 加倍时,发出来的地主整手牌平均更强,我自己的证据不参与。"""
+
+    def farmer_infoset(self):
+        env = new_game(7)
+        env.step()  # 地主出了第一手,现在轮到地主下家(农民)
+        info = env.game_infoset
+        self.assertEqual("landlord_down", info.player_position)
+        return info
+
+    def landlord_strength(self, hands):
+        return ADVISOR.opening_strength("landlord", hands["landlord"])
+
+    def test_landlord_bid_and_double_push_the_deal_towards_a_stronger_landlord(self):
+        import server as server_module
+        info = self.farmer_infoset()
+        auction = server_module.parse_auction({"bid": {"landlord": 3},
+                                               "double": {"landlord": True}})
+        plain_rng, weighted_rng = random.Random(20261117), random.Random(20261117)
+        plain = [self.landlord_strength(server_module.sample_hands(info, plain_rng))
+                 for _ in range(200)]
+        weighted = [self.landlord_strength(ADVISOR.sample_hands(info, weighted_rng, auction))
+                    for _ in range(200)]
+        self.assertGreater(sum(weighted) / len(weighted) - sum(plain) / len(plain), 0.05)
+
+    def test_without_auction_the_same_seed_deals_the_same_hands(self):
+        # 没有 auction 时完全走原来的 sample_hands:同一个种子发出来的牌一手不差
+        import server as server_module
+        info = self.farmer_infoset()
+        auction = server_module.parse_auction({})
+        for seed in (0, 1, 2):
+            self.assertEqual(server_module.sample_hands(info, random.Random(seed)),
+                             ADVISOR.sample_hands(info, random.Random(seed), auction))
+
+    def test_my_own_bid_does_not_weight_the_deal(self):
+        # 我是地主:叫 3 分的是我自己,看不到的对手没有证据,发牌与不加权完全一样
+        import server as server_module
+        info = new_game(7).game_infoset
+        self.assertEqual("landlord", info.player_position)
+        auction = server_module.parse_auction({"bid": {"landlord": 3},
+                                               "double": {"landlord": True}})
+        for seed in (0, 1, 2):
+            self.assertEqual(server_module.sample_hands(info, random.Random(seed)),
+                             ADVISOR.sample_hands(info, random.Random(seed), auction))
+
+
+class AuctionRolloutTest(unittest.TestCase):
+    """现场模拟也吃 auction:地主叫 3 分 + 加倍时,把看不见的牌往地主那边偏,我(农民)的模拟赢面应该更低。
+    用固定局数(不信时钟)让两边都可重放,只断言方向,不断言具体数值。"""
+
+    def farmer_position(self):
+        # seed 1 打到第 10 手:我是地主下家,顶两手分差在 CLOSE_MARGIN 以内,会现场模拟
+        env = new_game(1)
+        for _ in range(10):
+            env.step()
+        info = env.game_infoset
+        self.assertEqual("landlord_down", info.player_position)
+        return dict(seat=info.player_position, hand=names(info.player_hand_cards),
+                    bottom=names(info.three_landlord_cards),
+                    history=[names(m) for m in info.card_play_action_seq])
+
+    def rates(self, position, auction):
+        import server as server_module
+        report = {}
+        with mock.patch.object(server_module, "ACT_TOTAL_BUDGET_S", 60.0), \
+                mock.patch.object(server_module, "ACT_ROLLOUT_BUDGET_S", 60.0), \
+                mock.patch.object(server_module, "CLOSE_TOP", 2):
+            ROLLOUT_ADVISOR.act(position["seat"], position["hand"], position["bottom"],
+                                position["history"], report, auction=auction)
+        self.assertIn("rollout", report, "这一手顶两手分差很小,应该现场模拟")
+        return report["rollout"]["rates"]
+
+    def test_a_landlord_who_bid_three_and_doubled_lowers_my_rollout_win_rate(self):
+        import server as server_module
+        position = self.farmer_position()
+        plain = self.rates(position, None)
+        auction = server_module.parse_auction({"bid": {"landlord": 3},
+                                               "double": {"landlord": True}})
+        weighted = self.rates(position, auction)
+        # 同一个候选(两种发牌方式下 DouZero 选出的候选不变):加权后地主牌更强,我的赢面更低
+        self.assertIn("3 4 5 6 7", plain)
+        self.assertIn("3 4 5 6 7", weighted)
+        self.assertLess(weighted["3 4 5 6 7"], plain["3 4 5 6 7"] - 0.05)
+
+
+class AuctionEndgameTest(unittest.TestCase):
+    """残局似然也吃 auction:没有出牌历史、只有叫分 / 加倍时,地主牌强的分法权重更高;我自己的证据不算。"""
+
+    MY = ["Q", "Q", "K", "K", "A", "J", "J", "J", "10", "10", "10", "9", "9", "9", "8", "8", "8"]
+    STRONG = ["BJ", "SJ", "2", "2", "2", "2", "A", "A", "A", "K", "K",
+              "Q", "Q", "J", "10", "9", "8", "7", "6", "5"]
+    WEAK = ["3", "3", "3", "3", "4", "4", "4", "4", "5", "5", "5", "5",
+            "6", "6", "6", "6", "7", "7", "7", "7"]
+    # 我手牌之外的那 37 张;强 / 弱两种地主手牌都从这 37 张里分,另一种分法剩下的 17 张给队友
+    REST_STRONG = ["3", "3", "3", "3", "4", "4", "4", "4", "5", "5", "5", "6", "6", "6", "7", "7", "7"]
+    REST_WEAK = ["8", "9", "10", "J", "Q", "Q", "K", "K", "A", "A", "A", "2", "2", "2", "2", "SJ", "BJ"]
+
+    def splits(self):
+        return [
+            {"landlord_up": cards(self.MY), "landlord": cards(self.STRONG), "landlord_down": cards(self.REST_STRONG)},
+            {"landlord_up": cards(self.MY), "landlord": cards(self.WEAK), "landlord_down": cards(self.REST_WEAK)},
+        ]
+
+    def weights(self, auction, me):
+        import time
+        callback = ADVISOR.likelihood([], me, auction)
+        return callback(self.splits(), time.monotonic() + 5)
+
+    def test_a_strong_landlord_split_gets_more_weight_without_any_history(self):
+        import server as server_module
+        auction = server_module.parse_auction({"bid": {"landlord": 3},
+                                               "double": {"landlord": True}})
+        strong, weak = self.weights(auction, "landlord_up")
+        self.assertGreater(strong, weak, "地主叫 3 分 + 加倍时,地主牌强的分法权重应该更高")
+        self.assertGreater(strong, weak * 10)
+
+    def test_my_own_evidence_is_not_used(self):
+        import server as server_module
+        # 我是地主:叫分 / 加倍都是我自己的,不算证据;我是农民上家时我自己的加倍也不算
+        both = server_module.parse_auction({"bid": {"landlord": 3},
+                                            "double": {"landlord": True}})
+        self.assertEqual([1.0, 1.0], self.weights(both, "landlord"))
+        own = server_module.parse_auction({"double": {"landlord_up": True}})
+        self.assertEqual([1.0, 1.0], self.weights(own, "landlord_up"))
+
+    def test_other_bid_levels_are_not_evidence(self):
+        # v1 只看地主叫三分:叫 0/1/2 都不加权
+        import server as server_module
+        for level in (0, 1, 2):
+            auction = server_module.parse_auction({"bid": {"landlord": level}})
+            strong, weak = self.weights(auction, "landlord_up")
+            self.assertEqual(strong, weak, level)
+
+
 if __name__ == "__main__":
     unittest.main()
