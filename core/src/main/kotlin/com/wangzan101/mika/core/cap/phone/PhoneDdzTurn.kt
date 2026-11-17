@@ -1521,6 +1521,11 @@ internal object PhoneDdzTurn : PhoneTool {
                 // 等动画过去接着读下一帧。
                 val misreadDouble = view.phase == DdzPhase.Double && (turn.doubleDecided || playedSinceDeal(turn))
                 if (!misreadDouble && (turn.single || turn.mode == DdzMode.Human)) track(turn, frame, view)
+                // TEMP diagnostics: 叫分 / 加倍阶段抓整帧,看对手的叫分、加倍气泡长什么样(做「读对手叫分加倍」的素材); remove after.
+                if (turn.mode == DdzMode.Human && (view.phase == DdzPhase.Call || view.phase == DdzPhase.Double)) {
+                    val allRows = (0 until frame.height).toList()
+                    ctx.screen.rawFrame(allRows)?.let { DdzFrameDump.dump("auction_${view.phase.name}_${DdzFrameDump.clock() / 2_000}", it, allRows) }
+                }
                 if (misreadDouble) {
                     left = true
                 } else when (view.phase) {
