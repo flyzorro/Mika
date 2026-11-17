@@ -345,6 +345,12 @@ internal object PhoneDdzTurn : PhoneTool {
     private fun readAuction(turn: Turn, frame: com.wangzan101.mika.core.uistate.RawFrame) {
         if (turn.mode != DdzMode.Human) return
         if (turn.auctionClosed) return
+        // 第一手已经摆进出牌区、但这一帧还没记进 history:按第一手已出处理,不读这一帧的标签。
+        // 出牌的金红特效会压在头像下沿,把「顺子」之类认成加倍。
+        if (DdzSide.entries.any { DdzCards.play(frame, it) is DdzSeen.Cards }) {
+            closeAuction(turn)
+            return
+        }
         for ((side, doubled) in DdzCards.doubleBadges(frame)) {
             if (doubled == null) continue
             // TEMP diagnostics: 只留可能读错的帧——某家第一次判成加倍、或者判过加倍又读成没有; remove after.
