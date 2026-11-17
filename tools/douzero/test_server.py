@@ -324,6 +324,48 @@ class EndgameTest(unittest.TestCase):
         play = ADVISOR.act("landlord_up", ["3", "6", "8", "8", "9", "J", "A"], ["9", "J", "2"], history)
         self.assertEqual(["8", "8"], [NAMES[c] for c in play])
 
+    def test_a_one_card_opponent_who_passed_cannot_beat_the_last_play(self):
+        # 2026-11-17 23:11 土豪场,我是地主,手里 2 K K J;下家 7 张、上家只剩 1 张。
+        # 第 31 手我出单张 7,下家不出,上家只剩一张也不出:能一手走完的人不会不出,
+        # 所以上家那张一定 <= 7。服务原来按看不见的 8 张随便分,也考虑了上家是 Q / A 的分法,
+        # 出了 K K 被下家 A A 管上输掉;按明牌出单张 J 必赢。
+        import server as server_module
+        history = [["3", "3", "4", "4", "5", "5", "6", "6"], [], [],
+                   ["5"], ["7"], ["J"],
+                   ["Q"], [], ["K"],
+                   ["A"], [], ["2"],
+                   [], [], ["8", "8", "8", "6"],
+                   [], ["10", "10", "10", "9"], [],
+                   [], ["9", "8", "7", "6", "5"], ["A", "K", "Q", "J", "10"],
+                   [], [], ["4", "4"],
+                   ["9", "9"], [], ["2", "2"],
+                   ["SJ", "BJ"], [], [],
+                   ["7"], [], []]
+        auction = server_module.parse_auction({"bid": {"landlord": 3},
+                                               "double": {"landlord": False, "landlord_down": False, "landlord_up": True}})
+        play = ADVISOR.act("landlord", ["2", "K", "K", "J"], ["A", "J", "6"], history, auction=auction)
+        self.assertEqual(["J"], [NAMES[c] for c in play])
+
+    def test_a_one_card_opponent_who_cannot_beat_the_last_play_may_pass(self):
+        # 同样的局面,但地主最后出的是 2:上家那一张 3 / 7 / J / Q / A 都管不上,不出是正常的。
+        # 「能一手走完却不出」这条约束不能误伤这种分法,出牌要和加约束前一样是单张 7。
+        import server as server_module
+        history = [["3", "3", "4", "4", "5", "5", "6", "6"], [], [],
+                   ["5"], ["7"], ["J"],
+                   ["Q"], [], ["K"],
+                   ["A"], [], ["2"],
+                   [], [], ["8", "8", "8", "6"],
+                   [], ["10", "10", "10", "9"], [],
+                   [], ["9", "8", "7", "6", "5"], ["A", "K", "Q", "J", "10"],
+                   [], [], ["4", "4"],
+                   ["9", "9"], [], ["2", "2"],
+                   ["SJ", "BJ"], [], [],
+                   ["2"], [], []]
+        auction = server_module.parse_auction({"bid": {"landlord": 3},
+                                               "double": {"landlord": False, "landlord_down": False, "landlord_up": True}})
+        play = ADVISOR.act("landlord", ["K", "K", "J", "7"], ["A", "J", "6"], history, auction=auction)
+        self.assertEqual(["7"], [NAMES[c] for c in play])
+
     def test_a_landlord_with_a_pair_left_who_leads_wins(self):
         import endgame, time
         solver = endgame.Solver(time.monotonic() + 1)
