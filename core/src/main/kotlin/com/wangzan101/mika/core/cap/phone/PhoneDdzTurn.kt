@@ -345,6 +345,9 @@ internal object PhoneDdzTurn : PhoneTool {
         if (turn.mode != DdzMode.Human) return
         for ((side, doubled) in DdzCards.doubleBadges(frame)) {
             if (doubled == null) continue
+            // TEMP diagnostics: 只留可能读错的帧——某家第一次判成加倍、或者判过加倍又读成没有; remove after.
+            if (doubled && turn.auctionDouble[side] != true) DdzFrameDump.dump("auction_true_${side.name}", frame, FULL_ROWS)
+            if (!doubled && turn.auctionDouble[side] == true) DdzFrameDump.dump("auction_flip_${side.name}", frame, FULL_ROWS)
             if (turn.auctionClosed) {
                 // 第一手以后标签还留着:仍可确认「有」,但不再新记「没有」
                 if (doubled) turn.auctionDouble[side] = true
@@ -1597,13 +1600,6 @@ internal object PhoneDdzTurn : PhoneTool {
                 // 等动画过去接着读下一帧。
                 val misreadDouble = view.phase == DdzPhase.Double && (turn.doubleDecided || playedSinceDeal(turn))
                 if (!misreadDouble && (turn.single || turn.mode == DdzMode.Human)) track(turn, frame, view)
-                // TEMP diagnostics: 叫分 / 加倍阶段抓整帧,看对手的叫分、加倍气泡长什么样(做「读对手叫分加倍」的素材); remove after.
-                // 加倍气泡在对手决定后才出现,往往已经过了 Double 阶段:开局到第一手牌之前的帧也抓。
-                if (turn.mode == DdzMode.Human && (view.phase == DdzPhase.Call || view.phase == DdzPhase.Double ||
-                        (turn.tracker != null && !playedSinceDeal(turn)))) {
-                    val allRows = (0 until frame.height).toList()
-                    ctx.screen.rawFrame(allRows)?.let { DdzFrameDump.dump("auction_${view.phase.name}_${DdzFrameDump.clock() / 1_000}", it, allRows) }
-                }
                 if (misreadDouble) {
                     left = true
                 } else when (view.phase) {
