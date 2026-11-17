@@ -151,6 +151,14 @@ class DdzScreenTest {
         assertEquals(setOf(1, 2), DdzScreen.read(frame("vd_stage_3cards_K_lifted")).lifted)
     }
 
+    @Test fun theLandlordsRocketDoesNotHideMyHandCount() {
+        // 真机 2026-11-17 土豪场两次:右家地主打王炸,火箭特效盖住手牌上沿,HAND_ROW 那一行被切成两段,
+        // 手牌张数读成 8(实际 16)、1(实际 6),下一帧才恢复。同一场景的整帧里底部手牌是 5 张。
+        for (name in listOf("human_right_landlord_rocket", "human_right_landlord_rocket_f1")) {
+            assertEquals(name, 5, DdzScreen.read(frame(name), classic = true).handCount)
+        }
+    }
+
     @Test fun longStraightOnTheTableIsNotTakenForAGrayButton() {
         // 自己刚出的 3-4-5-6-7-8-9-10 摆在牌桌正中,横跨 470 这一行;牌面的白和牌间的灰影拼出一段"灰按钮",
         // 被当成轮到我出牌。地主在想时我这边一个按钮都没有:既不是 Lead/Follow,也不该有按钮。
