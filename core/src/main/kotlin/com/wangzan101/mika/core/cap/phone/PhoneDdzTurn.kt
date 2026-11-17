@@ -279,10 +279,11 @@ internal object PhoneDdzTurn : PhoneTool {
         println("DDZTRACE bid mode=$mode hand=${hand?.joinToString(",") ?: ""} " +
             "source=${if (advice != null) "douzero" else "rules"} win=${advice?.win} level=$level pressed=$pressed")
 
-    /** 记下这一次加倍:座位、手牌、底牌、来源、赢面、服务回的 super、实际按了「超级加倍」「加倍」还是「不加倍」。 */
-    private fun traceDouble(seat: String?, hand: List<String>?, bottom: List<String>?, advice: DoubleAdvice?, pressed: String) =
+    /** 记下这一次加倍:座位、手牌、底牌、底牌来源、来源、赢面、服务回的 super、实际按了「超级加倍」「加倍」还是「不加倍」。 */
+    private fun traceDouble(seat: String?, hand: List<String>?, bottom: List<String>?, bottomFrom: String?, advice: DoubleAdvice?, pressed: String) =
         println("DDZTRACE double seat=${seat ?: ""} hand=${hand?.joinToString(",") ?: ""} " +
-            "bottom=${bottom?.joinToString(",") ?: ""} source=${if (advice != null) "douzero" else "rules"} " +
+            "bottom=${bottom?.joinToString(",") ?: ""} bottomFrom=${bottomFrom ?: ""} " +
+            "source=${if (advice != null) "douzero" else "rules"} " +
             "win=${advice?.win} super=${advice?.superDouble} pressed=$pressed")
 
     /**
@@ -321,6 +322,25 @@ internal object PhoneDdzTurn : PhoneTool {
             counts[card] = left - 1
         }
         return false
+    }
+
+    /**
+     * 地主加倍时摆开的底牌认不全(还没翻出来、或者只认出两张),用叫分时记下的 17 张反推:
+     * 20 张手牌按点数减去那 17 张,正好剩 3 张才是这三张底牌。叫分那副牌里有一张 20 张里没有的
+     * (不是同一副牌)、或者剩下的不是 3 张,都不补,照原来的路继续读帧。农民 17 张不补。
+     */
+    private fun bidBottom(hand: List<String>?, bidHand: List<String>?): List<String>? {
+        if (hand == null || hand.size != 20 || bidHand == null) return null
+        val left = bidHand.groupingBy { it }.eachCount().toMutableMap()
+        val diff = hand.filter { card ->
+            val n = left[card] ?: 0
+            if (n > 0) {
+                left[card] = n - 1
+                false
+            } else true
+        }
+        if (left.values.any { it > 0 }) return null
+        return diff.takeIf { it.size == 3 }
     }
 
     /** 这些牌里有不可能的张数:同一张超过 4 张,或者大小王重复。 */
@@ -1537,7 +1557,14 @@ internal object PhoneDdzTurn : PhoneTool {
                         if (turn.mode == DdzMode.Human && !turn.humanActionSeen) {
                             val hand = DdzCards.hand(frame, view)
                             // 底牌在加倍时通常已经翻开;认不出就不加倍(和手牌认不出一样保守),不停下。
-                            val bottom = DdzCards.bottom(frame)
+                            // 地主 20 张时如果摆开的底牌认不全,可以用叫分时记下的 17 张反推出三张底牌。
+                            val readBottom = DdzCards.bottom(frame)?.takeIf { it.size == 3 }
+                            val bottom = readBottom ?: bidBottom(hand, turn.bidHand)
+                            val bottomFrom = when {
+                                readBottom != null -> "frame"
+                                bottom != null -> "bid"
+                                else -> null
+                            }
                             // 手牌和底牌对不上(同一张超过 4 张、王重复)就是认错了:不送服务,直接不加倍
                             val clash = hand != null && bottom != null && doubleCardsClash(hand, bottom)
                             val seat = if (clash) null else doubleSeat(hand, bottom, view.handCount, frame)
@@ -1563,11 +1590,11 @@ internal object PhoneDdzTurn : PhoneTool {
                                 val button = green ?: yellow ?: view.buttons.firstOrNull { it.color == DdzColor.Blue }
                                 when {
                                     button == null -> {
-                                        traceDouble(seat, hand, bottom, advice, "no")
+                                        traceDouble(seat, hand, bottom, bottomFrom, advice, "no")
                                         humanPause(turn, DdzSessionReason.UNKNOWN_SCENE)
                                     }
                                     button.color == DdzColor.Gray -> {
-                                        traceDouble(seat, hand, bottom, advice, "no")
+                                        traceDouble(seat, hand, bottom, bottomFrom, advice, "no")
                                         humanPause(turn, DdzSessionReason.REJECTED_ACTION)
                                     }
                                     press(button, ctx, turn).moved -> {
@@ -1576,13 +1603,13 @@ internal object PhoneDdzTurn : PhoneTool {
                                             DdzColor.Yellow -> "double"
                                             else -> "no"
                                         }
-                                        traceDouble(seat, hand, bottom, advice, pressed)
+                                        traceDouble(seat, hand, bottom, bottomFrom, advice, pressed)
                                         turn.declined = pressed == "no"
                                         turn.humanActionSeen = true
                                         turn.doubleDecided = true
                                     }
                                     else -> {
-                                        traceDouble(seat, hand, bottom, advice, "no")
+                                        traceDouble(seat, hand, bottom, bottomFrom, advice, "no")
                                         humanPause(turn, DdzSessionReason.REJECTED_ACTION)
                                     }
                                 }
