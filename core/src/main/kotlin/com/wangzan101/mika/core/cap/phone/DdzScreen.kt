@@ -55,6 +55,11 @@ internal object DdzScreen {
     /** 量手牌宽度的行:两种屏上都在牌面内,也避开最后一张右上角的地主绶带。 */
     const val HAND_ROW = 676
     /**
+     * 火箭/炸弹特效盖住手牌上沿时,[HAND_ROW] 那一行被特效切成两段,只数最宽那段会少数(真机 2026-11-17 土豪场:
+     * 王炸那一帧 16 张读成 8、6 张读成 1)。牌面下半截没被盖住,再探一行,取更宽的。
+     */
+    private const val HAND_LOW_ROW = 715
+    /**
      * 没抬的牌顶:主屏 669,Mika 的屏 644(牌桌整体高)。牌顶比这高出 [LIFT_MIN] 才算抬起:
      * 点起来的高 30,游戏轮到我时自己把提示的牌抬起的只高 17。
      */
@@ -77,7 +82,7 @@ internal object DdzScreen {
     /** 再来一局约 400 宽;救济金弹窗里同一行的双倍领取只有 286,那个要看广告,绝不能当成它。 */
     private const val MIN_RESULT_BUTTON = 350
     /** 认界面只看这几行。 */
-    val ROWS = listOf(BUTTON_ROW, CALL_ROW, STAGE_TOP_ROW, STAGE_BOTTOM_ROW, AUTO_ROW, RESULT_ROW, HAND_ROW,
+    val ROWS = listOf(BUTTON_ROW, CALL_ROW, STAGE_TOP_ROW, STAGE_BOTTOM_ROW, AUTO_ROW, RESULT_ROW, HAND_ROW, HAND_LOW_ROW,
         STAGE_HAND_PROBE, HAND_ROW + STAGE_HAND_DY, STAGE_LIFT_ROW) +
         (FLAT_TOP - LIFT_MIN until FLAT_TOP) + (FLAT_TOP_FULL_WIDTH - LIFT_MIN until FLAT_TOP_FULL_WIDTH)
 
@@ -155,6 +160,27 @@ internal object DdzScreen {
     private fun handSpan(frame: RawFrame, row: Int): IntRange? =
         runs(frame.width, gap = 70, minWidth = 150) { isCard(frame.pixel(it, row)) }.maxByOrNull { it.last - it.first }
 
+    /** [row] 上的手牌被切成几段,最大那段缺口里是又亮又艳的特效光(火箭/炸弹):这一行量不准。 */
+    private fun coveredByEffect(frame: RawFrame, row: Int): Boolean {
+        val found = runs(frame.width, gap = 70, minWidth = 150) { isCard(frame.pixel(it, row)) }
+        val gap = found.zipWithNext().maxByOrNull { (a, b) -> b.first - a.last } ?: return false
+        val x0 = gap.first.last + 1
+        val x1 = gap.second.first - 1
+        if (x1 < x0) return false
+        var bright = 0
+        var saturated = 0
+        for (x in x0..x1) {
+            val p = frame.pixel(x, row)
+            val r = p shr 16 and 0xff
+            val g = p shr 8 and 0xff
+            val b = p and 0xff
+            if (maxOf(r, g, b) > 200) bright++
+            if (maxOf(r, g, b) - minOf(r, g, b) > 60) saturated++
+        }
+        val n = x1 - x0 + 1
+        return bright * 10 >= n * 9 && saturated * 10 >= n * 8
+    }
+
     private fun pitch(frame: RawFrame): Int = (BASE_PITCH * (frame.width - blackBar(frame)) / BASE_CONTENT_WIDTH).roundToInt()
 
     /** 主屏左边留的黑边宽度;Mika 的屏没有。 */
@@ -162,7 +188,13 @@ internal object DdzScreen {
 
     /** 手牌左缘、张数(按标称间距数),和按这一帧手牌宽度量出的实际间距。 */
     private fun hand(frame: RawFrame, pitch: Int, row: Int): Triple<Int, Int, Double> {
-        val span = handSpan(frame, row) ?: return Triple(0, 0, pitch.toDouble())
+        var span = handSpan(frame, row) ?: return Triple(0, 0, pitch.toDouble())
+        // 火箭/炸弹特效盖住手牌上沿:这一行被特效切成两段,只数最宽那段会少数。牌面下半截没被盖住,再量一行取更宽的
+        if (coveredByEffect(frame, row)) {
+            val low = row + HAND_LOW_ROW - HAND_ROW
+            frame.row(low)?.let { handSpan(frame, low) }
+                ?.takeIf { it.last - it.first > span.last - span.first }?.let { span = it }
+        }
         val width = span.last - span.first + 1
         val count = ((width - CARD_WIDTH).toDouble() / pitch).roundToInt() + 1
         // 间距按内容宽度算、不取整(Mika 的屏上是 101.03,取整后 20 张牌累起来差好几像素);
