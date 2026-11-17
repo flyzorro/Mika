@@ -307,6 +307,13 @@ def is_simple_combo(move):
     return counts in ((1,), (2,), (3,), (1, 3), (2, 3))
 
 
+def splits_bomb(move):
+    """这手是不是把某个点数的四张拆开用了:四带二、四带两对、飞机带翅膀里塞了炸弹等,而不是单独当炸弹出。
+    拆开就少一次 ×2;四张一起出、王炸、不出都不算。"""
+    return md.get_move_type(sorted(move))["type"] != md.TYPE_4_BOMB \
+        and any(n == 4 for n in Counter(move).values())
+
+
 def single_kickers(move):
     """三带一/飞机带单里当带牌的单张;三条本身(哪怕三条是 A/2)不算。飞机带对不在其中。"""
     kind = md.get_move_type(sorted(move))["type"]
@@ -548,8 +555,8 @@ def fewer_plays(hand, keys, rates, scores, own, deadline=None):
     """模拟赢面差不多时,在赢面不低于 DouZero 那手([own])的候选里挑出完剩下手数最少的一手。
 
     [keys] 是候选手牌(已排序的元组),[rates] 是模拟赢面,[scores] 是 DouZero 分数。
-    赢面比 [own] 低的候选不用手数翻案(模拟都说更差);手数一样多时挑赢面高的,再挑分数高的。
-    返回 (选中的一手, 比过的手数),没有更少手的候选返回 None。一手都算不完(到 [deadline])也返回 None。
+    赢面比 [own] 低的候选不用手数翻案(模拟都说更差);拆了炸弹的候选也不翻案(少一次 ×2);手数一样多时挑赢面高的,
+    再挑分数高的。返回 (选中的一手, 比过的手数),没有更少手的候选返回 None。一手都算不完(到 [deadline])也返回 None。
     """
     if deadline is None:
         deadline = time.monotonic() + endgame.MIN_PLAYS_BUDGET_S
@@ -558,7 +565,7 @@ def fewer_plays(hand, keys, rates, scores, own, deadline=None):
         return None
     picked = None
     for k in keys:
-        if k == own or rates[k] < rates[own]:
+        if k == own or rates[k] < rates[own] or splits_bomb(k):
             continue
         plays[k] = endgame.min_plays(endgame.minus(hand, k), deadline)
         if plays[k] is None:
@@ -726,6 +733,9 @@ class Agent:
             if quick is not None and tuple(sorted(move)) != quick[0]:
                 if mate and infoset.last_pid == mate and [] in infoset.legal_actions:
                     forced = [list(quick[0]), []]
+                elif splits_bomb(quick[0]) or splits_bomb(minus(infoset.player_hand_cards, quick[0])):
+                    # 捷径把炸弹拆成四带二(或塞进别的牌型)会少一次 ×2:回到正常流程,让炸弹能单独炸出去
+                    pass
                 else:
                     return list(quick[0])
             # 分数只差一点点时,现场按看得见的牌模拟几百局再定;模拟了就以它为准,不再走下面那条不拆牌的规则
