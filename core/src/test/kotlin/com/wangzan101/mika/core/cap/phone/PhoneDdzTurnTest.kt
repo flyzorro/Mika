@@ -3106,6 +3106,58 @@ class PhoneDdzTurnTest {
     }
 
     /**
+     * 2026-11-17 10:5x 普通场:叫分 17 张 SJ 2 2 A A Q Q Q Q J 10 10 10 10 6 6 5,
+     * 加倍 20 张 BJ SJ 2 2 A A Q Q Q Q J J 10 10 10 10 9 6 6 5 都认对,差值底牌是 BJ J 9;
+     * 但画面认出了 3 张 J J Q(认错,不是认不全),而且都包含在 20 张里,doubleCardsClash 抓不到。
+     * 地主差值可用时一律用差值底牌;画面认的那份只写进 trace 的 bottomFrame 便于排查。
+     * 现有素材没有这副牌,用同一手 20 张、画面底牌认成 2 2 2 的 double_landlord_conflict 覆盖这条规则。
+     */
+    @Test fun humanLandlordPrefersTheBidHandDifferenceOverMisreadBottomCards() = runTest {
+        val call = callMatchingDoubleLandlord20()
+        val double = full("double_landlord_conflict")
+        val view = DdzScreen.read(double, classic = true)
+        assertEquals("构造:加倍画面", DdzPhase.Double, view.phase)
+        assertEquals("构造:画面认全了三张(但和差值不同)", listOf("2", "2", "2"), DdzCards.bottom(double))
+        val asked = mutableListOf<Triple<String, List<String>, List<String>>>()
+        val savedBid = PhoneDdzTurn.adviseBid
+        val savedDouble = PhoneDdzTurn.adviseDouble
+        PhoneDdzTurn.adviseBid = { _, _ -> PhoneDdzTurn.BidAdvice(3) }
+        PhoneDdzTurn.adviseDouble = { _, seat, hand, bottom ->
+            asked += Triple(seat, hand, bottom)
+            PhoneDdzTurn.DoubleAdvice(true, 0.93)
+        }
+        val out = ByteArrayOutputStream()
+        val old = System.out
+        try {
+            System.setOut(PrintStream(out))
+            val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(call, call, call, double)))
+            val result = PhoneDdzTurn.execute(
+                Args(PhoneDdzTurn.def, Json.parseToJsonElement(
+                    """{"action":"start","mode":"human","auto":true,"advisor":"http://mac:3426"}"""
+                ).jsonObject),
+                toolDispatcher(game).ctx,
+            )
+            assertEquals(result.content.toString(), "double", result.text("phase"))
+            assertNull("加倍时不暂停: ${result.content}", result.text("reason"))
+            val yellow = view.buttons.single { it.color == DdzColor.Yellow }
+            assertEquals("点了黄色的「加倍」", yellow.x to yellow.y, game.taps[1])
+            assertEquals("问一次服务", 1, asked.size)
+            assertEquals("landlord", asked.single().first)
+            assertEquals("hand 是 20 张", 20, asked.single().second.size)
+            assertEquals("画面认出的 3 张和差值不同时,用差值底牌", listOf("7", "2", "J").sorted(), asked.single().third.sorted())
+        } finally {
+            System.setOut(old)
+            PhoneDdzTurn.adviseBid = savedBid
+            PhoneDdzTurn.adviseDouble = savedDouble
+        }
+        val log = out.toString()
+        assertTrue(log, log.lines().any {
+            it.contains("DDZTRACE double") && it.contains("bottomFrom=bid") &&
+                it.contains("bottomFrame=2,2,2") && it.contains("pressed=double")
+        })
+    }
+
+    /**
      * 反例:叫分帧和加倍帧不是同一副牌(double 的 20 张里有叫分 17 张里没有的 SJ、K、Q、10、5),
      * 差值不是 3 张,不补底牌、不问服务,到截止时间点蓝色「不加倍」。
      */
