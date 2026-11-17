@@ -50,10 +50,6 @@ TILE_TYPES = [f"{number}{suit}" for suit in "mps" for number in range(1, 10)]
 DECK = [tile for tile in TILE_TYPES for _ in range(4)]
 
 
-def _tiles(counter):
-    return [tile for tile, count in counter.items() for _ in range(count)]
-
-
 def _counts(tiles):
     counter = {}
     for tile in tiles:
@@ -266,6 +262,25 @@ def build_table(coefficients):
     return milli
 
 
+def check_monotonic(milli):
+    """服务依赖的三条单调性:向听少、进张多、draws 多,概率都不减。"""
+    for shanten in range(1, MAX_SHANTEN + 1):
+        for ukeire in range(MAX_UKEIRE + 1):
+            for draws in range(MAX_DRAWS + 1):
+                if milli[shanten][ukeire][draws] > milli[shanten - 1][ukeire][draws]:
+                    raise SystemExit(f"向听单调破了: s={shanten} u={ukeire} d={draws}")
+    for shanten in range(MAX_SHANTEN + 1):
+        for ukeire in range(1, MAX_UKEIRE + 1):
+            for draws in range(MAX_DRAWS + 1):
+                if milli[shanten][ukeire][draws] < milli[shanten][ukeire - 1][draws]:
+                    raise SystemExit(f"进张单调破了: s={shanten} u={ukeire} d={draws}")
+        for ukeire in range(MAX_UKEIRE + 1):
+            for draws in range(1, MAX_DRAWS + 1):
+                if milli[shanten][ukeire][draws] < milli[shanten][ukeire][draws - 1]:
+                    raise SystemExit(f"draws 单调破了: s={shanten} u={ukeire} d={draws}")
+    print("table monotonic ok")
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--hands", type=int, default=12000, help="模拟手数(默认 12000)")
@@ -297,6 +312,7 @@ def main():
 
     coefficients = fit_coefficients(hist, raw=args.raw)
     milli = build_table(coefficients)
+    check_monotonic(milli)
     data = {
         "seed": args.seed,
         "hands": used,
