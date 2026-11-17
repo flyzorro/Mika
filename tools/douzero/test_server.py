@@ -430,6 +430,62 @@ class FinishInTwoTest(unittest.TestCase):
         self.assertIsNone(endgame.finish_in_two(hand, legal, (), unknown, 9, 9))
 
 
+class TeammateFinishInTwoTest(unittest.TestCase):
+    """桌上是队友的牌时,「两手出完」不直接压队友:捷径那手和「不出」一起现场模拟,按赢面出。"""
+
+    # 2026-11-17 12:47:36 精英场:我是地主下家(农民),手里 2 2 2 J 7 7,队友(地主上家)刚出 A A A J,地主不要了。
+    # 捷径发现 J 2 2 2 + 7 7 两手能出完,直接压了队友,没跟「不出、让队友接着出」比。
+    MATE = dict(seat="landlord_down",
+                hand=["2", "2", "2", "J", "7", "7"],
+                bottom=["3", "3", "6"],
+                history=[["3", "3", "3", "10"], ["9", "9", "9", "10"], [], [], ["3"], ["10"], ["K"], ["A"], [], ["2"],
+                         ["SJ"], [], [], ["5", "5", "5", "8"], ["A", "A", "A", "J"], []])
+
+    def act(self, position, report=None):
+        return ROLLOUT_ADVISOR.act(position["seat"], position["hand"], position["bottom"],
+                                   position["history"], report)
+
+    def test_a_teammates_cards_are_not_snapped_up_by_finishing_in_two(self):
+        report = {}
+        self.act(self.MATE, report)
+        rollout = report.get("rollout")
+        self.assertIsNotNone(rollout, "桌上是队友的牌时,两手出完那手要交给现场模拟")
+        self.assertIn("J 2 2 2", rollout["rates"])
+        self.assertIn("pass", rollout["rates"])
+
+    def test_the_shortcut_move_is_forced_into_the_candidates(self):
+        # 这一手 DouZero 给「不出」1.13、J 2 2 2 只有 0.99,差 0.13,不在后半局时按分差根本轮不到它;
+        # 桌上是队友的牌,捷径那手必须强制进候选(见 close_rollout 的 required)
+        import server
+        report = {}
+        with mock.patch.object(server, "LATE_CARDS", 0):
+            self.act(self.MATE, report)
+        rollout = report.get("rollout")
+        self.assertIsNotNone(rollout, "不在后半局也要把捷径那手和不出一起模拟")
+        self.assertIn("J 2 2 2", rollout["rates"])
+        self.assertIn("pass", rollout["rates"])
+
+    def test_no_time_to_simulate_falls_back_to_pass(self):
+        # 模拟跑不起来(剩下的时间不够)时退回不出,不压队友,也不退回捷径
+        import server
+        report = {}
+        with mock.patch.object(server, "ACT_ROLLOUT_MIN_S", 100.0):
+            move = self.act(self.MATE, report)
+        self.assertEqual([], move)
+        self.assertEqual("no_time", report.get("rollout_skipped"))
+
+    def test_landlords_own_cards_still_take_the_shortcut(self):
+        # 桌上是农民出的、我是地主:没有队友,两手出完那手照旧直接出,不模拟
+        report = {}
+        play = ROLLOUT_ADVISOR.act(
+            "landlord", ["2", "2", "6"], ["5", "6", "7"],
+            [["4", "4"], ["8", "8"], [], ["9", "9"], [], [], ["Q", "Q"], [], [],
+             ["5", "7", "10", "10", "10", "J", "J", "J"], ["3", "3", "3", "3"], [], [], ["5"], ["2"], ["BJ"], [], [],
+             ["A", "A"], [], []], report)
+        self.assertEqual(["2", "2"], [NAMES[c] for c in play])
+        self.assertNotIn("rollout", report)
+
+
 class RibbonMisreadTest(unittest.TestCase):
     def test_an_illegal_landlord_play_gets_its_ribboned_card_refilled(self):
         # 实机上的一手:地主出 44433,最后一张带绶带的 3 在落下时认成了 J;只有补成 3 才合规
