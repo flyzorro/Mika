@@ -884,6 +884,13 @@ class TaskRun(
             val selfPort = if (provenance.origin == RunOrigin.Ui && !conditionCheck) {
                 (service.application as? MikaApp)?.let { app -> com.wangzan101.mika.self.AndroidSelfPort(app, conversationId, key) }
             } else null
+            // 看屏(phone_mahjong_hint 的 watch 用法):截用户的主屏、在悬浮胶囊上闪字;子任务、条件检查等不给。
+            val mainScreenWatch = if (!conditionCheck) {
+                com.wangzan101.mika.cap.phone.a11y.MainScreenWatchPort(
+                    service, appAccess,
+                    capsule = { (service.application as? MikaApp)?.capsule },
+                )
+            } else null
             val tools = toolDispatcher(accessedPhone, model.capabilities.vision, catalog, recordFrames = true, vision = vision?.let { VisionService(it, BitmapImageOps) },
                 phoneCalls = (service.application as MikaApp).callPort.takeIf {
                     !conditionCheck && (service.application as MikaApp).calls.settings.state.value.enabled
@@ -915,6 +922,7 @@ class TaskRun(
                 onSandboxScript = { sandboxNote(StatusCopy.sandboxScript(sandboxOnline())) },
                 imageOps = BitmapImageOps, runSpec = runSpec,
                 userScreens = userScreens,
+                mainScreen = mainScreenWatch, hintHud = mainScreenWatch,
                 scheduleTrigger = if (provenance.origin == RunOrigin.Ui) { trigger -> TriggerRuntime.schedule(service, trigger) } else null,
                 scheduleAdmin = if (provenance.origin == RunOrigin.Ui) LocalScheduleAdmin(service) else null,
                 childHost = childRunner,

@@ -38,6 +38,8 @@ import com.wangzan101.mika.cap.phone.a11y.OverlayHold
 import com.wangzan101.mika.cap.phone.a11y.OverlayPlacement
 import com.wangzan101.mika.cap.phone.a11y.OverlayWindow
 import com.wangzan101.mika.cap.phone.a11y.ScreenAccessibility
+import com.wangzan101.mika.cap.phone.a11y.WatchGeometry
+import com.wangzan101.mika.cap.phone.a11y.WatchRect
 import com.wangzan101.mika.confirm.ConfirmationNotifier
 import com.wangzan101.mika.core.agent.TaskState
 import com.wangzan101.mika.core.assembly.knownTools
@@ -131,6 +133,11 @@ class CapsuleController(
     private var preview by mutableStateOf<Bitmap?>(null)
     private var zoomed by mutableStateOf(false)
     private var dock by mutableStateOf(flags.capsuleDock())
+    /** 看屏期间临时停的那个位置;看屏结束(或用户在期间自己拖过)时按 [savedDock] 还原。 */
+    private var watchDock: CapsuleDock? = null
+    private var savedDock: CapsuleDock? = null
+    /** 最近一次摆好的胶囊窗口矩形(屏幕像素,含阴影边);看屏截图前据此决定要不要临时藏起来。 */
+    private var capsuleRect: WatchRect? = null
     private var edgeHidden by mutableStateOf(false)
     private var inputUi by mutableStateOf(CardInputUi())
     /** 截到一屏时加一:一颗上闪一下。 */
@@ -730,6 +737,60 @@ class CapsuleController(
         }
     }
 
+    // ---------- 看屏(任务里的工具) ----------
+
+    /**
+     * 看屏开始:把胶囊停到不挡牌桌的位置(左边、屏高约一半),先记下用户原来的位置。
+     * 返回胶囊此刻在不在屏幕上;不在时看屏照样继续,只是提示闪不出来。
+     */
+    internal fun beginWatchDock(): Boolean {
+        if (watchDock == null) {
+            savedDock = dock
+            watchDock = WATCH_DOCK
+        }
+        dock = WATCH_DOCK
+        place()
+        fade()
+        return _showing.value
+    }
+
+    /** 看屏结束:还原用户原来的停靠位置;看屏期间用户自己拖过就尊重他拖到的位置。 */
+    internal fun endWatchDock() {
+        val temp = watchDock ?: return
+        watchDock = null
+        val saved = savedDock
+        savedDock = null
+        if (dock == temp && saved != null) {
+            dock = saved
+            place()
+            fade()
+        }
+    }
+
+    /** 从任务侧在胶囊上闪一句:胶囊不在屏幕上、或卡片展开着时不显示,返回 false。 */
+    internal fun flashHint(text: String, ms: Long = 2_500L): Boolean {
+        if (view == null || expanded) return false
+        showNote(text, CapsuleKind.Running, opensMika = false, ms)
+        return true
+    }
+
+    /** 卡片展开着(用户正在 Mika 卡片里操作):这时截主屏没有意义。 */
+    internal val cardOpen: Boolean get() = expanded
+
+    /** 胶囊此刻的窗口矩形;没显示、贴边藏起来、或卡片展开着时为 null。 */
+    internal fun bounds(): WatchRect? = capsuleRect?.takeIf { view != null && !expanded && !edgeHidden && card == null }
+
+    /**
+     * 看屏截图:胶囊压在 [regions] 里的任何一块上时先把它藏起来,截完马上显示回来;没压着就直接截。
+     * 节流(两张之间至少 1 秒)由调用方在进来之前做,别把等待放进藏起来的这段时间。只在主线程调。
+     */
+    internal suspend fun <T> hiddenForCapture(regions: List<WatchRect>, block: suspend () -> T): T {
+        if (!WatchGeometry.needsHide(bounds(), regions)) return block()
+        val w = window ?: return block()
+        if (w.height <= 0) return block()
+        return w.hiddenWhile(block)
+    }
+
     /**
      * 在对话 [conversationId] 里开始说 [text];别的任务在跑时排上,不丢。卡片接着跟这个对话;
      * 空闲卡片也改成接着这个对话(新开的对话标题就是这句话)。
@@ -953,6 +1014,8 @@ class CapsuleController(
         if (isBar()) {
             placedY = CapsuleDocking.fitY(CapsuleDocking.y(barFraction, a, dp(BAR_DP)), a, h)
             w.place(OverlayPlacement(Gravity.TOP or Gravity.CENTER_HORIZONTAL, 0, placedY))
+            val left = (a.width - w.width) / 2
+            capsuleRect = WatchRect(left, placedY, left + w.width, placedY + w.height)
             return
         }
         // 卡片展开着时这个窗口是空的,照样停在边上:收起时一颗就在原处出来
@@ -964,6 +1027,9 @@ class CapsuleController(
         val side = if (d.side == DockSide.Left) Gravity.LEFT else Gravity.RIGHT
         val offset = if (edgeHidden) CapsuleEdge.offset(d.side, a, room()) else CapsuleDocking.edgeOffset(d.side, a)
         w.place(OverlayPlacement(Gravity.TOP or side, offset, placedY))
+        // 左边停靠时 x 是离屏幕左边的距离,右边停靠时是离屏幕右边的距离。
+        val left = if (d.side == DockSide.Left) offset else a.width - w.width - offset
+        capsuleRect = WatchRect(left, placedY, left + w.width, placedY + w.height)
     }
 
     /**
@@ -1545,6 +1611,8 @@ class CapsuleController(
         /** 看得见的胶囊离屏幕左右边、离状态栏和底部。 */
         const val EDGE_MARGIN_DP = 12
         const val TOP_GAP_DP = 8
+        /** 看屏期间胶囊停在左边、屏高约一半(不挡手牌、牌墙和头像角标)。 */
+        val WATCH_DOCK = CapsuleDock(DockSide.Left, 0.45f)
         /** 胶囊、那一条连同阴影边的窗口高度(按比例摆高度时用)。 */
         const val PILL_DP = 40 + 16
         const val BAR_DP = 48 + 16

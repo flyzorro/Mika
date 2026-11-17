@@ -131,6 +131,10 @@ fun toolDispatcher(
     taskMemory: com.wangzan101.mika.core.memory.TaskMemoryStore? = null,
     /** 这两天的通知原文和存着的各天、各周、各月的归纳(主动能力攒下的、够格带进任务的);给了才提供 notices_read。 */
     notices: com.wangzan101.mika.core.proactive.NoticeSource? = null,
+    /** 用户主屏(不是 Mika 的虚拟屏)的前台和截图;给了才能持续看屏。 */
+    mainScreen: com.wangzan101.mika.core.userscreen.MainScreenPort? = null,
+    /** 悬浮胶囊上闪一句字。 */
+    hintHud: com.wangzan101.mika.core.userscreen.HintHud? = null,
 ): ToolDispatcher {
     val screenshotStore = sandbox?.takeIf {
         it.status() !is com.wangzan101.mika.core.cap.sandbox.SandboxStatus.Unsupported &&
@@ -139,7 +143,8 @@ fun toolDispatcher(
     }?.let { com.wangzan101.mika.core.cap.sandbox.WorkspaceScreenshots(it, workspace) }
     val config = ToolConfig(visionEnabled, skills, recordFrames, vision, inlineScreen, adaptiveVision, memory, profile, utterances, conversationId,
         imageOps, scheduleTrigger, scheduleAdmin, runSpec, childHost, userScreens, personalSkills, selfConfig, runRecords, webSearch, self, selfOperate,
-        screenshotStore?.let { store -> { path, png -> store.save(path, png) } }, taskMemory = taskMemory, notices = notices)
+        screenshotStore?.let { store -> { path, png -> store.save(path, png) } }, taskMemory = taskMemory, notices = notices,
+        mainScreen = mainScreen, hintHud = hintHud)
     val providers: List<CapabilityProvider> = listOf(
         object : CapabilityProvider {
             override val id = PHONE
