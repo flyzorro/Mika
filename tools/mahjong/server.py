@@ -18,6 +18,8 @@ POST /discard
   options 最多 3 个,第一个就是推荐;已胡时只返回 {"win": true}。
   target 是 fast(快胡,普通型或七对)、qingyise(清一色)、pengpeng(碰碰胡)或 qidui(七对)。
   fan 是这个目标胡了的番数;value 是期望倍数(赢牌概率 × 番数倍数,保留 2 位)。
+  value 不是查表值:表只用来粗排,排在前面的 4 个(切牌 × 目标)会对这手牌本身做固定种子
+  蒙特卡洛(牌墙 = 108 − 自己的牌,按目标贪心切牌;draws≤14 每候选 200 局,>14 100 局)。
   shanten/ukeire/waits 指的是这个目标的向听、理论进张和进张牌。
   waits/ukeire 只扣自己手牌和副露,不扣场上已经打出去的牌。
   queLeft 是切牌前手里还有几张定缺牌;有定缺牌时先切定缺牌,shanten/ukeire 只按非定缺门算。
@@ -29,6 +31,7 @@ POST /que
                           {"que": "p", "target": "fast", "value": 0.9},
                           {"que": "m", "target": "fast", "value": 0.4}]}
   三门都列出,按期望从高到低;期望一样时选张数少的那门,再一样按 m<p<s。
+  value 同样是每门做固定种子蒙特卡洛得到的(draws≤14 70 局,>14 50 局)。
 
 校验错误(HTTP 200,安卓端把非 2xx 当成连不上):
   {"error": "bad_tile" | "bad_que" | "bad_meld" | "not_drawn" | "wrong_count"
@@ -38,6 +41,7 @@ POST /que
 """
 import json
 import os
+import random
 import re
 import sys
 from math import comb
@@ -53,6 +57,22 @@ MIN_DRAWS = 1
 MAX_DRAWS = 30
 PROB_TABLE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "prob_table.json")
 
+BASE_WALL = [f"{number}{suit}" for suit in "mps" for number in range(1, 10) for _ in range(4)]
+MC_SEED = 20261117
+MC_GAMES = 200                 # 每个候选的模拟局数(draws ≤ 14)
+MC_LONG_DRAWS = 14
+MC_LONG_GAMES = 100            # draws 更大时降到 100 局,保证单次请求 < 1 秒
+MC_QUE_GAMES = 70              # /que 只排三门,局数少一些,保证也在 1 秒左右
+MC_QUE_LONG_GAMES = 50
+
+
+def mc_games(draws):
+    return MC_GAMES if draws <= MC_LONG_DRAWS else MC_LONG_GAMES
+
+
+def que_games(draws):
+    return MC_QUE_GAMES if draws <= MC_LONG_DRAWS else MC_QUE_LONG_GAMES
+
 
 def _load_prob_table():
     try:
@@ -66,9 +86,10 @@ PROB_TABLE = _load_prob_table()
 
 
 def win_probability(shanten, ukeire, draws):
-    """这个目标还能赢的概率:向听、进张、还能摸几张,三项都不减则概率不减。
+    """粗排用的赢牌概率:向听、进张、还能摸几张,三项都不减则概率不减。
 
-    表来自 calibrate_prob.py 的随机模拟校准;表不在时退回未校准的二项估计。
+    表来自 calibrate_prob.py 的纯模拟拟合;表不在时退回未校准的二项估计。
+    最终 value 不查表,由 MonteCarlo 对这手牌的前几个候选单独模拟。
     """
     if shanten < 0:
         return 1.0
@@ -356,8 +377,10 @@ def qingyise_result(hand13, melds, que, suit, draws):
     base = filtered_regular_shanten(x_tiles, len(melds))
     ukeire, waits = _ukeire(x_tiles, melds, que, base,
                             lambda tiles: filtered_regular_shanten(tiles, len(melds)), (suit,))
-    return _finish("qingyise", _qingyise_fan(x_tiles, melds, suit, waits), base, ukeire, waits, draws,
-                   SUIT_INDEX[suit])
+    result = _finish("qingyise", _qingyise_fan(x_tiles, melds, suit, waits), base, ukeire, waits, draws,
+                     SUIT_INDEX[suit])
+    result["_suit"] = suit
+    return result
 
 
 def pengpeng_result(hand13, melds, que, draws):
@@ -422,6 +445,160 @@ def _option(tile, best):
         "ukeire": best["ukeire"],
         "waits": best["waits"],
     }
+
+
+def _candidate_key(result):
+    return (
+        result["value"],
+        -result["shanten"],
+        result["ukeire"],
+        TARGET_PRIORITY[result["target"]],
+        -result["order"],
+    )
+
+
+def _coarse_key(discard, result):
+    return (
+        -result["value"],
+        result["shanten"],
+        -result["ukeire"],
+        tile_order(discard),
+        TARGET_PRIORITY[result["target"]],
+        -result["order"],
+    )
+
+
+def _discard_key(discard, result):
+    return (-result["value"], result["shanten"], -result["ukeire"], tile_order(discard))
+
+
+def _mc_target(result):
+    if result["target"] == "qingyise":
+        return f"qingyise:{result['_suit']}"
+    return result["target"]
+
+
+def _select_candidates(pairs, limit=4):
+    """表只做粗排:取粗排最前面的 4 个切牌,每个用粗排最好的目标做蒙特卡洛。"""
+    if not pairs:
+        return []
+    ordered = sorted(pairs, key=lambda item: _coarse_key(item[0], item[1]))
+    best_by_discard = {}
+    for discard, result in ordered:
+        current = best_by_discard.get(discard)
+        if current is None or _candidate_key(result) > _candidate_key(current):
+            best_by_discard[discard] = result
+    top_discards = sorted(best_by_discard, key=lambda discard: _coarse_key(discard, best_by_discard[discard]))[:limit]
+    return [(discard, best_by_discard[discard]) for discard in top_discards]
+
+
+class MonteCarlo:
+    """对这手牌、这个目标、draws 张牌墙做模拟;固定种子,同一输入结果相同。"""
+
+    def __init__(self, melds, que):
+        self.melds = melds
+        self.m = len(melds)
+        self.que = que
+        self.shanten_cache = {}
+        self.won_cache = {}
+
+    @staticmethod
+    def _key(target, tiles):
+        return (target, tuple(sorted(tiles)))
+
+    def shanten(self, target, tiles):
+        key = self._key(target, tiles)
+        cached = self.shanten_cache.get(key)
+        if cached is not None:
+            return cached
+        useful = [tile for tile in tiles if tile[1] != self.que]
+        if target == "fast":
+            value = fast_shanten(useful, self.m)
+        elif target == "qidui":
+            value = qidui_shanten(useful)
+        elif target == "pengpeng":
+            value = pengpeng_shanten(useful, self.m, self.que)
+        else:
+            suit = target.split(":", 1)[1]
+            value = filtered_regular_shanten([tile for tile in useful if tile[1] == suit], self.m)
+        self.shanten_cache[key] = value
+        return value
+
+    def won(self, target, tiles):
+        if any(meld["tile"][1] == self.que for meld in self.melds):
+            return False
+        key = self._key(target, tiles)
+        cached = self.won_cache.get(key)
+        if cached is not None:
+            return cached
+        if any(tile[1] == self.que for tile in tiles):
+            value = False
+        elif target.startswith("qingyise:"):
+            suit = target.split(":", 1)[1]
+            value = all(tile[1] == suit for tile in tiles) and regular_shanten(tiles) == -1
+        elif target == "qidui":
+            value = self.m == 0 and len(tiles) == 14 and all(count % 2 == 0 for count in to_counts(tiles))
+        elif target == "pengpeng":
+            value = regular_shanten(tiles) == -1 and is_pengpeng(tiles, self.m)
+        else:
+            value = regular_shanten(tiles) == -1 or (
+                self.m == 0 and len(tiles) == 14 and all(count % 2 == 0 for count in to_counts(tiles))
+            )
+        self.won_cache[key] = value
+        return value
+
+    def discard(self, target, tiles):
+        ordered = sorted(tiles)
+        for tile in ordered:
+            if tile[1] == self.que:
+                return tile
+        if target.startswith("qingyise:"):
+            suit = target.split(":", 1)[1]
+            for tile in ordered:
+                if tile[1] != suit:
+                    return tile
+        best = None
+        for tile in sorted(set(tiles)):
+            rest = list(tiles)
+            rest.remove(tile)
+            score = (self.shanten(target, rest), tile)
+            if best is None or score < best[0]:
+                best = (score, tile)
+        return best[1]
+
+    def run(self, hand, discard, target, draws, games):
+        start = list(hand)
+        if discard is not None:
+            start.remove(discard)
+        wall = list(BASE_WALL)
+        for meld in self.melds:
+            for tile in meld_tiles(meld):
+                wall.remove(tile)
+        for tile in hand:
+            wall.remove(tile)
+        rng = random.Random(MC_SEED)
+        wins = 0
+        for _ in range(games):
+            shuffled = wall[:]
+            rng.shuffle(shuffled)
+            current = list(start)
+            for turn in range(draws):
+                current.append(shuffled[turn])
+                if self.won(target, current):
+                    wins += 1
+                    break
+                current.remove(self.discard(target, current))
+        return wins / games
+
+
+def _run_monte_carlo(hand, melds, que, draws, candidates):
+    mc = MonteCarlo(melds, que)
+    games = mc_games(draws)
+    for discard, result in candidates:
+        probability = mc.run(hand, discard, _mc_target(result), draws, games)
+        result["value"] = probability * win_multiplier(result["fan"])
+        result["_games"] = games
+    return games
 
 
 def parse_draws(value):
@@ -498,22 +675,32 @@ def advise(hand, melds, que, draws=None):
         for tile in que_tiles:
             que_counts[tile] = que_counts.get(tile, 0) + 1
         candidates = sorted(que_counts, key=lambda tile: (que_counts[tile], tile_order(tile)))
+        mc = MonteCarlo(parsed_melds, que)
+        games = mc_games(draws)
         options = []
         for tile in candidates[:3]:
             remaining = list(hand)
             remaining.remove(tile)
             best = best_target(evaluate_hand(remaining, parsed_melds, que, draws))
+            probability = mc.run(hand, tile, _mc_target(best), draws, games)
+            best["value"] = probability * win_multiplier(best["fan"])
             options.append(_option(tile, best))
         return {"win": False, **options[0], "queLeft": len(que_tiles), "options": options}
-    scored = []
+    pairs = []
     for tile in sorted(set(hand), key=tile_order):
         remaining = list(hand)
         remaining.remove(tile)
-        best = best_target(evaluate_hand(remaining, parsed_melds, que, draws))
-        scored.append((best["value"], _option(tile, best)))
-    scored.sort(key=lambda item: (-item[0], item[1]["shanten"], -item[1]["ukeire"],
-                                  tile_order(item[1]["discard"])))
-    options = [option for _, option in scored[:3]]
+        for result in evaluate_hand(remaining, parsed_melds, que, draws):
+            pairs.append((tile, result))
+    candidates = _select_candidates(pairs)
+    _run_monte_carlo(hand, parsed_melds, que, draws, candidates)
+    best_by_discard = {}
+    for discard, result in candidates:
+        current = best_by_discard.get(discard)
+        if current is None or _candidate_key(result) > _candidate_key(current):
+            best_by_discard[discard] = result
+    scored = sorted(best_by_discard.items(), key=lambda item: _discard_key(item[0], item[1]))[:3]
+    options = [_option(discard, result) for discard, result in scored]
     return {"win": False, **options[0], "queLeft": 0, "options": options}
 
 
@@ -523,9 +710,11 @@ def advise_que(hand, draws=None):
         raise RequestError("wrong_count", f"定缺需要 13 或 14 张手牌，收到 {len(hand)} 张")
     _check_copies(hand, [])
     draws = parse_draws(draws)
+    games = que_games(draws)
     options = []
     for que in ("m", "p", "s"):
         best = None
+        best_discard = None
         if len(hand) == 13:
             best = best_target(evaluate_hand(hand, [], que, draws))
         else:
@@ -533,8 +722,12 @@ def advise_que(hand, draws=None):
                 remaining = list(hand)
                 remaining.remove(tile)
                 candidate = best_target(evaluate_hand(remaining, [], que, draws))
-                if best is None or candidate["value"] > best["value"]:
+                if best is None or _candidate_key(candidate) > _candidate_key(best):
                     best = candidate
+                    best_discard = tile
+        mc = MonteCarlo([], que)
+        probability = mc.run(hand, best_discard, _mc_target(best), draws, games)
+        best["value"] = probability * win_multiplier(best["fan"])
         count = sum(1 for tile in hand if tile[1] == que)
         options.append((best["value"], count, que, {"que": que, "target": best["target"],
                                                    "value": round(best["value"], 2)}))

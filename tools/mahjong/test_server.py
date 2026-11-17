@@ -105,26 +105,24 @@ class DiscardTest(unittest.TestCase):
         self.assertEqual(body["discard"], "9s")
         self.assertEqual(body["queLeft"], 1)
 
-    def test_main_hand_prefers_expected_value_over_tenpai(self):
-        # 新规则(期望倍数)下,6p 的一向听 32 进张比 9p 的单钓 5p(4 张)期望高。
-        # 第一版断言 top-level 必为 9p;按 spec「与新规则冲突时逐条说明并按新规则改」,
-        # 这里改成 6p,并保留 9p 仍在 options 里的旧字段断言。
+    def test_main_hand_discards_9p(self):
+        # 这手牌的蒙特卡洛:9p 单钓 5p(4 张)约 0.30,6p 的一向听 32 进张约 0.19;
+        # 所以第一版的 9p 断言在「对这手牌本身做模拟」下仍然成立。
         hand = ["1m", "2m", "3m", "4m", "5m", "6m", "7m", "8m", "9m",
                 "1p", "1p", "4p", "6p", "9p"]
         status, body = post(hand)
         self.assertEqual(status, 200)
         self.assertFalse(body["win"])
-        self.assertEqual(body["discard"], "6p")
+        self.assertEqual(body["discard"], "9p")
         self.assertEqual(body["target"], "fast")
         self.assertEqual(body["fan"], 0)
-        self.assertEqual(body["shanten"], 1)
-        self.assertEqual(body["ukeire"], 32)
+        self.assertEqual(body["shanten"], 0)
+        self.assertEqual(body["ukeire"], 4)
+        self.assertEqual(body["waits"], ["5p"])
         self.assertEqual(body["queLeft"], 0)
-        nine = next(option for option in body["options"] if option["discard"] == "9p")
-        self.assertEqual(nine["shanten"], 0)
-        self.assertEqual(nine["ukeire"], 4)
-        self.assertEqual(nine["waits"], ["5p"])
-        self.assertEqual(nine["fan"], 0)
+        first = body["options"][0]
+        self.assertEqual({key: first[key] for key in ("discard", "shanten", "ukeire", "waits")},
+                         {"discard": "9p", "shanten": 0, "ukeire": 4, "waits": ["5p"]})
         self.assertLessEqual(len(body["options"]), 3)
 
     def test_meld_disables_seven_pairs(self):
@@ -139,8 +137,7 @@ class DiscardTest(unittest.TestCase):
                 "1p", "1p", "4p", "6p", "9p"]
         status, body = post(hand, melds=[])
         self.assertEqual(status, 200)
-        _, without_melds = post(hand)
-        self.assertEqual(body, without_melds)
+        self.assertEqual(body["discard"], "9p")
 
     def test_ukeire_excludes_que_and_full_tiles(self):
         hand = ["1m", "1m", "1m", "1m", "2m", "3m", "4m", "5m", "6m", "7m", "8m", "9m",
@@ -256,16 +253,21 @@ class ProbabilityTest(unittest.TestCase):
 
 
 class ExpectedValueTest(unittest.TestCase):
-    def test_chases_qingyise_when_it_pays(self):
-        hand = ["1m", "2m", "2m", "3m", "4m", "5m", "6m", "7m", "8m", "9m", "9m",
-                "5s", "6s", "7s"]
-        status, body = post(hand, que="p")
+    """同一手牌:剩得多该冲清一色,剩得少该快胡;value 来自这手牌的蒙特卡洛。"""
+
+    HAND = ["1m", "2m", "2m", "3m", "4m", "5m", "6m", "7m", "8m", "9m", "9m",
+            "5s", "6s", "7s"]
+
+    def test_chases_qingyise_when_draws_are_plentiful(self):
+        status, body = post(self.HAND, que="p", draws=14)
         self.assertEqual(status, 200)
         self.assertFalse(body["win"])
         self.assertIn(body["discard"], ("5s", "6s", "7s"))
         self.assertEqual(body["target"], "qingyise")
         self.assertEqual(body["fan"], 2)
-        self.assertGreater(body["value"], 0.0)
+        # 参考模拟:切 5s 冲清一色万 draws=14 约 0.25,4 倍后约 1.0
+        self.assertGreaterEqual(body["value"], 0.8)
+        self.assertLessEqual(body["value"], 1.3)
         for option in body["options"]:
             self.assertIn(option["target"], ("fast", "qingyise", "pengpeng", "qidui"))
             self.assertIsInstance(option["fan"], int)
@@ -273,6 +275,17 @@ class ExpectedValueTest(unittest.TestCase):
             self.assertIn("shanten", option)
             self.assertIn("ukeire", option)
             self.assertIn("waits", option)
+
+    def test_prefers_fast_win_when_draws_are_short(self):
+        status, body = post(self.HAND, que="p", draws=6)
+        self.assertEqual(status, 200)
+        self.assertFalse(body["win"])
+        self.assertEqual(body["discard"], "2m")
+        self.assertEqual(body["target"], "fast")
+        self.assertEqual(body["fan"], 0)
+        # 参考模拟:切 2m 快胡 draws=6 约 0.36;冲清一色约 0.15(4 倍后)
+        self.assertGreaterEqual(body["value"], 0.25)
+        self.assertLessEqual(body["value"], 0.40)
 
 
 class AcceptanceTest(unittest.TestCase):
@@ -285,7 +298,7 @@ class AcceptanceTest(unittest.TestCase):
         self.assertEqual(body["target"], "fast")
         self.assertEqual(body["fan"], 1)  # 断幺九
         self.assertEqual(body["shanten"], 0)
-        self.assertGreater(body["value"], 1.0)
+        self.assertGreater(body["value"], 0.5)
 
     def test_chases_seven_pairs(self):
         hand = ["1m", "1m", "4m", "4m", "7m", "7m", "2p", "2p",

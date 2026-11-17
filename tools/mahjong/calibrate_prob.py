@@ -1,7 +1,9 @@
 """概率表校准:随机发牌 + 贪心打牌,估计 (向听, 进张, 还能摸几张) → 赢牌概率。
 
-服务里不跑模拟,只读本脚本写出的 `prob_table.json`;表里的每个格子是
+服务启动时只读本脚本写出的 `prob_table.json` 做**粗排**;表里的每个格子是
 「这个目标在 draws 张之内胡牌」的概率(千分比整数),按向听、进张、draws 单调。
+粗排排在前面的 4 个(切牌 × 目标)再由服务对这手牌本身做固定种子蒙特卡洛,
+最终排序和 `value` 用模拟结果,不用表的概率。所以表只决定「先模拟哪些候选」。
 
 模型假设:
   * 牌墙完全随机,自己摸到有用的就留下,每次切牌选「切完向听最小、其次最孤立」的那张;
@@ -20,13 +22,8 @@
   seed = 20261117,样本量 = 12000 手(随机 1/3 + 从胡牌回退的听牌/一向听 2/3),
   每手最多看 30 摸;详细数字见脚本运行输出和 README。
 
-关于平滑下限(重要):
-  纯按模拟的贪心打法,多向听目标的真实赢面很低(比如 2 向听、25 进张在 8 摸内
-  只有约 6%),这样「11 张万子冲清一色」会输给「马上听 5 张」,和 spec 的
-  「该冲清一色」验收冲突。模拟里「摸到有用的就留下」的打法是保守下界,真实的
-  牌手会为做大牌调整切牌;为了让 C[s] 不把多向听一棍子打死,表里用一条单调
-  平滑下限 C[s] >= 1 / (1 + 0.25*s) 兜底(仍随向听非增,单调性不变)。
-  想复现纯模拟系数加 --raw。
+表只用纯模拟拟合结果,没有人为抬高/压低的下限。模拟的贪心打法就是「摸到有用的就留下、
+切完向听最小」;多向听目标的真实赢面确实低,这是模型的一部分,不再为了某手牌的推荐去改。
 
 依赖只用标准库 + mahjong==2.2.0(和 server.py 一样)。
 """
@@ -43,8 +40,6 @@ MAX_SHANTEN = 12
 MAX_UKEIRE = 72
 MAX_DRAWS = 30
 UNSEEN = 94
-# 多向听保守下界的平滑斜率;见文件开头「关于平滑下限」
-SMOOTHING_K = 0.25
 
 TILE_TYPES = [f"{number}{suit}" for suit in "mps" for number in range(1, 10)]
 DECK = [tile for tile in TILE_TYPES for _ in range(4)]
@@ -175,7 +170,7 @@ def survival(draws, need, q):
     return sum(comb(draws, k) * q ** k * (1 - q) ** (draws - k) for k in range(need, draws + 1))
 
 
-def fit_coefficients(hist, raw=False):
+def fit_coefficients(hist):
     """每个向听一个系数 C[s];按「第几摸胡」的似然网格搜索,再强制非增。"""
     coefficients = []
     for shanten in range(MAX_SHANTEN + 1):
@@ -225,11 +220,6 @@ def fit_coefficients(hist, raw=False):
         if coefficients[shanten] is None:
             coefficients[shanten] = coefficients[shanten - 1] if shanten else 1.0
         if shanten:
-            coefficients[shanten] = min(coefficients[shanten], coefficients[shanten - 1])
-    if not raw:
-        for shanten in range(MAX_SHANTEN + 1):
-            coefficients[shanten] = max(coefficients[shanten], 1.0 / (1.0 + SMOOTHING_K * shanten))
-        for shanten in range(1, MAX_SHANTEN + 1):
             coefficients[shanten] = min(coefficients[shanten], coefficients[shanten - 1])
     return coefficients
 
@@ -286,7 +276,6 @@ def main():
     parser.add_argument("--hands", type=int, default=12000, help="模拟手数(默认 12000)")
     parser.add_argument("--seed", type=int, default=20261117)
     parser.add_argument("--out", default="prob_table.json")
-    parser.add_argument("--raw", action="store_true", help="不做多向听平滑下限,只输出模拟系数")
     args = parser.parse_args()
 
     rng = random.Random(args.seed)
@@ -310,7 +299,7 @@ def main():
         if used % 500 == 0:
             print(f"  {used}/{args.hands} 手,{time.time() - started:.0f}s", flush=True)
 
-    coefficients = fit_coefficients(hist, raw=args.raw)
+    coefficients = fit_coefficients(hist)
     milli = build_table(coefficients)
     check_monotonic(milli)
     data = {
