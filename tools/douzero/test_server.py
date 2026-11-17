@@ -325,10 +325,11 @@ class EndgameTest(unittest.TestCase):
         self.assertEqual(["8", "8"], [NAMES[c] for c in play])
 
     def test_a_one_card_opponent_who_passed_cannot_beat_the_last_play(self):
-        # 2026-11-17 23:11 土豪场,我是地主,手里 2 K K J;下家 7 张、上家只剩 1 张。
+        # 2026-11-17 23:12:13 土豪场,我是地主,手里 2 K K J;下家 7 张、上家只剩 1 张。
         # 第 31 手我出单张 7,下家不出,上家只剩一张也不出:能一手走完的人不会不出,
         # 所以上家那张一定 <= 7。服务原来按看不见的 8 张随便分,也考虑了上家是 Q / A 的分法,
-        # 出了 K K 被下家 A A 管上输掉;按明牌出单张 J 必赢。
+        # 出了 K K 被下家 A A 管上输掉;按明牌出单张 J 必赢。下面的请求照抄服务日志
+        # (底牌顺序 6 J A;auction 只有加倍,没有叫分)。
         import server as server_module
         history = [["3", "3", "4", "4", "5", "5", "6", "6"], [], [],
                    ["5"], ["7"], ["J"],
@@ -341,9 +342,8 @@ class EndgameTest(unittest.TestCase):
                    ["9", "9"], [], ["2", "2"],
                    ["SJ", "BJ"], [], [],
                    ["7"], [], []]
-        auction = server_module.parse_auction({"bid": {"landlord": 3},
-                                               "double": {"landlord": False, "landlord_down": False, "landlord_up": True}})
-        play = ADVISOR.act("landlord", ["2", "K", "K", "J"], ["A", "J", "6"], history, auction=auction)
+        auction = server_module.parse_auction({"double": {"landlord_down": False, "landlord_up": True}})
+        play = ADVISOR.act("landlord", ["2", "K", "K", "J"], ["6", "J", "A"], history, auction=auction)
         self.assertEqual(["J"], [NAMES[c] for c in play])
 
     def test_a_one_card_opponent_who_cannot_beat_the_last_play_may_pass(self):
