@@ -9,8 +9,9 @@ from douzero.env import move_detector as md
 from douzero.env.game import GameEnv
 
 from server import (
-    ACT_BUDGET_SAFETY_S, ACT_TOTAL_BUDGET_S, DECK, DOUBLE_WIN, FARMER_DOUBLE_WIN, NAMES, ROLLOUT_MIN_GAMES, SEATS,
-    SUPER_DOUBLE_WIN, Advisor, Mismatch, WEIGHTS, bid_level, cards, fewer_plays, handler, resolve, should_double,
+    ACT_BUDGET_SAFETY_S, ACT_ENDGAME_BUDGET_S, ACT_ROLLOUT_BUDGET_S, ACT_ROLLOUT_MIN_S, ACT_TOTAL_BUDGET_S, DECK,
+    DOUBLE_WIN, FARMER_DOUBLE_WIN, NAMES, ROLLOUT_MIN_GAMES, SEATS, SUPER_DOUBLE_WIN, Advisor, Mismatch, WEIGHTS,
+    bid_level, cards, fewer_plays, handler, resolve, should_double,
 )
 
 # 造局面时关掉「接近时现场模拟」:随机走一步有近一半的顶两手分差在 0.1 以内,开着会让原有测试慢到不可用。
@@ -330,6 +331,38 @@ class EndgameTest(unittest.TestCase):
         self.assertTrue(solver.landlord_wins(hands, "landlord", (), "landlord"))
         # 轮到农民先出:下家出 A 走完
         self.assertFalse(solver.landlord_wins(hands, "landlord_down", (), "landlord_down"))
+
+
+class EndgameBudgetTest(unittest.TestCase):
+    """残局搜索的时限要够把几百种分法(带 likelihood)算完:2026-11-17 12:14:32 精英场那一手。
+
+    三家剩 7 / 6 / 5 张,462 种分法,带 likelihood 在本机实测 1.58~1.84 秒;原来给的 1.5 秒正好差一点,
+    搜索超时返回 None,退回按均匀发牌的现场模拟,选了 J。明牌求解只有 6 6 能赢。按公开入口 ROLLOUT_ADVISOR.act 测。
+    """
+
+    # 我当时 17 张:SJ 2 2 A J 9 9 8 8 7 6 6 5 5 5 3 3;地主叫三分,底牌 10 7 9。
+    # 现在(我是地主上家,农民)手里 SJ A J 7 6 6 5,地主还剩 6 张、队友还剩 5 张。
+    LIVE = dict(seat="landlord_up",
+                hand=["SJ", "A", "J", "7", "6", "6", "5"],
+                bottom=["10", "7", "9"],
+                history=[["4", "4", "4", "5"], ["Q", "Q", "Q", "4"], [], ["A", "A", "A", "7"], [], [],
+                         ["6", "6"], ["7", "7"], [], ["9", "9"], ["10", "10"], [], [], ["3", "3"], [], ["10", "10"],
+                         ["J", "J"], ["2", "2"], [], [], ["3", "3"], [], [], ["8", "8"], [], [], ["5", "5"], [],
+                         [], ["9", "9"], [], []])
+
+    def act(self, position, report=None):
+        return ROLLOUT_ADVISOR.act(position["seat"], position["hand"], position["bottom"],
+                                   position["history"], report)
+
+    def test_the_search_finishes_in_time_and_picks_the_pair(self):
+        # 搜索算完了就以它为准:出 6 6,不再退回按均匀发牌的现场模拟
+        report = {}
+        started = time.monotonic()
+        move = self.act(self.LIVE, report)
+        elapsed = time.monotonic() - started
+        self.assertEqual(["6", "6"], names(move))
+        self.assertNotIn("rollout", report, "残局搜索算完了不该退回现场模拟")
+        self.assertLess(elapsed, ACT_TOTAL_BUDGET_S + 0.2)
 
 
 class MinPlaysTest(unittest.TestCase):
@@ -675,6 +708,7 @@ class CloseCallRolloutTest(unittest.TestCase):
     def test_a_near_tie_prefers_the_move_that_leaves_fewer_plays(self):
         # 模拟赢面差不到门槛时,手数更少的一手胜出:4..9 剩三手,5..9 剩四手。
         # 2.5 秒里多打一两局就能把赢面差顶过 0.05(150 局差 0.047,152 局差 0.053),固定局数让这条每次都走比手数那条路。
+        # ACT_ROLLOUT_GAMES 由 close_rollout 显式传给 successive_halving,这里改小才真的封住局数。
         import server
         report = {}
         with mock.patch.object(server, "ACT_ROLLOUT_GAMES", 150), \
@@ -888,18 +922,42 @@ class ActBudgetTest(unittest.TestCase):
                                    position["history"], report)
 
     def test_the_logged_request_answers_inside_the_phone_clock(self):
-        # 实机那一手回复 4903 毫秒,手机 4 秒就超时;总预算封顶后要在 3.5 秒内答完
+        # 实机那一手回复 4903 毫秒,手机 4 秒就超时;总预算封顶后要在手机读超时(4000 毫秒)内答完
         started = time.monotonic()
         self.act(self.LOGGED)
-        self.assertLess(time.monotonic() - started, 3.5)
+        self.assertLess(time.monotonic() - started, 4.0)
+
+    def test_the_turn_budget_stays_under_the_phone_timeout(self):
+        # 手机端 core/.../DdzAdvisor.kt 的 ACT_READ_TIMEOUT_MS = 4000:总预算不能超过 3.6 秒,留出网络余量
+        self.assertLessEqual(ACT_TOTAL_BUDGET_S, 3.6)
+
+    def test_a_non_endgame_close_call_still_gets_the_whole_rollout_budget(self):
+        # 不是残局(搜索立刻返回 None、不耗时)时,现场模拟能用的时间不能变少:还是拿满 ACT_ROLLOUT_BUDGET_S
+        import server
+        real = server.successive_halving
+        seen = []
+
+        def spy(keys, own, scores, deal, play, budget, **kwargs):
+            seen.append(budget)
+            return {k: 0 for k in keys}, {k: 1 for k in keys}, [[list(keys), 1]], list(keys)
+
+        server.successive_halving = spy
+        try:
+            report = {}
+            self.act(CloseCallRolloutTest.LIVE, report)
+        finally:
+            server.successive_halving = real
+        self.assertEqual([ACT_ROLLOUT_BUDGET_S], seen)
+        self.assertEqual(1, report["rollout"]["games"])
 
     def test_a_search_that_burns_the_clock_leaves_no_time_for_the_rollout(self):
-        # 残局搜索睡掉 2.6 秒、又没有结论:剩下的时间不到 ACT_ROLLOUT_MIN_S,现场模拟整个跳过,保留 DouZero 那一手
+        # 残局搜索把总预算烧到只剩 ACT_ROLLOUT_MIN_S 以下、又没有结论:现场模拟整个跳过,保留 DouZero 那一手,
+        # 整手牌仍不超过 ACT_TOTAL_BUDGET_S
         import endgame
         real = endgame.best
 
         def slow_best(*args, **kwargs):
-            time.sleep(2.6)
+            time.sleep(ACT_TOTAL_BUDGET_S - ACT_ROLLOUT_MIN_S + 0.05)
             return None
 
         endgame.best = slow_best
@@ -910,17 +968,18 @@ class ActBudgetTest(unittest.TestCase):
             elapsed = time.monotonic() - started
         finally:
             endgame.best = real
-        self.assertLess(elapsed, 3.5)
+        self.assertLess(elapsed, ACT_TOTAL_BUDGET_S + 0.15)
         self.assertEqual("no_time", report.get("rollout_skipped"))
         self.assertNotIn("rollout", report)
 
     def test_a_search_that_uses_its_own_budget_still_leaves_room_for_the_rollout(self):
-        # 残局搜索睡满自己的 1.5 秒:总预算还剩 1.6 秒左右,现场模拟照常跑,只是模拟得少些
+        # 残局搜索睡满自己的 ACT_ENDGAME_BUDGET_S 秒:总预算还剩 1.0 秒左右(仍在 ACT_ROLLOUT_MIN_S 之上),
+        # 现场模拟照常跑,只是模拟得少些
         import endgame
         real = endgame.best
 
         def slow_best(*args, **kwargs):
-            time.sleep(1.5)
+            time.sleep(ACT_ENDGAME_BUDGET_S)
             return None
 
         endgame.best = slow_best
@@ -931,22 +990,22 @@ class ActBudgetTest(unittest.TestCase):
             elapsed = time.monotonic() - started
         finally:
             endgame.best = real
-        self.assertLess(elapsed, 3.5)
+        self.assertLess(elapsed, ACT_TOTAL_BUDGET_S + 0.15)
         rollout = report.get("rollout")
-        self.assertIsNotNone(rollout, "残局搜索用掉 1.5 秒后还剩 1.6 秒,应该照常现场模拟")
-        self.assertGreater(rollout["budget_left"], 1.2)
-        self.assertLess(rollout["budget_left"], 1.8)
+        self.assertIsNotNone(rollout, "残局搜索用掉 2.5 秒后还剩 1.0 秒,应该照常现场模拟")
+        self.assertGreater(rollout["budget_left"], ACT_ROLLOUT_MIN_S - 0.15)
+        self.assertLess(rollout["budget_left"], ACT_TOTAL_BUDGET_S - ACT_ENDGAME_BUDGET_S + 0.2)
 
     def test_a_full_search_still_leaves_room_for_the_tiebreak(self):
-        # 残局搜索睡满 1.5 秒、现场模拟再吃掉剩下的:比手数(最多 0.2 秒)也要在 3.5 秒内收尾。
-        # 模拟截止时间要先给比手数留出 0.2 秒,比手数的 deadline 也不能超过总预算剩下的。
+        # 残局搜索睡满自己的 ACT_ENDGAME_BUDGET_S 秒、现场模拟再吃掉剩下的:比手数(最多 0.2 秒)也要在
+        # ACT_TOTAL_BUDGET_S 内收尾。模拟截止时间要先给比手数留出 0.2 秒,比手数的 deadline 也不能超过总预算剩下的。
         import endgame
         import server
         real_best, real_min_plays = endgame.best, endgame.min_plays
         seen = []
 
         def slow_best(*args, **kwargs):
-            time.sleep(1.5)
+            time.sleep(ACT_ENDGAME_BUDGET_S)
             return None
 
         def recording_min_plays(hand, deadline=None):
@@ -965,7 +1024,7 @@ class ActBudgetTest(unittest.TestCase):
                 elapsed = time.monotonic() - started
         finally:
             endgame.best, endgame.min_plays = real_best, real_min_plays
-        self.assertLess(elapsed, 3.5)
+        self.assertLess(elapsed, ACT_TOTAL_BUDGET_S + 0.15)
         self.assertTrue(seen, "模拟没换手时应该比手数")
         called_at, deadline = seen[0]
         self.assertGreater(deadline - called_at, 0.1, "模拟截止时间要给比手数留出余量")

@@ -113,13 +113,19 @@ HALVING_MIN_ROUND_GAMES = 12
 # 一手牌总共只给这么多秒:手机 /act 最多等 4 秒(连接 2 秒 + 读 4 秒,失败还重试一次),超了就当服务挂了。
 # 2026-11-16 12:18:11 土豪场,我是地主下家,手里 A 5 4 4 4,三家还剩 19 张:残局搜索先花掉 1.5 秒没结论,
 # 现场模拟又打满 2.5 秒,回复 4903 毫秒;手机 4 秒超时,标成 douzero_unreachable 重发同一手,三次各约 4020 毫秒,
-# 最后按简单规则打完这一局。所以从 Agent.act 进来起总共只给 3.2 秒,残局搜索、两手出完、现场模拟、比手数都在这一个预算里分:
-# 残局搜索最多 ACT_ENDGAME_BUDGET_S 秒(原来就是 1.5),现场模拟用 min(2.5, 剩下的 − 0.1 − 比手数的 0.2) 秒,
+# 最后按简单规则打完这一局。所以从 Agent.act 进来起总共只给 3.5 秒(手机端读超时 4 秒,留 0.5 秒网络余量),
+# 残局搜索、两手出完、现场模拟、比手数都在这一个预算里分:
+# 残局搜索最多 ACT_ENDGAME_BUDGET_S 秒,现场模拟用 min(2.5, 剩下的 − 0.1 − 比手数的 0.2) 秒,
 # 剩下的不到 ACT_ROLLOUT_MIN_S 就整个不模拟,直接听 DouZero 的。
-ACT_TOTAL_BUDGET_S = 3.2
+ACT_TOTAL_BUDGET_S = 3.5
 ACT_BUDGET_SAFETY_S = 0.1
 ACT_ROLLOUT_MIN_S = 0.8
-ACT_ENDGAME_BUDGET_S = 1.5
+# 残局搜索的时限要够把几百种分法(带 likelihood)算完:2026-11-17 12:14:32 精英场,我是地主上家(农民),
+# 手里 SJ A J 7 6 6 5,地主剩 6 张、队友剩 5 张,分法 462 种。本机(Apple M3 Max / macOS 26.7.2 / Python 3.14 venv)
+# 带 likelihood 实测 1.58~1.84 秒(6 次);原来给 1.5 秒,1.51 秒超时返回 None,退回模拟按均匀发牌出了 J,
+# 可明牌求解只有 6 6 能赢。给 2.5 秒,比实测最慢的 1.84 秒还多 0.66 秒;扣掉搜索,剩下的 1.0 秒还在
+# ACT_ROLLOUT_MIN_S 之上,现场模拟不会被整个跳过。
+ACT_ENDGAME_BUDGET_S = 2.5
 # 残局分法似然:每家对手取最近 [LIKELIHOOD_MOVES] 手不是不出的出牌,各手概率相乘。取 2 是因为
 # 2026-11-16 20:51:41 土豪场那一手,下家倒数第二手 10 10 10 + Q:如果手里还留着 4、9 这种低单张,
 # 正常会拿小牌当带牌而不是 Q。只看最近一手 7 7 看不出这点,两手里的三带一才把「剩零散小牌」的分法压下去。
@@ -693,7 +699,7 @@ class Agent:
         values = self.values(infoset)
         move = infoset.legal_actions[int(torch.argmax(values))]
         # 剩的牌少时按明牌把各种分法算到底:有赢面更大的一手就换成它(赢面一样大的里挑 DouZero 打分最高的)。
-        # 下面几条硬规则只在搜索也认为不吃亏时才换。搜索最多 1.5 秒,总预算不够时只给剩下的
+        # 下面几条硬规则只在搜索也认为不吃亏时才换。搜索最多 ACT_ENDGAME_BUDGET_S 秒,总预算不够时只给剩下的
         left_s = deadline - time.monotonic()
         solved = endgame.best(infoset, budget=min(ACT_ENDGAME_BUDGET_S, left_s), likelihood=likelihood) \
             if left_s > 0 else None
@@ -842,11 +848,12 @@ class Agent:
             sampler_deadline = time.monotonic() + budget
             sampler = lambda: self.advisor.sample_hands(  # noqa: E731
                 infoset, rng, auction, deadline=sampler_deadline)
+        # 局数上限显式传 ACT_ROLLOUT_GAMES:留作默认参数会被 def 时绑死,测试里改常量就不生效了
         wins, played, rounds, finalists = successive_halving(
             keys, own, scores, sampler,
             lambda hands, k: self.play_out(hands, infoset.three_landlord_cards, history,
                                            infoset.player_position, by_key[k]),
-            budget)
+            budget, cap=ACT_ROLLOUT_GAMES)
         games = min(played[k] for k in finalists)
         if games == 0:
             return None
