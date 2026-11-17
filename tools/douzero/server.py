@@ -712,6 +712,7 @@ class Agent:
             if wins.get(tuple(sorted(move)), 0) < top:
                 move = list(max(allowed, key=score.get))
                 return self.swap_high_kickers(infoset, move, ok=lambda m: tuple(sorted(m)) in allowed)
+        mate = {"landlord_down": "landlord_up", "landlord_up": "landlord_down"}.get(infoset.player_position)
         if solved is None:
             # 剩的牌多、搜不动:自己能两手出完、第一手很难被压时,先出那手再出完(DouZero 偶尔先出一张会被王压的单张)
             others = [p for p in endgame.SEATS if p != infoset.player_position]
@@ -720,14 +721,26 @@ class Agent:
             quick = endgame.finish_in_two(tuple(sorted(infoset.player_hand_cards)), infoset.legal_actions, rival,
                                           sorted(infoset.other_hand_cards), left[others[0]], left[others[1]],
                                           deadline=deadline - ACT_BUDGET_SAFETY_S)
+            # 桌上那手是队友出的:捷径不能直接压他,把它和「不出」一起交给下面的现场模拟比;地主没有队友,照旧走捷径
+            forced = None
             if quick is not None and tuple(sorted(move)) != quick[0]:
-                return list(quick[0])
+                if mate and infoset.last_pid == mate and [] in infoset.legal_actions:
+                    forced = [list(quick[0]), []]
+                else:
+                    return list(quick[0])
             # 分数只差一点点时,现场按看得见的牌模拟几百局再定;模拟了就以它为准,不再走下面那条不拆牌的规则
-            rolled = self.close_rollout(infoset, values, move, deadline, report, auction) if self.rollout else None
+            rolled = self.close_rollout(infoset, values, move, deadline, report, auction, required=forced) \
+                if self.rollout else None
             if rolled is not None:
                 move, info = rolled
                 if report is not None:
                     report["rollout"] = info
+                # 局数不到下限,模拟不算数:不压队友
+                if forced is not None and info["games"] < info["min_games"]:
+                    move = []
+            elif forced is not None:
+                # 时间不够、模拟整个跳过:同样不压队友,也不退回捷径
+                move = []
             else:
                 # 分数几乎一样的几手里优先不拆牌:DouZero 常常随手拆三条、对子去顶一张小牌
                 move = self.keep_combos(infoset, values, move)
@@ -741,7 +754,6 @@ class Agent:
                 move = infoset.legal_actions[max(beats, key=lambda i: float(values[i]))]
         # 桌上是队友的牌、队友只剩三张以内:不去压他(自己这手出完就赢的除外),让他接着出完。DouZero 残局偶尔会拿王压队友的 2,
         # 自己接过来再出单张,让只剩一张的地主走了
-        mate = {"landlord_down": "landlord_up", "landlord_up": "landlord_down"}.get(infoset.player_position)
         if move and mate and infoset.last_pid == mate and infoset.num_cards_left_dict[mate] <= 3 \
                 and len(move) < len(infoset.player_hand_cards) and [] in infoset.legal_actions and ok([]):
             move = []
@@ -791,8 +803,11 @@ class Agent:
                 best, best_score = action, score
         return move if best is None else best
 
-    def close_rollout(self, infoset, values, move, deadline=None, report=None, auction=None):
+    def close_rollout(self, infoset, values, move, deadline=None, report=None, auction=None, required=None):
         """顶两手的分数差不到 CLOSE_MARGIN 时,按看得见的牌随机发一批牌,每一手都用 DouZero 打分打到完,比赢面。
+
+        [required] 是必须放进候选的几手(桌上是队友的牌时,两手出完那手和「不出」):不管分差、牌型都塞进来,
+        其余候选仍按原来的方式挑;不在合法出牌里的跳过。
 
         后半局(三家手里合起来不超过 LATE_CARDS 张)不管分差多大都模拟:每种牌型先留 DouZero 分数最高的一手,
         名额还有剩再按分数补满 LATE_TOP 手(见 late_picks)。
@@ -820,6 +835,10 @@ class Agent:
         late = sum(infoset.num_cards_left_dict.values()) <= LATE_CARDS
         picks = late_picks(order, infoset.legal_actions) if late \
             else [i for i in order if top - float(values[i]) < CLOSE_MARGIN][:CLOSE_TOP]
+        if required:
+            index = {tuple(sorted(a)): i for i, a in enumerate(infoset.legal_actions)}
+            forced = [index[k] for k in (tuple(sorted(m)) for m in required) if k in index]
+            picks += [i for i in forced if i not in picks]
         if len(picks) < 2:
             return None
         # 总预算快用完了:模拟来不及打满下限,不如直接听 DouZero 的,别让手机等到超时
