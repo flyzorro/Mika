@@ -334,9 +334,9 @@ internal object PhoneDdzTurn : PhoneTool {
     }
 
     /**
-     * 地主加倍时摆开的底牌认不全(还没翻出来、或者只认出两张),用叫分时记下的 17 张反推:
+     * 地主加倍时的底牌,用叫分时记下的 17 张反推(比认摆开的底牌可靠,画面认全了也会认错):
      * 20 张手牌按点数减去那 17 张,正好剩 3 张才是这三张底牌。叫分那副牌里有一张 20 张里没有的
-     * (不是同一副牌)、或者剩下的不是 3 张,都不补,照原来的路继续读帧。农民 17 张不补。
+     * (不是同一副牌)、或者剩下的不是 3 张,返回 null,改用画面认的。农民 17 张不补。
      */
     private fun bidBottom(hand: List<String>?, bidHand: List<String>?): List<String>? {
         if (hand == null || hand.size != 20 || bidHand == null) return null
