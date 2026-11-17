@@ -76,6 +76,15 @@ class DdzDoubleBadgeTest {
         restore(DdzSeat.Me, listOf("J", "9", "3"), emptyList(), current = DdzSeat.Me)
     }
 
+    /** 我是地主、第一手已经出过:左家刚出 10 10 10 3,右家不出,轮到我(和 human_left_10_10_10_3 的画面一致)。 */
+    private fun landlordMeAfterFirstPlay() = DdzTracker(DdzSettlingPolicy.HUMAN).apply {
+        restore(
+            DdzSeat.Me, listOf("J", "9", "3"),
+            listOf(emptyList(), emptyList(), listOf("10", "10", "10", "3"), emptyList()),
+            current = DdzSeat.Me,
+        )
+    }
+
     /** 左家是地主(素材里的局面):左家是 landlord,右家是 landlord_up。 */
     private fun leftLandlordTracker() = DdzTracker(DdzSettlingPolicy.HUMAN).apply {
         restore(DdzSeat.Left, listOf("J", "9", "3"), emptyList(), current = DdzSeat.Me)
@@ -233,16 +242,48 @@ class DdzDoubleBadgeTest {
         assertEquals("左家: $double", false, double["landlord_down"]!!.jsonPrimitive.boolean)
     }
 
-    @Test fun aBadgeThatShowsUpAfterTheFirstPlayIsStillConfirmed() = runTest {
-        // follow 素材:已经在出牌阶段、标签还在。第一手出来后先把「没有」定下来,后面又看到标签仍要改成 true。
+    @Test fun aBadgeThatLingersAfterTheFirstPlayDoesNotChangeTheAuction() = runTest {
+        // follow 素材:已经在出牌阶段、标签还在。第一手出来时先把两家都定成「没有」,之后就定下来了:
+        // 后面这帧即使还认得出右家的标签,也不能再把读数改掉(2026-11-17 15:20 的顺子特效就是这样误报的)。
         val first = withoutButtons(tableWithBadges("double_badge_none"))
         assertTrue("构造:第一帧还是牌桌", DdzCards.classicHumanTable(first))
         assertEquals("构造:第一帧没有按钮", DdzPhase.Other, DdzScreen.read(first, classic = true).phase)
-        val (asked, result) = askAt(tableWithBadges("double_badge_right_follow"), rightLandlordTracker(), first = first)
+        val (asked, result) = askAt(tableWithBadges("double_badge_right_follow"), landlordMeAfterFirstPlay(), first = first)
         assertTrue("要问 DouZero: ${result.content}", asked.isNotEmpty())
         val double = Json.parseToJsonElement(asked.first()).jsonObject["auction"]!!.jsonObject["double"]!!.jsonObject
-        assertEquals("右家后来看到标签: $double", true, double["landlord"]!!.jsonPrimitive.boolean)
-        assertEquals("左家一直没标签: $double", false, double["landlord_down"]!!.jsonPrimitive.boolean)
+        assertEquals("第一手以后右家的读数就定了: $double", false, double["landlord_down"]!!.jsonPrimitive.boolean)
+        assertEquals("左家一直没标签: $double", false, double["landlord_up"]!!.jsonPrimitive.boolean)
+    }
+
+    @Test fun aStraightEffectAfterTheFirstPlayDoesNotChangeTheAuction() = runTest {
+        // 真机 2026-11-17 15:20 精英场:开局两家都没加倍,第一手已经出了;快结束时右家出一条顺子,
+        // 金红色的「顺子」特效正好压在右家头像下沿,被认成加倍标签。第一手出来以后读数就定了,后面的帧不能再改。
+        val asked = mutableListOf<String>()
+        val saved = PhoneDdzTurn.advise
+        PhoneDdzTurn.advise = { _, body -> asked += body; """{"play":[]}""" }
+        try {
+            val table = tableWithBadges("double_badge_none")
+            val straight = tableWithBadges("right_straight_effect_after_first_play")
+            assertEquals(
+                "构造:顺子特效压在右家头像下沿,单看这一帧会认成有标签: ${DdzCards.doubleBadges(straight)}",
+                true, DdzCards.doubleBadges(straight)[DdzSide.Right],
+            )
+            val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(table, table, withoutButtons(table), straight)))
+            val dispatcher = toolDispatcher(game)
+            PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement(
+                """{"action":"start","mode":"human","advisor":"http://mac:3426"}"""
+            ).jsonObject), dispatcher.ctx)
+            PhoneDdzTurn.useTracker(dispatcher.ctx, landlordMeAfterFirstPlay())
+            val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement(
+                """{"action":"start","mode":"human","auto":true,"advisor":"http://mac:3426"}"""
+            ).jsonObject), dispatcher.ctx)
+            assertTrue("要问 DouZero: ${result.content} $asked", asked.isNotEmpty())
+            val double = Json.parseToJsonElement(asked.first()).jsonObject["auction"]!!.jsonObject["double"]!!.jsonObject
+            assertEquals("第一手以后右家的读数定了,不能被顺子特效改成加倍: $double", false, double["landlord_down"]!!.jsonPrimitive.boolean)
+            assertEquals("左家没加倍: $double", false, double["landlord_up"]!!.jsonPrimitive.boolean)
+        } finally {
+            PhoneDdzTurn.advise = saved
+        }
     }
 
     @Test fun theRedAvatarDoesNotSendALandlordUpDouble() = runTest {
