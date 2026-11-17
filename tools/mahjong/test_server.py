@@ -437,12 +437,24 @@ class HintImageTest(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(body["error"], "unsupported_screen")
 
-    def test_a_jpeg_is_bad_image_even_at_the_right_size(self):
-        buffer = io.BytesIO()
-        Image.new("RGB", (2412, 1080), (0, 0, 0)).save(buffer, format="JPEG")
-        status, body = hint_bytes(buffer.getvalue())
-        self.assertEqual(status, 200)
-        self.assertEqual(body["error"], "bad_image")
+    def test_other_formats_are_bad_image(self):
+        for fmt in ("GIF", "BMP"):
+            with self.subTest(fmt=fmt):
+                buffer = io.BytesIO()
+                Image.new("RGB", (2412, 1080), (0, 0, 0)).save(buffer, format=fmt)
+                status, body = hint_bytes(buffer.getvalue())
+                self.assertEqual(status, 200)
+                self.assertEqual(body["error"], "bad_image")
+
+    def test_portrait_and_split_screens_are_unsupported(self):
+        for size in ((1080, 2412), (2412, 1200)):
+            for fmt in ("PNG", "JPEG"):
+                with self.subTest(size=size, fmt=fmt):
+                    buffer = io.BytesIO()
+                    Image.new("RGB", size, (0, 0, 0)).save(buffer, format=fmt)
+                    status, body = hint_bytes(buffer.getvalue())
+                    self.assertEqual(status, 200)
+                    self.assertEqual(body["error"], "unsupported_screen")
 
     def test_lobby_and_settlement_are_wait(self):
         for name in ("shots_204245", "shots_205135"):
@@ -705,3 +717,31 @@ class HintWinTest(unittest.TestCase):
         self.assertEqual(body["que"], "s")
         self.assertEqual(body["draws"], 10)
         self.assertNotIn("advice", body)
+
+
+class HintJpegTest(unittest.TestCase):
+    def test_every_fixture_as_jpeg_matches_the_png_result(self):
+        with open(os.path.join(FIXTURES, "labels.json"), encoding="utf-8") as file:
+            labels = json.load(file)
+        for name, label in labels.items():
+            if name.startswith("_"):
+                continue
+            with self.subTest(name=name):
+                buffer = io.BytesIO()
+                load_frame(name).save(buffer, format="JPEG", quality=85)
+                status, body = hint_bytes(buffer.getvalue())
+                self.assertEqual(status, 200)
+                self.assertEqual(body["state"], label["state"])
+                for key in ("hand", "melds", "que", "left"):
+                    if key in label:
+                        self.assertEqual(body[key], label[key], key)
+                if "jian" in label:
+                    self.assertEqual(body.get("jian"), label["jian"])
+
+    def test_jpeg_is_accepted_at_the_right_size(self):
+        buffer = io.BytesIO()
+        load_frame("shots_204809").save(buffer, format="JPEG", quality=85)
+        status, body = hint_bytes(buffer.getvalue())
+        self.assertEqual(status, 200)
+        self.assertEqual(body["state"], "turn")
+        self.assertEqual(body["hand"][0], "1m")

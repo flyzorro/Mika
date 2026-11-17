@@ -34,7 +34,7 @@ POST /que
   value 同样是每门做固定种子蒙特卡洛得到的(draws≤14 70 局,>14 50 局)。
 
 POST /hint
-  {"image": "<2412×1080 整屏 PNG 的 base64>"}   # JJ麻将主屏截图
+  {"image": "<2412×1080 整屏 PNG 或 JPEG 的 base64>"}   # JJ麻将主屏截图,按文件头识别
 成功 state 取 turn / win / que_select / wait / unsure:
   turn:       {"state":"turn","hand":[...],"melds":[...],"que":"p","left":31,"draws":8,
                "jian":"9s"或 null,"advice":{…/discard 的返回…}}
@@ -47,12 +47,13 @@ POST /hint
               # 认不出就不给建议;认不出的牌面存进 unsure/,方便以后补模板
   draws = max(1, ⌈left ÷ 4⌉),即自己还能摸几张。
   手牌张数 + 3 × 碰杠组数 = 14 且没胡才算 turn;之前(13 张)是 wait。
-  手牌每张和 templates/hand/ 的模板比 40×64 归一化点积,≥0.95 才算认出;
+  手牌每张和 templates/hand/ 的模板比 40×64 归一化点积(BILINEAR),≥0.95 才算认出;
   自己的碰杠用 templates/meld/,牌墙剩余用 templates/digit/,定缺角标用
   templates/que/。只支持这台手机的 2412×1080 横屏。
 
 /hint 错误(HTTP 200,同第一期约定):
   {"error": "bad_image" | "unsupported_screen", "detail": "人话"}
+  # 不是 PNG/JPEG(按文件头)或解不开 → bad_image;不是 2412×1080 → unsupported_screen
 
 校验错误(HTTP 200,安卓端把非 2xx 当成连不上):
   {"error": "bad_tile" | "bad_que" | "bad_meld" | "not_drawn" | "wrong_count"
@@ -73,7 +74,7 @@ from math import comb
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageFilter
 from mahjong.shanten import Shanten
 
 TILE_RE = re.compile(r"^([1-9])([mps])$")
@@ -787,7 +788,8 @@ MELD_COLUMN = 92
 
 
 def _feature(image, size=(40, 64)):
-    values = np.asarray(image.convert("RGB").resize(size, Image.LANCZOS), float).ravel()
+    # BILINEAR 比 LANCZOS 更抗 JPEG 的块效应(手牌最低分 0.9457 → 0.9570)。
+    values = np.asarray(image.convert("RGB").resize(size, Image.BILINEAR), float).ravel()
     values -= values.mean()
     return values / (np.linalg.norm(values) + 1e-9)
 
@@ -800,14 +802,21 @@ def _load_features(pattern, size=(40, 64)):
     return table
 
 
+def _digit_feature(image):
+    if isinstance(image, np.ndarray):
+        image = Image.fromarray(image.astype("uint8"))
+    image = image.convert("L").filter(ImageFilter.GaussianBlur(0.6)).resize((16, 24), Image.BILINEAR)
+    values = np.asarray(image, float).ravel()
+    values -= values.mean()
+    return values / (np.linalg.norm(values) + 1e-9)
+
+
 def _load_digits():
     table = {}
-    for path in sorted(glob.glob(os.path.join(TEMPLATE_DIR, "digit", "*.png"))):
-        name = os.path.splitext(os.path.basename(path))[0]
-        image = Image.open(path).convert("L")
-        values = np.asarray(image, float).ravel()
-        values -= values.mean()
-        table.setdefault(name[0], []).append(values / (np.linalg.norm(values) + 1e-9))
+    for pattern in (os.path.join("digit", "*.png"), os.path.join("digit_jpeg", "*.png")):
+        for path in sorted(glob.glob(os.path.join(TEMPLATE_DIR, pattern))):
+            name = os.path.splitext(os.path.basename(path))[0]
+            table.setdefault(name[0], []).append(_digit_feature(Image.open(path)))
     return table
 
 
@@ -833,13 +842,19 @@ def _decode_screen(value):
         raw = base64.b64decode(value, validate=True)
     except (ValueError, TypeError):
         raise RequestError("bad_image", "image 不是合法的 base64") from None
+    if raw.startswith(b"\x89PNG\r\n\x1a\n"):
+        expected_format = "PNG"
+    elif raw.startswith(b"\xff\xd8\xff"):
+        expected_format = "JPEG"
+    else:
+        raise RequestError("bad_image", "只认 PNG 或 JPEG(按文件头判断)")
     try:
         image = Image.open(io.BytesIO(raw))
         image.load()
     except Exception:
         raise RequestError("bad_image", "图片解不开") from None
-    if image.format != "PNG":
-        raise RequestError("bad_image", f"只认 PNG，收到 {image.format}")
+    if image.format != expected_format:
+        raise RequestError("bad_image", f"文件头和实际格式不一致：{image.format}")
     if image.size != SCREEN_SIZE:
         raise RequestError(
             "unsupported_screen", f"只支持 {SCREEN_SIZE[0]}×{SCREEN_SIZE[1]}，收到 {image.width}×{image.height}"
@@ -1002,66 +1017,90 @@ def _dilate(mask):
     return out
 
 
+def _components(mask):
+    """8 连通域;绿框顶边的白条和数字会各成一块。"""
+    height, width = mask.shape
+    seen = np.zeros_like(mask, bool)
+    found = []
+    for y in range(height):
+        for x in range(width):
+            if not mask[y, x] or seen[y, x]:
+                continue
+            stack = [(y, x)]
+            seen[y, x] = True
+            points = []
+            while stack:
+                cy, cx = stack.pop()
+                points.append((cy, cx))
+                for dy in (-1, 0, 1):
+                    for dx in (-1, 0, 1):
+                        ny, nx = cy + dy, cx + dx
+                        if 0 <= ny < height and 0 <= nx < width and mask[ny, nx] and not seen[ny, nx]:
+                            seen[ny, nx] = True
+                            stack.append((ny, nx))
+            found.append(points)
+    return found
+
+
 def _left_digits(array):
-    """左上角绿框里的白色数字,按列切成 1–2 个字形。"""
-    red, green, blue = array[..., 0], array[..., 1], array[..., 2]
-    box = (green > 130) & (green - red > 50) & (green - blue > 50)
-    box[:20] = False
-    box[100:] = False
-    box[:, :340] = False
-    box[:, 450:] = False
-    ys, xs = np.where(box)
-    if len(xs) < 300:
+    """左上角绿框里的数字,按连通域切成 1–2 个灰度字形。
+
+    绿框固定在这台手机的 x 375–408、y 34–80;用带边距的固定窗口,不跟 JPEG
+    把绿框撑大的 1px 走。数字用连通域分,不靠列投影 —— 个位的 0/7 中间会断。
+    """
+    digits = array[36:76, 370:412]
+    red, green, blue = digits[..., 0], digits[..., 1], digits[..., 2]
+    if int(((green > 130) & (green - red > 50) & (green - blue > 50)).sum()) < 300:
         return None
-    x0, x1, y0, y1 = int(xs.min()), int(xs.max()) + 1, int(ys.min()), int(ys.max()) + 1
-    digits = array[y0:y1, x0:x1]
-    white = (digits.min(axis=2) > 150) & ((digits.max(axis=2) - digits.min(axis=2)) < 40)
-    white[:, :3] = False  # 绿框左边 1px 的白边
-    columns = _dilate(white).mean(axis=0) > 0.05
-    runs = []
-    start = None
-    for index, on in enumerate(columns):
-        if on and start is None:
-            start = index
-        if not on and start is not None:
-            runs.append((start, index))
-            start = None
-    if start is not None:
-        runs.append((start, len(columns)))
-    runs = [run for run in runs if run[1] - run[0] >= 3]
-    if not runs or len(runs) > 2:
+    gray = digits.min(axis=2)
+    white = gray > 150
+    white[:, :5] = False  # 固定窗口左边 5px 是绿框的边
+    boxes = []
+    for points in _components(white):
+        if len(points) < 8:
+            continue
+        xs = [point[1] for point in points]
+        ys = [point[0] for point in points]
+        if max(ys) <= 12:  # 绿框顶边的白条
+            continue
+        boxes.append([min(xs), max(xs) + 1, min(ys), max(ys) + 1])
+    # 同一个数字裂成几块(例如 4 的竖和斜)时按 x 重叠合并;两个数字不会重叠。
+    while True:
+        merged = False
+        for i in range(len(boxes)):
+            for j in range(i + 1, len(boxes)):
+                first, second = boxes[i], boxes[j]
+                if first[0] <= second[1] + 1 and second[0] <= first[1] + 1:
+                    boxes[i] = [min(first[0], second[0]), max(first[1], second[1]),
+                                min(first[2], second[2]), max(first[3], second[3])]
+                    del boxes[j]
+                    merged = True
+                    break
+            if merged:
+                break
+        if not merged:
+            break
+    boxes.sort(key=lambda box: box[0])
+    if not 1 <= len(boxes) <= 2:
         return None
-    glyphs = []
-    for run0, run1 in runs:
-        glyph = white[:, run0:run1]
-        rows = np.where(glyph.mean(axis=1) > 0.1)[0]
-        if len(rows) < 8:
-            return None
-        glyph = glyph[rows[0]:rows[-1] + 1]
-        cols = np.where(glyph.mean(axis=0) > 0.05)[0]
-        glyphs.append(glyph[:, cols.min():cols.max() + 1])
-    return glyphs
+    return [gray[y0:y1, x0:x1] for x0, x1, y0, y1 in boxes]
 
 
 def _read_left(array):
-    """牌墙剩余:逐位和 templates/digit/ 的 0–9 小模板比;个位数渲染略小,阈值放宽。"""
+    """牌墙剩余:逐位和 digit/、digit_jpeg/ 的 0–9 灰度模板比。"""
     glyphs = _left_digits(array)
     if glyphs is None:
         return None
-    threshold = 0.75 if len(glyphs) == 1 else DIGIT_MATCH
     value = ""
     for glyph in glyphs:
-        small = Image.fromarray((glyph * 255).astype("uint8")).resize((16, 24), Image.LANCZOS)
-        values = np.asarray(small, float).ravel()
-        values -= values.mean()
-        values /= np.linalg.norm(values) + 1e-9
+        feature = _digit_feature(glyph)
         score, digit = 0.0, None
         for candidate, templates in DIGIT_TEMPLATES.items():
             for template in templates:
-                current = float(values @ template)
+                current = float(feature @ template)
                 if current > score:
                     score, digit = current, candidate
-        if score < threshold:
+        if score < DIGIT_MATCH:
             return None
         value += digit
     return int(value)
