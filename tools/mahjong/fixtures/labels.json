@@ -418,5 +418,56 @@
  },
  "shots5_110926_0050": {
   "state": "wait"
+ },
+ "shots5_145239_0051": {
+  "state": "turn",
+  "hand": [
+   "6m",
+   "6m",
+   "8m",
+   "2p",
+   "2p",
+   "2p",
+   "6p",
+   "2m"
+  ],
+  "melds": [
+   {
+    "type": "kan",
+    "tile": "7m"
+   },
+   {
+    "type": "kan",
+    "tile": "5p"
+   }
+  ],
+  "que": "s",
+  "left": 25,
+  "jian": null
+ },
+ "shots_204945": {
+  "state": "wait",
+  "hand": [
+   "6s",
+   "6s",
+   "7s",
+   "7s"
+  ],
+  "melds": [
+   {
+    "type": "pon",
+    "tile": "7m"
+   },
+   {
+    "type": "kan",
+    "tile": "8m"
+   },
+   {
+    "type": "pon",
+    "tile": "8s"
+   }
+  ],
+  "que": "p",
+  "left": 0
  }
 }

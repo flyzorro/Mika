@@ -767,7 +767,7 @@ def advise_que(hand, draws=None):
 
 # ---- /hint:识别一张 2412×1080 的主屏截图 ----
 # 手牌区右对齐到 x=2004,每张宽 123.5px;刚摸的那张单独在 x=2043–2166。
-# 手牌和模板比 40×64 的归一化点积,>= 0.95 才算认出;自己的碰杠、牌墙剩余、
+# 手牌和模板比 40×64 的归一化点积,>= 0.90 才算认出;自己的碰杠、牌墙剩余、
 # 定缺角标和「荐」都用同一套模板/几何。认不出返回 unsure,并把牌面存进 unsure/。
 SCREEN_SIZE = (2412, 1080)
 HAND_RIGHT = 2004.0
@@ -775,9 +775,11 @@ HAND_PITCH = 123.5
 DRAWN_X = (2043.0, 2166.0)
 HAND_TOP, HAND_BOTTOM = 820, 1075
 HAND_FACE_TOP, HAND_FACE_BOTTOM = 885, 1057
-HAND_MATCH = 0.95
+# 0.90 实测选的:发黄光/带黄点的牌最低 0.912(4m),真牌最低 0.903;
+# 空槽/桌面最高 0.515,留 0.38 余量。0.95 会把这些 0.912–0.941 的牌漏成 unsure。
+HAND_MATCH = 0.90
 # 有没有牌不再看「牌面比桌布亮」,而是看固定格子里的模板得分:
-# 正常牌 ≥0.95;空格子/桌面最高 0.52(新手场 0.21、500 场 0.26、结算 0.52)。
+# 正常牌 ≥0.90;空格子/桌面最高 0.52(新手场 0.21、500 场 0.26、结算 0.52)。
 # 抬起的牌按 0–60px 上下搜索;玩家点选的那张实测抬 52px,碰/过提示抬 30px。
 HAND_LIFT_MAX = 60
 HAND_PRESENT = 0.60
@@ -793,6 +795,9 @@ MELD_GROUP_X = 456
 MELD_GROUP_STEP = 320
 MELD_GROUP_WIDTH = 276
 MELD_COLUMN = 92
+# 暗杠抬起那张牌的牌面顶边固定在 y≈878；淡紫灰桌布上方的高光也会过白色掩码，
+# 所以行范围从牌面顶边开始找，不把桌布算进牌面（绿桌布、紫灰桌布切出同样的框）。
+MELD_ANKONG_FACE_TOP = 870
 
 
 def _feature(image, size=(40, 64)):
@@ -971,6 +976,7 @@ def _recognize_melds(image, array, hand_start):
                 continue
             left_x, right_x = start + 40 + int(xs.min()), start + 40 + int(xs.max()) + 1
             rows = white[:, xs.min():xs.max() + 1].mean(axis=1) > 0.5
+            rows[:MELD_ANKONG_FACE_TOP - 820] = False
             ys = np.where(rows)[0]
             if not len(ys):
                 melds.append(None)
@@ -1212,6 +1218,12 @@ def advise_hint(image_value):
         fields["left"] = left
     if total == 14:
         if any(meld is None for meld in melds):
+            for index, meld in enumerate(melds):
+                if meld is not None:
+                    continue
+                start = MELD_GROUP_X + MELD_GROUP_STEP * index
+                _save_unsure(image.crop((start + 6, 921, start + 86, 1026)), "meld")
+            _save_unsure(image, "meld_frame")
             return {"state": "unsure", "reason": "meld"}
         if que is None:
             return {"state": "unsure", "reason": "que"}

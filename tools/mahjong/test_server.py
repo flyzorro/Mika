@@ -3,6 +3,7 @@ import base64
 import io
 import json
 import os
+import tempfile
 import threading
 import time
 import unittest
@@ -542,6 +543,8 @@ class HintMeldTest(unittest.TestCase):
             "shots4_212841_0033": [{"type": "kan", "tile": "7m"}],
             "shots4_212820_0023": [{"type": "kan", "tile": "7m"}],
             "shots_205128": [{"type": "kan", "tile": "1m"}, {"type": "kan", "tile": "4m"}],
+            # 500 场紫灰桌布:两个暗杠(七萬、五筒)都要切出和绿桌布一样的牌面。
+            "shots5_145239_0051": [{"type": "kan", "tile": "7m"}, {"type": "kan", "tile": "5p"}],
         }
         for name, melds in cases.items():
             with self.subTest(name=name):
@@ -563,6 +566,12 @@ class HintMeldTest(unittest.TestCase):
                 "hand": ["1m", "2m", "3m", "4m", "5m", "6m", "1s", "3s", "5s", "1p"],
                 "melds": [{"type": "kan", "tile": "7m"}], "que": "p", "left": 47,
             },
+            "shots_204945": {
+                "hand": ["6s", "6s", "7s", "7s"],
+                "melds": [{"type": "pon", "tile": "7m"}, {"type": "kan", "tile": "8m"},
+                          {"type": "pon", "tile": "8s"}],
+                "que": "p", "left": 0,
+            },
         }
         for name, expected in cases.items():
             with self.subTest(name=name):
@@ -571,6 +580,28 @@ class HintMeldTest(unittest.TestCase):
                 for key, value in expected.items():
                     self.assertEqual(body[key], value)
                 self.assertNotIn("advice", body)
+
+
+class HintUnsureMeldTest(unittest.TestCase):
+    def test_unreadable_meld_saves_face_and_full_frame(self):
+        templates = {name: value for name, value in server.MELD_TEMPLATES.items()
+                     if name != "flat_7m"}  # 没有 7m 碰的模板,这一组认不出
+        with Image.open(os.path.join(server.TEMPLATE_DIR, "meld", "flat_7m.png")) as template:
+            expected = template.size
+        with tempfile.TemporaryDirectory() as unsure_dir, \
+                mock.patch.object(server, "MELD_TEMPLATES", templates), \
+                mock.patch.object(server, "UNSURE_DIR", unsure_dir):
+            status, body = hint_frame("shots_204850")
+            self.assertEqual(status, 200)
+            self.assertEqual(body, {"state": "unsure", "reason": "meld"})
+            names = os.listdir(unsure_dir)
+            faces = [name for name in names if name.endswith("_meld.png")]
+            frames = [name for name in names if name.endswith("_meld_frame.png")]
+            self.assertEqual(len(faces), 1)  # 每组认不出的碰杠各存一张牌面
+            self.assertEqual(len(frames), 1)  # 整屏存一张,方便查为什么没读出来
+            for name, size in ((faces[0], expected), (frames[0], (2412, 1080))):
+                with Image.open(os.path.join(unsure_dir, name)) as saved:
+                    self.assertEqual(saved.size, size)
 
 
 class HintQueSelectTest(unittest.TestCase):
@@ -706,7 +737,9 @@ class HintUnsureReasonTest(unittest.TestCase):
         image.paste(image.crop((x0, 921, x1, 1026)).transpose(Image.FLIP_LEFT_RIGHT), (x0, 921))
         buffer = io.BytesIO()
         image.save(buffer, format="PNG")
-        _, body = hint_bytes(buffer.getvalue())
+        with tempfile.TemporaryDirectory() as unsure_dir, \
+                mock.patch.object(server, "UNSURE_DIR", unsure_dir):
+            _, body = hint_bytes(buffer.getvalue())
         self.assertEqual(body, {"state": "unsure", "reason": "meld"})
 
 
@@ -767,3 +800,14 @@ class HandTemplateTest(unittest.TestCase):
         score, tile = _best(_feature(Image.open(path)), HAND_TEMPLATES)
         self.assertEqual(tile, "4s")
         self.assertGreaterEqual(score, HAND_MATCH, f"{score:.4f}")
+
+
+class HandNearMissTest(unittest.TestCase):
+    def test_glow_and_dot_crops_pass_the_accept_rule(self):
+        directory = os.path.join(FIXTURES, "near_miss")
+        for name in sorted(os.listdir(directory)):
+            expected = name.split("_")[0]
+            with self.subTest(name=name):
+                score, tile = _best(_feature(Image.open(os.path.join(directory, name))), HAND_TEMPLATES)
+                self.assertEqual(tile, expected)
+                self.assertGreaterEqual(score, HAND_MATCH, f"{score:.4f}")
