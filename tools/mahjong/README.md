@@ -96,7 +96,12 @@ curl -s http://127.0.0.1:3428/hint \
   碰杠认不出时也会存下那一组的牌面（可直接当 `templates/meld/flat_<tile>.png`）和整屏截图。
 
 `/hint` 的错误用 HTTP 200 + `{"error","detail"}`：图片解不开或格式不是 PNG/JPEG
-`bad_image`，分辨率不是 2412×1080 `unsupported_screen`。
+`bad_image`，分辨率不是 2412×1080 `unsupported_screen`。认图时出了异常返回 HTTP 500
+`{"error":"internal"}`，异常栈打进日志。
+
+**抓帧**：除了普通的 `wait`，每次 `/hint` 都把原图和回复存进 `captures/`（同名 `.png`/`.jpg`
++ `.json`），用来事后逐帧核对认错的牌。`wait` 只在认出的手牌 + 3×碰杠凑不成 13 张时存；
+出异常的帧 `.json` 里带 `traceback`。一局大约 20 帧、50MB，用完手动清。
 
 ### 认牌
 

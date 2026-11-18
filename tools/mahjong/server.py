@@ -72,6 +72,7 @@ import random
 import re
 import sys
 import time
+import traceback
 from math import comb
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -791,6 +792,7 @@ DIGIT_MATCH = 0.9
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 TEMPLATE_DIR = os.path.join(BASE_DIR, "templates")
 UNSURE_DIR = os.path.join(BASE_DIR, "unsure")
+CAPTURE_DIR = os.path.join(BASE_DIR, "captures")
 MELD_GROUP_X = 456
 MELD_GROUP_STEP = 320
 MELD_GROUP_WIDTH = 276
@@ -1166,6 +1168,33 @@ def _save_unsure(crop, reason):
         pass
 
 
+def _worth_capturing(reply):
+    # 「等待」只在认出的张数凑不成 13 时存(多半认错或漏了碰杠);其余回复都存
+    if reply.get("state") != "wait":
+        return True
+    if "hand" not in reply:
+        return False
+    return len(reply["hand"]) + 3 * len(reply.get("melds", [])) != 13
+
+
+def _capture(image_value, reply):
+    # 原图字节原样落盘 + 同名 .json 存回复,事后逐帧核对认错的牌
+    try:
+        raw = base64.b64decode(image_value, validate=True)
+    except (ValueError, TypeError):
+        return
+    ext = "jpg" if raw.startswith(b"\xff\xd8\xff") else "png"
+    stem = os.path.join(CAPTURE_DIR, f"{time.time_ns()}_{reply.get('state') or reply.get('error')}")
+    try:
+        os.makedirs(CAPTURE_DIR, exist_ok=True)
+        with open(f"{stem}.{ext}", "wb") as file:
+            file.write(raw)
+        with open(f"{stem}.json", "w", encoding="utf-8") as file:
+            json.dump(reply, file, ensure_ascii=False)
+    except OSError:
+        pass
+
+
 def _tile_at(records, slot):
     if slot is None:
         return None
@@ -1247,7 +1276,16 @@ def handle(body, path="/discard"):
     if not isinstance(body, dict):
         return 400, {"error": "bad_request", "detail": "请求体必须是 JSON 对象"}
     if path == "/hint":
-        return 200, advise_hint(body.get("image"))
+        try:
+            reply = advise_hint(body.get("image"))
+        except Exception:
+            trace = traceback.format_exc()
+            print(trace, file=sys.stderr, flush=True)
+            _capture(body.get("image"), {"error": "internal", "traceback": trace})
+            return 500, {"error": "internal"}
+        if _worth_capturing(reply):
+            _capture(body.get("image"), reply)
+        return 200, reply
     try:
         if path == "/que":
             return 200, advise_que(body["hand"], body.get("draws"))

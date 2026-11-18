@@ -414,6 +414,19 @@ FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures")
 FRAME_DIR = os.path.join(FIXTURES, "frames")
 
 
+def setUpModule():
+    # 测试里的 /hint 不往仓库目录的 captures/ 写图
+    global _CAPTURE_TMP, _CAPTURE_PATCH
+    _CAPTURE_TMP = tempfile.TemporaryDirectory()
+    _CAPTURE_PATCH = mock.patch.object(server, "CAPTURE_DIR", _CAPTURE_TMP.name, create=True)
+    _CAPTURE_PATCH.start()
+
+
+def tearDownModule():
+    _CAPTURE_PATCH.stop()
+    _CAPTURE_TMP.cleanup()
+
+
 def png_base64(path):
     with open(path, "rb") as file:
         return base64.b64encode(file.read()).decode()
@@ -811,3 +824,61 @@ class HandNearMissTest(unittest.TestCase):
                 score, tile = _best(_feature(Image.open(os.path.join(directory, name))), HAND_TEMPLATES)
                 self.assertEqual(tile, expected)
                 self.assertGreaterEqual(score, HAND_MATCH, f"{score:.4f}")
+
+
+class HintCaptureTest(unittest.TestCase):
+    """非「等待」的帧、数不对的等待帧、出异常的帧,原图和回复都存进 captures/,事后核对认错的牌。"""
+
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.patch = mock.patch.object(server, "CAPTURE_DIR", self.dir.name)
+        self.patch.start()
+
+    def tearDown(self):
+        self.patch.stop()
+        self.dir.cleanup()
+
+    def captured(self):
+        names = sorted(os.listdir(self.dir.name))
+        replies = [n for n in names if n.endswith(".json")]
+        images = [n for n in names if not n.endswith(".json")]
+        return replies, images
+
+    def test_turn_frame_is_saved_with_its_reply(self):
+        path = os.path.join(FRAME_DIR, "shots_204809.png")
+        _, body = hint_frame("shots_204809")
+        replies, images = self.captured()
+        self.assertEqual(len(replies), 1)
+        self.assertEqual(len(images), 1)
+        with open(os.path.join(self.dir.name, images[0]), "rb") as file, open(path, "rb") as original:
+            self.assertEqual(file.read(), original.read())
+        with open(os.path.join(self.dir.name, replies[0]), encoding="utf-8") as file:
+            self.assertEqual(json.load(file), body)
+
+    def test_plain_wait_is_not_saved(self):
+        _, body = hint_frame("shots_204857")
+        self.assertEqual(body["state"], "wait")
+        self.assertEqual(self.captured(), ([], []))
+
+    def test_wait_with_a_hand_that_does_not_add_up_is_saved(self):
+        reply = {"state": "wait", "hand": ["1m"] * 10, "melds": []}
+        with mock.patch.object(server, "advise_hint", return_value=reply):
+            code, body = hint_frame("shots_204857")
+        self.assertEqual((code, body), (200, reply))
+        replies, images = self.captured()
+        self.assertEqual((len(replies), len(images)), (1, 1))
+
+    def test_crash_is_saved_and_answered_500(self):
+        with mock.patch.object(server, "_scan_hand", side_effect=RuntimeError("boom")):
+            code, body = hint_frame("shots_204809")
+        self.assertEqual(code, 500)
+        self.assertEqual(body["error"], "internal")
+        replies, images = self.captured()
+        self.assertEqual(len(images), 1)
+        with open(os.path.join(self.dir.name, replies[0]), encoding="utf-8") as file:
+            self.assertIn("RuntimeError: boom", json.load(file)["traceback"])
+
+    def test_bad_image_saves_nothing(self):
+        code, body = handle({"image": "not base64!"}, "/hint")
+        self.assertEqual(body["error"], "bad_image")
+        self.assertEqual(self.captured(), ([], []))
