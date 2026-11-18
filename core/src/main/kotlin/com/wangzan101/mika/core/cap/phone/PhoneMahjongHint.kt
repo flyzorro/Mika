@@ -153,6 +153,8 @@ internal object PhoneMahjongHint : PhoneTool {
 
     /**
      * 持续看用户的主屏:只在前台是 JJ麻将时截图、发给 Mac 的 `/hint`,把建议闪到悬浮胶囊上。
+     * 第一次认出某一手就闪,不再等第二帧;同一手只闪一次,下一帧手牌变了再闪新的建议。
+     * 胶囊没显示、卡片展开着时闪不出来(`HintHud.flash` 返回 false),这一手不算闪过,下一帧接着试。
      * 循环里不调用模型、不点屏;用户插话时收尾,用户点停止时协程被取消(在 finally 里闪一句"已停止")。
      */
     private suspend fun watch(advisor: String, ctx: ToolContext): ToolExecution {
@@ -165,7 +167,6 @@ internal object PhoneMahjongHint : PhoneTool {
         var firstSeen: Long? = null
         var lastSeen = 0L
         var failures = 0
-        var pending: String? = null
         var hintedKey: String? = null
         var winFlashed = false
         var queHinted: String? = null
@@ -195,42 +196,33 @@ internal object PhoneMahjongHint : PhoneTool {
                                         winFlashed = false
                                         queHinted = null
                                         val key = root?.let(::frameKey)
-                                        if (key != null && key == pending && key != hintedKey) {
+                                        // 第一次认出这一手就闪;闪不出来(胶囊不在、卡片开着)就留着 key,
+                                        // 同一手下一帧再试,只在真的闪出来以后才记成已提示。
+                                        if (key != null && key != hintedKey) {
                                             val text = root?.let(::turnText)
-                                            if (text != null) {
-                                                hud.flash(text)
+                                            if (text == null) {
+                                                unsure++
+                                            } else if (hud.flash(text)) {
                                                 hinted++
                                                 hintedKey = key
-                                            } else {
-                                                unsure++
                                             }
                                         }
-                                        pending = key
                                     }
-                                    "win" -> {
-                                        pending = null
-                                        if (!winFlashed) {
-                                            hud.flash(WIN_TEXT)
-                                            hinted++
-                                            winFlashed = true
-                                        }
+                                    "win" -> if (!winFlashed && hud.flash(WIN_TEXT)) {
+                                        hinted++
+                                        winFlashed = true
                                     }
                                     "que_select" -> {
-                                        pending = null
                                         val text = root?.let(::queText)
                                         if (text == null) {
                                             unsure++
-                                        } else if (text != queHinted) {
-                                            hud.flash(text)
+                                        } else if (text != queHinted && hud.flash(text)) {
                                             hinted++
                                             queHinted = text
                                         }
                                     }
-                                    "unsure" -> {
-                                        pending = null
-                                        unsure++
-                                    }
-                                    else -> pending = null
+                                    "unsure" -> unsure++
+                                    else -> Unit
                                 }
                             }
                         }

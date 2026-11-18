@@ -767,9 +767,16 @@ class CapsuleController(
         }
     }
 
-    /** 从任务侧在胶囊上闪一句:胶囊不在屏幕上、或卡片展开着时不显示,返回 false。 */
+    /**
+     * 从任务侧在胶囊上闪一句:胶囊不在屏幕上、或卡片展开着时不显示,返回 false。
+     * 任务侧只在返回 true 时才算这一手提示过,false 时同一手下一帧再试。
+     */
     internal fun flashHint(text: String, ms: Long = 2_500L): Boolean {
-        if (view == null || expanded) return false
+        if (view == null || expanded) {
+            // 看屏提示闪不出来时留一条:真机上一眼看出是胶囊没显示还是卡片开着,否则这个返回值没人看得见。
+            Log.w(TAG, "watch hint dropped: capsule hidden=${view == null}, cardOpen=$expanded")
+            return false
+        }
         showNote(text, CapsuleKind.Running, opensMika = false, ms)
         return true
     }
