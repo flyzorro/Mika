@@ -1963,9 +1963,9 @@ internal object PhoneDdzTurn : PhoneTool {
         tracker.observe(
             seat, { DdzCards.play(frame, it) }, { DdzCards.bottom(frame) },
             view.phase == DdzPhase.Lead && view.handCount == 20, trackedLeading(view.phase, seat),
-        ) {
-            if (DdzCards.singleStageTable(frame)) DdzCards.counts(frame) else emptyMap()
-        }
+            counts = { if (DdzCards.singleStageTable(frame)) DdzCards.counts(frame) else emptyMap() },
+            hand = { DdzCards.hand(frame, view) },
+        )
     }
 
     /**

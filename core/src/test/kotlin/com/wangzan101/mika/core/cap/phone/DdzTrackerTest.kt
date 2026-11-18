@@ -25,6 +25,51 @@ class DdzTrackerTest {
     }
 
     /**
+     * 2026-11-16 00:45 真人精英场:上一局停在结算页(正中还摆着上一局的底牌 J Q 3),新牌桌刚出来时
+     * 这三张还会被读到。以前第一帧读到就记下、整局不再更新,DouZero 收到的每一手都是上一局的底牌。
+     * 现在要等这一局地主定下来、底牌翻开以后才读。
+     */
+    @Test fun theBottomIsReadOnlyAfterThisHandsLandlordIsKnown() {
+        var read: List<String>? = listOf("J", "Q", "3")
+        repeat(4) { tracker.observe(DdzSeat.Left, { DdzSeen.Empty }, { read }) }
+        assertNull("地主还没定,画面上那三张不算", tracker.bottom)
+        // 右家是地主,出了第一手 3:这时底牌早翻开了,读到的是这一局的
+        right = DdzSeen.Cards(listOf("3"))
+        read = listOf("4", "9", "K")
+        repeat(4) { tracker.observe(DdzSeat.Left, { if (it == DdzSide.Left) left else right }, { read }) }
+        assertEquals(DdzSeat.Right, tracker.landlord)
+        assertEquals(listOf("4", "9", "K"), tracker.bottom)
+    }
+
+    /** 底牌和手里的牌、别家出过的牌对不上(同一个点数第五次出现):是上一局留下来的,丢掉。 */
+    @Test fun aBottomThatConflictsWithKnownCardsIsDropped() {
+        val hand = listOf("9", "9", "9")
+        // 地主右家先出一对 5;底牌 9 K Q 这时和手牌对得上
+        right = DdzSeen.Cards(listOf("5", "5"))
+        repeat(4) { tracker.observe(DdzSeat.Left, { if (it == DdzSide.Left) left else right }, { listOf("9", "K", "Q") }, hand = { hand }) }
+        assertEquals(DdzSeat.Right, tracker.landlord)
+        assertEquals(listOf("9", "K", "Q"), tracker.bottom)
+        // 左家压 99:手里三个 9 + 底牌一个 9 + 左家两个,一共六个,底牌里那张 9 只能是上一局的
+        left = DdzSeen.Cards(listOf("9", "9"))
+        repeat(6) { tracker.observe(DdzSeat.Me, { if (it == DdzSide.Left) left else right }, { listOf("9", "K", "Q") }, hand = { hand }) }
+        assertNull("底牌读错了,丢给 DouZero 的空数组", tracker.bottom)
+    }
+
+    /** 自己是地主时底牌本来就在 20 张手牌里:别把同一张牌数两次,把好底牌当成读错的丢掉。 */
+    @Test fun theLandlordsOwnBottomIsNotCountedTwice() {
+        val hand = "9 9 9 9 K Q 3 4 5 6 7 8 10 J A 2 SJ BJ 3 4".split(' ')
+        val read = listOf("9", "K", "Q")
+        repeat(2) { tracker.observe(DdzSeat.Me, { DdzSeen.Empty }, { read }, leadingWith20 = true, hand = { hand }) }
+        assertEquals(DdzSeat.Me, tracker.landlord)
+        assertEquals(read, tracker.bottom)
+        // 领出的正是底牌里的那张 9:手牌少一张,打出去的牌还在自己的 20 张里,底牌照旧对得上
+        tracker.mine(listOf("9"))
+        val left = hand.toMutableList().apply { remove("9") }
+        tracker.observe(DdzSeat.Me, { DdzSeen.Empty }, { read }, leading = true, hand = { left })
+        assertEquals(read, tracker.bottom)
+    }
+
+    /**
      * 2026-11-16 真人局农民:底牌翻开/动画的某一帧只认出两张,后面读到完整三张时要换成三张,
      * 别整局锁成两张(两张只是给 DouZero 的参考,三张才是这一局的底牌)。
      */
