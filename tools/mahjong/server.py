@@ -47,9 +47,11 @@ POST /hint
               # 认不出就不给建议;认不出的牌面存进 unsure/,方便以后补模板
   draws = max(1, ⌈left ÷ 4⌉),即自己还能摸几张。
   手牌张数 + 3 × 碰杠组数 = 14 且没胡才算 turn;之前(13 张)是 wait。
-  手牌每张和 templates/hand/ 的模板比 40×64 归一化点积(BILINEAR),≥0.95 才算认出;
-  自己的碰杠用 templates/meld/,牌墙剩余用 templates/digit/,定缺角标用
-  templates/que/。只支持这台手机的 2412×1080 横屏。
+  手牌按固定格子切(右对齐 x=2004、每张 123.5px、牌面 y=885–1057,刚摸的
+  x=2043–2166),哪格有牌看模板得分而不是桌布颜色;被抬起的牌在 0–60px 内
+  上下搜索。每张和 templates/hand/ 的模板比 40×64 归一化点积(BILINEAR),
+  ≥0.95 才算认出;自己的碰杠用 templates/meld/,牌墙剩余用 templates/digit/,
+  定缺角标用 templates/que/。只支持这台手机的 2412×1080 横屏。
 
 /hint 错误(HTTP 200,同第一期约定):
   {"error": "bad_image" | "unsupported_screen", "detail": "人话"}
@@ -773,8 +775,14 @@ HAND_PITCH = 123.5
 DRAWN_X = (2043.0, 2166.0)
 HAND_TOP, HAND_BOTTOM = 820, 1075
 HAND_FACE_TOP, HAND_FACE_BOTTOM = 885, 1057
-HAND_MIN_FACE = 150
 HAND_MATCH = 0.95
+# 有没有牌不再看「牌面比桌布亮」,而是看固定格子里的模板得分:
+# 正常牌 ≥0.95;空格子/桌面最高 0.52(新手场 0.21、500 场 0.26、结算 0.52)。
+# 抬起的牌按 0–60px 上下搜索;玩家点选的那张实测抬 52px,碰/过提示抬 30px。
+HAND_LIFT_MAX = 60
+HAND_PRESENT = 0.60
+HAND_WEAK = 0.45
+HAND_FACE_WHITE = 0.55
 MELD_MATCH = 0.9
 QUE_MATCH = 0.9
 DIGIT_MATCH = 0.9
@@ -862,64 +870,58 @@ def _decode_screen(value):
     return image.convert("RGB")
 
 
-def _is_hand_tile(array, x0, x1):
-    region = array[930:1050, int(x0 + 0.2 * (x1 - x0)):int(x1 - 0.2 * (x1 - x0))]
-    return (region[..., 0] > 150).mean() > 0.5
+def _face_white(array, x0, x1, y0, y1):
+    """牌面是低饱和的近白;紫桌布偏灰蓝、绿桌布偏暗,空格子达不到这个比例。"""
+    region = array[int(y0) + 20:int(y1) - 20, int(x0) + 15:int(x1) - 15]
+    white = (region.min(axis=2) > 150) & ((region.max(axis=2) - region.min(axis=2)) < 60)
+    return float(white.mean())
 
 
-def _face_rows(array, x0, x1):
-    region = array[HAND_TOP:HAND_BOTTOM, int(x0 + 10):int(x1 - 10)]
-    bright = (region.min(axis=2) > 150).mean(axis=1) > 0.5
-    rows = np.where(bright)[0]
-    if not len(rows):
-        return None
-    return (HAND_TOP + int(rows[0]), HAND_TOP + int(rows[-1]))
+def _match_slot(image, array, x0, x1):
+    """在一个固定格子里找得分最高的牌面,顺带试抬起的牌。"""
+    best = None
+    for lift in range(HAND_LIFT_MAX + 1):
+        y0 = HAND_FACE_TOP - lift
+        y1 = HAND_FACE_BOTTOM - lift
+        crop = image.crop((int(x0) + 4, int(y0), int(x1) - 4, int(y1)))
+        score, tile = _best(_feature(crop), HAND_TEMPLATES)
+        if best is None or score > best["score"]:
+            best = {"score": score, "tile": tile, "lift": lift,
+                    "slot": (x0, x1, y0, y1, False), "crop": crop}
+        if lift == 0 and score >= HAND_MATCH:
+            break
+    best["present"] = _slot_present(array, best)
+    return best
 
 
-def _hand_slots(array, fixed=False):
-    """返回 [(x0, x1, y0, y1, drawn)],从左到右。fixed 用于定缺阶段(牌面被黄光罩住)。"""
-    slots = []
-    for index in range(14):
+def _slot_present(array, record):
+    score = record["score"]
+    if score >= HAND_PRESENT:
+        return True
+    if score < HAND_WEAK:
+        return False
+    x0, x1, y0, y1, _ = record["slot"]
+    return _face_white(array, x0, x1, y0, y1) >= HAND_FACE_WHITE
+
+
+def _scan_hand(image, array):
+    """从右往左按固定格子找手牌;遇到空格就停,避免把左边的碰杠当成手牌。"""
+    records = []
+    for index in range(13):
         x1 = HAND_RIGHT - HAND_PITCH * index
         x0 = x1 - HAND_PITCH
-        if not _is_hand_tile(array, x0, x1):
+        record = _match_slot(image, array, x0, x1)
+        if not record["present"]:
             break
-        if fixed:
-            slots.append((x0, x1, HAND_FACE_TOP, HAND_FACE_BOTTOM, False))
-            continue
-        rows = _face_rows(array, x0, x1)
-        if not rows or rows[1] - rows[0] < HAND_MIN_FACE:
-            break
-        slots.append((x0, x1, rows[0], rows[1], False))
-    slots.reverse()
-    if _is_hand_tile(array, *DRAWN_X):
-        if fixed:
-            slots.append((*DRAWN_X, HAND_FACE_TOP, HAND_FACE_BOTTOM, True))
-        else:
-            rows = _face_rows(array, *DRAWN_X)
-            if rows:
-                slots.append((*DRAWN_X, rows[0], rows[1], True))
-    return slots
-
-
-def _tile_crop(image, slot):
-    x0, x1, y0, y1, _ = slot
-    return image.crop((int(x0) + 4, int(y0), int(x1) - 4, int(y1)))
-
-
-def _recognize_hand(image, array, slots=None, fixed=False):
-    records = []
-    if slots is None:
-        slots = _hand_slots(array, fixed)
-    for slot in slots:
-        crop = _tile_crop(image, slot)
-        score, tile = _best(_feature(crop), HAND_TEMPLATES)
-        records.append({
-            "slot": slot,
-            "crop": crop,
-            "tile": tile if score >= HAND_MATCH else None,
-            "score": score,
-        })
+        records.append(record)
+    records.reverse()
+    drawn = _match_slot(image, array, *DRAWN_X)
+    if drawn["present"]:
+        drawn["slot"] = (*DRAWN_X, drawn["slot"][2], drawn["slot"][3], True)
+        records.append(drawn)
+    for record in records:
+        if record["score"] < HAND_MATCH:
+            record["tile"] = None
     return records
 
 
@@ -1106,10 +1108,25 @@ def _read_left(array):
     return int(value)
 
 
+def _is_result_screen(array):
+    """结算弹窗盖住牌桌中间,是一大块近白面板;正常牌桌中央没有这么亮。"""
+    region = array[180:620, 560:1400]
+    return float((region.min(axis=2) > 200).mean()) > 0.20
+
+
 def _is_que_select(array):
-    """定缺阶段屏幕中间有「请选择定缺的花色」深蓝横幅,别的时候那一带没有。"""
-    region = array[600:670, 600:1800]
+    """定缺阶段中间有「请选择定缺的花色」横幅和三个大花色圆盘。
+
+    绿桌布横幅是深蓝底,紫桌布横幅是半透明浅蓝底(深蓝像素几乎没有),
+    所以两种桌布都看红「万」圆盘:定缺时红色像素 >5000,正常打牌 <1000。
+    """
+    region = array[560:800, 650:1400]
     red, green, blue = region[..., 0], region[..., 1], region[..., 2]
+    disk = (red > 180) & (red - green > 80) & (red - blue > 80)
+    if int(disk.sum()) > 2000:
+        return True
+    banner = array[600:670, 600:1800]
+    red, green, blue = banner[..., 0], banner[..., 1], banner[..., 2]
     dark = (blue > red + 10) & (blue > green + 5) & (blue < 110) & (red < 70)
     return int(dark.sum()) > 1000
 
@@ -1158,10 +1175,12 @@ def advise_hint(image_value):
     except RequestError as error:
         return {"error": error.code, "detail": error.detail}
     array = np.asarray(image).astype(int)
-    if not _hand_slots(array):
+    if _is_result_screen(array):
+        return {"state": "wait"}
+    records = _scan_hand(image, array)
+    if not records:
         return {"state": "wait"}
     if _is_que_select(array):
-        records = _recognize_hand(image, array, _hand_slots(array, fixed=True))
         hand = [record["tile"] for record in records]
         if any(tile is None for tile in hand):
             for record in records:
@@ -1169,9 +1188,13 @@ def advise_hint(image_value):
                     _save_unsure(record["crop"], "tile")
             return {"state": "unsure", "reason": "tile"}
         return {"state": "que_select", "hand": hand, "advice": advise_que(hand)}
-    slots = _hand_slots(array)
-    records = _recognize_hand(image, array, slots)
     hand = [record["tile"] for record in records]
+    if any(tile is None for tile in hand):
+        for record in records:
+            if record["tile"] is None:
+                _save_unsure(record["crop"], "tile")
+        return {"state": "unsure", "reason": "tile"}
+    slots = [record["slot"] for record in records]
     melds = _recognize_melds(image, array, slots[0][0])
     que = _recognize_que(image, array, records)
     left = _read_left(array)
@@ -1186,11 +1209,6 @@ def advise_hint(image_value):
     if left is not None:
         fields["left"] = left
     if total == 14:
-        if any(tile is None for tile in hand):
-            for record in records:
-                if record["tile"] is None:
-                    _save_unsure(record["crop"], "tile")
-            return {"state": "unsure", "reason": "tile"}
         if any(meld is None for meld in melds):
             return {"state": "unsure", "reason": "meld"}
         if que is None:
