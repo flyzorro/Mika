@@ -9,6 +9,9 @@ import unittest
 import urllib.error
 import urllib.request
 from http.server import ThreadingHTTPServer
+from unittest import mock
+
+import server
 
 from PIL import Image, ImageDraw
 
@@ -583,6 +586,16 @@ class HintQueSelectTest(unittest.TestCase):
                 self.assertIn(body["advice"]["que"], "mps")
                 self.assertEqual(len(body["advice"]["options"]), 3)
                 self.assertNotIn("left", body)
+
+    def test_que_select_with_partial_hand_waits(self):
+        records = [
+            {"tile": "1m", "slot": (100, 900), "crop": None},
+            {"tile": "2m", "slot": (160, 900), "crop": None},
+        ]
+        with mock.patch.object(server, "_scan_hand", return_value=records):
+            status, body = hint_frame("shots_204728")
+        self.assertEqual(status, 200)
+        self.assertEqual(body, {"state": "wait"})
 
 
 class HintJianTest(unittest.TestCase):
