@@ -2417,6 +2417,36 @@ class PhoneDdzTurnTest {
         assertTrue("一下都不点牌: ${game.taps}", game.taps.none { it.second == DdzScreen.CARD_Y })
     }
 
+    @Test fun humanStartWalksIntoTheSupremeRoomWhenAsked() = runTest {
+        // 2026-11-18 11:14:豆豆 4.48 亿,点 room=master 被游戏放进了「经典至尊场」。用户要打至尊场:
+        // room=supreme 点第二排第二张橙色「至尊场」(和精英场同一列、和大师场同一排),一下都不点牌
+        val rooms = shot("human_classic_rooms")
+        val call = full("call")
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(rooms, call) + List(6) { call } + List(2) { lobbyFrame("vd_lobby") }))
+        val dispatcher = toolDispatcher(game)
+        PhoneDdzTurn.adviseBid = { _, _ -> PhoneDdzTurn.BidAdvice(0) }
+        PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","auto":true,"room":"supreme","advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
+        assertEquals(listOf(1360 to 723), game.taps.take(1))
+        assertTrue("一下都不点牌: ${game.taps}", game.taps.none { it.second == DdzScreen.CARD_Y })
+    }
+
+    @Test fun supremeRoomOnAZhizunTableKeepsPlaying() = runTest {
+        // 同一张「经典至尊场」牌桌,room=supreme 对得上:不报 room_mismatch、不因场次停下。
+        // 这张图是右家正在叫分(轮不到我),工具只会等,所以不看有没有点。
+        val table = roomFrame("master_zhizun_table")
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(table) + List(8) { table } + List(2) { lobbyFrame("vd_lobby") }))
+        val dispatcher = toolDispatcher(game)
+        val savedBid = PhoneDdzTurn.adviseBid
+        PhoneDdzTurn.adviseBid = { _, _ -> PhoneDdzTurn.BidAdvice(0) }
+        try {
+            val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","auto":true,"room":"supreme","advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
+            assertNotEquals(result.toString(), "room_mismatch", result.text("error"))
+            assertNotEquals(result.toString(), "room_mismatch", result.text("reason"))
+        } finally {
+            PhoneDdzTurn.adviseBid = savedBid
+        }
+    }
+
     @Test fun masterRoomOnAZhizunTableStopsBeforeBiddingOrPlaying() = runTest {
         // 2026-11-13:room=master 点的 872,723 是紫色大师场,进桌后底部却写「经典至尊场」。
         // 认出来就地停下:不叫分、不出牌,报 room_mismatch 和读到的场次名。
