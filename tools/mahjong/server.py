@@ -1187,6 +1187,8 @@ def advise_hint(image_value):
                 if record["tile"] is None:
                     _save_unsure(record["crop"], "tile")
             return {"state": "unsure", "reason": "tile"}
+        if len(hand) not in (13, 14):
+            return {"state": "wait"}
         return {"state": "que_select", "hand": hand, "advice": advise_que(hand)}
     hand = [record["tile"] for record in records]
     if any(tile is None for tile in hand):

@@ -9,10 +9,14 @@ import unittest
 import urllib.error
 import urllib.request
 from http.server import ThreadingHTTPServer
+from unittest import mock
+
+import server
 
 from PIL import Image, ImageDraw
 
-from server import handle, handler, win_fan, win_multiplier, win_probability
+from server import (_best, _feature, HAND_MATCH, HAND_TEMPLATES,
+                    handle, handler, win_fan, win_multiplier, win_probability)
 
 
 def post(hand, melds=None, que="s", draws=None):
@@ -584,6 +588,16 @@ class HintQueSelectTest(unittest.TestCase):
                 self.assertEqual(len(body["advice"]["options"]), 3)
                 self.assertNotIn("left", body)
 
+    def test_que_select_with_partial_hand_waits(self):
+        records = [
+            {"tile": "1m", "slot": (100, 900), "crop": None},
+            {"tile": "2m", "slot": (160, 900), "crop": None},
+        ]
+        with mock.patch.object(server, "_scan_hand", return_value=records):
+            status, body = hint_frame("shots_204728")
+        self.assertEqual(status, 200)
+        self.assertEqual(body, {"state": "wait"})
+
 
 class HintJianTest(unittest.TestCase):
     def test_jian_points_at_the_tile_above_it(self):
@@ -745,3 +759,11 @@ class HintJpegTest(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(body["state"], "turn")
         self.assertEqual(body["hand"][0], "1m")
+
+
+class HandTemplateTest(unittest.TestCase):
+    def test_committed_4s_crop_is_recognized(self):
+        path = os.path.join(FIXTURES, "4s_live.png")
+        score, tile = _best(_feature(Image.open(path)), HAND_TEMPLATES)
+        self.assertEqual(tile, "4s")
+        self.assertGreaterEqual(score, HAND_MATCH, f"{score:.4f}")

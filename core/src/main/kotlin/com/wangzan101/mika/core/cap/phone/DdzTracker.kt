@@ -68,6 +68,11 @@ internal class DdzTracker(private val settling: DdzSettlingPolicy = DdzSettlingP
     private var awaitLeader: DdzSeat? = null
     /** 等领出的人下一步动作期间,中间各家读到过牌(哪怕认不准):那就不是三家都不出。 */
     private var awaitSawPlay = false
+    /**
+     * 刚把「右家不出 + 左家这一手」补记完:补记时闹钟还在右家桌上,接下来几帧可能还指着右家、再到左家。
+     * 这两家这一轮都已经记过了,要等闹钟真的走到我这里,别把中间这两帧当成新的轮次。
+     */
+    private var awaitMeAfterInfer = false
 
     /**
      * 每一帧喂进来:[turn] 此刻轮到谁(没人或看不出为 null),[read] 读某家出牌区,[bottom] 读底牌,
@@ -83,6 +88,8 @@ internal class DdzTracker(private val settling: DdzSettlingPolicy = DdzSettlingP
         meFrames = if (rawTurn == DdzSeat.Me) meFrames + 1 else 0
         val turn = if (rawTurn == DdzSeat.Me && meFrames < settling.meFrames) null else rawTurn
         if (turn != lastTurn) { note("t=${turn?.name ?: "-"}"); lastTurn = turn }
+        // 补记完右家不出、左家这一手以后,闹钟一路走过来,到我才算这一轮真的轮到我了
+        if (awaitMeAfterInfer && turn == DdzSeat.Me) awaitMeAfterInfer = false
         val read2 = counts()
         for (side in DdzSide.entries) {
             val seat = seatOf(side)
@@ -107,6 +114,7 @@ internal class DdzTracker(private val settling: DdzSettlingPolicy = DdzSettlingP
             unsureThisTrick.clear()
             awaitLeader = null
             awaitSawPlay = false
+            awaitMeAfterInfer = false
         }
         if (landlord == null) {
             if (leadingWith20) {
@@ -168,6 +176,8 @@ internal class DdzTracker(private val settling: DdzSettlingPolicy = DdzSettlingP
         }
         // 我方先出且上一手有效牌是我出的,轮到我前的每家都只能是不出;不等出牌区读稳
         inferOwnLeadPasses(turn, leading)
+        // 还等着右家,左家却已经亮出压上来的新一手:右家这一下不出,只是「不出」没读到(见 [inferRightPassBeforeLeftPlay])
+        if ((turn == null || turn == DdzSeat.Right) && inferRightPassBeforeLeftPlay(read)) return
         resolve(seen)
         // 闹钟已经在这个最后出牌的人这里(没有走动的这一步):先记下,等他下一步动作再判中间各家
         if (turn != null && turn == active && advanceLeaderAwait(turn, read)) resolve(seen)
@@ -180,6 +190,8 @@ internal class DdzTracker(private val settling: DdzSettlingPolicy = DdzSettlingP
             }
         }
         if (turn == null || turn == active) return
+        // 补记时闹钟还在右家/左家桌上:这两家这一轮已经记过,等它走到我这里(见 [awaitMeAfterInfer])
+        if (awaitMeAfterInfer) return
         advance(turn)
         inferOwnLeadPasses(turn, leading)
         resolve(seen)
@@ -456,6 +468,8 @@ internal class DdzTracker(private val settling: DdzSettlingPolicy = DdzSettlingP
         if (waiting.isNotEmpty()) return fail("unread_before_me")
         record(DdzSeat.Me, cards)
         leftMe = false
+        // 补记后闹钟可能还停在右家/左家:我自己这一手已经按下了,不用再等它走到我这里
+        awaitMeAfterInfer = false
         // 出完就轮到下家:两家出得太快、闹钟又回到我这里时,才看得出中间那两手
         active = DdzSeat.Me.next
     }
@@ -517,6 +531,7 @@ internal class DdzTracker(private val settling: DdzSettlingPolicy = DdzSettlingP
         leftMe = true
         awaitLeader = null
         awaitSawPlay = false
+        awaitMeAfterInfer = false
         firstUnsure = 0
         steadyFrames.clear()
         steadyFrameNo.clear()
@@ -577,6 +592,39 @@ internal class DdzTracker(private val settling: DdzSettlingPolicy = DdzSettlingP
             record(seat, emptyList())
             lastSeen -= seat
         }
+    }
+
+    /**
+     * 还等着右家的时候,左家亮出一手新牌:右家这一下是不出,只是「不出」没读到(真人桌上有时根本不显示,
+     * 有时只闪一帧),窝在右家桌上的牌就整个被略过。这里按「右家不出 + 左家这一手」补记,顺序不变。
+     * 只在唯一说得通时补:右家那边不是牌(没出过牌)、左家这手读得准(没有 ?)、不是他上一手还摆着的旧牌、
+     * 认得出牌型而且压得过这一轮;张数读得到时还要正好少掉这一手的张数。否则照旧等闹钟、照旧判漏,不猜。
+     */
+    private fun inferRightPassBeforeLeftPlay(read: (DdzSide) -> DdzSeen): Boolean {
+        if (active != DdzSeat.Right || waiting.isNotEmpty()) return false
+        // 右家出牌区摆着牌、或者认不准:他可能真的出过牌,不能替他按不出
+        val rightSeen = read(DdzSide.Right)
+        if (rightSeen != DdzSeen.Empty && rightSeen != DdzSeen.Pass) return false
+        val seen = read(DdzSide.Left)
+        if (seen !is DdzSeen.Cards) return false
+        val cards = seen.ranks
+        if (cards.isEmpty() || cards.any { it.startsWith(DdzCards.UNKNOWN) }) return false
+        // 出牌区还摆着他上一手:那不是新的一手
+        if (cards == lastPlay[DdzSeat.Left]) return false
+        // 右家不出,左家这一手只能是压这一轮:认得出牌型,还得压得过
+        val lead = trickLead() ?: return false
+        val move = DdzSnapshotRecovery.classify(cards) ?: return false
+        if (!DdzSnapshotRecovery.beats(lead, move)) return false
+        // 张数读得到时,少掉的正好的这一手;对不上就是还没落稳,等他落了再补
+        val played = unplayed(DdzSeat.Left)
+        if (played != null && played != cards.size) return false
+        if (!steady(DdzSeat.Left to cards, if (played == null) settling.steadyFrames else settling.countedFrames)) return false
+        record(DdzSeat.Right, emptyList())
+        record(DdzSeat.Left, cards)
+        lastSeen -= DdzSeat.Left
+        active = DdzSeat.Me
+        awaitMeAfterInfer = true
+        return true
     }
 
     /**
