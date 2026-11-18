@@ -20,6 +20,8 @@ POST /discard
   fan 是这个目标胡了的番数;value 是期望倍数(赢牌概率 × 番数倍数,保留 2 位)。
   value 不是查表值:表只用来粗排,排在前面的 4 个(切牌 × 目标)会对这手牌本身做固定种子
   蒙特卡洛(牌墙 = 108 − 自己的牌,按目标贪心切牌;draws≤14 每候选 200 局,>14 100 局)。
+  排序时同一 target 下两个候选的赢牌率落在 95% 置信区间内就算分不出高低,先比向听、
+  再比进张(否则 200 局的噪声会把拆对子退向听的打法排到前面),所以 options 的 value 不保证单调。
   shanten/ukeire/waits 指的是这个目标的向听、理论进张和进张牌。
   waits/ukeire 只扣自己手牌和副露,不扣场上已经打出去的牌。
   queLeft 是切牌前手里还有几张定缺牌;有定缺牌时先切定缺牌,shanten/ukeire 只按非定缺门算。
@@ -73,7 +75,7 @@ import re
 import sys
 import time
 import traceback
-from math import comb
+from math import comb, sqrt
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import numpy as np
@@ -499,8 +501,39 @@ def _coarse_key(discard, result):
     )
 
 
-def _discard_key(discard, result):
-    return (-result["value"], result["shanten"], -result["ukeire"], tile_order(discard))
+RANK_Z = 1.96  # 95% 置信区间
+
+
+def _within_noise(first, second):
+    """同一个 target 下,两个候选的蒙卡赢牌率是不是区分不开(95% 置信区间)。"""
+    if first["target"] != second["target"]:
+        return False
+    first_p, second_p = first["_prob"], second["_prob"]
+    variance = (first_p * (1 - first_p) + second_p * (1 - second_p)) / first["_games"]
+    return abs(first_p - second_p) <= RANK_Z * sqrt(variance)
+
+
+def _rank_key(result):
+    return (-result["shanten"], result["ukeire"], result["value"],
+            TARGET_PRIORITY[result["target"]], -result["order"])
+
+
+def _rank_candidates(candidates):
+    """按蒙卡赢牌率排序;同一个 target 下区分不开时,先比向听、再比进张。
+
+    蒙卡 200 局的赢牌率标准误差约 0.026,常常比两种打法之间的真实差距还大;
+    直接按点估计排序会把噪声当成结论,把拆对子退向听的打法排到前面。
+    向听只跟同一个 target 比:清一色、七对的向听口径不同,跨目标只能比 value。
+    """
+    remaining = list(candidates)
+    ordered = []
+    while remaining:
+        top = max(remaining, key=lambda item: _candidate_key(item[1]))
+        tied = [item for item in remaining if _within_noise(item[1], top[1])]
+        pick = max(tied, key=lambda item: _rank_key(item[1]))
+        ordered.append(pick)
+        remaining.remove(pick)
+    return ordered
 
 
 def _mc_target(result):
@@ -628,6 +661,7 @@ def _run_monte_carlo(hand, melds, que, draws, candidates):
     for discard, result in candidates:
         probability = mc.run(hand, discard, _mc_target(result), draws, games)
         result["value"] = probability * win_multiplier(result["fan"])
+        result["_prob"] = probability
         result["_games"] = games
     return games
 
@@ -730,7 +764,7 @@ def advise(hand, melds, que, draws=None):
         current = best_by_discard.get(discard)
         if current is None or _candidate_key(result) > _candidate_key(current):
             best_by_discard[discard] = result
-    scored = sorted(best_by_discard.items(), key=lambda item: _discard_key(item[0], item[1]))[:3]
+    scored = _rank_candidates(list(best_by_discard.items()))[:3]
     options = [_option(discard, result) for discard, result in scored]
     return {"win": False, **options[0], "queLeft": 0, "options": options}
 
