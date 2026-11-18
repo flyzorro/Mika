@@ -793,6 +793,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 TEMPLATE_DIR = os.path.join(BASE_DIR, "templates")
 UNSURE_DIR = os.path.join(BASE_DIR, "unsure")
 CAPTURE_DIR = os.path.join(BASE_DIR, "captures")
+_last_capture = None  # 上一张存下的回复;用户想牌时手机每秒发同样的画面,只留第一张
 MELD_GROUP_X = 456
 MELD_GROUP_STEP = 320
 MELD_GROUP_WIDTH = 276
@@ -1179,6 +1180,10 @@ def _worth_capturing(reply):
 
 def _capture(image_value, reply):
     # 原图字节原样落盘 + 同名 .json 存回复,事后逐帧核对认错的牌
+    global _last_capture
+    if reply == _last_capture:
+        return
+    _last_capture = reply
     try:
         raw = base64.b64decode(image_value, validate=True)
     except (ValueError, TypeError):
@@ -1252,7 +1257,6 @@ def advise_hint(image_value):
                     continue
                 start = MELD_GROUP_X + MELD_GROUP_STEP * index
                 _save_unsure(image.crop((start + 6, 921, start + 86, 1026)), "meld")
-            _save_unsure(image, "meld_frame")
             return {"state": "unsure", "reason": "meld"}
         if que is None:
             return {"state": "unsure", "reason": "que"}
