@@ -224,6 +224,8 @@ internal object PhoneDdzTurn : PhoneTool {
         var humanActionSeen = false
         /** The latest human frame passed the positive classic-table gate and may be tapped once. */
         var humanEligible = false
+        /** 这一局中途取消过游戏的托管:手牌/按钮还认不出时接着轮询,不再暂停把这一手交回托管。 */
+        var tookBackAuto = false
         var advisor: String? = null
         var tracker: DdzTracker? = null
         /** 我的出牌/跟牌按钮还亮着时,闹钟指到别家的读数要连着两帧一样才认:上一帧那个座位,和连着几帧了。 */
@@ -1226,17 +1228,17 @@ internal object PhoneDdzTurn : PhoneTool {
     private suspend fun hint(view: DdzView, ctx: ToolContext, turn: Turn): Move {
         // 手牌没认全:一下都不点,按认不出的画面处理,不拿认不出的牌去选。
         if (readableHand(ctx, view) == null) return Move(false, "hand_unreadable")
-        if (DdzScreen.onlyPass(view)) return press(view.buttons[0], ctx, turn)
+        if (DdzScreen.onlyPass(view)) return pressPass(view, ctx, turn)
         if (!tap(ctx, turn, view.buttons[1].x, view.buttons[1].y)) return Move(false, "tap_failed")
         delay(SETTLE_MS)
         val after = read(ctx, turn) ?: return Move(false, "no_frame")
         // 按钮没了就是这一手已经过去;提示抬不起牌就是要不起
         if (after.phase != DdzPhase.Follow) return Move(true)
-        if (after.lifted.isEmpty()) return press(view.buttons[0], ctx, turn)
+        if (after.lifted.isEmpty()) return pressPass(view, ctx, turn)
         return when (confirm(view, after.lifted.size, null, ctx, turn)) {
             Sent.Played -> Move(true)
             Sent.Drift -> Move(false, "hand_drift")
-            else -> press(view.buttons[0], ctx, turn)
+            else -> pressPass(view, ctx, turn)
         }
     }
 
@@ -1450,11 +1452,69 @@ internal object PhoneDdzTurn : PhoneTool {
         return ctx.screen.quickTap(x, y)
     }
 
+    /**
+     * 真人局按「不出」并像出牌一样核对它真的过去了:按下后画面还在我的跟牌决定、手牌张数也没变,就是游戏没认这一下,
+     * 过了 [VERDICT_MS] 再按一次;两次都没认就是 [Move] 失败(pass_not_taken),调用方按简单规则接着打,
+     * 不能把一个没过去的「不出」记进历史、干等 15 秒倒计时把这一手交给托管。单机局没有倒计时抢手,照旧按一下就回。
+     */
+    private suspend fun pressPass(view: DdzView, ctx: ToolContext, turn: Turn): Move {
+        if (view.buttons.isEmpty()) return Move(false, "rejected")
+        if (turn.mode != DdzMode.Human) return press(view.buttons[0], ctx, turn)
+        repeat(2) {
+            if (!press(view.buttons[0], ctx, turn).moved) return Move(false, "tap_failed")
+            if (passTook(view, ctx, turn)) return Move(true)
+        }
+        return Move(false, "pass_not_taken")
+    }
+
+    /**
+     * 按了「不出」之后看画面,和出牌的 [verify] 一样:画面离开我的决定(按钮没了、轮到别家,或者结算页)才算不出成功;
+     * 窗口过完还在我的跟牌决定、张数也没变,就是游戏没认。只认窗口末尾那一帧:按下之后按钮可能先闪掉一帧又回来
+     * (真机 2026-11-18 13:46 就是这样),中途离开一下不算数。认不出的帧接着看,不改变上一次的判断。
+     */
+    private suspend fun passTook(view: DdzView, ctx: ToolContext, turn: Turn?): Boolean {
+        var waited = 0L
+        var mine = true
+        while (waited < VERDICT_MS + HUMAN_SCENE_RETRY_POLLS * POLL_MS) {
+            val frame = ctx.screen.rawFrame(FULL_ROWS)
+            if (frame != null) {
+                // 和等待循环一样:确认过是经典牌桌的这一帧才允许再点一下
+                if (turn?.mode == DdzMode.Human && DdzCards.classicHumanTable(frame)) turn.humanEligible = true
+                if (DdzCards.humanResult(frame)) return true
+                val after = DdzScreen.read(frame, classic = classicTable(turn))
+                if (after.handCount > 0) mine = after.phase == DdzPhase.Follow && after.handCount == view.handCount
+            }
+            delay(POLL_MS)
+            waited += POLL_MS
+        }
+        return !mine
+    }
+
+    /**
+     * 这一下没成的时候游戏可能已经进了托管(15 秒到了,或者按钮被托管藏起来):和等待循环里一样先点「取消托管」,
+     * 再把取消后的画面读回来给简单规则用。取消过就记在 [Turn.tookBackAuto] 上:这一局后面读不出时接着轮询,不再暂停。
+     */
+    private suspend fun retakeAfterAutoPlay(
+        ctx: ToolContext, turn: Turn,
+    ): Pair<com.wangzan101.mika.core.uistate.RawFrame, DdzView>? {
+        val frame = ctx.screen.rawFrame(FULL_ROWS) ?: return null
+        val view = DdzScreen.read(frame, classic = classicTable(turn))
+        if (view.phase != DdzPhase.AutoPlay || view.buttons.isEmpty() || !DdzCards.classicHumanTable(frame)) {
+            return frame to view
+        }
+        // 托管那一帧也要先认准在牌桌上:确认过这一帧才允许点
+        turn.humanEligible = true
+        takeBackControl(view, ctx, turn)
+        val after = ctx.screen.rawFrame(FULL_ROWS) ?: return frame to view
+        return after to DdzScreen.read(after, classic = classicTable(turn))
+    }
+
     /** 模型想的时候超时进了托管:先取消,再按取消后的画面做。 */
     private suspend fun takeBackControl(view: DdzView, ctx: ToolContext, turn: Turn): DdzView {
         // 真人局刚接手、还没确认这一局接得上:托管留着,让游戏自己打完
         if (turn.mode == DdzMode.Human && turn.joining) return view
         if (view.phase != DdzPhase.AutoPlay || !tap(ctx, turn, view.buttons[0].x, view.buttons[0].y)) return view
+        if (turn.mode == DdzMode.Human) turn.tookBackAuto = true
         delay(SETTLE_MS)
         return read(ctx, turn) ?: view
     }
@@ -1698,7 +1758,11 @@ internal object PhoneDdzTurn : PhoneTool {
                     DdzPhase.AutoPlay -> {
                         left = true
                         // 等的时候前台可能换了,点之前再认一次;点了等它退出托管,别连着点
-                        if (tap(ctx, turn, view.buttons[0].x, view.buttons[0].y)) delay(AUTO_CANCEL_MS)
+                        // 取消过托管就记下:这一局后面读不出时不再暂停,接着按简单规则打完
+                        if (tap(ctx, turn, view.buttons[0].x, view.buttons[0].y)) {
+                            if (turn.mode == DdzMode.Human) turn.tookBackAuto = true
+                            delay(AUTO_CANCEL_MS)
+                        }
                     }
                     // 加倍只有约 5 秒,模型来不及:单机局里自己点最左边蓝色的不加倍(加倍要看视频,绝不点);不是单机就让它走完
                     DdzPhase.Double -> {
@@ -1848,6 +1912,7 @@ internal object PhoneDdzTurn : PhoneTool {
             turn.expectedHand = null
             turn.joining = true
             turn.doubleDecided = false
+            turn.tookBackAuto = false
             clearAuction(turn)
         }
         turn.noHand = 0
@@ -1860,6 +1925,7 @@ internal object PhoneDdzTurn : PhoneTool {
     private fun track(turn: Turn, frame: com.wangzan101.mika.core.uistate.RawFrame, view: DdzView) {
         if (view.phase == DdzPhase.Call) {
             turn.tracker = null; turn.expectedHand = null; turn.joining = false; turn.doubleDecided = false
+            turn.tookBackAuto = false
             clearAuction(turn)
             return
         }
@@ -1984,11 +2050,13 @@ internal object PhoneDdzTurn : PhoneTool {
                 tracker.fail(DdzSessionReason.INVALID_ADVISOR_PLAY)
                 return fallback(ctx, turn, tracker, frame, view)
             }
-            val button = view.buttons.firstOrNull() ?: return humanPause(turn, DdzSessionReason.REJECTED_ACTION).let { Auto.Off }
-            if (!press(button, ctx, turn).moved) {
-                // 「不出」按不下去:这一局剩下的按简单规则打完
-                tracker.fail("tap_failed")
-                return fallback(ctx, turn, tracker, frame, view)
+            if (view.buttons.isEmpty()) return humanPause(turn, DdzSessionReason.REJECTED_ACTION).let { Auto.Off }
+            // 「不出」也要核对真的过去了:按下没过去就再按一次;还是不行这一局交给简单规则,
+            // 别等 15 秒倒计时把这一手交给托管(2026-11-18 13:46 精英场就是这样)
+            if (!pressPass(view, ctx, turn).moved) {
+                tracker.fail("pass_not_taken")
+                val now = retakeAfterAutoPlay(ctx, turn)
+                return fallback(ctx, turn, tracker, now?.first ?: frame, now?.second ?: view)
             }
             tracker.mine(emptyList())
             turn.expectedHand = played
@@ -2002,7 +2070,10 @@ internal object PhoneDdzTurn : PhoneTool {
             Sent.Played -> Unit
             Sent.SelectFailed -> {
                 tracker.fail("select_failed")
-                return fallback(ctx, turn, tracker, frame, view)
+                // 抬不起牌/读不到决策画面时游戏可能已经进了托管:先取消托管(和等待循环同一下),
+                // 再拿取消后的画面按简单规则打完这一手,不暂停
+                val now = retakeAfterAutoPlay(ctx, turn)
+                return fallback(ctx, turn, tracker, now?.first ?: frame, now?.second ?: view)
             }
             Sent.Drift -> {
                 // 出牌已经按下去、牌也出去了(出的不是要的,或一直看不出出了什么):这一手算出过,轮次多半也过了,
@@ -2047,14 +2118,22 @@ internal object PhoneDdzTurn : PhoneTool {
                 val landlordLeft = lord?.takeIf { it != DdzSeat.Me }?.let { counts[sideOf(it)] }
                 // 地主只剩最后一张:桌上的单张(队友出的也一样)要顶住,不然他最后一张就把这一手压死
                 if (landlordLeft == 1 && leadSingle != null) blockSingle(view, ctx, turn, leadSingle)
-                else if (teammate) press(view.buttons[0], ctx, turn) else hint(view, ctx, turn)
+                else if (teammate) pressPass(view, ctx, turn) else hint(view, ctx, turn)
             }
             else -> return Auto.Settling
         }
         if (!move.moved) {
             // 前台换了之类的暂停已经记下了,别用 unknown_scene 盖掉
             if (turn.state == DdzSessionState.Paused) return Auto.Off
-            if (turn.mode == DdzMode.Human) return humanPause(turn, pauseReason(move.error ?: "rejected")).let { Auto.Off }
+            if (turn.mode == DdzMode.Human) {
+                // 托管把按钮藏起来(或者刚刚进了托管):先取消托管,下一帧接着按简单规则打,不暂停——
+                // 暂停就是坐着让游戏托管打完这一局(2026-11-18 13:46: select_failed → 托管 → pause unreadable_hand)
+                val now = retakeAfterAutoPlay(ctx, turn)
+                if (turn.tookBackAuto || now?.second?.phase == DdzPhase.AutoPlay) return Auto.Settling
+                // 简单规则按的「不出」游戏也没认:下一帧接着按,不暂停——暂停就是把人交给 15 秒倒计时
+                if (move.error == "pass_not_taken") return Auto.Settling
+                return humanPause(turn, pauseReason(move.error ?: "rejected")).let { Auto.Off }
+            }
             return Auto.Off
         }
         turn.expectedHand = null
@@ -2064,12 +2143,12 @@ internal object PhoneDdzTurn : PhoneTool {
     /** 地主报单时跟一张单牌:用手里能压过 [lead] 的最大单张;压不住就不出。 */
     private suspend fun blockSingle(view: DdzView, ctx: ToolContext, turn: Turn, lead: String): Move {
         val hand = readableHand(ctx, view) ?: return Move(false, "hand_unreadable")
-        val index = biggestSingle(hand, lead) ?: return press(view.buttons[0], ctx, turn)
+        val index = biggestSingle(hand, lead) ?: return pressPass(view, ctx, turn)
         return when (submit(setOf(index), view, ctx, turn)) {
             Sent.Played -> Move(true)
             Sent.SelectFailed -> Move(false, "select_failed")
             Sent.Drift -> Move(false, "hand_drift")
-            Sent.Rejected -> press(view.buttons[0], ctx, turn)
+            Sent.Rejected -> pressPass(view, ctx, turn)
         }
     }
 
@@ -2347,7 +2426,9 @@ internal object PhoneDdzTurn : PhoneTool {
             broken == "history_not_ready" || broken == "hand_unreadable" || broken == "landlord_mismatch" ||
             broken.startsWith("unread_") || broken.startsWith("unsure_") || broken.startsWith("illegal_") ||
             broken.startsWith("douzero_") ||
-            broken == "select_failed" || broken == "confirm_failed" || broken == "tap_failed")
+            broken == "select_failed" || broken == "confirm_failed" || broken == "tap_failed" ||
+            // 按了「不出」游戏没认:这一局剩下的按简单规则打完,把人从 15 秒倒计时和托管里捞出来
+            broken == "pass_not_taken")
 
     /** Known non-table scenes that end automatic human play; null when the scene is just unrecognised. */
     private fun humanHandoff(frame: com.wangzan101.mika.core.uistate.RawFrame): String? = when {
