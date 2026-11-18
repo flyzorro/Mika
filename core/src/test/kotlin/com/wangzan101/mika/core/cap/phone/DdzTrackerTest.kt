@@ -1361,6 +1361,29 @@ class DdzTrackerTest {
         assertTrue("history=${human.history} trace=${human.trace}", human.ready())
     }
 
+    @Test fun aNonBombMisplayedWhileMyButtonsAppearStillGoesThroughTheNormalSettling() {
+        // 同一个回放状态,但这不是王炸:左家那一手落下时误读成一对 J,下一帧才看清是对 10。
+        // 补记王炸的那条快捷路只看一帧、又不走 steady/张数校验,不能拿它记普通牌,否则这一帧的误读会被直接写进历史。
+        val human = DdzTracker(DdzSettlingPolicy.HUMAN)
+        fun feed(turn: DdzSeat?, l: DdzSeen, r: DdzSeen) =
+            human.observe(turn, { if (it == DdzSide.Left) l else r }, { bottom })
+        val pairOfNines = listOf("9", "9")
+        human.restore(
+            DdzSeat.Left, bottom,
+            listOf(
+                listOf("3", "3", "3", "4"), listOf("4", "4", "4", "5"), listOf("10", "10", "10", "3"),
+                emptyList(), emptyList(), listOf("7", "7", "7", "6", "6", "6", "K", "J"),
+                emptyList(), emptyList(), pairOfNines,
+            ),
+            DdzSeat.Left,
+        )
+        // 牌落下那一帧:带绶带的那张认错了,读成一对 J
+        feed(DdzSeat.Me, DdzSeen.Cards(listOf("J", "J")), DdzSeen.Cards(pairOfNines))
+        // 读稳以后是压过对 9 的一对 10
+        repeat(4) { feed(DdzSeat.Me, DdzSeen.Cards(listOf("10", "10")), DdzSeen.Cards(pairOfNines)) }
+        assertEquals("history=${human.history} trace=${human.trace}", listOf("10", "10"), human.history.last())
+    }
+
     @Test fun aRocketThatNeverReadsAsAWholeStillFailsAsMissedPlay() {
         // 同一个漏帧,但王炸那一帧只读到一张 BJ(压不过这一轮的对 9),后面 5558 也读得不准:
         // 不能因为想让这一局接着记就编出一手,真正漏了还是判 missed_play,交给简单规则。

@@ -445,9 +445,9 @@ internal class DdzTracker(private val settling: DdzSettlingPolicy = DdzSettlingP
 
     /**
      * 画面上已经轮到我(按钮亮了、闹钟藏起来),tracker 还按上一帧以为轮到 [active] 那家,而他的出牌区
-     * 已经亮出压这一轮的新一手:这一手先记下,把 [active] 让给我,别等它被下一手盖掉。
-     * 只认压得起这一轮的一手(看得出牌型、压得过 [trickLead]),而且要读得准、不是他这一轮已经出过的那手;
-     * 新一轮的领出、认不准、张数对不上都留给原来的流程。
+     * 已经亮出王炸/炸弹:这一手先记下,把 [active] 让给我,别等它被下一手盖掉。
+     * 只补王炸和炸弹:它们挡闹钟、又只亮一帧,等不到 steady;普通牌仍旧交给 [resolve] 读稳,
+     * 免得把「牌落下那一帧带绶带的 3 认成 J」这种误读直接写进历史。读不准、张数对不上、顺序不对都不补。
      */
     private fun recordPlayShownAsMyTurnBegins(read: (DdzSide) -> DdzSeen) {
         val seat = active ?: return
@@ -457,13 +457,10 @@ internal class DdzTracker(private val settling: DdzSettlingPolicy = DdzSettlingP
         val seen = read(sideOf(seat))
         if (seen !is DdzSeen.Cards) return
         val cards = seen.ranks
-        if (cards.isEmpty() || cards == lastPlay[seat]) return
-        if (cards.any { it.startsWith(DdzCards.UNKNOWN) }) return
-        // 只补「压这一轮」的一手:新一轮的领出读一半也可能凑成牌型,不能凭一帧就记
-        val lead = trickLead() ?: return
+        if (cards.isEmpty()) return
         val move = DdzSnapshotRecovery.classify(cards) ?: return
-        if (!DdzSnapshotRecovery.beats(lead, move)) return
-        if (samePlayAgain(seat, cards)) return
+        if (move.kind != DdzSnapshotRecovery.Kind.Rocket && move.kind != DdzSnapshotRecovery.Kind.Bomb) return
+        if (!usablePlay(seat, cards)) return
         record(seat, cards)
         active = seat.next
     }
