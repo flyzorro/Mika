@@ -1317,6 +1317,101 @@ class DdzTrackerTest {
         assertNull(tracker.broken)
     }
 
+    @Test fun aRocketSeenOnlyWhileMyButtonsAreUpIsRecordedBeforeTheNextLeadCoversIt() {
+        // 2026-11-18 17:14:56 精英场(真机,DDZTRACE + 服务器出牌消息):队友(右家)出 99,地主(左家)王炸 BJ SJ 压上,
+        // 王炸的动画挡住了闹钟,轮到我出牌的第一帧(phase=Follow、clock=null,meFrames 还没够)只喂进来一帧,
+        // 画面上 L=[BJ,SJ] 读得准,tracker 却因为 turn 被挡成 null、Left 也不在 waiting,整手没记。
+        // 之后地主接着领出 5558,出牌区把王炸盖掉;闹钟再一路走到我时,Left 卡在队头,最后判 missed_play。
+        // 修好以后:王炸、两个不出、5558、两个不出、AKQJ10987 都按顺序记上,轮到我跟顺子时不再判漏。
+        val human = DdzTracker(DdzSettlingPolicy.HUMAN)
+        fun feed(turn: DdzSeat?, l: DdzSeen, r: DdzSeen) =
+            human.observe(turn, { if (it == DdzSide.Left) l else r }, { bottom })
+        val rocket = listOf("BJ", "SJ")
+        val pairOfNines = listOf("9", "9")
+        human.restore(
+            DdzSeat.Left, bottom,
+            listOf(
+                listOf("3", "3", "3", "4"), listOf("4", "4", "4", "5"), listOf("10", "10", "10", "3"),
+                emptyList(), emptyList(), listOf("7", "7", "7", "6", "6", "6", "K", "J"),
+                emptyList(), emptyList(), pairOfNines,
+            ),
+            DdzSeat.Left,
+        )
+        // 王炸只在这一帧看得见:轮到我出牌的第一帧(按钮亮了、闹钟藏起来)
+        feed(DdzSeat.Me, DdzSeen.Cards(rocket), DdzSeen.Cards(pairOfNines))
+        assertEquals("history=${human.history} trace=${human.trace}", rocket, human.history.last())
+        // 我不出、队友不出,地主重新领出 5558
+        feed(DdzSeat.Left, DdzSeen.Empty, DdzSeen.Pass)
+        feed(DdzSeat.Me, DdzSeen.Cards(listOf("5", "5", "5", "?J", "5", "8")), DdzSeen.Empty)
+        feed(DdzSeat.Me, DdzSeen.Cards(listOf("5", "5", "5", "8")), DdzSeen.Empty)
+        feed(DdzSeat.Right, DdzSeen.Cards(listOf("5", "5", "5", "8")), DdzSeen.Empty)
+        feed(DdzSeat.Left, DdzSeen.Empty, DdzSeen.Pass)
+        // 地主接着出 AKQJ10987,牌落下
+        feed(DdzSeat.Me, DdzSeen.Unsure, DdzSeen.Empty)
+        repeat(4) { feed(DdzSeat.Me, DdzSeen.Cards("A K Q J 10 9 8 7".split(' ')), DdzSeen.Empty) }
+        assertNull("history=${human.history} trace=${human.trace}", human.broken)
+        assertEquals(
+            listOf(
+                pairOfNines, rocket, emptyList(), emptyList(),
+                listOf("5", "5", "5", "8"), emptyList(), emptyList(),
+                listOf("A", "K", "Q", "J", "10", "9", "8", "7"),
+            ),
+            human.history.takeLast(8),
+        )
+        assertTrue("history=${human.history} trace=${human.trace}", human.ready())
+    }
+
+    @Test fun aNonBombMisplayedWhileMyButtonsAppearStillGoesThroughTheNormalSettling() {
+        // 同一个回放状态,但这不是王炸:左家那一手落下时误读成一对 J,下一帧才看清是对 10。
+        // 补记王炸的那条快捷路只看一帧、又不走 steady/张数校验,不能拿它记普通牌,否则这一帧的误读会被直接写进历史。
+        val human = DdzTracker(DdzSettlingPolicy.HUMAN)
+        fun feed(turn: DdzSeat?, l: DdzSeen, r: DdzSeen) =
+            human.observe(turn, { if (it == DdzSide.Left) l else r }, { bottom })
+        val pairOfNines = listOf("9", "9")
+        human.restore(
+            DdzSeat.Left, bottom,
+            listOf(
+                listOf("3", "3", "3", "4"), listOf("4", "4", "4", "5"), listOf("10", "10", "10", "3"),
+                emptyList(), emptyList(), listOf("7", "7", "7", "6", "6", "6", "K", "J"),
+                emptyList(), emptyList(), pairOfNines,
+            ),
+            DdzSeat.Left,
+        )
+        // 牌落下那一帧:带绶带的那张认错了,读成一对 J
+        feed(DdzSeat.Me, DdzSeen.Cards(listOf("J", "J")), DdzSeen.Cards(pairOfNines))
+        // 读稳以后是压过对 9 的一对 10
+        repeat(4) { feed(DdzSeat.Me, DdzSeen.Cards(listOf("10", "10")), DdzSeen.Cards(pairOfNines)) }
+        assertEquals("history=${human.history} trace=${human.trace}", listOf("10", "10"), human.history.last())
+    }
+
+    @Test fun aRocketThatNeverReadsAsAWholeStillFailsAsMissedPlay() {
+        // 同一个漏帧,但王炸那一帧只读到一张 BJ(压不过这一轮的对 9),后面 5558 也读得不准:
+        // 不能因为想让这一局接着记就编出一手,真正漏了还是判 missed_play,交给简单规则。
+        val human = DdzTracker(DdzSettlingPolicy.HUMAN)
+        fun feed(turn: DdzSeat?, l: DdzSeen, r: DdzSeen) =
+            human.observe(turn, { if (it == DdzSide.Left) l else r }, { bottom })
+        val pairOfNines = listOf("9", "9")
+        human.restore(
+            DdzSeat.Left, bottom,
+            listOf(
+                listOf("3", "3", "3", "4"), listOf("4", "4", "4", "5"), listOf("10", "10", "10", "3"),
+                emptyList(), emptyList(), listOf("7", "7", "7", "6", "6", "6", "K", "J"),
+                emptyList(), emptyList(), pairOfNines,
+            ),
+            DdzSeat.Left,
+        )
+        feed(DdzSeat.Me, DdzSeen.Cards(listOf("BJ")), DdzSeen.Cards(pairOfNines))
+        feed(DdzSeat.Left, DdzSeen.Empty, DdzSeen.Pass)
+        feed(DdzSeat.Me, DdzSeen.Cards(listOf("5", "5", "5", "?J", "5", "8")), DdzSeen.Empty)
+        repeat(3) { feed(DdzSeat.Me, DdzSeen.Cards(listOf("5", "5", "5", "8")), DdzSeen.Empty) }
+        feed(DdzSeat.Right, DdzSeen.Cards(listOf("5", "5", "5", "8")), DdzSeen.Empty)
+        feed(DdzSeat.Left, DdzSeen.Empty, DdzSeen.Pass)
+        feed(DdzSeat.Me, DdzSeen.Unsure, DdzSeen.Empty)
+        repeat(4) { feed(DdzSeat.Me, DdzSeen.Cards("A K Q J 10 9 8 7".split(' ')), DdzSeen.Empty) }
+        assertEquals("history=${human.history} trace=${human.trace}", "missed_play", human.broken)
+        assertFalse(human.history.any { it == listOf("BJ") || it == listOf("BJ", "SJ") })
+    }
+
     @Test fun anUnsureLeftPlayWhileWaitingForRightInventsNothing() {
         // 同一次漏读,但左家那一手只读到 Unsure:不能凭它给右家补「不出」、更不能把这张牌记进历史。
         tracker.observe(DdzSeat.Me, { DdzSeen.Empty }, { bottom }, leadingWith20 = true)

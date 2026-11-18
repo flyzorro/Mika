@@ -162,6 +162,11 @@ internal class DdzTracker(private val settling: DdzSettlingPolicy = DdzSettlingP
             firstIllegal = 0
             return
         }
+        // 王炸/炸弹的特效会挡住闹钟:轮到我出牌的第一帧(meFrames 还没够,turn 被挡成 null)闹钟不显示,
+        // 可刚压上牌的那家出牌区已经亮出这一轮的新一手。等这帧过去,他接着领出的下一手会把这手盖掉,
+        // 一整手就永远读不到了(2026-11-18 17:14:56 精英场:地主的王炸被下一手 5558 盖掉,后面判 missed_play)。
+        // 只在能确认是压这一轮的一手时先记下:这不是给我记「不出」,炸弹特效那几帧不会被当成真的回合。
+        if (rawTurn == DdzSeat.Me && turn != DdzSeat.Me) recordPlayShownAsMyTurnBegins(read)
         // 轮到自己先出,说明上一轮最后出牌的是自己、后面两家都没要;闯关的牌桌一轮结束就清桌,连「不出」都不留
         val seen = if (leading) { side: DdzSide -> read(side).let { if (it == DdzSeen.Empty) DdzSeen.Pass else it } } else read
         if (turn != DdzSeat.Me) leftMe = true
@@ -436,6 +441,28 @@ internal class DdzTracker(private val settling: DdzSettlingPolicy = DdzSettlingP
             waiting.removeFirst()
             lastSeen -= seat
         }
+    }
+
+    /**
+     * 画面上已经轮到我(按钮亮了、闹钟藏起来),tracker 还按上一帧以为轮到 [active] 那家,而他的出牌区
+     * 已经亮出王炸/炸弹:这一手先记下,把 [active] 让给我,别等它被下一手盖掉。
+     * 只补王炸和炸弹:它们挡闹钟、又只亮一帧,等不到 steady;普通牌仍旧交给 [resolve] 读稳,
+     * 免得把「牌落下那一帧带绶带的 3 认成 J」这种误读直接写进历史。读不准、张数对不上、顺序不对都不补。
+     */
+    private fun recordPlayShownAsMyTurnBegins(read: (DdzSide) -> DdzSeen) {
+        val seat = active ?: return
+        // 前面还有人等着记(他这一手可能还在飞):不能越过他先把后面这家的牌记下,顺序会乱
+        if (waiting.isNotEmpty()) return
+        if (seat == DdzSeat.Me) return
+        val seen = read(sideOf(seat))
+        if (seen !is DdzSeen.Cards) return
+        val cards = seen.ranks
+        if (cards.isEmpty()) return
+        val move = DdzSnapshotRecovery.classify(cards) ?: return
+        if (move.kind != DdzSnapshotRecovery.Kind.Rocket && move.kind != DdzSnapshotRecovery.Kind.Bomb) return
+        if (!usablePlay(seat, cards)) return
+        record(seat, cards)
+        active = seat.next
     }
 
     /** 从 [active] 往后数、不经过自己就到得了 [seat]。 */
