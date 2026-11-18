@@ -543,6 +543,8 @@ class HintMeldTest(unittest.TestCase):
             "shots4_212841_0033": [{"type": "kan", "tile": "7m"}],
             "shots4_212820_0023": [{"type": "kan", "tile": "7m"}],
             "shots_205128": [{"type": "kan", "tile": "1m"}, {"type": "kan", "tile": "4m"}],
+            # 500 场紫灰桌布:两个暗杠(七萬、五筒)都要切出和绿桌布一样的牌面。
+            "shots5_145239_0051": [{"type": "kan", "tile": "7m"}, {"type": "kan", "tile": "5p"}],
         }
         for name, melds in cases.items():
             with self.subTest(name=name):

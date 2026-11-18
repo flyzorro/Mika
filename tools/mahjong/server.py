@@ -795,6 +795,9 @@ MELD_GROUP_X = 456
 MELD_GROUP_STEP = 320
 MELD_GROUP_WIDTH = 276
 MELD_COLUMN = 92
+# 暗杠抬起那张牌的牌面顶边固定在 y≈878；淡紫灰桌布上方的高光也会过白色掩码，
+# 所以行范围从牌面顶边开始找，不把桌布算进牌面（绿桌布、紫灰桌布切出同样的框）。
+MELD_ANKONG_FACE_TOP = 870
 
 
 def _feature(image, size=(40, 64)):
@@ -973,6 +976,7 @@ def _recognize_melds(image, array, hand_start):
                 continue
             left_x, right_x = start + 40 + int(xs.min()), start + 40 + int(xs.max()) + 1
             rows = white[:, xs.min():xs.max() + 1].mean(axis=1) > 0.5
+            rows[:MELD_ANKONG_FACE_TOP - 820] = False
             ys = np.where(rows)[0]
             if not len(ys):
                 melds.append(None)
