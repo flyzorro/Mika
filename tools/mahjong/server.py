@@ -767,7 +767,7 @@ def advise_que(hand, draws=None):
 
 # ---- /hint:识别一张 2412×1080 的主屏截图 ----
 # 手牌区右对齐到 x=2004,每张宽 123.5px;刚摸的那张单独在 x=2043–2166。
-# 手牌和模板比 40×64 的归一化点积,>= 0.95 才算认出;自己的碰杠、牌墙剩余、
+# 手牌和模板比 40×64 的归一化点积,>= 0.90 才算认出;自己的碰杠、牌墙剩余、
 # 定缺角标和「荐」都用同一套模板/几何。认不出返回 unsure,并把牌面存进 unsure/。
 SCREEN_SIZE = (2412, 1080)
 HAND_RIGHT = 2004.0
@@ -775,9 +775,11 @@ HAND_PITCH = 123.5
 DRAWN_X = (2043.0, 2166.0)
 HAND_TOP, HAND_BOTTOM = 820, 1075
 HAND_FACE_TOP, HAND_FACE_BOTTOM = 885, 1057
-HAND_MATCH = 0.95
+# 0.90 实测选的:发黄光/带黄点的牌最低 0.912(4m),真牌最低 0.903;
+# 空槽/桌面最高 0.515,留 0.38 余量。0.95 会把这些 0.912–0.941 的牌漏成 unsure。
+HAND_MATCH = 0.90
 # 有没有牌不再看「牌面比桌布亮」,而是看固定格子里的模板得分:
-# 正常牌 ≥0.95;空格子/桌面最高 0.52(新手场 0.21、500 场 0.26、结算 0.52)。
+# 正常牌 ≥0.90;空格子/桌面最高 0.52(新手场 0.21、500 场 0.26、结算 0.52)。
 # 抬起的牌按 0–60px 上下搜索;玩家点选的那张实测抬 52px,碰/过提示抬 30px。
 HAND_LIFT_MAX = 60
 HAND_PRESENT = 0.60
@@ -841,6 +843,10 @@ def _best(feature, table):
         if score > best[0]:
             best = (score, name)
     return best
+
+
+def _hand_matched(score):
+    return score >= HAND_MATCH
 
 
 def _decode_screen(value):
@@ -920,7 +926,7 @@ def _scan_hand(image, array):
         drawn["slot"] = (*DRAWN_X, drawn["slot"][2], drawn["slot"][3], True)
         records.append(drawn)
     for record in records:
-        if record["score"] < HAND_MATCH:
+        if not _hand_matched(record["score"]):
             record["tile"] = None
     return records
 
