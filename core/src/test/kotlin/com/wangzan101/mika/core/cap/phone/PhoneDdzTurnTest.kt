@@ -441,6 +441,41 @@ class PhoneDdzTurnTest {
         return RawFrame(image.width, image.height, rows)
     }
 
+    /** 一张真人牌桌的可改副本(整屏要读的行都在),给 [frameOf] 拼相邻几帧用。 */
+    private fun frameRows(name: String): MutableMap<Int, IntArray> {
+        val image = ImageIO.read((javaClass.getResourceAsStream("/ddz/$name.jpg") ?: javaClass.getResourceAsStream("/ddz/$name.png"))!!)
+        return (DdzScreen.ROWS + DdzCards.ROWS + DdzCards.LOBBY_ROWS + DdzPopups.SCAN_ROWS).distinct()
+            .associateWith { image.getRGB(0, it, image.width, 1, null, 0, image.width) }.toMutableMap()
+    }
+
+    private fun frameOf(rows: Map<Int, IntArray>) = RawFrame(2412, 1080, rows.toMap())
+
+    private fun copyRows(rows: MutableMap<Int, IntArray>) = rows.mapValues { it.value.copyOf() }.toMutableMap()
+
+    /** 和读牌时一样:牌桌内容的左缘,闹钟、出牌区都按它算。 */
+    private fun barOf(rows: Map<Int, IntArray>): Int =
+        rows[DdzScreen.HAND_ROW]?.indexOfFirst { (it and 0xffffff) > 0x101010 } ?: 0
+
+    /** 闹钟点到左家/右家:真人桌上是一块金色。 */
+    private fun paintClock(rows: MutableMap<Int, IntArray>, side: DdzSide) {
+        val bar = barOf(rows)
+        val k = (2412 - bar) / 2292.0
+        val x0 = bar + ((if (side == DdzSide.Left) 310 else 1900) * k).toInt()
+        val x1 = x0 + (90 * k).toInt()
+        for (y in 220 until 320) rows[y]?.let { row -> for (x in x0 until x1) row[x] = 0xFFFFB000.toInt() }
+    }
+
+    /** 两家剩几张读不到:这几帧只认闹钟和出牌区,张数按这一局记下的来。 */
+    private fun blankCounts(rows: MutableMap<Int, IntArray>) {
+        for (y in 315 until 420) rows[y]?.let { row -> for (x in 226 until 288) row[x] = 0; for (x in 2130 until 2192) row[x] = 0 }
+    }
+
+    /** 我的不出/提示/出牌按钮没了:轮到别家。 */
+    private fun blankButtons(rows: MutableMap<Int, IntArray>) {
+        rows[470]?.fill(0)
+        rows[488]?.fill(0)
+    }
+
     /**
      * 加倍时手牌还没认全的一帧(2026-11-16 23:41 精英场:刚当上地主,三张底牌插进手牌并抬起):
      * 把手牌那一段的点数抹平,整手认牌返回 null,张数、底牌和加倍按钮照旧。
@@ -4371,6 +4406,73 @@ class PhoneDdzTurnTest {
             assertNotEquals(waited.content.toString() + game.taps, "paused", waited.text("state"))
             assertEquals("DouZero 那两下 + 简单规则的一下 ${game.taps}", 3, game.taps.count { it == pass })
             assertTrue("没过去的不出不能记进历史: ${tracker.history}", tracker.history.none { it.isEmpty() })
+        } finally {
+            PhoneDdzTurn.advise = saved
+        }
+    }
+
+    @Test fun aVerifiedPassKeepsTrackingTheNextTwoPlayers() = runTest {
+        // 2026-11-18:核对「不出」的那一窗口里别家也在出牌。以前整整 2.6 秒的帧既不进 tracker、也没人管,
+        // 右家、左家出得快的就漏成 missed_play。现在连着两帧看到画面离开我的决定就回去接着读,
+        // 读到的帧照常喂给记牌器:右家的不出、左家领出的这一手都要按顺序记上。
+        val saved = PhoneDdzTurn.advise
+        PhoneDdzTurn.advise = { _, _ -> """{"play":[]}""" }
+        try {
+            val base = frameRows("human_follow_left8_right2") // 轮到我:左家出了 6,右家不出
+            val leadSource = frameRows("human_left_10_10_10_3") // 借同一块屏上左家的另一手
+            val follow = frameOf(base)
+            // 右家在想:我的按钮没了,闹钟在右家
+            val rightTurn = frameOf(
+                copyRows(base).also { rows ->
+                    blankButtons(rows)
+                    blankCounts(rows)
+                    paintClock(rows, DdzSide.Right)
+                },
+            )
+            // 右家不出:闹钟到左家,左家这一手已经清掉
+            val leftTurn = frameOf(
+                copyRows(base).also { rows ->
+                    blankButtons(rows)
+                    blankCounts(rows)
+                    for (y in 220 until 420) rows[y]?.fill(0, 0, 1200)
+                    paintClock(rows, DdzSide.Left)
+                },
+            )
+            // 左家领出 10 10 10 3,又轮到我:按钮还在
+            val leftLead = frameOf(
+                copyRows(base).also { rows ->
+                    for (y in 220 until 420) {
+                        val from = leadSource[y] ?: continue
+                        val to = rows[y] ?: continue
+                        for (x in 200 until 1150) to[x] = from[x]
+                    }
+                    blankCounts(rows)
+                },
+            )
+            val result = full("human_result_leave_change_continue")
+            // start 读一帧、wait 开头再读一帧,第三帧轮到我按不出;之后右家、左家马上出牌
+            val frames = ArrayDeque(
+                listOf(follow, follow, follow) + List(2) { rightTurn } + List(3) { leftTurn } + List(6) { leftLead } + List(3) { result },
+            )
+            val pass = DdzScreen.read(follow).buttons[0].let { it.x to it.y }
+            val game = Game(PhoneDdzTurn.PACKAGE, frames)
+            val dispatcher = toolDispatcher(game)
+            PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
+            val tracker = DdzTracker(DdzSettlingPolicy.HUMAN).apply {
+                restore(DdzSeat.Left, listOf("J", "7", "4"), listOf(listOf("6")), current = DdzSeat.Me)
+            }
+            PhoneDdzTurn.useTracker(dispatcher.ctx, tracker)
+            val waited = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"wait"}""").jsonObject), dispatcher.ctx)
+            val history = tracker.history
+            assertNull("这几帧一手都不能漏: history=$history trace=${tracker.trace} ${waited.content}", tracker.broken)
+            assertEquals(
+                "我的不出、右家的不出、左家领出的 10 10 10 3: history=$history trace=${tracker.trace}",
+                listOf(emptyList<String>(), emptyList(), listOf("10", "10", "10", "3")),
+                history.drop(1).take(3),
+            )
+            // 核对两帧就回到等待循环:右家、左家这一轮读完,又轮到我,第二手照常按不出。
+            // 等满整个窗口的话这一帧(和左家这一手)都在盲区里,既轮不到我、也记不上。
+            assertEquals("两下不出都在: ${game.taps}", 2, game.taps.count { it == pass })
         } finally {
             PhoneDdzTurn.advise = saved
         }

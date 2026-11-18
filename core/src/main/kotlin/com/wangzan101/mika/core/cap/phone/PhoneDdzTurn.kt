@@ -136,6 +136,8 @@ internal object PhoneDdzTurn : PhoneTool {
     private const val SETTLE_MS = 250L
     private val JOKERS = setOf("BJ", "SJ")
     private const val VERDICT_MS = 800L
+    /** 按「不出」之后要连着几帧看到画面已经离开我的决定才算过去了:一帧可能只是按钮闪掉(见 [passTook])。 */
+    private const val PASS_LEFT_FRAMES = 2
     /** 这一手过了这么久就不再问模型,直接保底,免得倒计时走完。 */
     private const val RETRY_BUDGET_MS = 8_000L
 
@@ -1469,20 +1471,31 @@ internal object PhoneDdzTurn : PhoneTool {
 
     /**
      * 按了「不出」之后看画面,和出牌的 [verify] 一样:画面离开我的决定(按钮没了、轮到别家,或者结算页)才算不出成功;
-     * 窗口过完还在我的跟牌决定、张数也没变,就是游戏没认。只认窗口末尾那一帧:按下之后按钮可能先闪掉一帧又回来
-     * (真机 2026-11-18 13:46 就是这样),中途离开一下不算数。认不出的帧接着看,不改变上一次的判断。
+     * 窗口过完还在我的跟牌决定、张数也没变,就是游戏没认。
+     * 连着两帧都离开了我的决定就马上返回:核对期间别家也在出牌,不能为了等窗口把这一轮看漏(以前整整等满
+     * 2.6 秒,这两家的出牌全在盲区里,tracker 记成 missed_play)。只有按钮闪掉一帧又回来那种含糊的情况才等满窗口
+     * (真机 2026-11-18 13:46 就是这样)。认不出的帧接着看,不改变上一次的判断。
+     * 读到的帧照常喂给记牌器([track]):核对窗口里的帧和等待循环里的一样,一手都不能漏。
      */
     private suspend fun passTook(view: DdzView, ctx: ToolContext, turn: Turn?): Boolean {
         var waited = 0L
         var mine = true
+        // 连着几帧看到画面已经离开我的决定
+        var left = 0
         while (waited < VERDICT_MS + HUMAN_SCENE_RETRY_POLLS * POLL_MS) {
             val frame = ctx.screen.rawFrame(FULL_ROWS)
             if (frame != null) {
                 // 和等待循环一样:确认过是经典牌桌的这一帧才允许再点一下
                 if (turn?.mode == DdzMode.Human && DdzCards.classicHumanTable(frame)) turn.humanEligible = true
-                if (DdzCards.humanResult(frame)) return true
                 val after = DdzScreen.read(frame, classic = classicTable(turn))
-                if (after.handCount > 0) mine = after.phase == DdzPhase.Follow && after.handCount == view.handCount
+                // 这一帧别家的出牌也要记上:核对不是闭着眼等
+                if (turn != null) track(turn, frame, after)
+                if (DdzCards.humanResult(frame)) return true
+                if (after.handCount > 0) {
+                    mine = after.phase == DdzPhase.Follow && after.handCount == view.handCount
+                    left = if (mine) 0 else left + 1
+                    if (left >= PASS_LEFT_FRAMES) return true
+                }
             }
             delay(POLL_MS)
             waited += POLL_MS
@@ -2058,7 +2071,9 @@ internal object PhoneDdzTurn : PhoneTool {
                 val now = retakeAfterAutoPlay(ctx, turn)
                 return fallback(ctx, turn, tracker, now?.first ?: frame, now?.second ?: view)
             }
-            tracker.mine(emptyList())
+            // 核对窗口里的帧也喂给了 tracker:闹钟走过我时它已经记上这一手不出了,别再记一次;
+            // 还轮到我(窗口里只读到了别家的牌)才自己记。
+            if (tracker.ready()) tracker.mine(emptyList())
             turn.expectedHand = played
             return Auto.Played
         }
