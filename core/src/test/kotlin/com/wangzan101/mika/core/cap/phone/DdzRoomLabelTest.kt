@@ -6,7 +6,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
 
-/** 牌桌/匹配画面底部「经典××场」的读法:认得至尊场、土豪场、普通场,认不出时绝不猜。 */
+/** 牌桌/匹配画面底部「经典××场」的读法:认得至尊场、大师场、土豪场、普通场,认不出时绝不猜。 */
 class DdzRoomLabelTest {
     private fun image(name: String) = ImageIO.read(javaClass.getResourceAsStream("/ddz/$name.png")!!)
 
@@ -22,6 +22,12 @@ class DdzRoomLabelTest {
         assertEquals("至尊场", DdzRoomLabel.read(labelFrame("master_zhizun_matching")))
         assertEquals("土豪场", DdzRoomLabel.read(labelFrame("tuhao_table")))
         assertEquals("普通场", DdzRoomLabel.read(labelFrame("human_right_landlord_10cards")))
+    }
+
+    @Test fun readsTheMasterRoomInsteadOfTakingItForTuhao() {
+        // 2026-11-18 11:31 / 11:50:room=supreme 被游戏放进了「经典大师场」,而样本里没有大师场,
+        // 「大师」和「土豪」差得刚好够过门槛,读成了土豪场。素材是 11:50:59 的匹配画面(只存了识别要读的行)。
+        assertEquals("大师场", DdzRoomLabel.read(labelFrame("dashi_matching")))
     }
 
     @Test fun anUnknownOrCoveredLabelReadsAsNull() {
