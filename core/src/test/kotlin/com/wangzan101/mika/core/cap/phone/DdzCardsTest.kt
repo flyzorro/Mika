@@ -424,6 +424,15 @@ class DdzCardsTest {
         assertEquals(listOf("Q", "4", "10"), DdzCards.bottom(fullFrame("double_bottom_partial_4_10_Q")))
     }
 
+    /**
+     * 2026-11-17/18 真人局三次:放大底牌里的 3 都读成了 2(2 8 3 → 2 8 2、2 5 3 → 2 5 2、2 3 9 → 2 2 9)。
+     * 放大底牌的点数字高约 63~65 行,字形窗口只取牌顶往下 60 行,3 下半截的弯被切掉,剩下的更像 2。
+     * 素材是 2026-11-18 10:02 土豪场地主加倍时的帧(底牌 2♣ 3♣ 9♣,只存了识别要读的行)。
+     */
+    @Test fun aRevealedBottomThreeIsNotReadAsATwo() {
+        assertEquals(listOf("2", "3", "9"), DdzCards.bottom(fullFrame("revealed_bottom_2_3_9")))
+    }
+
     @Test fun seesWhoseTurnItIs() {
         assertEquals(DdzSide.Right, DdzCards.clock(frame("table_left55")))
         assertEquals(DdzSide.Left, DdzCards.clock(frame("table_rightKK")))
