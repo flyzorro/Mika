@@ -544,5 +544,30 @@
   "que": "p",
   "left": 42,
   "jian": null
+ },
+ "shots8_172536": {
+  "state": "turn",
+  "hand": [
+   "1p",
+   "1p",
+   "1p",
+   "4p",
+   "5p",
+   "5p",
+   "5p",
+   "7p",
+   "2s",
+   "4s",
+   "4p"
+  ],
+  "melds": [
+   {
+    "type": "pon",
+    "tile": "8s"
+   }
+  ],
+  "que": "m",
+  "left": 42,
+  "jian": null
  }
 }

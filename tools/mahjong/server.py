@@ -994,7 +994,8 @@ def _recognize_melds(image, array, hand_start):
         if score < MELD_MATCH or name is None:
             melds.append(None)
             continue
-        melds.append({"type": kind, "tile": name.split("_", 1)[1]})
+        # 同一张牌碰在不同组透视不一样,可以有多张模板:flat_8s.png、flat_8s_g0.png 都是 8s
+        melds.append({"type": kind, "tile": name.split("_")[1]})
     return melds
 
 
