@@ -134,6 +134,8 @@ internal object PhoneDdzTurn : PhoneTool {
         var roomLabel: String? = null
         /** 场次对不上时,牌还没发、已经点返回离开了匹配。 */
         var leftMismatchedRoom = false
+        /** 牌已经发了才认出场次对不上:照打这一局(用户定的:比坐着被游戏托管强),结果里一直带着 [roomLabel]。 */
+        var roomMismatchPlayed = false
         var seenAt: Long? = null
         var rejected = 0
         var single = false
@@ -650,6 +652,7 @@ internal object PhoneDdzTurn : PhoneTool {
             if (turn.lost > 0) put("handsLost", turn.lost)
             if (turn.played > 0) put("handsPlayed", turn.played)
             putAutoPlayed(turn)
+            putRoomMismatchPlayed(turn)
             putDouzeroOffs(turn)
             turn.tracker?.let { t ->
                 t.broken?.let { put("douzeroOff", it); put("douzeroTrace", t.trace.joinToString(" ")) }
@@ -662,6 +665,13 @@ internal object PhoneDdzTurn : PhoneTool {
     }
 
     /** DouZero 这次替模型打了几手、每手从轮到自己到牌出去花了多久;报完就清空,下一次调用不重复报。 */
+    /** 牌发了才认出场次不对、照打的这一局:每次结果都带上读到的场次,模型要告诉用户。 */
+    private fun JsonObjectBuilder.putRoomMismatchPlayed(turn: Turn) {
+        if (!turn.roomMismatchPlayed) return
+        turn.roomLabel?.let { put("roomMismatch", it) }
+        turn.requestedRoom?.let { put("requested", it) }
+    }
+
     private fun JsonObjectBuilder.putAutoPlayed(turn: Turn) {
         if (turn.decisions.isEmpty()) return
         put("autoPlayed", turn.decisions.size)
@@ -732,6 +742,7 @@ internal object PhoneDdzTurn : PhoneTool {
         turn.requestedRoom = explicitRoom
         turn.roomLabel = null
         turn.leftMismatchedRoom = false
+        turn.roomMismatchPlayed = false
         if (!DdzCards.classicHumanTable(page)) {
             if (!auto) return refused("not_human_game")
             // 在主大厅点「真人对战」、在真人场次页点选的场次(默认普通场),再等匹配和牌桌出来
@@ -791,6 +802,7 @@ internal object PhoneDdzTurn : PhoneTool {
             put("phase", next.phase.name.lowercase())
             put("handCount", next.handCount)
             putAutoPlayed(turn)
+            putRoomMismatchPlayed(turn)
             putDouzeroOffs(turn)
             turn.tracker?.let { tracker ->
                 tracker.broken?.let { put("douzeroOff", it) }
@@ -868,6 +880,7 @@ internal object PhoneDdzTurn : PhoneTool {
             if (turn.lost > 0) put("handsLost", turn.lost)
             if (turn.played > 0) put("handsPlayed", turn.played)
             putAutoPlayed(turn)
+            putRoomMismatchPlayed(turn)
             putDouzeroOffs(turn)
             turn.tracker?.let { t -> t.broken?.let { put("douzeroOff", it); put("douzeroTrace", t.trace.joinToString(" ")) } }
         }, image = if (ctx.config.visionEnabled) ctx.screen.quickShot() else null, changed = true)
@@ -928,6 +941,14 @@ internal object PhoneDdzTurn : PhoneTool {
         val expected = expectedRoomLabel(requested) ?: return false
         val label = DdzRoomLabel.read(frame) ?: return false
         if (label == expected) return false
+        // 牌已经发了:停下也走不了,人坐在桌上没人操作,游戏会托管打完整局(2026-11-18 两局)。
+        // 用户定的:照打这一局,只记下读到的场次,结果里报给模型
+        if (DdzCards.classicHumanTable(frame) && DdzScreen.read(frame, classic = true).handCount > 0) {
+            if (!turn.roomMismatchPlayed) println("DDZTRACE room_mismatch_play requested=$requested expected=$expected read=$label")
+            turn.roomLabel = label
+            turn.roomMismatchPlayed = true
+            return false
+        }
         turn.roomLabel = label
         turn.humanEligible = false
         turn.state = DdzSessionState.Paused
