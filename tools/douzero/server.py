@@ -330,6 +330,11 @@ def splits_bomb(move):
         and any(n == 4 for n in Counter(move).values())
 
 
+def is_bomb(move):
+    """这手是不是炸弹或王炸(整手四张一起出 / 大小王一起出),不出不算。"""
+    return md.get_move_type(list(move))["type"] in (md.TYPE_4_BOMB, md.TYPE_5_KING_BOMB)
+
+
 def single_kickers(move):
     """三带一/飞机带单里当带牌的单张;三条本身(哪怕三条是 A/2)不算。飞机带对不在其中。"""
     kind = md.get_move_type(sorted(move))["type"]
@@ -628,10 +633,10 @@ def sample_hands(infoset, rng):
 
 
 def halve(alive, own, rates, scores):
-    """一轮打完:按累计赢面去掉较差的一半(向上取整),DouZero 选的那手 [own] 永远留着。
+    """一轮打完:按累计平均得分去掉较差的一半(向上取整),DouZero 选的那手 [own] 永远留着。
 
     留几名向上取整:8 手留 4、5~7 手留 3~4、3 手留 2、2 手不再淘汰。
-    [own] 排在淘汰区时把它换进来、顶掉落选名次最高的那个,留的人数不变。返回按赢面从高到低排好的名单。
+    [own] 排在淘汰区时把它换进来、顶掉落选名次最高的那个,留的人数不变。返回按平均得分从高到低排好的名单。
     """
     keep = (len(alive) + 1) // 2
     ranked = sorted(alive, key=lambda k: (-rates[k], -scores[k], k))
@@ -665,16 +670,19 @@ def successive_halving(keys, own, scores, deal, play, budget, cap=ACT_ROLLOUT_GA
                       min_round_games=HALVING_MIN_ROUND_GAMES, clock=time.monotonic):
     """把 [budget] 秒分成几轮边打边淘汰:每轮还活着的候选都打同一批新发的牌,轮末去掉较差的一半。
 
-    [deal]() 发一批牌(这一轮里所有还活着的候选共用),[play](hands, key) 拿这批牌打一局、返回赢了没有。
+    [deal]() 发一批牌(这一轮里所有还活着的候选共用),[play](hands, key) 拿这批牌打一局、返回这局的结果:
+    赢了是正的 2^k、输了是负的 2^k(k 是这一手起打出的炸弹 / 王炸个数);布尔值 True/False 也照收。
     淘汰轮按 round_shares 分到的时间收手,但每个候选至少打满 [min_round_games] 局才淘汰——
     8 手按 1/4 预算只分到七八局,七八局的赢面差一半是运气,不能拿来淘汰。每个候选最多打 [cap] 局;
-    最后一轮(只剩两手)用掉剩下的全部时间。轮末按累计赢面淘汰,见 halve。
-    返回 (每个候选累计的 wins/played, 每轮 [留下的候选, 这一轮每个候选至少打了几局], 最后还活着的候选)。
+    最后一轮(只剩两手)用掉剩下的全部时间。轮末按累计平均得分淘汰,见 halve。
+    返回 (每个候选累计赢的局数, 每个候选累计得分, played, 每轮 [留下的候选, 这一轮每个候选至少打了几局],
+    最后还活着的候选)。赢的局数只用来在报告里算胜率;淘汰和最后比较都用平均得分,炸弹让这一局翻倍。
     [clock] 只为测试换成假时钟,线上就是 time.monotonic。
     """
     started = clock()
     rollout_deadline = started + budget
     wins = {k: 0 for k in keys}
+    earned = {k: 0.0 for k in keys}
     played = {k: 0 for k in keys}
     alive = list(keys)
     shares = round_shares(len(keys))
@@ -700,16 +708,18 @@ def successive_halving(keys, own, scores, deal, play, budget, cap=ACT_ROLLOUT_GA
                 if clock() >= rollout_deadline:
                     break
                 played[k] += 1
-                if play(hands, k):
+                result = play(hands, k)
+                if result > 0:
                     wins[k] += 1
+                earned[k] += float(result)
         games = min(played[k] - before[k] for k in alive)
         if len(alive) <= 2:
             rounds.append([list(alive), games])
             break
-        rates = {k: (wins[k] / played[k] if played[k] else 0.0) for k in keys}
-        alive = halve(alive, own, rates, scores)
+        means = {k: (earned[k] / played[k] if played[k] else 0.0) for k in keys}
+        alive = halve(alive, own, means, scores)
         rounds.append([list(alive), games])
-    return wins, played, rounds, alive
+    return wins, earned, played, rounds, alive
 
 
 class Agent:
@@ -748,7 +758,13 @@ class Agent:
             score = {tuple(sorted(a)): float(values[i]) for i, a in enumerate(infoset.legal_actions)}
             top = max(wins.get(m, 0) for m in score)
             allowed = {m for m in score if wins.get(m, 0) == top}
-            if wins.get(tuple(sorted(move)), 0) < top:
+            if top == 0:
+                # 一手都赢不了:炸弹只会把输的金豆再翻一倍,从不是炸弹 / 王炸的出法里挑 DouZero 打分最高的。
+                # 一手非炸弹都没有时照旧(炸不炸都输,炸弹也许能少输一手)。
+                quiet = {m for m in allowed if not is_bomb(m)}
+                if quiet:
+                    allowed = quiet
+            if tuple(sorted(move)) not in allowed:
                 move = list(max(allowed, key=score.get))
                 return self.swap_high_kickers(infoset, move, ok=lambda m: tuple(sorted(m)) in allowed)
         mate = {"landlord_down": "landlord_up", "landlord_up": "landlord_down"}.get(infoset.player_position)
@@ -910,7 +926,7 @@ class Agent:
             sampler = lambda: self.advisor.sample_hands(  # noqa: E731
                 infoset, rng, auction, deadline=sampler_deadline)
         # 局数上限显式传 ACT_ROLLOUT_GAMES:留作默认参数会被 def 时绑死,测试里改常量就不生效了
-        wins, played, rounds, finalists = successive_halving(
+        wins, earned, played, rounds, finalists = successive_halving(
             keys, own, scores, sampler,
             lambda hands, k: self.play_out(hands, infoset.three_landlord_cards, history,
                                            infoset.player_position, by_key[k]),
@@ -919,32 +935,35 @@ class Agent:
         if games == 0:
             return None
         rates = {k: (wins[k] / played[k] if played[k] else 0.0) for k in keys}
+        means = {k: (earned[k] / played[k] if played[k] else 0.0) for k in keys}
         chosen = move
         tie = None
         min_games = ACT_ROLLOUT_MIN_GAMES_OPENING if sum(infoset.num_cards_left_dict.values()) >= OPENING_CARDS \
             else ACT_ROLLOUT_MIN_GAMES
         if games >= min_games:
-            # 只在最后两手(淘汰掉的不再参选)里挑赢面最高的;同分仍按 DouZero 分数顺序
-            best = max((k for k in keys if k in finalists), key=lambda k: rates[k])
+            # 只在最后两手(淘汰掉的不再参选)里挑平均得分最高的;同分仍按 DouZero 分数顺序。
+            # 炸弹让这一局翻倍,所以要按得分比,不能只看胜率。
+            best = max((k for k in keys if k in finalists), key=lambda k: means[k])
             margin = SWITCH_MARGIN if games >= ACT_ROLLOUT_MIN_GAMES else OPENING_SWITCH_MARGIN
-            if rates[best] - rates[own] >= margin:
+            if means[best] - means[own] >= margin:
                 chosen = by_key[best]
             else:
                 # 差不到门槛时挑出完剩下手数更少的:2026-11-16 11:58:20 土豪场,我是地主上家领出,
                 # 手里 BJ 2 J 9 8 7 6 5 5 5 5 4。DouZero 出 5 6 7 8 9,模拟 152 局 5..9 赢 0.59、4..9 赢 0.64,
                 # 差不到 0.1 的门槛仍出 5..9;可 4..9 出完剩 BJ 2 J 5 5 5 三手,5..9 剩 BJ 2 J 5 5 5 4 四手。
-                # 赢面不低于 DouZero 那手的候选里手数更少就换;淘汰掉的候选也不再参选。
+                # 平均得分不低于 DouZero 那手的候选里手数更少就换;淘汰掉的候选也不再参选。
                 # 手数比较也吃一手牌的总预算:截止时刻取 min(自己的 0.2 秒, 总预算剩下的 − 0.1),
                 # 总预算没余量就不比了(模拟截止时间已经先给它留出 0.2 秒)。
                 tie_left = deadline - time.monotonic() - ACT_BUDGET_SAFETY_S
                 if tie_left > 0:
                     tie = fewer_plays(infoset.player_hand_cards, [k for k in keys if k in finalists],
-                                      rates, scores, own,
+                                      means, scores, own,
                                       time.monotonic() + min(endgame.MIN_PLAYS_BUDGET_S, tie_left))
                 if tie is not None:
                     chosen = by_key[tie[0]]
         info = {"games": games, "min_games": min_games, "budget_left": round(left, 2),
                 "rates": {labels[k]: round(rates[k], 2) for k in keys},
+                "avg_score": {labels[k]: round(means[k], 3) for k in keys},
                 "rounds": [[[labels[k] for k in alive], n] for alive, n in rounds],
                 "chosen": move_label(chosen)}
         if late:
@@ -955,14 +974,20 @@ class Agent:
         return chosen, info
 
     def play_out(self, hands, bottom, history, me, move):
-        """按 [hands] 开局把 [history] 重放到现在,我先出 [move],之后三家都按 DouZero 打分打到完。返回我这方赢没赢。"""
+        """按 [hands] 开局把 [history] 重放到现在,我先出 [move],之后三家都按 DouZero 打分打到完。
+
+        返回这一局的得分:赢 +2^k、输 −2^k,k 是这一手起(含候选这一手)打出的炸弹 / 王炸个数。
+        斗地主每个炸弹把整局输赢 ×2,所以模拟要按金额比,不能只比赢面;历史里已经出过的炸弹不算。
+        """
         replay = Replay(history)
         players = {s: _RolloutAgent(replay, self.plain[s], move if s == me else None) for s in SEATS}
         env = GameEnv(players)
         env.card_play_init({**{s: list(hands[s]) for s in SEATS}, "three_landlord_cards": list(bottom)})
         while not env.game_over:
             env.step()
-        return bool(env.num_wins["landlord" if me == "landlord" else "farmer"])
+        k = env.bomb_num - sum(1 for m in history if is_bomb(m))
+        score = 2 ** k
+        return score if env.num_wins["landlord" if me == "landlord" else "farmer"] else -score
 
     def values(self, infoset):
         obs = get_obs(infoset)
