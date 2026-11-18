@@ -6,6 +6,7 @@ import android.graphics.Bitmap
 import android.graphics.Rect
 import android.os.PowerManager
 import android.os.SystemClock
+import android.util.Log
 import android.view.Display
 import android.view.accessibility.AccessibilityWindowInfo
 import com.wangzan101.mika.capsule.CapsuleController
@@ -43,7 +44,9 @@ class MainScreenWatchPort(
             watchSince = now
         }
         return try {
-            withContext(Dispatchers.Main.immediate) { capsule()?.beginWatchDock() }
+            // 胶囊此刻在不在屏幕上,只用来留一条日志:看屏照样继续,提示等胶囊显示出来再闪(任务侧按 flash 的返回值重试)。
+            val docked = withContext(Dispatchers.Main.immediate) { capsule()?.beginWatchDock() ?: false }
+            if (!docked) Log.w(TAG, "watch started while the capsule is not shown; hints retry until it is")
             true
         } catch (e: Throwable) {
             // 还没真正开起来就被取消:别把「正在看屏」占着。
@@ -152,6 +155,7 @@ class MainScreenWatchPort(
     }
 
     private companion object {
+        const val TAG = "MikaWatch"
         /** 整个进程共用一个看屏名额:第二个任务的端口实例看到它占着就报 busy。 */
         val WATCH_LOCK = Any()
         var watchOwner: MainScreenWatchPort? = null

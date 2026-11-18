@@ -2015,9 +2015,9 @@ internal object PhoneDdzTurn : PhoneTool {
         tracker.observe(
             seat, { DdzCards.play(frame, it) }, { DdzCards.bottom(frame) },
             view.phase == DdzPhase.Lead && view.handCount == 20, trackedLeading(view.phase, seat),
-        ) {
-            if (DdzCards.singleStageTable(frame)) DdzCards.counts(frame) else emptyMap()
-        }
+            counts = { if (DdzCards.singleStageTable(frame)) DdzCards.counts(frame) else emptyMap() },
+            hand = { DdzCards.hand(frame, view) },
+        )
         // TEMP diagnostics for live runs (单机也抓); remove after.
         run {
             if (brokenBefore == null && tracker.broken != null) DdzFrameDump.dump("fail_${tracker.broken}", frame, FULL_ROWS)

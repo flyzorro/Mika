@@ -321,6 +321,36 @@ class AcceptanceTest(unittest.TestCase):
         self.assertEqual(body["shanten"], 0)
 
 
+class ShantenRegressionTest(unittest.TestCase):
+    """拆对子退向听换来的进张,不能盖过少一向听。
+
+    概率表把「高向听 × 大进张」这一格估高了,而 200 局蒙卡的标准误差(约 0.026)
+    比这些打法之间的真实差距还大;排序不能把噪声当成结论。
+    """
+
+    CASES = [
+        # 打 5p 拆对子退成 3 向听(59 进张),打孤张 9p 留 2 向听(20 进张)
+        (["1p", "1p", "1p", "2p", "5p", "5p", "9p", "2s", "4s", "6s", "8s", "8s", "9s", "4p"], "9p"),
+        # 打 1s 拆对子退成 2 向听(43 进张),打孤张 8s 留 1 向听(10 进张)
+        (["1p", "2p", "2p", "4p", "5p", "6p", "7p", "8p", "9p", "1s", "1s", "5s", "5s", "8s"], "8s"),
+        # 打 8s 拆对子退成 2 向听(59 进张),打孤张 7p 留 1 向听(13 进张)
+        (["1p", "1p", "2p", "2p", "3p", "4p", "5p", "7p", "1s", "5s", "6s", "7s", "8s", "8s"], "7p"),
+        # 打 4s 拆 444s 刻子退成 3 向听(59 进张),打 6p 留 2 向听(16 进张)
+        (["2p", "3p", "5p", "6p", "8p", "9p", "2s", "3s", "4s", "4s", "4s", "5s", "8s", "9s"], "6p"),
+    ]
+
+    def test_recommendation_keeps_the_least_shanten_for_its_target(self):
+        for hand, expected in self.CASES:
+            with self.subTest(hand=" ".join(hand)):
+                status, body = handle({"hand": hand, "melds": [], "que": "m", "draws": 14}, "/discard")
+                self.assertEqual(status, 200)
+                self.assertFalse(body["win"])
+                first = body["options"][0]
+                same_target = [option for option in body["options"] if option["target"] == first["target"]]
+                self.assertEqual(first["shanten"], min(option["shanten"] for option in same_target))
+                self.assertEqual(body["discard"], expected)
+
+
 class QueTest(unittest.TestCase):
     HAND = ["1m", "2m", "3m", "4m", "5m", "6m", "7m", "2p", "3p", "4p", "1s", "5s", "9s"]
 
@@ -595,14 +625,53 @@ class HintMeldTest(unittest.TestCase):
                 self.assertNotIn("advice", body)
 
 
+class HintMeldHandTemplateTest(unittest.TestCase):
+    """碰/明杠的牌面不靠 templates/meld/flat_*.png,要能由 templates/hand/ 的 27 张生成。"""
+
+    def test_melds_are_recognized_without_flat_templates(self):
+        # 每组都有 27 种牌面,全部从 templates/hand/ 生成,仓库里没有 flat_*.png。
+        self.assertEqual(sorted(server.MELD_FLAT_TEMPLATES[0]), sorted(HAND_TEMPLATES))
+        templates = {name: value for name, value in server.MELD_TEMPLATES.items()
+                     if not name.startswith("flat_")}
+        cases = {
+            "shots8_172536": [{"type": "pon", "tile": "8s"}],
+            "shots_204945": [{"type": "pon", "tile": "7m"}, {"type": "kan", "tile": "8m"},
+                             {"type": "pon", "tile": "8s"}],
+            "shots7_165550": [{"type": "pon", "tile": "2s"}],
+            "shots7_170205": [{"type": "pon", "tile": "3m"}],
+        }
+        with mock.patch.object(server, "MELD_TEMPLATES", templates):
+            for name, melds in cases.items():
+                with self.subTest(name=name):
+                    _, body = hint_frame(name)
+                    self.assertEqual(body["melds"], melds)
+
+
+class HintMeldMarginTest(unittest.TestCase):
+    def test_every_pon_or_exposed_kan_has_a_clear_lead(self):
+        # 认出的那张和「第二名」至少差 0.15:换一张牌不会被当成这一张。
+        with open(os.path.join(FIXTURES, "labels.json"), encoding="utf-8") as file:
+            labels = json.load(file)
+        for name, label in labels.items():
+            if name.startswith("_") or not label.get("melds"):
+                continue
+            image = load_frame(name)
+            for group, meld in enumerate(label["melds"]):
+                scores = server.meld_scores(image, group)
+                if scores is None:  # 暗杠走 templates/meld/ankong_*.png,不在这次比较里
+                    continue
+                with self.subTest(name=name, group=group):
+                    self.assertEqual(scores[0][0], meld["tile"])
+                    self.assertGreater(scores[0][1] - scores[1][1], 0.15)
+
+
 class HintUnsureMeldTest(unittest.TestCase):
     def test_unreadable_meld_saves_face_in_unsure_and_frame_in_captures(self):
-        templates = {name: value for name, value in server.MELD_TEMPLATES.items()
-                     if name != "flat_7m"}  # 没有 7m 碰的模板,这一组认不出
-        with Image.open(os.path.join(server.TEMPLATE_DIR, "meld", "flat_7m.png")) as template:
-            expected = template.size
+        # 拿掉第 1 组的 7m 碰牌模板:这一组认不出(第二名 8m 只有 0.58,低于 0.65)。
+        templates = [dict(table) for table in server.MELD_FLAT_TEMPLATES]
+        del templates[0]["7m"]
         with tempfile.TemporaryDirectory() as unsure_dir, tempfile.TemporaryDirectory() as capture_dir, \
-                mock.patch.object(server, "MELD_TEMPLATES", templates), \
+                mock.patch.object(server, "MELD_FLAT_TEMPLATES", templates), \
                 mock.patch.object(server, "UNSURE_DIR", unsure_dir), \
                 mock.patch.object(server, "CAPTURE_DIR", capture_dir), \
                 mock.patch.object(server, "_last_capture", None, create=True):
@@ -614,7 +683,7 @@ class HintUnsureMeldTest(unittest.TestCase):
             self.assertEqual(names, faces)  # unsure/ 只放牌面
             self.assertEqual(len(faces), 1)  # 每组认不出的碰杠各存一张牌面
             with Image.open(os.path.join(unsure_dir, faces[0])) as saved:
-                self.assertEqual(saved.size, expected)
+                self.assertEqual(saved.size, server.MELD_FACE_SIZE)
             frames = [name for name in os.listdir(capture_dir) if name.endswith(".png")]
             self.assertEqual(len(frames), 1)  # 整屏在 captures/,方便查为什么没读出来
 
