@@ -27,6 +27,10 @@ internal class DdzTracker(private val settling: DdzSettlingPolicy = DdzSettlingP
         private set
 
     private var active: DdzSeat? = null
+    /** 核对过底牌时的历史长度:别家每多出一手,就再拿底牌和已知的牌对一遍。 */
+    private var bottomChecked = -1
+    /** 底牌记下之后对不上、丢掉了:底牌早翻过去了,这一局不再重读。 */
+    private var bottomGaveUp = false
     private var firstUnsure = 0
     /** 地主的第一手连着几帧不合牌规:和「认不准」一样,读稳之前先等。 */
     private var firstIllegal = 0
@@ -76,11 +80,11 @@ internal class DdzTracker(private val settling: DdzSettlingPolicy = DdzSettlingP
 
     /**
      * 每一帧喂进来:[turn] 此刻轮到谁(没人或看不出为 null),[read] 读某家出牌区,[bottom] 读底牌,
-     * [leadingWith20] 此刻轮到自己先出、手里 20 张,[leading] 此刻轮到自己先出。
+     * [leadingWith20] 此刻轮到自己先出、手里 20 张,[leading] 此刻轮到自己先出,[hand] 读自己的手牌(核对底牌用)。
      */
     fun observe(
         rawTurn: DdzSeat?, read: (DdzSide) -> DdzSeen, bottom: () -> List<String>?, leadingWith20: Boolean = false, leading: Boolean = false,
-        counts: () -> Map<DdzSide, Int?> = { emptyMap() },
+        counts: () -> Map<DdzSide, Int?> = { emptyMap() }, hand: () -> List<String>? = { null },
     ) {
         if (broken != null) return
         frameNo++
@@ -98,12 +102,10 @@ internal class DdzTracker(private val settling: DdzSettlingPolicy = DdzSettlingP
             countSeen[seat] = now
         }
         // 底牌只是给 DouZero 的参考,认不出(比如里面有张王,竖着写的字太小)也照样记;叫分、加倍时出牌区只有字,不会当成牌。
-        // 翻开/动画的某一帧可能只认出两张:后面读到完整三张、而且包含先前那两张时换成三张,别整局锁成两张。
-        val readBottom = bottom()
-        if (readBottom != null) {
-            val known = this.bottom
-            if (known == null || (known.size < 3 && readBottom.size == 3 && containsAll(readBottom, known))) this.bottom = readBottom
-        }
+        // 只在这一局地主定下来、底牌翻开以后才读:新牌桌刚出来时画面上还留着上一局的底牌,一记就是整局。
+        // 已经记下的底牌等别家再出牌时再核对一遍。
+        recheckBottom(hand)
+        sampleBottom(bottom, hand)
         // 轮到自己先出、手里 20 张,一定是地主、还没人出过牌:之前认成别家出的牌(比如翻底牌的动画)作废
         if (leadingWith20 && landlord != DdzSeat.Me) {
             landlord = null
@@ -514,6 +516,69 @@ internal class DdzTracker(private val settling: DdzSettlingPolicy = DdzSettlingP
         return true
     }
 
+    /**
+     * 底牌只在这一局地主定下来、翻开以后读(叫分、翻底牌时画面上还是上一局那三张)。读到的这份还要和
+     * 手里的牌、别家已经出过的牌合得起来;合不起来的丢掉,这一局不再重读。
+     * 翻开/动画的某一帧可能只认出两张:后面读到完整三张、而且包含先前那两张时换成三张,别整局锁成两张。
+     */
+    private fun sampleBottom(bottom: () -> List<String>?, hand: () -> List<String>?) {
+        if (bottomGaveUp || landlord == null) return
+        val cards = bottom() ?: return
+        val known = this.bottom
+        if (known != null && !(known.size < 3 && cards.size == 3 && containsAll(cards, known))) return
+        if (!fitsDeck(cards, hand())) {
+            note("bottom_stale=${cards.joinToString("")}")
+            return
+        }
+        this.bottom = cards
+        bottomChecked = history.size
+        note("bottom=${cards.joinToString("")}")
+    }
+
+    /** 别家又出了牌:底牌和手牌、别家出过的牌再对一遍,同一个点数超过 4 张(王超过 1 张)就丢掉,这一局不再重读。 */
+    private fun recheckBottom(hand: () -> List<String>?) {
+        val cards = bottom ?: return
+        if (history.size == bottomChecked) return
+        bottomChecked = history.size
+        if (fitsDeck(cards, hand())) return
+        note("bottom_drop=${cards.joinToString("")}")
+        bottom = null
+        bottomGaveUp = true
+    }
+
+    /**
+     * 底牌和已经知道的牌合不合得起来:底牌 + 自己手里的牌 + 别家已经出过的牌,一个点数最多 4 张,王只有 1 张。
+     * 自己出过的牌不算:手里读的是此刻剩下的牌,出出去的已经不在里面了。
+     * 自己是地主时,底牌本来就在这 20 张手牌里:只看底牌是不是这手牌(或者自己已经打出去的牌)里的,
+     * 不再另算一遍——同一张牌数两次会把好底牌当成错的丢掉。[hand] 认不出时为 null,只按别家的出牌核对。
+     */
+    private fun fitsDeck(cards: List<String>, hand: List<String>?): Boolean {
+        if (cards.isEmpty()) return false
+        val mine = HashMap<String, Int>()
+        hand?.forEach { mine.merge(it, 1, Int::plus) }
+        val others = HashMap<String, Int>()
+        history.forEachIndexed { index, move ->
+            if (confirmedSeats.getOrNull(index) == DdzSeat.Me) {
+                // 地主打出去的牌也在自己的 20 张里,底牌可能是其中一张
+                if (landlord == DdzSeat.Me) move.forEach { rank -> if (!rank.startsWith(DdzCards.UNKNOWN)) mine.merge(rank, 1, Int::plus) }
+                return@forEachIndexed
+            }
+            move.forEach { rank -> if (!rank.startsWith(DdzCards.UNKNOWN)) others.merge(rank, 1, Int::plus) }
+        }
+        if (landlord == DdzSeat.Me && hand != null) {
+            for (rank in cards) {
+                val left = mine[rank] ?: return false
+                if (left == 0) return false
+                mine[rank] = left - 1
+            }
+            return true
+        }
+        val used = HashMap(mine)
+        cards.forEach { used.merge(it, 1, Int::plus) }
+        others.forEach { (rank, n) -> used.merge(rank, n, Int::plus) }
+        return used.all { (rank, n) -> n <= if (rank == "SJ" || rank == "BJ") 1 else 4 }
+    }
+
     /** Install a complete, already validated visible history without observing a new frame. */
     internal fun restore(landlord: DdzSeat, bottom: List<String>, moves: List<List<String>>, current: DdzSeat = landlord) {
         this.landlord = landlord
@@ -556,6 +621,9 @@ internal class DdzTracker(private val settling: DdzSettlingPolicy = DdzSettlingP
         awaitSawPlay = false
         awaitMeAfterInfer = false
         firstUnsure = 0
+        // 恢复的底牌来自核对过的快照,不再和这里的出牌重对一遍
+        bottomChecked = history.size
+        bottomGaveUp = false
         steadyFrames.clear()
         steadyFrameNo.clear()
     }
