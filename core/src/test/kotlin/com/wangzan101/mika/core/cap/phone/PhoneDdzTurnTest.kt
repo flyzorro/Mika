@@ -2468,18 +2468,24 @@ class PhoneDdzTurnTest {
         }
     }
 
-    @Test fun masterRoomOnAZhizunTableStopsBeforeBiddingOrPlaying() = runTest {
+    @Test fun masterRoomOnADealtZhizunTablePlaysOnAndReportsTheMismatch() = runTest {
         // 2026-11-13:room=master 点的 872,723 是紫色大师场,进桌后底部却写「经典至尊场」。
-        // 认出来就地停下:不叫分、不出牌,报 room_mismatch 和读到的场次名。
+        // 2026-11-18:牌已经发了才认出来,以前就地停下不动,结果游戏托管把整局打完(一次 +1.41 亿、一次 −1.06 亿)。
+        // 用户定的:牌发了就用 DouZero 照打,不报 room_mismatch 停下;结果里带上读到的场次,让模型告诉用户。
         val table = roomFrame("master_zhizun_table")
-        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(List(4) { table }))
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(List(8) { table } + List(2) { lobbyFrame("vd_lobby") }))
         val dispatcher = toolDispatcher(game)
-        val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","auto":true,"room":"master","advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
-        assertEquals(result.toString(), "room_mismatch", result.text("error"))
-        assertEquals("至尊场", result.text("room"))
-        assertEquals("master", result.text("requested"))
-        assertEquals("大师场", result.text("expected"))
-        assertTrue("一下都不点(更不点牌): ${game.taps}", game.taps.isEmpty())
+        val savedBid = PhoneDdzTurn.adviseBid
+        PhoneDdzTurn.adviseBid = { _, _ -> PhoneDdzTurn.BidAdvice(0) }
+        try {
+            val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","auto":true,"room":"master","advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
+            assertNotEquals(result.toString(), "room_mismatch", result.text("error"))
+            assertNotEquals(result.toString(), "room_mismatch", result.text("reason"))
+            assertEquals(result.toString(), "至尊场", result.text("roomMismatch"))
+            assertEquals(result.toString(), "master", result.text("requested"))
+        } finally {
+            PhoneDdzTurn.adviseBid = savedBid
+        }
     }
 
     @Test fun masterRoomStopsAtTheMatchingScreenWhenItSaysZhizun() = runTest {
