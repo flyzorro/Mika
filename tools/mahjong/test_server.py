@@ -321,6 +321,36 @@ class AcceptanceTest(unittest.TestCase):
         self.assertEqual(body["shanten"], 0)
 
 
+class ShantenRegressionTest(unittest.TestCase):
+    """拆对子退向听换来的进张,不能盖过少一向听。
+
+    概率表把「高向听 × 大进张」这一格估高了,而 200 局蒙卡的标准误差(约 0.026)
+    比这些打法之间的真实差距还大;排序不能把噪声当成结论。
+    """
+
+    CASES = [
+        # 打 5p 拆对子退成 3 向听(59 进张),打孤张 9p 留 2 向听(20 进张)
+        (["1p", "1p", "1p", "2p", "5p", "5p", "9p", "2s", "4s", "6s", "8s", "8s", "9s", "4p"], "9p"),
+        # 打 1s 拆对子退成 2 向听(43 进张),打孤张 8s 留 1 向听(10 进张)
+        (["1p", "2p", "2p", "4p", "5p", "6p", "7p", "8p", "9p", "1s", "1s", "5s", "5s", "8s"], "8s"),
+        # 打 8s 拆对子退成 2 向听(59 进张),打孤张 7p 留 1 向听(13 进张)
+        (["1p", "1p", "2p", "2p", "3p", "4p", "5p", "7p", "1s", "5s", "6s", "7s", "8s", "8s"], "7p"),
+        # 打 4s 拆 444s 刻子退成 3 向听(59 进张),打 6p 留 2 向听(16 进张)
+        (["2p", "3p", "5p", "6p", "8p", "9p", "2s", "3s", "4s", "4s", "4s", "5s", "8s", "9s"], "6p"),
+    ]
+
+    def test_recommendation_keeps_the_least_shanten_for_its_target(self):
+        for hand, expected in self.CASES:
+            with self.subTest(hand=" ".join(hand)):
+                status, body = handle({"hand": hand, "melds": [], "que": "m", "draws": 14}, "/discard")
+                self.assertEqual(status, 200)
+                self.assertFalse(body["win"])
+                first = body["options"][0]
+                same_target = [option for option in body["options"] if option["target"] == first["target"]]
+                self.assertEqual(first["shanten"], min(option["shanten"] for option in same_target))
+                self.assertEqual(body["discard"], expected)
+
+
 class QueTest(unittest.TestCase):
     HAND = ["1m", "2m", "3m", "4m", "5m", "6m", "7m", "2p", "3p", "4p", "1s", "5s", "9s"]
 
