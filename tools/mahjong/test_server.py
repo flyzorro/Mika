@@ -767,3 +767,14 @@ class HandTemplateTest(unittest.TestCase):
         score, tile = _best(_feature(Image.open(path)), HAND_TEMPLATES)
         self.assertEqual(tile, "4s")
         self.assertGreaterEqual(score, HAND_MATCH, f"{score:.4f}")
+
+
+class HandNearMissTest(unittest.TestCase):
+    def test_glow_and_dot_crops_pass_the_accept_rule(self):
+        directory = os.path.join(FIXTURES, "near_miss")
+        for name in sorted(os.listdir(directory)):
+            expected = name.split("_")[0]
+            with self.subTest(name=name):
+                score, tile = _best(_feature(Image.open(os.path.join(directory, name))), HAND_TEMPLATES)
+                self.assertEqual(tile, expected)
+                self.assertGreaterEqual(score, HAND_MATCH, f"{score:.4f}")
