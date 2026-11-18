@@ -94,14 +94,16 @@ internal object PhoneDdzTurn : PhoneTool {
     private const val HUMAN_ELITE_ROOM_X = 1360
     /** 同一排蓝色「土豪场」卡片的中心(1000 万-3 亿金豆):豆豆过了精英场上限,土豪场是还能进的底分最低的场。 */
     private const val HUMAN_TUHAO_ROOM_X = 1847
-    /** 第二排紫色「大师场」卡片的中心(2000 万-6 亿金豆):和普通场同一列,y 是第二排。 */
-    private const val HUMAN_MASTER_ROOM_X = 872
-    private const val HUMAN_MASTER_ROOM_Y = 723
     /**
-     * 第二排第二张橙色「至尊场」卡片的中心(1 亿金豆起,没有上限):和精英场同一列、和大师场同一排。
-     * 豆豆多了游戏会把点大师场的人放进至尊场(2026-11-13、2026-11-18 4.48 亿时都这样),要打就明说 room=supreme。
+     * 要进大师场(2000 万-6 亿金豆)点的位置:第二排第二张、卡面写「至尊场」的橙色卡(和精英场同一列)。
+     * 游戏把第二排两张卡对调了:点紫色「大师场」卡进的是经典至尊场,点橙色「至尊场」卡进的是经典大师场。
+     * 真机上 2026-11-13,以及 2026-11-18 11:14 / 11:31 / 11:50 / 12:00(豆豆 4.48 亿-5.89 亿)都是这样,和豆数无关;
+     * 场次页上游戏自己的高亮卡和「快速开始」写的场次也总是这两场对调。进桌后照旧按场次标签核对,游戏哪天改回来会报 room_mismatch。
      */
-    private const val HUMAN_SUPREME_ROOM_X = HUMAN_ELITE_ROOM_X
+    private const val HUMAN_MASTER_ROOM_X = HUMAN_ELITE_ROOM_X
+    private const val HUMAN_MASTER_ROOM_Y = 723
+    /** 要进至尊场(1 亿金豆起,没有上限)点的位置:第二排第一张、卡面写「大师场」的紫色卡(和普通场同一列),原因见 [HUMAN_MASTER_ROOM_X]。 */
+    private const val HUMAN_SUPREME_ROOM_X = HUMAN_NORMAL_ROOM_X
     /** Mika 屏上闯关页的报名。 */
     private const val STAGE_BUTTON_Y = 920
     private const val AUTO_CANCEL_MS = 600L

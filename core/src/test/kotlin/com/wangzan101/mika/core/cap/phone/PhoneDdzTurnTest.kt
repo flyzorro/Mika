@@ -2405,28 +2405,29 @@ class PhoneDdzTurnTest {
     }
 
     @Test fun humanStartWalksIntoTheMasterRoomWhenAsked() = runTest {
-        // 豆豆 3.21 亿:普通、精英、土豪场都超上限,大师场(2000 万-6 亿)是第二排第一张紫色卡。
-        // room=master 由工具自己点那一张,一下都不点牌
+        // 豆豆 3.21 亿:普通、精英、土豪场都超上限,该去大师场(2000 万-6 亿)。
+        // 游戏把第二排两张卡对调了:点紫色「大师场」卡进的是至尊场、点橙色「至尊场」卡进的是大师场
+        // (2026-11-13、2026-11-18 11:14/11:31/11:50/12:00 真机都这样)。room=master 点橙色那张,一下都不点牌
         val rooms = shot("human_classic_rooms")
         val call = full("call")
         val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(rooms, call) + List(6) { call } + List(2) { lobbyFrame("vd_lobby") }))
         val dispatcher = toolDispatcher(game)
         PhoneDdzTurn.adviseBid = { _, _ -> PhoneDdzTurn.BidAdvice(0) }
         PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","auto":true,"room":"master","advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
-        assertEquals(listOf(872 to 723), game.taps.take(1))
+        assertEquals(listOf(1360 to 723), game.taps.take(1))
         assertTrue("一下都不点牌: ${game.taps}", game.taps.none { it.second == DdzScreen.CARD_Y })
     }
 
     @Test fun humanStartWalksIntoTheSupremeRoomWhenAsked() = runTest {
         // 2026-11-18 11:14:豆豆 4.48 亿,点 room=master 被游戏放进了「经典至尊场」。用户要打至尊场:
-        // room=supreme 点第二排第二张橙色「至尊场」(和精英场同一列、和大师场同一排),一下都不点牌
+        // 游戏把第二排两张卡对调了(11:31、11:50 点橙色「至尊场」卡都进了大师场):room=supreme 点紫色「大师场」卡,一下都不点牌
         val rooms = shot("human_classic_rooms")
         val call = full("call")
         val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(rooms, call) + List(6) { call } + List(2) { lobbyFrame("vd_lobby") }))
         val dispatcher = toolDispatcher(game)
         PhoneDdzTurn.adviseBid = { _, _ -> PhoneDdzTurn.BidAdvice(0) }
         PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","auto":true,"room":"supreme","advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
-        assertEquals(listOf(1360 to 723), game.taps.take(1))
+        assertEquals(listOf(872 to 723), game.taps.take(1))
         assertTrue("一下都不点牌: ${game.taps}", game.taps.none { it.second == DdzScreen.CARD_Y })
     }
 
@@ -2477,7 +2478,7 @@ class PhoneDdzTurnTest {
         val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","auto":true,"room":"master","advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
         assertEquals(result.toString(), "room_mismatch", result.text("error"))
         assertEquals("离开了匹配: $result", "true", result.text("left"))
-        assertEquals(listOf(872 to 723, 168 to 56), game.taps)
+        assertEquals(listOf(1360 to 723, 168 to 56), game.taps)
         assertTrue("一下都不点牌: ${game.taps}", game.taps.none { it.second == DdzScreen.CARD_Y })
     }
 
@@ -2627,8 +2628,9 @@ class PhoneDdzTurnTest {
             "normal" to (262 to { (r, g, b) -> r < 120 && g > 165 && b > 100 && g - r > 60 }),
             "elite" to (262 to { (r, g, b) -> r < 80 && g > 170 && b > 160 }),
             "tuhao" to (262 to { (r, g, b) -> b > 200 && r < 135 && g > 135 }),
-            // 大师场在第二排:看它自己那一排的紫色色带
-            "master" to (600 to { (r, g, b) -> b > 200 && b - r > 50 && b - g > 40 }),
+            // 第二排两张卡被游戏对调了:要大师场点橙色「至尊场」卡,要至尊场点紫色「大师场」卡
+            "master" to (600 to { (r, g, b) -> r > 200 && r - b > 100 }),
+            "supreme" to (600 to { (r, g, b) -> b > 200 && b - r > 50 && b - g > 40 }),
         )
         for ((room, probe) in colours) {
             val (y, isCard) = probe
