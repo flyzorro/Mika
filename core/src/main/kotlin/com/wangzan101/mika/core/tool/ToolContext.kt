@@ -60,6 +60,8 @@ internal class ToolConfig(
     val mainScreen: com.wangzan101.mika.core.userscreen.MainScreenPort? = null,
     /** 悬浮胶囊上闪一句字;给了才能把看屏的建议闪出来。 */
     val hintHud: com.wangzan101.mika.core.userscreen.HintHud? = null,
+    /** 编译时预设的 Mac 麻将服务地址(本机 Gradle 属性 `mika.mahjongAdvisor`,不进仓库);模型没给 advisor 时用它。 */
+    val mahjongAdvisor: String? = null,
 )
 
 /** 一个任务里按规矩不收的记忆写入,到这么多条为止不计入连续失败;再多就照常计(见 [ToolContext.noteMemoryRefusal])。 */

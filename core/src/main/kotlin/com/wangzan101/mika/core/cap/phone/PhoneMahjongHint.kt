@@ -69,8 +69,8 @@ internal object PhoneMahjongHint : PhoneTool {
             put("enum", JsonArray(listOf("m", "p", "s").map(::JsonPrimitive)))
             put("description", "定缺: the suit you must get rid of first, m (万), p (筒) or s (条).")
         },
-        "advisor" to buildJsonObject { put("type", "string"); put("description", "Mahjong service URL on the Mac, as the user gave it.") },
-    ), listOf("advisor"))
+        "advisor" to buildJsonObject { put("type", "string"); put("description", "Mahjong service URL on the Mac, as the user gave it; omit to use the preset one.") },
+    ))
 
     /** 问麻将服务;测试里换掉。返回响应正文,连不上为 null。 */
     internal var post: suspend (url: String, body: String) -> String? = { url, body -> DdzAdvisor.post(url, body, "discard") }
@@ -89,7 +89,7 @@ internal object PhoneMahjongHint : PhoneTool {
         ctx.config.visionEnabled || (ctx.config.mainScreen != null && ctx.config.hintHud != null)
 
     override suspend fun execute(a: Args, ctx: ToolContext): ToolExecution {
-        val advisor = a.str("advisor") ?: throw ArgError("advisor", "required")
+        val advisor = a.str("advisor") ?: ctx.config.mahjongAdvisor?.takeIf { it.isNotBlank() } ?: throw ArgError("advisor", "required")
         return when (val action = a.str("action")?.trim()?.lowercase()) {
             null -> discard(a, advisor)
             "watch" -> watch(advisor, ctx)

@@ -25,6 +25,8 @@ android {
         // 关于页版本号后的 Beta 标记;出正式版时改成 false
         buildConfigField("boolean", "BETA", "true")
         buildConfigField("boolean", "ADB_LOGS", "false")
+        // 麻将提示的 Mac 服务默认地址:本机 ~/.gradle/gradle.properties 里的 mika.mahjongAdvisor(带主机名,不进仓库);没设为空
+        buildConfigField("String", "MAHJONG_ADVISOR", "\"${providers.gradleProperty("mika.mahjongAdvisor").orNull.orEmpty()}\"")
     }
 
     // 沙箱程序只有 arm64 版本(jniLibs/arm64-v8a);APK 不限 ABI,别的设备照常安装、显示「此设备不支持沙箱」。
