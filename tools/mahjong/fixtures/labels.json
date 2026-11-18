@@ -469,5 +469,80 @@
   ],
   "que": "p",
   "left": 0
+ },
+ "shots6_152150": {
+  "state": "turn",
+  "hand": [
+   "5s",
+   "6s",
+   "6s",
+   "7s",
+   "7s",
+   "7s",
+   "2m",
+   "3m",
+   "4m",
+   "8m",
+   "8m"
+  ],
+  "melds": [
+   {
+    "type": "pon",
+    "tile": "1s"
+   }
+  ],
+  "que": "p",
+  "left": 35,
+  "jian": "6s"
+ },
+ "shots7_165550": {
+  "state": "turn",
+  "hand": [
+   "4s",
+   "5s",
+   "5s",
+   "5s",
+   "6s",
+   "6s",
+   "9s",
+   "9s",
+   "4p",
+   "4p",
+   "4s"
+  ],
+  "melds": [
+   {
+    "type": "pon",
+    "tile": "2s"
+   }
+  ],
+  "que": "m",
+  "left": 29,
+  "jian": "5s"
+ },
+ "shots7_170205": {
+  "state": "turn",
+  "hand": [
+   "1m",
+   "4m",
+   "6m",
+   "7m",
+   "7m",
+   "9m",
+   "1s",
+   "2s",
+   "3s",
+   "5s",
+   "8s"
+  ],
+  "melds": [
+   {
+    "type": "pon",
+    "tile": "3m"
+   }
+  ],
+  "que": "p",
+  "left": 42,
+  "jian": null
  }
 }

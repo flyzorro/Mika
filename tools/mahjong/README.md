@@ -93,10 +93,16 @@ curl -s http://127.0.0.1:3428/hint \
   `hand` / `melds` / `que` / `left`，大厅和结算只有 `state`。
 - `unsure`：有一张牌、一组碰杠、定缺或牌墙剩余认不出；`reason` 是 `tile` / `meld` /
   `que` / `left`。这一手不给建议。认不出的牌面会存进 `unsure/`，攒够了补模板；
-  碰杠认不出时也会存下那一组的牌面（可直接当 `templates/meld/flat_<tile>.png`）和整屏截图。
+  碰杠认不出时也会存下那一组的牌面（可直接当 `templates/meld/flat_<tile>.png`），整屏在 `captures/`。
 
 `/hint` 的错误用 HTTP 200 + `{"error","detail"}`：图片解不开或格式不是 PNG/JPEG
-`bad_image`，分辨率不是 2412×1080 `unsupported_screen`。
+`bad_image`，分辨率不是 2412×1080 `unsupported_screen`。认图时出了异常返回 HTTP 500
+`{"error":"internal"}`，异常栈打进日志。
+
+**抓帧**：除了普通的 `wait`，每次 `/hint` 都把原图和回复存进 `captures/`（同名 `.png`/`.jpg`
++ `.json`），用来事后逐帧核对认错的牌。`wait` 只在认出的手牌 + 3×碰杠凑不成 13 张时存；
+出异常的帧 `.json` 里带 `traceback`。和上一张回复完全一样的帧不重复存（用户想牌时每秒一帧）。
+一局大约 20–40 帧、几十 MB，用完手动清。
 
 ### 认牌
 
@@ -112,7 +118,7 @@ curl -s http://127.0.0.1:3428/hint \
   最高 0.515，所以阈值取 0.90，留 0.38 余量。
 - 自己的碰杠在 x 456 起、每组 276px 宽：3 张白面是碰；中间抬起的是杠；抬起的牌
   只露 1 张正面、左右是绿牌背的是暗杠。牌面用 `templates/meld/` 的模板比：明面模板
-  `flat_*` 现在覆盖 1p、4m、6m、6p、7m、8m（杠）、8s，暗杠模板 `ankong_*` 覆盖 1m、5p、7m；
+  `flat_*` 现在覆盖 1p、1s、2s、3m、4m、6m、6p、7m、8m（杠）、8s，暗杠模板 `ankong_*` 覆盖 1m、5p、7m；
   没模板的牌返回 `unsure`（`reason` 为 `meld`）。暗杠牌面从抬起那张的牌面顶边开始切
   （`MELD_ANKONG_FACE_TOP`），绿桌布和淡紫灰桌布切出同样的框，不再把桌布算进牌面。
 - 牌墙剩余是左上角绿框里的数字，用连通域切成 1–2 位，再和 `templates/digit/`

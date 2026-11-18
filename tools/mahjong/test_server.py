@@ -414,6 +414,19 @@ FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures")
 FRAME_DIR = os.path.join(FIXTURES, "frames")
 
 
+def setUpModule():
+    # 测试里的 /hint 不往仓库目录的 captures/ 写图
+    global _CAPTURE_TMP, _CAPTURE_PATCH
+    _CAPTURE_TMP = tempfile.TemporaryDirectory()
+    _CAPTURE_PATCH = mock.patch.object(server, "CAPTURE_DIR", _CAPTURE_TMP.name, create=True)
+    _CAPTURE_PATCH.start()
+
+
+def tearDownModule():
+    _CAPTURE_PATCH.stop()
+    _CAPTURE_TMP.cleanup()
+
+
 def png_base64(path):
     with open(path, "rb") as file:
         return base64.b64encode(file.read()).decode()
@@ -583,25 +596,27 @@ class HintMeldTest(unittest.TestCase):
 
 
 class HintUnsureMeldTest(unittest.TestCase):
-    def test_unreadable_meld_saves_face_and_full_frame(self):
+    def test_unreadable_meld_saves_face_in_unsure_and_frame_in_captures(self):
         templates = {name: value for name, value in server.MELD_TEMPLATES.items()
                      if name != "flat_7m"}  # 没有 7m 碰的模板,这一组认不出
         with Image.open(os.path.join(server.TEMPLATE_DIR, "meld", "flat_7m.png")) as template:
             expected = template.size
-        with tempfile.TemporaryDirectory() as unsure_dir, \
+        with tempfile.TemporaryDirectory() as unsure_dir, tempfile.TemporaryDirectory() as capture_dir, \
                 mock.patch.object(server, "MELD_TEMPLATES", templates), \
-                mock.patch.object(server, "UNSURE_DIR", unsure_dir):
+                mock.patch.object(server, "UNSURE_DIR", unsure_dir), \
+                mock.patch.object(server, "CAPTURE_DIR", capture_dir), \
+                mock.patch.object(server, "_last_capture", None, create=True):
             status, body = hint_frame("shots_204850")
             self.assertEqual(status, 200)
             self.assertEqual(body, {"state": "unsure", "reason": "meld"})
             names = os.listdir(unsure_dir)
             faces = [name for name in names if name.endswith("_meld.png")]
-            frames = [name for name in names if name.endswith("_meld_frame.png")]
+            self.assertEqual(names, faces)  # unsure/ 只放牌面
             self.assertEqual(len(faces), 1)  # 每组认不出的碰杠各存一张牌面
-            self.assertEqual(len(frames), 1)  # 整屏存一张,方便查为什么没读出来
-            for name, size in ((faces[0], expected), (frames[0], (2412, 1080))):
-                with Image.open(os.path.join(unsure_dir, name)) as saved:
-                    self.assertEqual(saved.size, size)
+            with Image.open(os.path.join(unsure_dir, faces[0])) as saved:
+                self.assertEqual(saved.size, expected)
+            frames = [name for name in os.listdir(capture_dir) if name.endswith(".png")]
+            self.assertEqual(len(frames), 1)  # 整屏在 captures/,方便查为什么没读出来
 
 
 class HintQueSelectTest(unittest.TestCase):
@@ -811,3 +826,73 @@ class HandNearMissTest(unittest.TestCase):
                 score, tile = _best(_feature(Image.open(os.path.join(directory, name))), HAND_TEMPLATES)
                 self.assertEqual(tile, expected)
                 self.assertGreaterEqual(score, HAND_MATCH, f"{score:.4f}")
+
+
+class HintCaptureTest(unittest.TestCase):
+    """非「等待」的帧、数不对的等待帧、出异常的帧,原图和回复都存进 captures/,事后核对认错的牌。"""
+
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.patches = [mock.patch.object(server, "CAPTURE_DIR", self.dir.name),
+                        mock.patch.object(server, "_last_capture", None, create=True)]
+        for patch in self.patches:
+            patch.start()
+
+    def tearDown(self):
+        for patch in self.patches:
+            patch.stop()
+        self.dir.cleanup()
+
+    def captured(self):
+        names = sorted(os.listdir(self.dir.name))
+        replies = [n for n in names if n.endswith(".json")]
+        images = [n for n in names if not n.endswith(".json")]
+        return replies, images
+
+    def test_turn_frame_is_saved_with_its_reply(self):
+        path = os.path.join(FRAME_DIR, "shots_204809.png")
+        _, body = hint_frame("shots_204809")
+        replies, images = self.captured()
+        self.assertEqual(len(replies), 1)
+        self.assertEqual(len(images), 1)
+        with open(os.path.join(self.dir.name, images[0]), "rb") as file, open(path, "rb") as original:
+            self.assertEqual(file.read(), original.read())
+        with open(os.path.join(self.dir.name, replies[0]), encoding="utf-8") as file:
+            self.assertEqual(json.load(file), body)
+
+    def test_same_reply_twice_in_a_row_is_saved_once(self):
+        # 用户想牌时手机每秒发一帧同样的画面,只留第一张
+        hint_frame("shots_204809")
+        hint_frame("shots_204809")
+        self.assertEqual(len(self.captured()[0]), 1)
+        hint_frame("shots_204850")
+        hint_frame("shots_204809")
+        self.assertEqual(len(self.captured()[0]), 3)
+
+    def test_plain_wait_is_not_saved(self):
+        _, body = hint_frame("shots_204857")
+        self.assertEqual(body["state"], "wait")
+        self.assertEqual(self.captured(), ([], []))
+
+    def test_wait_with_a_hand_that_does_not_add_up_is_saved(self):
+        reply = {"state": "wait", "hand": ["1m"] * 10, "melds": []}
+        with mock.patch.object(server, "advise_hint", return_value=reply):
+            code, body = hint_frame("shots_204857")
+        self.assertEqual((code, body), (200, reply))
+        replies, images = self.captured()
+        self.assertEqual((len(replies), len(images)), (1, 1))
+
+    def test_crash_is_saved_and_answered_500(self):
+        with mock.patch.object(server, "_scan_hand", side_effect=RuntimeError("boom")):
+            code, body = hint_frame("shots_204809")
+        self.assertEqual(code, 500)
+        self.assertEqual(body["error"], "internal")
+        replies, images = self.captured()
+        self.assertEqual(len(images), 1)
+        with open(os.path.join(self.dir.name, replies[0]), encoding="utf-8") as file:
+            self.assertIn("RuntimeError: boom", json.load(file)["traceback"])
+
+    def test_bad_image_saves_nothing(self):
+        code, body = handle({"image": "not base64!"}, "/hint")
+        self.assertEqual(body["error"], "bad_image")
+        self.assertEqual(self.captured(), ([], []))

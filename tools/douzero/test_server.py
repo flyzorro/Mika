@@ -294,13 +294,15 @@ class EndgameTest(unittest.TestCase):
     def test_the_last_pair_is_not_treated_as_a_random_pair(self):
         # 2026-11-16 20:51:41 土豪场,我是地主:手里 BJ SJ 2 Q 9 9,下家四张时先出 7 7 只剩两张,
         # 上家剩六张,没露面的是 4 9 K K A A 2 2。搜索把任意两张当成一样可能,算出 9 9 赢的分法最多;
-        # 可刚主动出过对子的人最后两张多半还是一对,只有王炸能赢 KK。应该出王炸。
+        # 可刚主动出过对子的人最后两张多半还是一对,只有王炸能赢 KK。
+        # 2026-11-18 残局改成按金额比后:likelihood 给王炸的赢面只有权重 ~0.0001,
+        # 王炸值 = 2×(2×0.0001−1) ≈ −2,9 9 值 = −1,不炸少输一半,所以这里出 9 9。
         history = [["3", "3"], ["4", "4"], ["Q", "Q"], ["K", "K"], ["A", "A"], [], [],
                    ["5", "5", "5", "3"], ["6", "6", "6", "5"], ["4", "J", "J", "J"], [], [],
                    ["6", "7", "8", "9", "10"], [], [], ["7"], ["J"], ["2"], [], [],
                    ["8", "8", "8", "3"], [], ["10", "10", "10", "Q"], [], [], ["7", "7"], []]
         play = ADVISOR.act("landlord", ["BJ", "SJ", "2", "Q", "9", "9"], ["9", "10", "Q"], history)
-        self.assertEqual(["SJ", "BJ"], [NAMES[c] for c in play])
+        self.assertEqual(["9", "9"], [NAMES[c] for c in play])
 
     def test_a_single_lead_does_not_talk_the_search_into_a_pair(self):
         # 同样的残局,但下家最后不是出对子,而是把对子拆开出了一张单 7:这时他手里不太可能还留着对子。
@@ -943,10 +945,9 @@ class CloseCallRolloutTest(unittest.TestCase):
         self.assertIn("BJ", rollout["rates"])
         self.assertEqual("pass", rollout["chosen"])
 
-    def test_a_near_tie_prefers_the_move_that_leaves_fewer_plays(self):
-        # 模拟赢面差不到门槛时,手数更少的一手胜出:4..9 剩三手,5..9 剩四手。
-        # 2.5 秒里多打一两局就能把赢面差顶过 0.05(150 局差 0.047,152 局差 0.053),固定局数让这条每次都走比手数那条路。
-        # ACT_ROLLOUT_GAMES 由 close_rollout 显式传给 successive_halving,这里改小才真的封住局数。
+    def test_a_move_that_leaves_fewer_plays_also_wins_on_amount(self):
+        # 4..9 剩三手,5..9 剩四手。按金额比时输掉的局会被炸弹翻倍放大,两手的平均得分差得很开
+        # (实测 -0.13 对 -0.37),4..9 直接胜出,不用走比手数那条路;手数更少的兜底仍见 FewerPlaysTest。
         import server
         report = {}
         with mock.patch.object(server, "ACT_ROLLOUT_GAMES", 150), \
@@ -955,10 +956,9 @@ class CloseCallRolloutTest(unittest.TestCase):
         self.assertEqual(["4", "5", "6", "7", "8", "9"], [NAMES[c] for c in move])
         rollout = report.get("rollout")
         self.assertIsNotNone(rollout, "顶两手差不到门槛,应该现场模拟")
-        self.assertEqual("fewer_plays", rollout.get("tiebreak"))
-        self.assertEqual(3, rollout["plays"]["4 5 6 7 8 9"])
-        self.assertEqual(4, rollout["plays"]["5 6 7 8 9"])
         self.assertEqual("4 5 6 7 8 9", rollout["chosen"])
+        self.assertGreater(rollout["avg_score"]["4 5 6 7 8 9"],
+                           rollout["avg_score"]["5 6 7 8 9"])
 
     def test_a_close_call_the_rollout_prefers_the_second_move(self):
         report = {}
@@ -1119,7 +1119,7 @@ class HalvingScheduleTest(unittest.TestCase):
         return result, now
 
     def test_the_worse_half_is_dropped_and_the_final_two_get_most_games(self):
-        ((wins, played, rounds, finalists), _) = (self.run_halving("pass"))
+        ((wins, earned, played, rounds, finalists), _) = (self.run_halving("pass"))
         # 8 -> 4 -> 2,最后一轮只剩两手不再淘汰
         self.assertEqual([4, 2, 2], [len(alive) for alive, _ in rounds])
         self.assertGreaterEqual(rounds[0][1], 12, "第一轮淘汰前每手至少打满 12 局")
@@ -1134,7 +1134,7 @@ class HalvingScheduleTest(unittest.TestCase):
 
     def test_the_douzero_move_is_never_dropped(self):
         # own 的假赢面最低,按赢面会被淘汰;它必须每一轮都在,而且换进来顶掉的只是最后一名
-        ((wins, played, rounds, finalists), _) = self.run_halving("pass")
+        ((wins, earned, played, rounds, finalists), _) = self.run_halving("pass")
         for alive, _ in rounds:
             self.assertIn("pass", alive)
         self.assertIn("pass", finalists)
@@ -1177,7 +1177,8 @@ class ActBudgetTest(unittest.TestCase):
 
         def spy(keys, own, scores, deal, play, budget, **kwargs):
             seen.append(budget)
-            return {k: 0 for k in keys}, {k: 1 for k in keys}, [[list(keys), 1]], list(keys)
+            return ({k: 0 for k in keys}, {k: 0.0 for k in keys}, {k: 1 for k in keys},
+                    [[list(keys), 1]], list(keys))
 
         server.successive_halving = spy
         try:
@@ -1516,6 +1517,157 @@ class AuctionEndgameTest(unittest.TestCase):
             auction = server_module.parse_auction({"bid": {"landlord": level}})
             strong, weak = self.weights(auction, "landlord_up")
             self.assertEqual(strong, weak, level)
+
+
+class LostEndgameRuleTest(unittest.TestCase):
+    """残局搜索按金额比:每手值 = Σ 分法权重 ×(赢 +m / 输 −m),炸弹 / 王炸 m=2,其它 m=1。"""
+
+    def play(self, bomb_wins, pass_wins):
+        import endgame
+        import torch
+        total = 100
+        info = SimpleNamespace(
+            player_position="landlord_down",
+            player_hand_cards=[3, 3, 3, 3, 4],
+            legal_actions=[[3, 3, 3, 3], []],
+            num_cards_left_dict={s: 5 for s in SEATS},
+            three_landlord_cards=[], card_play_action_seq=[], last_move=[], last_two_moves=[[], []],
+            last_move_dict={s: [] for s in SEATS}, played_cards={s: [] for s in SEATS},
+            bomb_num=0, last_pid=None, all_handcards=None)
+        agent = ADVISOR.agents["landlord_down"]
+        # DouZero 永远更想炸:炸弹 9 分、不出 1 分;选哪手只由残局搜索的金额决定
+        values = torch.tensor([9.0, 1.0])
+        wins = {(3, 3, 3, 3): bomb_wins * total, (): pass_wins * total}
+        with mock.patch.object(agent, "values", return_value=values), \
+                mock.patch.object(endgame, "best", return_value=(wins, total)):
+            return names(agent.act(info))
+
+    def test_a_zero_win_endgame_drops_the_bomb(self):
+        import endgame
+        import torch
+        info = SimpleNamespace(
+            player_position="landlord",
+            player_hand_cards=[3, 3, 3, 3, 4, 5, 6],
+            legal_actions=[[3, 3, 3, 3], [4], [5], [6]],
+            num_cards_left_dict={s: 7 for s in SEATS},
+            three_landlord_cards=[], card_play_action_seq=[], last_move=[], last_two_moves=[[], []],
+            last_move_dict={s: [] for s in SEATS}, played_cards={s: [] for s in SEATS},
+            bomb_num=0, last_pid=None, all_handcards=None)
+        agent = ADVISOR.agents["landlord"]
+        # DouZero 给炸弹 9 分、其余 1/2/3 分;搜索说全军覆没时炸弹值 −2×权重、非炸弹 −1×权重,该出 6
+        values = torch.tensor([9.0, 1.0, 2.0, 3.0])
+        zero = {(3, 3, 3, 3): 0, (4,): 0, (5,): 0, (6,): 0}
+        with mock.patch.object(agent, "values", return_value=values), \
+                mock.patch.object(endgame, "best", return_value=(zero, 1)):
+            move = agent.act(info)
+        self.assertEqual([6], move)
+
+    def test_a_bomb_that_wins_less_weight_than_pass_is_dropped(self):
+        # 炸弹赢 40% 权重、不出 35%:炸弹 2×(0.4−0.6) = −0.4,不出 0.35−0.65 = −0.3,选不出
+        self.assertEqual([], self.play(0.40, 0.35))
+
+    def test_a_bomb_that_wins_more_amount_is_still_kept(self):
+        # 炸弹赢 60% 权重、不出 55%:炸弹 2×(0.6−0.4) = +0.4,不出 0.1,仍然炸
+        self.assertEqual(["3", "3", "3", "3"], self.play(0.60, 0.55))
+
+
+class LostBombAmountTest(unittest.TestCase):
+    """现场模拟按输赢金额比,不按胜率比:赢 +2^k、输 −2^k,k 是这一手起打出的炸弹 / 王炸个数。
+
+    按公开入口 ROLLOUT_ADVISOR.act 测;mock 掉 play_out 让炸弹和不出各自有确定的赢面,
+    其余候选一律输,这样最后两手一定是炸弹和不出。
+    """
+
+    # 2026-11-18 16:35:59 普通场,我是地主下家,地主出 2 2,现场模拟 rates={"pass": 0.48, "3 3 3 3": 0.55}。
+    LIVE = dict(seat="landlord_down",
+                hand=["2", "K", "J", "8", "8", "5", "4", "4", "4", "3", "3", "3", "3"],
+                bottom=["7", "Q", "K"],
+                history=[["5", "5"], ["10", "10"], ["A", "A"], [], [], ["8", "7", "6", "5", "4"],
+                         ["K", "Q", "J", "10", "9"], [], [], ["7", "7"], [], ["J", "J"], ["Q", "Q"], ["A", "A"], [],
+                         ["2", "2"]],
+                auction={"double": {"landlord": True, "landlord_up": False}})
+
+    def act(self, bomb_wins, pass_wins, report=None):
+        import server as server_module
+        seen = {}
+
+        def fake_play_out(hands, bottom, history, me, move):
+            key = "pass" if not move else " ".join(NAMES[c] for c in move)
+            n = seen.get(key, 0)
+            seen[key] = n + 1
+            target = {"3 3 3 3": bomb_wins, "pass": pass_wins}.get(key, 0.0)
+            won = (n % 100) < int(round(target * 100))
+            # 炸弹那一手打出去,这一局 k=1:赢 +2、输 −2;不出的局 k=0:赢 +1、输 −1
+            k = 1 if key == "3 3 3 3" else 0
+            return (2 ** k) if won else -(2 ** k)
+
+        agent = ROLLOUT_ADVISOR.agents[self.LIVE["seat"]]
+        auction = server_module.parse_auction(self.LIVE.get("auction"))
+        # 钉死局数,每手打满 100 局,赢面就是上面给的百分比,不受机器快慢影响
+        with mock.patch.object(agent, "play_out", fake_play_out), \
+                mock.patch.object(server_module, "ACT_ROLLOUT_GAMES", 100):
+            return ROLLOUT_ADVISOR.act(self.LIVE["seat"], self.LIVE["hand"], self.LIVE["bottom"],
+                                       self.LIVE["history"], report, auction=auction)
+
+    def test_a_bomb_that_still_wins_more_often_is_still_the_better_bet(self):
+        # 炸弹赢 0.55、不出赢 0.48:按金额炸弹 = 2×(0.55−0.45) = +0.20,不出 = 0.48−0.52 = −0.04,
+        # 炸弹仍然对。规则 B 是按金额比,不是一刀切禁炸。
+        report = {}
+        move = self.act(0.55, 0.48, report)
+        self.assertEqual(["3", "3", "3", "3"], names(move))
+        rollout = report.get("rollout")
+        self.assertIsNotNone(rollout)
+        self.assertEqual("3 3 3 3", rollout["chosen"])
+        self.assertIn("avg_score", rollout, "报告里要另带平均得分")
+        self.assertGreater(rollout["avg_score"]["3 3 3 3"], rollout["avg_score"]["pass"])
+
+    def test_a_bomb_that_wins_less_amount_should_pass(self):
+        # 炸弹赢 0.40、不出赢 0.35:按胜率选炸弹,按金额炸弹 −0.40 < 不出 −0.30,应该不出。
+        report = {}
+        move = self.act(0.40, 0.35, report)
+        self.assertEqual([], move)
+        rollout = report.get("rollout")
+        self.assertIsNotNone(rollout)
+        self.assertEqual("pass", rollout["chosen"])
+        self.assertIn("avg_score", rollout, "报告里要另带平均得分")
+        self.assertGreater(rollout["avg_score"]["pass"], rollout["avg_score"]["3 3 3 3"])
+        self.assertGreater(rollout["rates"]["3 3 3 3"], rollout["rates"]["pass"], "rates 还是胜率")
+
+
+class SwitchMarginScaleTest(unittest.TestCase):
+    """平均得分 = 2×胜率−1(不炸的局 ±1),换手门槛也要 ×2;不然 0.04 的胜率差会被当成过了 0.05。"""
+
+    LIVE = CloseCallRolloutTest.LIVE
+
+    def act(self, pass_wins, bj_wins, report):
+        import server as server_module
+        seen = {}
+
+        def fake_play_out(hands, bottom, history, me, move):
+            key = "pass" if not move else " ".join(NAMES[c] for c in move)
+            n = seen.get(key, 0)
+            seen[key] = n + 1
+            target = {"pass": pass_wins, "BJ": bj_wins}.get(key, 0.0)
+            return 1 if (n % 100) < int(round(target * 100)) else -1
+
+        agent = ROLLOUT_ADVISOR.agents[self.LIVE["seat"]]
+        with mock.patch.object(agent, "play_out", fake_play_out), \
+                mock.patch.object(server_module, "ACT_ROLLOUT_GAMES", 100):
+            return names(ROLLOUT_ADVISOR.act(self.LIVE["seat"], self.LIVE["hand"], self.LIVE["bottom"],
+                                             self.LIVE["history"], report))
+
+    def test_a_four_point_win_rate_gap_does_not_switch(self):
+        # 胜率 0.50 对 0.54,差 0.04 < 0.05;平均得分差 0.08,不能当过了 0.05
+        report = {}
+        self.assertEqual([], self.act(0.50, 0.54, report))
+        self.assertEqual("pass", report["rollout"]["chosen"])
+        self.assertLess(report["rollout"]["avg_score"]["BJ"] - report["rollout"]["avg_score"]["pass"], 0.1)
+
+    def test_a_six_point_win_rate_gap_switches(self):
+        # 胜率 0.50 对 0.56,差 0.06 > 0.05;平均得分差 0.12,要换
+        report = {}
+        self.assertEqual(["BJ"], self.act(0.50, 0.56, report))
+        self.assertEqual("BJ", report["rollout"]["chosen"])
 
 
 if __name__ == "__main__":
