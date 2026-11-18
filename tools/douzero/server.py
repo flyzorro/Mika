@@ -109,7 +109,8 @@ KEEP_MARGIN = 0.05
 # 下家农民用单张 2 顶住。DouZero 给不出不出的 +0.121 对 BJ 的 +0.060,只差 0.06 就信了分数选了不出。
 # 按看得见的牌随机发几百副、三家都用 DouZero 打分打到底:不出赢 0.79、BJ 赢 0.69,分数那点差距并不可靠。
 # 所以顶两手的分数差不到 CLOSE_MARGIN 就现场模拟:取 CLOSE_MARGIN 以内最多 CLOSE_TOP 手,同一批发牌比出牌,
-# 赢面高出 SWITCH_MARGIN 才换,否则仍听 DouZero。2.5 秒内每手至少打 ACT_ROLLOUT_MIN_GAMES 局,手机这一手等 4 秒够。
+# 平均得分高出 2×SWITCH_MARGIN 才换(不炸时得分 = 2×胜率−1,门槛也要 ×2),否则仍听 DouZero。
+# 2.5 秒内每手至少打 ACT_ROLLOUT_MIN_GAMES 局,手机这一手等 4 秒够。
 # 但开局每局都长:2026-11-16 10:58:14 精英场,我当地主的第一手(2 2 A K K Q Q J 9 8 8 8 7 7 6 5 5 5 5 4),
 # 2.5 秒只跑了 43 局,不到 60 局就白模拟了;单张 9 赢面 0.4 比单张 6 的 0.27 高 13 个点也换不掉。
 # 三家手里还有 OPENING_CARDS 张以上算开局,下限降到 ACT_ROLLOUT_MIN_GAMES_OPENING 局;
@@ -754,16 +755,17 @@ class Agent:
             if left_s > 0 else None
         allowed = None
         if solved is not None:
-            wins, _ = solved
+            wins, total = solved
             score = {tuple(sorted(a)): float(values[i]) for i, a in enumerate(infoset.legal_actions)}
-            top = max(wins.get(m, 0) for m in score)
-            allowed = {m for m in score if wins.get(m, 0) == top}
-            if top == 0:
-                # 一手都赢不了:炸弹只会把输的金豆再翻一倍,从不是炸弹 / 王炸的出法里挑 DouZero 打分最高的。
-                # 一手非炸弹都没有时照旧(炸不炸都输,炸弹也许能少输一手)。
-                quiet = {m for m in allowed if not is_bomb(m)}
-                if quiet:
-                    allowed = quiet
+            # 残局也按金额比:每手的值 = Σ 分法权重 ×(赢 +m / 输 −m),炸弹 / 王炸 m=2,其它 m=1。
+            # wins 是赢的分法权重,输的是 total − wins;一手都赢不了时炸弹值 −2×总权重 < 非炸弹 −1×总权重,
+            # 自然就不会炸,不用再单独判 top == 0。
+            amount = {}
+            for m in score:
+                weight = wins.get(m, 0)
+                amount[m] = (2 if is_bomb(m) else 1) * (2 * weight - total)
+            top = max(amount.values())
+            allowed = {m for m in score if amount[m] == top}
             if tuple(sorted(move)) not in allowed:
                 move = list(max(allowed, key=score.get))
                 return self.swap_high_kickers(infoset, move, ok=lambda m: tuple(sorted(m)) in allowed)
@@ -945,7 +947,9 @@ class Agent:
             # 炸弹让这一局翻倍,所以要按得分比,不能只看胜率。
             best = max((k for k in keys if k in finalists), key=lambda k: means[k])
             margin = SWITCH_MARGIN if games >= ACT_ROLLOUT_MIN_GAMES else OPENING_SWITCH_MARGIN
-            if means[best] - means[own] >= margin:
+            # 不炸的局得分 ±1,平均得分 = 2×胜率−1:同样的胜率差,平均得分差是它的 2 倍。
+            # 原来的 0.05 / 0.1 是按胜率定的门槛,按平均得分比要 ×2,不然等于把换手门槛减半。
+            if means[best] - means[own] >= 2 * margin:
                 chosen = by_key[best]
             else:
                 # 差不到门槛时挑出完剩下手数更少的:2026-11-16 11:58:20 土豪场,我是地主上家领出,
