@@ -1324,7 +1324,10 @@ internal object PhoneDdzTurn : PhoneTool {
      */
     private suspend fun submit(want: Set<Int>, view: DdzView, ctx: ToolContext, turn: Turn?): Sent {
         val selected = select(want, ctx, turn) ?: return Sent.SelectFailed
-        if (selected.phase != view.phase || selected.handCount != view.handCount) return Sent.Drift
+        if (selected.phase != view.phase || selected.handCount != view.handCount) {
+            DdzFrameDump.dump("fail_submit_drift", null, FULL_ROWS) // TEMP diagnostics; remove after.
+            return Sent.Drift
+        }
         val before = ctx.screen.rawFrame(FULL_ROWS)?.let { frame ->
             DdzScreen.read(frame, classic = classicTable(turn)).takeIf { it.lifted == want && it.handCount == view.handCount }?.let { DdzCards.hand(frame, it) }
         }
@@ -1349,6 +1352,8 @@ internal object PhoneDdzTurn : PhoneTool {
         repeat(2) {
             if (!tap(ctx, turn, view.buttons.last().x, view.buttons.last().y)) return Sent.Rejected
             val verdict = verify(view, count, left, ctx, classicTable(turn))
+            // TEMP diagnostics: 按了出牌看不出出了什么,把 verify 看过的几帧写盘; remove after.
+            if (verdict == Sent.Drift) DdzFrameDump.dump("fail_submit_drift", null, FULL_ROWS)
             if (verdict != null) return verdict
         }
         return Sent.Rejected
@@ -1368,6 +1373,7 @@ internal object PhoneDdzTurn : PhoneTool {
         var mismatch: List<String>? = null
         while (waited < VERDICT_MS + HUMAN_SCENE_RETRY_POLLS * POLL_MS) {
             val frame = ctx.screen.rawFrame(FULL_ROWS)
+            frame?.let { DdzFrameDump.seen(it) } // TEMP diagnostics; remove after.
             val after = frame?.let { DdzScreen.read(it, classic = classic) }
             // TEMP diagnostics; remove after.
             println("DDZTRACE verify phase=${after?.phase} count=${after?.handCount} hand=${if (frame != null && after != null) DdzCards.hand(frame, after) else null}")
