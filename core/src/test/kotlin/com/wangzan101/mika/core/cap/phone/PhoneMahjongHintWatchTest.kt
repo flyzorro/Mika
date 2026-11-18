@@ -20,6 +20,7 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -260,6 +261,17 @@ class PhoneMahjongHintWatchTest {
         val r = d.execute(Part.ToolCall("c1", "phone_mahjong_hint", """{"advisor":"http://mac:3428"}"""))
         assertEquals("invalid_arguments", r.content["error"]?.jsonPrimitive?.content)
         assertTrue("the message names the missing hand", r.content["message"]!!.jsonPrimitive.content.contains("hand"))
+    }
+
+    /** 看屏不经过模型看图:主模型不能看图(如 DeepSeek flash)时,只要能截主屏、能闪胶囊,工具也要提供。 */
+    @Test fun offeredToATextOnlyModelWhenTheScreenCanBeWatched() {
+        val ctx = toolDispatcher(screen, visionEnabled = false, mainScreen = main, hintHud = hud).ctx
+        assertTrue(PhoneMahjongHint.available(ctx))
+    }
+
+    @Test fun notOfferedToATextOnlyModelWithoutWatchPorts() {
+        val ctx = toolDispatcher(screen, visionEnabled = false).ctx
+        assertFalse(PhoneMahjongHint.available(ctx))
     }
 
     @Test fun rejectsAnUnknownAction() = runTest {
