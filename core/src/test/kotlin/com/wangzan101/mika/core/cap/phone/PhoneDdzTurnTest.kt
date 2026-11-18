@@ -2590,6 +2590,99 @@ class PhoneDdzTurnTest {
         assertTrue("绝不点「立即前往」: ${game.taps}", game.taps.none { (x, y) -> x in 1000..1420 && y in 690..800 })
     }
 
+    @Test fun humanAutoStartClimbsToTheLowestRoomItsBeansAllow() = runTest {
+        // 豆豆过了普通场、精英场的上限:room=auto 点普通场弹「豆豆太多」,工具自己点叉关掉、往上换一场;
+        // 精英场还是弹,土豪场才进得去。选场全程不交给模型,进桌照常叫分打牌。
+        val rooms = shot("human_classic_rooms")
+        val tooMany = shot("human_room_beans_too_many")
+        val close = DdzCards.humanBeansTooMany(tooMany)!!
+        val call = full("call")
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(
+            rooms, tooMany, rooms, tooMany, rooms, call, call, lobbyFrame("vd_lobby"),
+        )))
+        val dispatcher = toolDispatcher(game)
+        val savedBid = PhoneDdzTurn.adviseBid
+        PhoneDdzTurn.adviseBid = { _, _ -> PhoneDdzTurn.BidAdvice(0) }
+        try {
+            val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","auto":true,"room":"auto","advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
+            assertNull(result.toString(), result.text("error"))
+            assertEquals(result.toString(), listOf(872 to 400, close, 1360 to 400, close, 1847 to 400), game.taps.take(5))
+            assertEquals("进了土豪场就报土豪场: $result", "tuhao", result.text("room"))
+            assertTrue("绝不点「立即前往」: ${game.taps}", game.taps.none { (x, y) -> x in 1000..1420 && y in 690..800 })
+        } finally {
+            PhoneDdzTurn.adviseBid = savedBid
+        }
+    }
+
+    @Test fun humanAutoStartTapsOnlyTheNormalRoomWhenNoPopup() = runTest {
+        // 豆豆够普通场:room=auto 只点一次普通场就进桌,不往上爬
+        val rooms = shot("human_classic_rooms")
+        val call = full("call")
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(rooms, call, call, lobbyFrame("vd_lobby"))))
+        val dispatcher = toolDispatcher(game)
+        val savedBid = PhoneDdzTurn.adviseBid
+        PhoneDdzTurn.adviseBid = { _, _ -> PhoneDdzTurn.BidAdvice(0) }
+        try {
+            val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","auto":true,"room":"auto","advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
+            assertNull(result.toString(), result.text("error"))
+            assertEquals(listOf(872 to 400), game.taps.take(1))
+            assertEquals("normal", result.text("room"))
+            val higher = setOf(1360 to 400, 1847 to 400, 1360 to 723, 872 to 723)
+            assertTrue("只点普通场: ${game.taps}", game.taps.none { it in higher })
+        } finally {
+            PhoneDdzTurn.adviseBid = savedBid
+        }
+    }
+
+    @Test fun humanAutoStartReportsBeansTooManyAfterTheSupremeRoom() = runTest {
+        // 每一场都弹「豆豆太多」:room=auto 一路点叉往上爬,点完至尊场也进不去,才把选场交回模型报 beans_too_many
+        val rooms = shot("human_classic_rooms")
+        val tooMany = shot("human_room_beans_too_many")
+        val close = DdzCards.humanBeansTooMany(tooMany)!!
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(List(5) { listOf(rooms, tooMany) }.flatten()))
+        val result = run(game, """{"action":"start","mode":"human","auto":true,"room":"auto","advisor":"http://mac:3426"}""")
+        assertEquals("beans_too_many", result.text("error"))
+        assertEquals(listOf(
+            872 to 400, close, 1360 to 400, close, 1847 to 400, close, 1360 to 723, close, 872 to 723, close,
+        ), game.taps)
+    }
+
+    @Test fun autoRoomStopsAtTheMatchingScreenWhenItSaysZhizun() = runTest {
+        // room=auto 点的是普通场,匹配画面底部却写「经典至尊场」:牌还没发,点左上角返回箭头离开匹配,报 room_mismatch。
+        // 核对的是最后点下去的那一场(普通场),不是 auto 本身。
+        val rooms = shot("human_classic_rooms")
+        val matching = roomFrame("master_zhizun_matching")
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(rooms, matching) + List(4) { matching }))
+        val result = run(game, """{"action":"start","mode":"human","auto":true,"room":"auto","advisor":"http://mac:3426"}""")
+        assertEquals("room_mismatch", result.text("error"))
+        assertEquals(result.toString(), "true", result.text("left"))
+        assertEquals(result.toString(), "auto", result.text("requested"))
+        assertEquals(result.toString(), "普通场", result.text("expected"))
+        assertEquals(result.toString(), "至尊场", result.text("room"))
+        assertEquals(listOf(872 to 400, 168 to 56), game.taps)
+    }
+
+    @Test fun autoRoomOnADealtZhizunTablePlaysOnAndReportsTheMismatch() = runTest {
+        // 牌已经发了才认出点普通场进的却是至尊场:照打这一局(结果里带 roomMismatch 和 requested=auto),
+        // 不报 room_mismatch 停下
+        val rooms = shot("human_classic_rooms")
+        val table = roomFrame("master_zhizun_table")
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(rooms) + List(8) { table } + List(2) { lobbyFrame("vd_lobby") }))
+        val dispatcher = toolDispatcher(game)
+        val savedBid = PhoneDdzTurn.adviseBid
+        PhoneDdzTurn.adviseBid = { _, _ -> PhoneDdzTurn.BidAdvice(0) }
+        try {
+            val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","auto":true,"room":"auto","advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
+            assertNotEquals(result.toString(), "room_mismatch", result.text("error"))
+            assertNotEquals(result.toString(), "room_mismatch", result.text("reason"))
+            assertEquals(result.toString(), "至尊场", result.text("roomMismatch"))
+            assertEquals(result.toString(), "auto", result.text("requested"))
+            assertEquals(872 to 400, game.taps.first())
+        } finally {
+            PhoneDdzTurn.adviseBid = savedBid
+        }
+    }
+
     @Test fun humanStartTapsOnlyTheFreeClaimsOnTheReliefScreens() = runTest {
         // 领金豆弹窗只点「领取」,恭喜获得页只点「普通领取」,带视频图标的「双倍领取」一下都不点
         val popup = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(shot("human_relief_popup"))))

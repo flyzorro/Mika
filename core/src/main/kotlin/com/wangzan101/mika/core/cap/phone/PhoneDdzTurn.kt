@@ -100,6 +100,20 @@ internal object PhoneDdzTurn : PhoneTool {
     private const val HUMAN_MASTER_ROOM_Y = 723
     /** 要进至尊场(1 亿金豆起,没有上限)点的位置:第二排第一张、卡面写「大师场」的紫色卡(和普通场同一列),原因见 [HUMAN_MASTER_ROOM_X]。 */
     private const val HUMAN_SUPREME_ROOM_X = HUMAN_NORMAL_ROOM_X
+
+    /**
+     * 真人经典场从低到高,连同各自的场次卡中心。room=auto 就照这个顺序一场场往上试:
+     * 豆豆够得着的最低那一场就是用户要的。坐标和显式 room 完全一样,大师场/至尊场照旧点被游戏对调的那张卡。
+     */
+    private val HUMAN_ROOMS = listOf(
+        "normal" to (HUMAN_NORMAL_ROOM_X to HUMAN_NORMAL_ROOM_Y),
+        "elite" to (HUMAN_ELITE_ROOM_X to HUMAN_NORMAL_ROOM_Y),
+        "tuhao" to (HUMAN_TUHAO_ROOM_X to HUMAN_NORMAL_ROOM_Y),
+        "master" to (HUMAN_MASTER_ROOM_X to HUMAN_MASTER_ROOM_Y),
+        "supreme" to (HUMAN_SUPREME_ROOM_X to HUMAN_MASTER_ROOM_Y),
+    )
+    /** room=auto 爬到最高一场还进不去:豆豆过了至尊场的门槛(1 亿)也进不去,就是真没场了。 */
+    private const val AUTO_ROOM = "auto"
     /** Mika 屏上闯关页的报名。 */
     private const val STAGE_BUTTON_Y = 920
     private const val AUTO_CANCEL_MS = 600L
@@ -130,9 +144,11 @@ internal object PhoneDdzTurn : PhoneTool {
      * [advisor]:DouZero 服务地址。[tracker]:这一局的出牌历史;记不下去了这一局剩下的交还模型,单机经典场除外(由工具按简单规则打完)。
      */
     internal class Turn {
-        /** start human auto 时要的场次(normal/elite/tuhao/master/supreme);别的情形为 null。 */
+        /** start human auto 时要的场次(normal/elite/tuhao/master/supreme/auto);别的情形为 null。 */
         var requestedRoom: String? = null
-        /** 底部读到的场次名和 [requestedRoom] 对不上时,读到的那个名字(如「至尊场」)。 */
+        /** 核对底部场次标签用的场次:显式 room 就是它;room=auto 是最后点下去的那张卡(爬到哪一场就核对哪一场)。 */
+        var checkedRoom: String? = null
+        /** 底部读到的场次名和 [checkedRoom] 对不上时,读到的那个名字(如「至尊场」)。 */
         var roomLabel: String? = null
         /** 场次对不上时,牌还没发、已经点返回离开了匹配。 */
         var leftMismatchedRoom = false
@@ -468,8 +484,8 @@ internal object PhoneDdzTurn : PhoneTool {
         "advisor" to buildJsonObject { put("type", "string"); put("description", "start: DouZero service URL, required for both modes.") },
         "room" to buildJsonObject {
             put("type", "string")
-            put("enum", JsonArray(listOf("normal", "elite", "tuhao", "master", "supreme").map(::JsonPrimitive)))
-            put("description", "start human mode with auto=true: which classic room to sit down in, normal (普通场, 5万-200万, default), elite (精英场, 200万-6000万), tuhao (土豪场, 1000万-3亿), master (大师场, 2000万-6亿) or supreme (至尊场, from 1亿 with no upper limit, the highest stakes).")
+            put("enum", JsonArray(listOf("normal", "elite", "tuhao", "master", "supreme", AUTO_ROOM).map(::JsonPrimitive)))
+            put("description", "start human mode with auto=true: which classic room to sit down in, normal (普通场, 5万-200万, default), elite (精英场, 200万-6000万), tuhao (土豪场, 1000万-3亿), master (大师场, 2000万-6亿) or supreme (至尊场, from 1亿 with no upper limit, the highest stakes). auto (from the lowest: the tool closes the 去高级房间 popup and climbs 普通场 → 精英场 → 土豪场 → 大师场 → 至尊场 until one accepts, so it still enters 精英场 or higher when the beans require it).")
         },
         "hand" to ranks("play: your whole hand; resume: the complete current hand."),
         "play" to ranks("The cards to play."),
@@ -730,25 +746,23 @@ internal object PhoneDdzTurn : PhoneTool {
         // 选场先校验,认不得的场次一下都不点
         val auto = a.bool("auto", false)
         val explicitRoom = a.str("room")?.trim()?.lowercase()
-        val room = explicitRoom ?: "normal"
-        val (roomX, roomY) = when (room) {
-            "normal" -> HUMAN_NORMAL_ROOM_X to HUMAN_NORMAL_ROOM_Y
-            "elite" -> HUMAN_ELITE_ROOM_X to HUMAN_NORMAL_ROOM_Y
-            "tuhao" -> HUMAN_TUHAO_ROOM_X to HUMAN_NORMAL_ROOM_Y
-            "master" -> HUMAN_MASTER_ROOM_X to HUMAN_MASTER_ROOM_Y
-            "supreme" -> HUMAN_SUPREME_ROOM_X to HUMAN_MASTER_ROOM_Y
-            else -> throw ArgError("room", "must be normal, elite, tuhao, master or supreme")
-        }
+        // room=auto:从普通场开始由工具一场场往上爬,不把选场交给模型
+        val climb = explicitRoom == AUTO_ROOM
+        val room = if (explicitRoom == null || climb) "normal" else explicitRoom
+        if (HUMAN_ROOMS.none { it.first == room }) throw ArgError("room", "must be normal, elite, tuhao, master, supreme or auto")
         // 只有这次调用明确给了 room 才校验场次:auto 不传 room 时只是沿用点普通场的老行为
         // (2026-11-13 14:33:结算页再 start 不带 room,第二局还在土豪场,不能因此误报 room_mismatch)。
+        // room=auto 要核对最后点下去的那一场,由 awaitHumanEntry 每点一张卡就更新。
         turn.requestedRoom = explicitRoom
+        turn.checkedRoom = if (explicitRoom == null || climb) null else explicitRoom
         turn.roomLabel = null
         turn.leftMismatchedRoom = false
         turn.roomMismatchPlayed = false
         if (!DdzCards.classicHumanTable(page)) {
             if (!auto) return refused("not_human_game")
-            // 在主大厅点「真人对战」、在真人场次页点选的场次(默认普通场),再等匹配和牌桌出来
-            val entry = awaitHumanEntry(ctx, turn, page, roomX, roomY)
+            // 在主大厅点「真人对战」、在真人场次页点选的场次(默认普通场),再等匹配和牌桌出来。
+            // room=auto 时豆豆太多会让工具关掉弹窗再往上换一场,一路爬到豆豆够得着的那个场。
+            val entry = awaitHumanEntry(ctx, turn, page, room, climb)
             if (entry.error == DdzSessionReason.ROOM_MISMATCH) return roomMismatchResult(turn)
             if (entry.error == DdzSessionReason.BEANS_TOO_FEW) return beansTooFewResult(turn)
             page = entry.frame ?: return refused(entry.error ?: "not_human_game")
@@ -786,6 +800,8 @@ internal object PhoneDdzTurn : PhoneTool {
                 put("state", turn.state.wire)
                 put("phase", view.phase.name.lowercase())
                 put("handCount", view.handCount)
+                // 实际进的场次(room=auto 爬到的、或显式点的那一场);没点名 room 就不报
+                turn.checkedRoom?.let { put("room", it) }
             }, image = if (ctx.config.visionEnabled) ctx.screen.quickShot() else null, changed = false)
         }
         // Human tables have the same hard turn clock as single-player tables. Keep the
@@ -803,6 +819,8 @@ internal object PhoneDdzTurn : PhoneTool {
             recoveryHint(turn)?.let { put("recovery", it) }
             put("phase", next.phase.name.lowercase())
             put("handCount", next.handCount)
+            // room=auto 爬到的、或显式点的那一场:模型据此知道这一局打的是哪个场
+            turn.checkedRoom?.let { put("room", it) }
             putAutoPlayed(turn)
             putRoomMismatchPlayed(turn)
             putDouzeroOffs(turn)
@@ -936,17 +954,17 @@ internal object PhoneDdzTurn : PhoneTool {
 
     /**
      * 牌桌/匹配画面底部写的场次和要的 room 对不上:记下读到的名字、停下,返回 false 表示能对上或读不出。
-     * 读不出(精英场、弹窗挡住)不算不符——调用方照旧往下打。
+     * 核对的是 [Turn.checkedRoom](room=auto 爬到的最后一场);读不出(精英场、弹窗挡住)不算不符——调用方照旧往下打。
      */
     private fun roomMismatch(frame: com.wangzan101.mika.core.uistate.RawFrame, turn: Turn): Boolean {
-        val requested = turn.requestedRoom ?: return false
-        val expected = expectedRoomLabel(requested) ?: return false
+        val room = turn.checkedRoom ?: return false
+        val expected = expectedRoomLabel(room) ?: return false
         val label = DdzRoomLabel.read(frame) ?: return false
         if (label == expected) return false
         // 牌已经发了:停下也走不了,人坐在桌上没人操作,游戏会托管打完整局(2026-11-18 两局)。
         // 用户定的:照打这一局,只记下读到的场次,结果里报给模型
         if (DdzCards.classicHumanTable(frame) && DdzScreen.read(frame, classic = true).handCount > 0) {
-            if (!turn.roomMismatchPlayed) println("DDZTRACE room_mismatch_play requested=$requested expected=$expected read=$label")
+            if (!turn.roomMismatchPlayed) println("DDZTRACE room_mismatch_play requested=${turn.requestedRoom} room=$room expected=$expected read=$label")
             turn.roomLabel = label
             turn.roomMismatchPlayed = true
             return false
@@ -955,8 +973,14 @@ internal object PhoneDdzTurn : PhoneTool {
         turn.humanEligible = false
         turn.state = DdzSessionState.Paused
         turn.reason = DdzSessionReason.ROOM_MISMATCH
-        println("DDZTRACE room_mismatch requested=$requested expected=$expected read=$label")
+        println("DDZTRACE room_mismatch requested=${turn.requestedRoom} room=$room expected=$expected read=$label")
         return true
+    }
+
+    /** room=auto 往上爬一场:已经在至尊场(或认不得的场次)就没有下一场了。 */
+    private fun nextRoomUp(room: String): String? {
+        val index = HUMAN_ROOMS.indexOfFirst { it.first == room }
+        return if (index < 0) null else HUMAN_ROOMS.getOrNull(index + 1)?.first
     }
 
     private fun expectedRoomLabel(room: String) = when (room) {
@@ -976,9 +1000,9 @@ internal object PhoneDdzTurn : PhoneTool {
         turn.mode?.let { put("mode", it.wire) }
         put("state", DdzSessionState.Paused.wire)
         put("reason", DdzSessionReason.ROOM_MISMATCH)
-        turn.requestedRoom?.let { requested ->
-            put("requested", requested)
-            expectedRoomLabel(requested)?.let { put("expected", it) }
+        turn.requestedRoom?.let { put("requested", it) }
+        (turn.checkedRoom ?: turn.requestedRoom)?.let { room ->
+            expectedRoomLabel(room)?.let { put("expected", it) }
         }
         turn.roomLabel?.let { put("room", it) }
         put("left", turn.leftMismatchedRoom)
@@ -990,7 +1014,7 @@ internal object PhoneDdzTurn : PhoneTool {
         put("error", DdzSessionReason.BEANS_TOO_FEW)
         put("recoverable", false)
         turn.mode?.let { put("mode", it.wire) }
-        turn.requestedRoom?.let { put("room", it) }
+        (turn.checkedRoom ?: turn.requestedRoom)?.let { put("room", it) }
     })
 
     /** After the wait loop: keep a pause the loop set (and its reason); otherwise report the phase it reached. */
@@ -2058,14 +2082,18 @@ internal object PhoneDdzTurn : PhoneTool {
     private class HumanEntry(val frame: com.wangzan101.mika.core.uistate.RawFrame?, val error: String? = null)
 
     /**
-     * 从游戏主大厅点中间的「真人对战」、在真人场次页点([roomX], [roomY]) 的场次卡(普通场、精英场、土豪场、大师场或至尊场),然后等匹配和牌桌;单机的经典场次页不点。
+     * 从游戏主大厅点中间的「真人对战」、在真人场次页点([room] 那张卡:普通场、精英场、土豪场、大师场或至尊场),然后等匹配和牌桌;单机的经典场次页不点。
+     * [climb] 是 room=auto:豆豆太多进不去([DdzSessionReason.BEANS_TOO_MANY])时关掉弹窗、点下一张更高的卡接着试,
+     * 直到进得去或爬过至尊场;显式 room 只点那一场,进不去就交还模型。
      * 路上真人场的领金豆弹窗自己领(只点免费的),单机救济金、看视频领取、广告由 [clearPopup] 收拾;领完回到场次页再点一次同一个场次。
      * 最多等约 45 秒(真人场匹配的倒计时就有 30 秒),弹窗另算。只认 Mika 的屏,认不出的画面一律不点。
      */
     private suspend fun awaitHumanEntry(
-        ctx: ToolContext, turn: Turn, first: com.wangzan101.mika.core.uistate.RawFrame, roomX: Int, roomY: Int,
+        ctx: ToolContext, turn: Turn, first: com.wangzan101.mika.core.uistate.RawFrame, room: String, climb: Boolean,
     ): HumanEntry {
         var page: com.wangzan101.mika.core.uistate.RawFrame? = first
+        /** 当前要点的场次卡:room=auto 每被拒一次就往上换一场。 */
+        var candidate = room
         var lobbyTapped = false
         var roomsTapped = false
         var resultTapped = false
@@ -2130,11 +2158,21 @@ internal object PhoneDdzTurn : PhoneTool {
             }
             // 单机的「经典模式」场次页:不是真人场,绝不点
             if (frame != null && DdzCards.singleClassicRooms(frame)) return HumanEntry(null, "single_player_rooms")
-            // 豆豆太多点了低级场:只点右上角的叉关弹窗(绝不点「立即前往」),然后交还模型换更高的场
+            // 豆豆太多点了低级场:只点右上角的叉关弹窗(绝不点「立即前往」)。room=auto 关掉后直接换下一场往上试,
+            // 不把选场交回模型;爬到至尊场还进不去才报 beans_too_many
             val tooMany = frame?.let { DdzCards.humanBeansTooMany(it) }
             if (tooMany != null) {
                 tapOnTheWay(ctx, turn, tooMany.first, tooMany.second)
-                return HumanEntry(null, DdzSessionReason.BEANS_TOO_MANY)
+                val next = if (climb) nextRoomUp(candidate) else null
+                if (next == null) return HumanEntry(null, DdzSessionReason.BEANS_TOO_MANY)
+                println("DDZTRACE room_climb from=$candidate to=$next")
+                candidate = next
+                // 回到场次页要点的是下一张卡:普通场不能因为已经点过就不再点
+                roomsTapped = false
+                roomTapDump = 0
+                waitOrSteer { delay(POPUP_TAP_MS) } ?: return HumanEntry(null)
+                page = ctx.screen.rawFrame(FULL_ROWS)
+                continue
             }
             // 金豆输光后冷启动开在商店的金豆页:这页只有左上角的返回箭头不花钱,只点它,别的一概不点;
             // 连点几次还在这页就交还模型。点了场次才开商店的,是金豆不够进这个场:回到场次页就报错,绝不再点场次
@@ -2179,9 +2217,12 @@ internal object PhoneDdzTurn : PhoneTool {
                 // 点了场次后开的是商店:已经点过返回,回到这页就停,绝不再点场次、也不等到超时
                 if (outOfBeans) return HumanEntry(null, DdzSessionReason.BEANS_TOO_FEW)
                 if (!roomsTapped) {
+                    val (roomX, roomY) = HUMAN_ROOMS.first { it.first == candidate }.second
                     // 点场次的诊断:哪天又进错了场,日志里能直接看到点的是哪个 room、哪个坐标
-                    println("DDZTRACE room_tap room=${turn.requestedRoom ?: "normal"} x=$roomX y=$roomY")
+                    println("DDZTRACE room_tap room=$candidate x=$roomX y=$roomY")
                     if (!tapOnTheWay(ctx, turn, roomX, roomY)) return HumanEntry(null)
+                    // 场次标签核对的是真点下去的这一场:auto 爬到哪儿就核对哪儿
+                    turn.checkedRoom = candidate
                     roomsTapped = true
                     roomTapDump = 3
                 }
