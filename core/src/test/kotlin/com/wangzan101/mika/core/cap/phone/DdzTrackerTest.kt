@@ -1267,4 +1267,67 @@ class DdzTrackerTest {
             tracker.history,
         )
     }
+
+    @Test fun aMissedRightPassBeforeLeftsPlayIsRecordedInOrder() {
+        // 2026-11-18 13:08 普通场(真人局):我出 66688,右家想了 6 秒后不出,但「不出」一直没读到(出牌区仍空着);
+        // 左家随即压 AAA22。等右家时左家摆出的牌被整个忽略,右家后来那次不出被当成对 66688 的回答,
+        // 左家接着领出的 3 又顶上来,DouZero 收到 [66688],[],[3] 报 history_mismatch。
+        tracker.observe(DdzSeat.Me, { DdzSeen.Empty }, { bottom }, leadingWith20 = true)
+        tracker.mine(listOf("6", "6", "6", "8", "8"))
+        repeat(2) { see(DdzSeat.Right) }                 // 等右家,他的「不出」没读到
+        left = DdzSeen.Cards(listOf("A", "A", "A", "2", "2"))
+        repeat(4) { see(DdzSeat.Right) }                 // 左家这一手已经在桌上
+        assertEquals(
+            listOf(listOf("6", "6", "6", "8", "8"), emptyList(), listOf("A", "A", "A", "2", "2")),
+            tracker.history,
+        )
+        assertNull(tracker.broken)
+        // 我要不起;右家也不出(这次读到了),左家接着领出单张 3
+        tracker.mine(emptyList())
+        left = DdzSeen.Empty
+        right = DdzSeen.Pass
+        repeat(4) { see(DdzSeat.Left) }
+        left = DdzSeen.Cards(listOf("3"))
+        repeat(4) { see(DdzSeat.Me) }
+        assertEquals(
+            listOf(
+                listOf("6", "6", "6", "8", "8"), emptyList(), listOf("A", "A", "A", "2", "2"),
+                emptyList(), emptyList(), listOf("3"),
+            ),
+            tracker.history,
+        )
+        assertNull(tracker.broken)
+        assertTrue(tracker.ready())
+    }
+
+    @Test fun theLeftBadgeCrossChecksTheInferredPlayWhenItIsReadable() {
+        // 单机牌桌读得到剩牌张数:张数还没少,左家桌上那手就还没落稳,不补;少掉的正好是这一手的张数才补。
+        tracker.observe(DdzSeat.Me, { DdzSeen.Empty }, { bottom }, leadingWith20 = true)
+        tracker.mine(listOf("6", "6", "6", "8", "8"))
+        counts = mapOf(DdzSide.Left to 17, DdzSide.Right to 17)
+        left = DdzSeen.Cards(listOf("A", "A", "A", "2", "2"))
+        repeat(4) { seeCounted(DdzSeat.Right) }
+        assertEquals(listOf(listOf("6", "6", "6", "8", "8")), tracker.history)
+        counts = mapOf(DdzSide.Left to 12, DdzSide.Right to 17)
+        repeat(4) { seeCounted(DdzSeat.Right) }
+        assertEquals(
+            listOf(listOf("6", "6", "6", "8", "8"), emptyList(), listOf("A", "A", "A", "2", "2")),
+            tracker.history,
+        )
+        assertNull(tracker.broken)
+    }
+
+    @Test fun anUnsureLeftPlayWhileWaitingForRightInventsNothing() {
+        // 同一次漏读,但左家那一手只读到 Unsure:不能凭它给右家补「不出」、更不能把这张牌记进历史。
+        tracker.observe(DdzSeat.Me, { DdzSeen.Empty }, { bottom }, leadingWith20 = true)
+        tracker.mine(listOf("6", "6", "6", "8", "8"))
+        left = DdzSeen.Unsure
+        repeat(4) { see(DdzSeat.Right) }
+        assertEquals(listOf(listOf("6", "6", "6", "8", "8")), tracker.history)
+        assertFalse(tracker.ready())
+        // 闹钟走到左家,这一手还是读不准:和以前一样判漏,不会编出一段历史
+        repeat(DdzSettlingPolicy.SINGLE.maxUnconfirmedFrames + 2) { see(DdzSeat.Left) }
+        assertTrue(tracker.broken != null)
+        assertEquals(listOf(listOf("6", "6", "6", "8", "8")), tracker.history)
+    }
 }
