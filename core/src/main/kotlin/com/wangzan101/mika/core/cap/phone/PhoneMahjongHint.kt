@@ -81,8 +81,12 @@ internal object PhoneMahjongHint : PhoneTool {
     /** 看屏的时钟;测试里换成虚拟时钟。 */
     internal var clock: () -> Long = System::currentTimeMillis
 
-    /** 工具列表在任务开始时就定了,那时游戏还没打开,所以这里只看主模型能不能看图。 */
-    override fun available(ctx: ToolContext) = ctx.config.visionEnabled
+    /**
+     * 工具列表在任务开始时就定了,那时游戏还没打开。手动用法要模型看图读牌;看屏用法不经过模型看图,
+     * 能截主屏、能闪胶囊就够——主模型不能看图(如 DeepSeek flash)时也要提供。
+     */
+    override fun available(ctx: ToolContext) =
+        ctx.config.visionEnabled || (ctx.config.mainScreen != null && ctx.config.hintHud != null)
 
     override suspend fun execute(a: Args, ctx: ToolContext): ToolExecution {
         val advisor = a.str("advisor") ?: throw ArgError("advisor", "required")
