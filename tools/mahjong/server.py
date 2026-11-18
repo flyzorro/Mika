@@ -845,10 +845,6 @@ def _best(feature, table):
     return best
 
 
-def _hand_matched(score):
-    return score >= HAND_MATCH
-
-
 def _decode_screen(value):
     if not isinstance(value, str) or not value:
         raise RequestError("bad_image", "image 必须是整屏 PNG 的 base64 字符串")
@@ -926,7 +922,7 @@ def _scan_hand(image, array):
         drawn["slot"] = (*DRAWN_X, drawn["slot"][2], drawn["slot"][3], True)
         records.append(drawn)
     for record in records:
-        if not _hand_matched(record["score"]):
+        if record["score"] < HAND_MATCH:
             record["tile"] = None
     return records
 

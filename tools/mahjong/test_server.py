@@ -15,7 +15,7 @@ import server
 
 from PIL import Image, ImageDraw
 
-from server import (_best, _feature, _hand_matched, HAND_MATCH, HAND_TEMPLATES,
+from server import (_best, _feature, HAND_MATCH, HAND_TEMPLATES,
                     handle, handler, win_fan, win_multiplier, win_probability)
 
 
@@ -777,4 +777,4 @@ class HandNearMissTest(unittest.TestCase):
             with self.subTest(name=name):
                 score, tile = _best(_feature(Image.open(os.path.join(directory, name))), HAND_TEMPLATES)
                 self.assertEqual(tile, expected)
-                self.assertTrue(_hand_matched(score), f"{score:.4f}")
+                self.assertGreaterEqual(score, HAND_MATCH, f"{score:.4f}")
