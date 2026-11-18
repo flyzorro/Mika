@@ -258,7 +258,7 @@ class PhoneMahjongHintWatchTest {
 
     @Test fun manualUsageStillNeedsHandAndQue() = runTest {
         val d = toolDispatcher(screen, visionEnabled = true)
-        val r = d.execute(Part.ToolCall("c1", "phone_mahjong_hint", """{"advisor":"http://mac:3428"}"""))
+        val r = d.execute(Part.ToolCall("c1", "phone_mahjong_hint", """{"que":"p","advisor":"http://mac:3428"}"""))
         assertEquals("invalid_arguments", r.content["error"]?.jsonPrimitive?.content)
         assertTrue("the message names the missing hand", r.content["message"]!!.jsonPrimitive.content.contains("hand"))
     }
@@ -291,6 +291,18 @@ class PhoneMahjongHintWatchTest {
         val r = d.execute(Part.ToolCall("c1", "phone_mahjong_hint", """{"action":"watch"}"""))
         assertEquals("invalid_arguments", r.content["error"]?.jsonPrimitive?.content)
         assertTrue(r.content["message"]!!.jsonPrimitive.content.contains("advisor"))
+    }
+
+    /** 手机那组工具收着时也要看得到:用户一句「开始麻将提示」,模型第一步就能调它。 */
+    @Test fun isAStandaloneEntry() {
+        assertEquals(com.wangzan101.mika.core.tool.Entry.Alone, PhoneMahjongHint.entry)
+    }
+
+    /** 模型空着参数调(不给 action、不给手牌)也直接开始看屏。 */
+    @Test fun noActionAndNoHandMeansWatch() = runTest {
+        main.front = "com.tencent.mm"
+        val r = watch("""{"advisor":"http://mac:3428"}""")
+        assertEquals("app_left", r.text("stopped"))
     }
 
     @Test fun rejectsAnUnknownAction() = runTest {
