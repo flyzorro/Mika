@@ -835,6 +835,23 @@ MELD_COLUMN = 92
 # 暗杠抬起那张牌的牌面顶边固定在 y≈878；淡紫灰桌布上方的高光也会过白色掩码，
 # 所以行范围从牌面顶边开始找，不把桌布算进牌面（绿桌布、紫灰桌布切出同样的框）。
 MELD_ANKONG_FACE_TOP = 870
+# 碰/明杠的牌面固定裁 (start+6, 921)–(start+86, 1026) = 80×105。
+# 明面模板不再从截图上逐张逐组截:手牌模板是同一套牌面,只是手牌离镜头近、每组碰杠
+# 在桌上的透视各不相同(第 1 组左边缘斜 22px,第 3 组正对镜头)。把 templates/hand/
+# 的 27 张按每组的仿射变换缩到 80×105,就能得到每组的全部 27 种碰杠模板。
+# 系数是 PIL AFFINE 的逆变换(hand_x = a*x + b*y + c, hand_y = d*x + e*y + f),
+# 逐组量 fixtures 里的碰杠拟合出来;第 4 组没有样本,按前三组的线性趋势外推。
+MELD_FACE_SIZE = (80, 105)
+MELD_GROUP_AFFINE = {
+    0: (1.3639, 0.4609, -24.7198, 0.0132, 1.7054, 19.6221),
+    1: (1.3513, 0.2497, -11.5338, 0.0110, 1.7000, 20.0482),
+    2: (1.3717, 0.0403, -0.1512, 0.0079, 1.7000, 20.0900),
+    3: (1.3701, -0.1703, 12.4337, 0.0054, 1.6964, 20.3880),
+}
+# 碰/明杠牌面比手牌小一半,直接点积只有 0.55–0.71;先减去高斯模糊(高通)再归一化,
+# 把桌布反光、阴影和第 1 组左上的桌布斜边滤掉,正确牌升到 0.74–0.90,第二名 ≤0.59。
+MELD_BLUR = 2.5
+MELD_FLAT_MATCH = 0.65
 
 
 def _feature(image, size=(40, 64)):
@@ -850,6 +867,24 @@ def _load_features(pattern, size=(40, 64)):
         name = os.path.splitext(os.path.basename(path))[0]
         table[name] = _feature(Image.open(path), size)
     return table
+
+
+def _load_images(pattern):
+    table = {}
+    for path in sorted(glob.glob(os.path.join(TEMPLATE_DIR, pattern))):
+        name = os.path.splitext(os.path.basename(path))[0]
+        table[name] = Image.open(path).convert("RGB")
+    return table
+
+
+def _meld_feature(image):
+    """碰杠牌面只在 80×105 的小图里认:先减高斯模糊做高通,去掉桌布反光和阴影。"""
+    gray = image.convert("L")
+    low = gray.filter(ImageFilter.GaussianBlur(MELD_BLUR))
+    values = (np.asarray(gray.resize((40, 64), Image.BILINEAR), float)
+              - np.asarray(low.resize((40, 64), Image.BILINEAR), float)).ravel()
+    values -= values.mean()
+    return values / (np.linalg.norm(values) + 1e-9)
 
 
 def _digit_feature(image):
@@ -872,8 +907,26 @@ def _load_digits():
 
 HAND_TEMPLATES = _load_features(os.path.join("hand", "*.png"))
 MELD_TEMPLATES = _load_features(os.path.join("meld", "*.png"))
+MELD_ANKONG_TEMPLATES = {name: value for name, value in MELD_TEMPLATES.items()
+                         if name.startswith("ankong_")}
 QUE_TEMPLATES = _load_features(os.path.join("que", "*.png"), (32, 32))
 DIGIT_TEMPLATES = _load_digits()
+HAND_IMAGES = _load_images(os.path.join("hand", "*.png"))
+
+
+def _load_meld_flat_templates():
+    """每组一份 27 张手牌模板的仿射副本,就是这一组碰/明杠的牌面模板。"""
+    groups = []
+    for group in range(len(MELD_GROUP_AFFINE)):
+        affine = MELD_GROUP_AFFINE[group]
+        groups.append({
+            name: _meld_feature(image.transform(MELD_FACE_SIZE, Image.AFFINE, affine, Image.BILINEAR))
+            for name, image in HAND_IMAGES.items()
+        })
+    return groups
+
+
+MELD_FLAT_TEMPLATES = _load_meld_flat_templates()
 
 
 def _best(feature, table):
@@ -973,8 +1026,53 @@ def _white_fraction(array, x0, x1, y0, y1):
     return float(white.mean())
 
 
+def _meld_shape(array, start):
+    """这一组是碰、明杠还是暗杠;不是碰杠(空格/还没摆好)返回 None。"""
+    flat = []
+    raised = []
+    for column in range(3):
+        x0 = start + MELD_COLUMN * column + 8
+        x1 = start + MELD_COLUMN * column + 84
+        flat.append(_white_fraction(array, x0, x1, 950, 1020))
+        raised.append(_white_fraction(array, x0, x1, 870, 905))
+    lifted = sum(value > 0.4 for value in raised)
+    if lifted:
+        if flat[0] > 0.5 and flat[2] > 0.5:
+            return "kan", False
+        if flat[0] < 0.2 and flat[2] < 0.2:
+            return "kan", True
+        return None
+    if all(value > 0.5 for value in flat):
+        return "pon", False
+    return None
+
+
+def _meld_face(image, array, start, dark):
+    """切这一组的牌面:暗杠从抬起那张的牌面顶边切,明面(碰/明杠)切最左边那张。"""
+    if not dark:
+        x0, y0 = start + 6, 921
+        return image.crop((x0, y0, x0 + MELD_FACE_SIZE[0], y0 + MELD_FACE_SIZE[1]))
+    region = array[820:1080, start + 40:start + 230]
+    white = (region.min(axis=2) > 150) & ((region.max(axis=2) - region.min(axis=2)) < 60)
+    columns = white[80:130].mean(axis=0)
+    xs = np.where(columns > 0.5)[0]
+    if not len(xs):
+        return None
+    left_x, right_x = start + 40 + int(xs.min()), start + 40 + int(xs.max()) + 1
+    rows = white[:, xs.min():xs.max() + 1].mean(axis=1) > 0.5
+    rows[:MELD_ANKONG_FACE_TOP - 820] = False
+    ys = np.where(rows)[0]
+    if not len(ys):
+        return None
+    return image.crop((left_x + 3, 820 + int(ys.min()) + 3, right_x - 3, 820 + int(ys.max()) - 2))
+
+
 def _recognize_melds(image, array, hand_start):
-    """自己的碰杠:每组固定 276px 宽,按白面/绿背和抬起的那张判断碰、明杠、暗杠。"""
+    """自己的碰杠:每组固定 276px 宽,按白面/绿背和抬起的那张判断碰、明杠、暗杠。
+
+    明面牌面用 `MELD_FLAT_TEMPLATES[group]`(手牌模板按这一组的几何生成),
+    暗杠仍用 `templates/meld/ankong_*.png`。
+    """
     melds = []
     if hand_start is None or hand_start <= 740:
         return melds
@@ -982,55 +1080,39 @@ def _recognize_melds(image, array, hand_start):
         start = MELD_GROUP_X + MELD_GROUP_STEP * group
         if start + MELD_GROUP_WIDTH > hand_start - 20:
             break
-        flat = []
-        raised = []
-        for column in range(3):
-            x0 = start + MELD_COLUMN * column + 8
-            x1 = start + MELD_COLUMN * column + 84
-            flat.append(_white_fraction(array, x0, x1, 950, 1020))
-            raised.append(_white_fraction(array, x0, x1, 870, 905))
-        lifted = sum(value > 0.4 for value in raised)
-        if lifted:
-            if flat[0] > 0.5 and flat[2] > 0.5:
-                kind, dark = "kan", False
-            elif flat[0] < 0.2 and flat[2] < 0.2:
-                kind, dark = "kan", True
-            else:
-                melds.append(None)
-                continue
-        elif all(value > 0.5 for value in flat):
-            kind, dark = "pon", False
-        else:
+        shape = _meld_shape(array, start)
+        face = None if shape is None else _meld_face(image, array, start, shape[1])
+        if shape is None or face is None:
             melds.append(None)
             continue
+        kind, dark = shape
         if dark:
-            region = array[820:1080, start + 40:start + 230]
-            white = (region.min(axis=2) > 150) & ((region.max(axis=2) - region.min(axis=2)) < 60)
-            columns = white[80:130].mean(axis=0)
-            xs = np.where(columns > 0.5)[0]
-            if not len(xs):
-                melds.append(None)
-                continue
-            left_x, right_x = start + 40 + int(xs.min()), start + 40 + int(xs.max()) + 1
-            rows = white[:, xs.min():xs.max() + 1].mean(axis=1) > 0.5
-            rows[:MELD_ANKONG_FACE_TOP - 820] = False
-            ys = np.where(rows)[0]
-            if not len(ys):
-                melds.append(None)
-                continue
-            face = image.crop((left_x + 3, 820 + int(ys.min()) + 3, right_x - 3, 820 + int(ys.max()) - 2))
-            prefix = "ankong_"
+            score, name = _best(_feature(face), MELD_ANKONG_TEMPLATES)
+            tile = None if name is None else name.split("_", 1)[1]
+            match = MELD_MATCH
         else:
-            face = image.crop((start + 6, 921, start + 86, 1026))
-            prefix = "flat_"
-        templates = {name: value for name, value in MELD_TEMPLATES.items() if name.startswith(prefix)}
-        score, name = _best(_feature(face), templates)
-        if score < MELD_MATCH or name is None:
+            score, tile = _best(_meld_feature(face), MELD_FLAT_TEMPLATES[group])
+            match = MELD_FLAT_MATCH
+        if score < match or tile is None:
             melds.append(None)
             continue
-        # 同一张牌碰在不同组透视不一样,可以有多张模板:flat_8s.png、flat_8s_g0.png 都是 8s
-        melds.append({"type": kind, "tile": name.split("_")[1]})
+        melds.append({"type": kind, "tile": tile})
     return melds
+
+
+def meld_scores(image, group):
+    """调试/测试用:第 group 组碰/明杠牌面的分数表(高到低);暗杠或没有这组返回 None。"""
+    if not 0 <= group < len(MELD_FLAT_TEMPLATES):
+        return None
+    array = np.asarray(image.convert("RGB")).astype(int)
+    start = MELD_GROUP_X + MELD_GROUP_STEP * group
+    shape = _meld_shape(array, start)
+    if shape is None or shape[1]:
+        return None
+    feature = _meld_feature(_meld_face(image, array, start, False))
+    table = MELD_FLAT_TEMPLATES[group]
+    return sorted(((tile, float(feature @ value)) for tile, value in table.items()),
+                  key=lambda item: -item[1])
 
 
 def _recognize_que(image, array, records):
@@ -1291,7 +1373,7 @@ def advise_hint(image_value):
                 if meld is not None:
                     continue
                 start = MELD_GROUP_X + MELD_GROUP_STEP * index
-                _save_unsure(image.crop((start + 6, 921, start + 86, 1026)), "meld")
+                _save_unsure(_meld_face(image, array, start, False), "meld")
             return {"state": "unsure", "reason": "meld"}
         if que is None:
             return {"state": "unsure", "reason": "que"}
