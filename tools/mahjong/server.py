@@ -933,11 +933,8 @@ def _white_fraction(array, x0, x1, y0, y1):
     return float(white.mean())
 
 
-def _recognize_melds(image, array, hand_start, unsure=None):
-    """自己的碰杠:每组固定 276px 宽,按白面/绿背和抬起的那张判断碰、明杠、暗杠。
-
-    认不出的组会把牌面裁图放进 unsure(传进来的 list),方便以后补模板。
-    """
+def _recognize_melds(image, array, hand_start):
+    """自己的碰杠:每组固定 276px 宽,按白面/绿背和抬起的那张判断碰、明杠、暗杠。"""
     melds = []
     if hand_start is None or hand_start <= 740:
         return melds
@@ -960,15 +957,11 @@ def _recognize_melds(image, array, hand_start, unsure=None):
                 kind, dark = "kan", True
             else:
                 melds.append(None)
-                if unsure is not None:
-                    unsure.append(image.crop((start + 6, 921, start + 86, 1026)))
                 continue
         elif all(value > 0.5 for value in flat):
             kind, dark = "pon", False
         else:
             melds.append(None)
-            if unsure is not None:
-                unsure.append(image.crop((start + 6, 921, start + 86, 1026)))
             continue
         if dark:
             region = array[820:1080, start + 40:start + 230]
@@ -977,16 +970,12 @@ def _recognize_melds(image, array, hand_start, unsure=None):
             xs = np.where(columns > 0.5)[0]
             if not len(xs):
                 melds.append(None)
-                if unsure is not None:
-                    unsure.append(image.crop((start + 6, 921, start + 86, 1026)))
                 continue
             left_x, right_x = start + 40 + int(xs.min()), start + 40 + int(xs.max()) + 1
             rows = white[:, xs.min():xs.max() + 1].mean(axis=1) > 0.5
             ys = np.where(rows)[0]
             if not len(ys):
                 melds.append(None)
-                if unsure is not None:
-                    unsure.append(image.crop((start + 6, 921, start + 86, 1026)))
                 continue
             face = image.crop((left_x + 3, 820 + int(ys.min()) + 3, right_x - 3, 820 + int(ys.max()) - 2))
             prefix = "ankong_"
@@ -997,8 +986,6 @@ def _recognize_melds(image, array, hand_start, unsure=None):
         score, name = _best(_feature(face), templates)
         if score < MELD_MATCH or name is None:
             melds.append(None)
-            if unsure is not None:
-                unsure.append(face)
             continue
         melds.append({"type": kind, "tile": name.split("_", 1)[1]})
     return melds
@@ -1212,8 +1199,7 @@ def advise_hint(image_value):
                 _save_unsure(record["crop"], "tile")
         return {"state": "unsure", "reason": "tile"}
     slots = [record["slot"] for record in records]
-    unsure_melds = []
-    melds = _recognize_melds(image, array, slots[0][0], unsure_melds)
+    melds = _recognize_melds(image, array, slots[0][0])
     que = _recognize_que(image, array, records)
     left = _read_left(array)
     total = len(hand) + 3 * len(melds)
@@ -1228,8 +1214,11 @@ def advise_hint(image_value):
         fields["left"] = left
     if total == 14:
         if any(meld is None for meld in melds):
-            for crop in unsure_melds:
-                _save_unsure(crop, "meld")
+            for index, meld in enumerate(melds):
+                if meld is not None:
+                    continue
+                start = MELD_GROUP_X + MELD_GROUP_STEP * index
+                _save_unsure(image.crop((start + 6, 921, start + 86, 1026)), "meld")
             _save_unsure(image, "meld_frame")
             return {"state": "unsure", "reason": "meld"}
         if que is None:
