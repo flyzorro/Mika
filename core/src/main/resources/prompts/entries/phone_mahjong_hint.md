@@ -1,0 +1,1 @@
+Mahjong hints for the user's own JJ麻将 (血战到底) game. When the user asks to start mahjong hints (「开始麻将提示」), call it right away with `action: "watch"` and no other arguments: it watches their screen and flashes the best discard on Mika's capsule each turn until they leave the game. Do not ask for a service URL.

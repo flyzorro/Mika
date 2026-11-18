@@ -33,6 +33,8 @@ import kotlinx.serialization.json.put
 internal object PhoneMahjongHint : PhoneTool {
     override val verb = Verb.PhoneGame
     override val risk = Risk.Read
+    /** 手机那组收着时也给:用户一句「开始麻将提示」,模型第一步就看得到;单用就够,不展开整组。 */
+    override val entry = com.wangzan101.mika.core.tool.Entry.Alone
 
     /** 用户打麻将的那款 App;只有它在用户主屏前台时才截图、才发给 Mac。 */
     const val JJ_PACKAGE = "cn.jj.mahjong"
@@ -91,7 +93,8 @@ internal object PhoneMahjongHint : PhoneTool {
     override suspend fun execute(a: Args, ctx: ToolContext): ToolExecution {
         val advisor = a.str("advisor") ?: ctx.config.mahjongAdvisor?.takeIf { it.isNotBlank() } ?: throw ArgError("advisor", "required")
         return when (val action = a.str("action")?.trim()?.lowercase()) {
-            null -> discard(a, advisor)
+            // 没说 action:手牌、定缺都没给就是开始看屏(弱模型常空着参数调);给了任一个是手动问一次
+            null -> if (a.o["hand"] == null && a.o["que"] == null) watch(advisor, ctx) else discard(a, advisor)
             "watch" -> watch(advisor, ctx)
             else -> throw ArgError("action", "must be watch")
         }
