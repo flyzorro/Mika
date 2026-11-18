@@ -1,7 +1,8 @@
 # 四川麻将出牌服务
 
 给 Mika 的安卓端用的本机出牌/定缺建议服务：四川麻将血战到底，只有万、筒、条三门，没有字牌/花牌，
-副露只有碰和杠（血战没有吃）。
+副露只有碰和杠（血战没有吃）。除了给局面要建议的 `/discard`、`/que`，还有直接吃一张
+JJ麻将主屏截图的 `/hint`：服务认出手牌、自己的碰杠、定缺、牌墙剩余和游戏的「荐」，再给建议。
 
 服务不再只按「向听小 → 进张多」推荐，而是按**期望得分**：每种打法对「快胡 / 清一色 / 碰碰胡 / 七对」
 各估一次「能胡的概率 × 胡了值几倍」，取期望最高的目标。该冲清一色、七对、碰碰胡时就冲，
@@ -20,8 +21,10 @@
 ```bash
 cd tools/mahjong
 uv venv --python python3.14 .venv
-uv pip install --python .venv/bin/python mahjong==2.2.0
+uv pip install --python .venv/bin/python mahjong==2.2.0 pillow numpy
 ```
+
+`/hint` 要有 `pillow` 和 `numpy`（读 PNG、比模板）；`/discard` 和 `/que` 只用标准库。
 
 ## 运行与测试
 
@@ -63,6 +66,57 @@ curl -s http://127.0.0.1:3428/que \
 - `fan`：按 JJ麻将规则页算的番数（牌型番 + 清一色 + 断幺九 + 根）；
 - `value`：期望倍数 = 这手牌的蒙特卡洛赢牌率 × 番数倍数（0 番 1 倍、1 番 2 倍、2 番 4 倍、
   3 番 8 倍，之后每番 +4）。draws≤14 时每个候选 200 局，draws>14 时 100 局；`/que` 是 70/50 局。
+
+`POST /hint` 直接收一张 **2412×1080 的整屏 PNG 或 JPEG**（base64，按文件头识别），
+认局面再复用 `/discard`、`/que`：
+
+```bash
+# 手机上截一张主屏,转成 base64
+BASE64=$(base64 -i 主屏.png | tr -d '\n')
+curl -s http://127.0.0.1:3428/hint \
+  -H 'Content-Type: application/json' \
+  -d "{\"image\":\"$BASE64\"}"
+# 轮到出牌:
+# {"state":"turn","hand":["1m","2m","4m",...],"melds":[],"que":"p","left":39,
+#  "draws":10,"jian":null,"advice":{"win":false,"discard":"1m",...}}
+# 定缺阶段:
+# {"state":"que_select","hand":[...],"advice":{"que":"p","options":[...]}}
+```
+
+`state` 有五种：
+
+- `turn`：手牌张数 + 3 × 碰杠组数 = 14，且还没胡。`advice` 就是 `/discard` 的返回；
+  `draws = max(1, ⌈left ÷ 4⌉)`；`jian` 是屏上橙色「荐」指的那张，没有就是 `null`。
+- `win`：认出 14 张已经胡了，没有 `advice`。
+- `que_select`：屏上有「请选择定缺的花色」，`advice` 是 `/que` 的返回。
+- `wait`：不是用户出牌（别人出牌、动画、结算、大厅）。牌桌画面会带上认得出的
+  `hand` / `melds` / `que` / `left`，大厅和结算只有 `state`。
+- `unsure`：有一张牌、一组碰杠、定缺或牌墙剩余认不出；`reason` 是 `tile` / `meld` /
+  `que` / `left`。这一手不给建议。认不出的牌面会存进 `unsure/`，攒够了补模板。
+
+`/hint` 的错误用 HTTP 200 + `{"error","detail"}`：图片解不开或格式不是 PNG/JPEG
+`bad_image`，分辨率不是 2412×1080 `unsupported_screen`。
+
+### 认牌
+
+- 手牌右对齐到 x=2004，每张宽 123.5px；刚摸的那张单独在 x=2043–2166。每张切成
+  40×64、减均值归一化，和 `templates/hand/` 里的模板点积，**≥ 0.95 才算认出**。
+  模板是这台手机上截下来的 24 种牌面（还缺 7p、8p、4s；认不出会返回 `unsure`）。
+  缩放用 BILINEAR（比 LANCZOS 抗 JPEG 块效应）：测试集 q85 JPEG 的手牌最低分
+  **0.9570**，PNG 最低 **0.9626**，都在 0.95 以上，没有为 JPEG 降阈值。
+- 自己的碰杠在 x 456 起、每组 276px 宽：3 张白面是碰；中间抬起的是杠；抬起的牌
+  只露 1 张正面、左右是绿牌背的是暗杠。牌面用 `templates/meld/` 的模板比。
+- 牌墙剩余是左上角绿框里的数字，用连通域切成 1–2 位，再和 `templates/digit/`
+  （PNG）与 `templates/digit_jpeg/`（q85 JPEG）的 0–9 灰度模板比；JPEG 最低分
+  **0.9905**，PNG **1.0**。
+- 定缺优先读左下角头像旁的角标（`templates/que/` 里的万/筒/条），读不到再看手里
+  哪门有粉色小猪头。
+- 「荐」是 y 约 830–905 的橙色圆标，按 x 找它正下方的那张牌。
+- 定缺阶段的牌会被黄光罩住，按固定牌面位置切，避开光晕。
+
+测试集在 `fixtures/`：`frames/` 里 13 帧 2412×1080 整屏 PNG（碰、明杠、暗杠、「荐」、
+定缺阶段、他人出牌、结算、大厅），`labels.json` 是人工标注。`test_server.py` 里有
+逐帧对照，以及分辨率/坏图/认不出/性能用例。
 
 ## 概率表
 

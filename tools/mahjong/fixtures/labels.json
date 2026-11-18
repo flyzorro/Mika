@@ -1,0 +1,16 @@
+{
+  "_note": "2026-11-17 人工标注。frames/ 下同名 PNG（2412x1080 整屏）。hand 按屏幕从左到右，刚摸的那张放最后。melds 按屏幕从左到右；kan 包括明杠（3 张可见面 + 1 张叠在上面）和暗杠（只露 1 张正面、其余是牌背）。left = 左上角绿框里的牌墙剩余。que_select 帧里有几张牌发黄光（定缺阶段的高亮），也要认对。",
+  "shots_204809": {"state": "turn", "hand": ["1m","2m","4m","7m","7m","8m","8m","2s","3s","5s","6s","7s","8s","8m"], "melds": [], "que": "p", "left": 39, "jian": null},
+  "shots_204850": {"state": "turn", "hand": ["8m","8m","8m","3s","6s","6s","7s","7s","8s","8s","9s"], "melds": [{"type":"pon","tile":"7m"}], "que": "p", "left": 20, "jian": "9s"},
+  "shots2_210336": {"state": "turn", "hand": ["5p","5p","5p","3s","5s","6s","6s","6s","8s","8s","6p"], "melds": [{"type":"pon","tile":"1p"}], "que": "m", "left": 24, "jian": null},
+  "shots3_211829": {"state": "turn", "hand": ["1m","1m","3m","4m","4m","7m","7m","8m","9m","9m","6p"], "melds": [{"type":"pon","tile":"6m"}], "que": "s", "left": 28, "jian": null},
+  "shots4_212932_0057": {"state": "turn", "hand": ["1m","2m","3m","4m","5m","5m","6m","1s","3s","5s","5s"], "melds": [{"type":"kan","tile":"7m"}], "que": "p", "left": 27, "jian": "5m"},
+  "shots4_212841_0033": {"state": "turn", "hand": ["1m","2m","3m","4m","5m","6m","1s","3s","5s","1p","7s"], "melds": [{"type":"kan","tile":"7m"}], "que": "p", "left": 44, "jian": null},
+  "shots_204857": {"state": "wait", "hand": ["8m","8m","8m","6s","6s","7s","7s","8s","8s","9s"], "melds": [{"type":"pon","tile":"7m"}], "que": "p", "left": 20},
+  "shots_205128": {"state": "wait", "hand": ["5m","7m","7m","8m","9m","2s","2s"], "melds": [{"type":"kan","tile":"1m"},{"type":"kan","tile":"4m"}], "que": "p", "left": 21},
+  "shots4_212820_0023": {"state": "wait", "hand": ["1m","2m","3m","4m","5m","6m","1s","3s","5s","1p"], "melds": [{"type":"kan","tile":"7m"}], "que": "p", "left": 47},
+  "shots_204728": {"state": "que_select", "hand": ["1m","2m","4m","7m","7m","8m","2s","3s","5s","6s","7s","8s","3p"]},
+  "shots2_210150": {"state": "que_select", "hand": ["1p","1p","2p","4p","5p","5p","5p","1s","3s","6s","6s","8s","9s"]},
+  "shots_205135": {"state": "wait"},
+  "shots_204245": {"state": "wait"}
+}
