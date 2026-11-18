@@ -15,7 +15,8 @@ import server
 
 from PIL import Image, ImageDraw
 
-from server import handle, handler, win_fan, win_multiplier, win_probability
+from server import (_best, _feature, HAND_MATCH, HAND_TEMPLATES,
+                    handle, handler, win_fan, win_multiplier, win_probability)
 
 
 def post(hand, melds=None, que="s", draws=None):
@@ -758,3 +759,11 @@ class HintJpegTest(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(body["state"], "turn")
         self.assertEqual(body["hand"][0], "1m")
+
+
+class HandTemplateTest(unittest.TestCase):
+    def test_committed_4s_crop_is_recognized(self):
+        path = os.path.join(FIXTURES, "4s_live.png")
+        score, tile = _best(_feature(Image.open(path)), HAND_TEMPLATES)
+        self.assertEqual(tile, "4s")
+        self.assertGreaterEqual(score, HAND_MATCH, f"{score:.4f}")
