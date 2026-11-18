@@ -955,7 +955,7 @@ internal object PhoneDdzTurn : PhoneTool {
 
     /**
      * 牌桌/匹配画面底部写的场次和要的 room 对不上:记下读到的名字、停下,返回 false 表示能对上或读不出。
-     * 读不出(大师场、精英场、弹窗挡住)不算不符——调用方照旧往下打。
+     * 读不出(精英场、弹窗挡住)不算不符——调用方照旧往下打。
      */
     private fun roomMismatch(frame: com.wangzan101.mika.core.uistate.RawFrame, turn: Turn): Boolean {
         val requested = turn.requestedRoom ?: return false

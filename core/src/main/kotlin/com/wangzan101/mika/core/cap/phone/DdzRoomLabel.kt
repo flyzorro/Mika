@@ -9,7 +9,7 @@ import com.wangzan101.mika.core.uistate.RawFrame
  * 游戏把高豆账号放进了别的场(2026-11-13: room=master 却进了「经典至尊场」)。
  *
  * 这个标签是正中的五个字,只有中间两个字随场次不同。每个已知场次存中间两个字的 20×20 二值字形;
- * 认不出的场(大师场、精英场,或者被弹窗挡住)对不上任何样本,返回 null——调用方只能当成「看不出」,
+ * 认不出的场(精英场,或者被弹窗挡住)对不上任何样本,返回 null——调用方只能当成「看不出」,
  * 绝不能当成场次不符。
  */
 internal object DdzRoomLabel {
@@ -43,7 +43,7 @@ internal object DdzRoomLabel {
             }
     }
 
-    /** 底部五个字里的场次名(如「至尊场」「土豪场」「普通场」);认不出为 null。 */
+    /** 底部五个字里的场次名(「至尊场」「大师场」「土豪场」「普通场」);认不出为 null。 */
     fun read(frame: RawFrame): String? {
         if (frame.width != 2412 || frame.height != 1080) return null
         val w = X1 - X0
