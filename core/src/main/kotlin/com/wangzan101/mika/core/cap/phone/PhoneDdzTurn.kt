@@ -90,6 +90,11 @@ internal object PhoneDdzTurn : PhoneTool {
     /** 第二排紫色「大师场」卡片的中心(2000 万-6 亿金豆):和普通场同一列,y 是第二排。 */
     private const val HUMAN_MASTER_ROOM_X = 872
     private const val HUMAN_MASTER_ROOM_Y = 723
+    /**
+     * 第二排第二张橙色「至尊场」卡片的中心(1 亿金豆起,没有上限):和精英场同一列、和大师场同一排。
+     * 豆豆多了游戏会把点大师场的人放进至尊场(2026-11-13、2026-11-18 4.48 亿时都这样),要打就明说 room=supreme。
+     */
+    private const val HUMAN_SUPREME_ROOM_X = HUMAN_ELITE_ROOM_X
     /** Mika 屏上闯关页的报名。 */
     private const val STAGE_BUTTON_Y = 920
     private const val AUTO_CANCEL_MS = 600L
@@ -120,7 +125,7 @@ internal object PhoneDdzTurn : PhoneTool {
      * [advisor]:DouZero 服务地址。[tracker]:这一局的出牌历史;记不下去了这一局剩下的交还模型,单机经典场除外(由工具按简单规则打完)。
      */
     internal class Turn {
-        /** start human auto 时要的场次(normal/elite/tuhao/master);别的情形为 null。 */
+        /** start human auto 时要的场次(normal/elite/tuhao/master/supreme);别的情形为 null。 */
         var requestedRoom: String? = null
         /** 底部读到的场次名和 [requestedRoom] 对不上时,读到的那个名字(如「至尊场」)。 */
         var roomLabel: String? = null
@@ -454,8 +459,8 @@ internal object PhoneDdzTurn : PhoneTool {
         "advisor" to buildJsonObject { put("type", "string"); put("description", "start: DouZero service URL, required for both modes.") },
         "room" to buildJsonObject {
             put("type", "string")
-            put("enum", JsonArray(listOf("normal", "elite", "tuhao", "master").map(::JsonPrimitive)))
-            put("description", "start human mode with auto=true: which classic room to sit down in, normal (普通场, 5万-200万, default), elite (精英场, 200万-6000万), tuhao (土豪场, 1000万-3亿) or master (大师场, 2000万-6亿, the highest stakes).")
+            put("enum", JsonArray(listOf("normal", "elite", "tuhao", "master", "supreme").map(::JsonPrimitive)))
+            put("description", "start human mode with auto=true: which classic room to sit down in, normal (普通场, 5万-200万, default), elite (精英场, 200万-6000万), tuhao (土豪场, 1000万-3亿), master (大师场, 2000万-6亿) or supreme (至尊场, from 1亿 with no upper limit, the highest stakes).")
         },
         "hand" to ranks("play: your whole hand; resume: the complete current hand."),
         "play" to ranks("The cards to play."),
@@ -714,7 +719,8 @@ internal object PhoneDdzTurn : PhoneTool {
             "elite" -> HUMAN_ELITE_ROOM_X to HUMAN_NORMAL_ROOM_Y
             "tuhao" -> HUMAN_TUHAO_ROOM_X to HUMAN_NORMAL_ROOM_Y
             "master" -> HUMAN_MASTER_ROOM_X to HUMAN_MASTER_ROOM_Y
-            else -> throw ArgError("room", "must be normal, elite, tuhao or master")
+            "supreme" -> HUMAN_SUPREME_ROOM_X to HUMAN_MASTER_ROOM_Y
+            else -> throw ArgError("room", "must be normal, elite, tuhao, master or supreme")
         }
         // 只有这次调用明确给了 room 才校验场次:auto 不传 room 时只是沿用点普通场的老行为
         // (2026-11-13 14:33:结算页再 start 不带 room,第二局还在土豪场,不能因此误报 room_mismatch)。
@@ -929,6 +935,7 @@ internal object PhoneDdzTurn : PhoneTool {
         "elite" -> "精英场"
         "tuhao" -> "土豪场"
         "master" -> "大师场"
+        "supreme" -> "至尊场"
         else -> null
     }
 
@@ -2021,7 +2028,7 @@ internal object PhoneDdzTurn : PhoneTool {
     private class HumanEntry(val frame: com.wangzan101.mika.core.uistate.RawFrame?, val error: String? = null)
 
     /**
-     * 从游戏主大厅点中间的「真人对战」、在真人场次页点([roomX], [roomY]) 的场次卡(普通场、精英场、土豪场或大师场),然后等匹配和牌桌;单机的经典场次页不点。
+     * 从游戏主大厅点中间的「真人对战」、在真人场次页点([roomX], [roomY]) 的场次卡(普通场、精英场、土豪场、大师场或至尊场),然后等匹配和牌桌;单机的经典场次页不点。
      * 路上真人场的领金豆弹窗自己领(只点免费的),单机救济金、看视频领取、广告由 [clearPopup] 收拾;领完回到场次页再点一次同一个场次。
      * 最多等约 45 秒(真人场匹配的倒计时就有 30 秒),弹窗另算。只认 Mika 的屏,认不出的画面一律不点。
      */
