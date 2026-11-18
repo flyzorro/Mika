@@ -130,6 +130,9 @@ internal object PhoneDdzTurn : PhoneTool {
         var roomLabel: String? = null
         /** TEMP diagnostics: last DDZTRACE line, to log only changes. */
         var lastTrace: String? = null
+        /** TEMP diagnostics: 前两帧的手牌张数,抓「只错一帧又回来」的张数跳变。remove after. */
+        var handCountPrev = -1
+        var handCountPrev2 = -1
         var seenAt: Long? = null
         var rejected = 0
         var single = false
@@ -1875,6 +1878,13 @@ internal object PhoneDdzTurn : PhoneTool {
             for (side in DdzSide.entries) {
                 if (unsurePersisted(turn, side, DdzCards.play(frame, side))) DdzFrameDump.dump("unsure_${side.name}", frame, FULL_ROWS)
             }
+            // 手牌张数只错一帧又回来(A → B → A,差超过 2):王炸/炸弹特效那一帧读错。错的那帧还在环形缓冲里,这时一起写盘
+            if (turn.handCountPrev2 == view.handCount && view.handCount > 0 &&
+                kotlin.math.abs(turn.handCountPrev - view.handCount) > 2) {
+                DdzFrameDump.dump("hand_blip_${turn.handCountPrev2}_${turn.handCountPrev}", frame, FULL_ROWS)
+            }
+            turn.handCountPrev2 = turn.handCountPrev
+            turn.handCountPrev = view.handCount
             val line = "phase=${view.phase} hand=${view.handCount}${DdzCards.hand(frame, view)} lifted=${view.lifted} clock=$clock seat=$seat " +
                 "L=${DdzCards.play(frame, DdzSide.Left)} R=${DdzCards.play(frame, DdzSide.Right)} ${tracker.debugState()}"
             if (line != turn.lastTrace) { turn.lastTrace = line; println("DDZTRACE ${System.currentTimeMillis() % 100_000} $line") }
