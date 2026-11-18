@@ -140,14 +140,19 @@ internal object DdzCards {
      * 把两位数的 10 的「1」切掉,所以两个间距都摆一次,取更像的那个。
      */
     private fun revealedBottom(frame: RawFrame, bar: Int, k: Double): List<String>? {
+        // 放大底牌的点数字高约 63~65 行:窗口只取 60 行会切掉 3 下半截的弯,3 读成 2;再按 [REVEALED_TALL_ROWS] 行量一次取更像的。
+        // 不能只用高窗:地主帽子压着的那张(J 5 8 的 5),高窗把帽子的暗红边也框进来,反而认不出
         val cards = strip(frame, bar + (953 * k).toInt(), bar + (1347 * k).toInt(), 120, 310, pitch = 135 * k, width = 123 * k,
             glyphRows = 60, glyphWidth = (56 * k).toInt(), k = k, minRows = 60, sure = REVEALED_SURE, margin = REVEALED_MARGIN,
-            probeNearBottom = true, gap = 20, spanAll = true, glyphTops = listOf(0, 4), alsoPitch = REVEALED_PITCH) ?: return null
+            probeNearBottom = true, gap = 20, spanAll = true, glyphTops = listOf(0, 4), alsoPitch = REVEALED_PITCH,
+            alsoRows = REVEALED_TALL_ROWS) ?: return null
         return cards.map { it.rank }.filterNotNull().takeIf { it.size >= 2 }
     }
 
     /** 放大底牌实测的牌间距(最终像素),和 [revealedBottom] 里按内容宽度换算的 135×k 一起试。 */
     private const val REVEALED_PITCH = 135.0
+    /** 放大底牌点数字的高窗(牌顶往下的行数):够装下整个 3,花色从约 80 行起够不着。 */
+    private const val REVEALED_TALL_ROWS = 72
     /**
      * 放大底牌上会压着地主的帽子图案,中间那张 5 只露出顶上一横和左竖,和 5 的样本差 0.31;
      * 底牌门槛 0.3 差一点点就把它丢了。放到 0.33,同时要求和第二像拉开 0.02,认不准仍交 null。
@@ -997,6 +1002,7 @@ internal object DdzCards {
         wideLast: Int? = null, wrapDy: Int? = null, tailDy: Int? = null, wrapBelow: Int = WRAP_BELOW,
         wrapFull: Boolean = false, wrapWhite: Int = 100, probeTop: Int? = null,
         gap: Int = 12, spanAll: Boolean = false, glyphTops: List<Int> = listOf(4), alsoPitch: Double? = null,
+        alsoRows: Int? = null,
     ): List<Read>? {
         val right = minOf(x1, frame.width)
         fun white(x: Int, y: Int) = frame.pixel(x, y).let { p -> min(p) > 190 && spread(p) < 45 }
@@ -1024,7 +1030,7 @@ internal object DdzCards {
         }.maxByOrNull { it.last - it.first } ?: return null
         val n = ((span.last - span.first + 1 - width) / pitch).roundToInt() + 1
         if (n !in 1..20) return null
-        val first = row(frame, x0 + span.first, top, n, pitch, glyphRows, glyphWidth, k, sure, margin, wideLast, glyphTops, alsoPitch)
+        val first = row(frame, x0 + span.first, top, n, pitch, glyphRows, glyphWidth, k, sure, margin, wideLast, glyphTops, alsoPitch, alsoRows)
         // 真人右家最后一张带绶带时会下移,横向宽度仍和上一张重叠,不能靠牌面总宽计数
         if (tailDy != null) {
             val tailLeft = x0 + span.first + ((n - 1) * pitch).toInt()
@@ -1035,7 +1041,7 @@ internal object DdzCards {
                 }
             } } >= 45
             if (ribbon) {
-                val tail = row(frame, tailLeft, tailTop, 1, pitch, glyphRows, glyphWidth, k, sure, margin, wideLast ?: 72, glyphTops, alsoPitch)
+                val tail = row(frame, tailLeft, tailTop, 1, pitch, glyphRows, glyphWidth, k, sure, margin, wideLast ?: 72, glyphTops, alsoPitch, alsoRows)
                 return first + tail
             }
         }
@@ -1052,13 +1058,14 @@ internal object DdzCards {
         // 右家的贴着右边(2074),第二排接着从最后一张下面摆(真人右家的十张飞机带对子)。
         // 九张没摆满不会有第二排,也别把真人右家掉下去那张绶带牌(在右边)当成第二排
         if (wrapFull && (n != 9 || !wrapsUnder(span, span2))) return first
-        return first + row(frame, x0 + span2.first, top + wrapDy, n2, pitch, glyphRows, glyphWidth, k, sure, margin, wideLast, glyphTops, alsoPitch)
+        return first + row(frame, x0 + span2.first, top + wrapDy, n2, pitch, glyphRows, glyphWidth, k, sure, margin, wideLast, glyphTops, alsoPitch, alsoRows)
     }
 
     /** 一排 [n] 张牌,最左一张从 [left] 起、牌顶在 [top]:每张的点数。 */
     private fun row(
         frame: RawFrame, left: Int, top: Int, n: Int, pitch: Double, glyphRows: Int, glyphWidth: Int, k: Double,
         sure: Double, margin: Double, wideLast: Int?, glyphTops: List<Int> = listOf(4), alsoPitch: Double? = null,
+        alsoRows: Int? = null,
     ): List<Read> {
         return (0 until n).map { i ->
             // 放大摆开的底牌:三张牌实测相距 135 像素,而 [pitch] 按内容宽度换算成了 135×k,越往后偏得越多
@@ -1072,6 +1079,8 @@ internal object DdzCards {
             // 最后一张整张露着:窄了 10 的 0 会切掉,宽了地主的绶带会进来;给了 [wideLast] 就两种都量,取更像的
             // 最后一张右边没有下一张牌,宽窗封顶到 pitch 就够、不用减那 3 的余量(窄窗仍减 3 避绶带):
             // 这手末尾的黑 10 偏右、0 伸到第 49 列,47 的宽窗量不全,整手读成 ?K,7,J;量到 50 才认出 10
+            // 窗口高度:默认 [glyphRows];给了 [alsoRows] 就两种都量,取更像的
+            val heights = listOfNotNull(glyphRows, alsoRows).distinct()
             val widths = if (i == n - 1) listOfNotNull(
                 (minOf(glyphWidth.toDouble(), pitch) - 3).toInt(),
                 wideLast?.let { minOf(it.toDouble(), pitch).toInt() },
@@ -1086,19 +1095,19 @@ internal object DdzCards {
                 // 真人牌桌的绶带更靠左:黑边在亮红左边 5 列(第 r 行约 39+r),落在上面那条斜线以内,和点数连成一块
                 // (AKQJ10 的 10 读成 ?K,A,7,王炸的小王读成 ?K,7,A)。每行再从亮红往左 [RIBBON_EDGE] 列擦掉;
                 // 点数的红最亮约 195,绶带 240,按 [RIBBON_RED] 分得开
-                val edge = if (!ribbon) null else IntArray(glyphRows) { r ->
+                val edge = if (!ribbon) null else IntArray(heights.max()) { r ->
                     (0 until RIBBON_SCAN).firstOrNull { c -> frame.pixel(cx + c, top + 4 + r).let { p ->
                         (p shr 16 and 0xff) > RIBBON_RED && (p shr 8 and 0xff) < 110 && (p and 0xff) < 110
                     } }?.minus(RIBBON_EDGE) ?: Int.MAX_VALUE
                 }
-                widths.flatMap { wide -> glyphTops.mapNotNull { glyphTop ->
-                    val ink = Array(glyphRows) { r -> BooleanArray(wide) { c ->
+                widths.flatMap { wide -> heights.flatMap { rows -> glyphTops.mapNotNull { glyphTop ->
+                    val ink = Array(rows) { r -> BooleanArray(wide) { c ->
                         (edge == null || (c < RIBBON_COL + RIBBON_SLOPE * r && c < edge[r])) && textInk(frame.pixel(cx + c, top + glyphTop + r))
                     } }
                     val box = rankBox(ink) ?: return@mapNotNull null
                     val red = share(frame, cx, top + glyphTop, ink) { r, g, _ -> r - g > 50 } > 0.5
                     ranked(tableGlyphs, boxSig(box, TABLE_W, TABLE_H)).map { joker(it.first, red) to it.second }
-                } }
+                } } }
             }.minByOrNull { it.first().second }
                 ?.let { ranked -> Read(sure(ranked, sure, margin), ranked.take(GUESSES).map { it.first }) }
                 ?: Read(null, emptyList())
