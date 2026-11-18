@@ -2483,14 +2483,16 @@ class PhoneDdzTurnTest {
     }
 
     @Test fun masterRoomStopsAtTheMatchingScreenWhenItSaysZhizun() = runTest {
-        // 匹配画面底部已经写出「经典至尊场」:不等牌桌,点完场次卡就停下,一下都不点牌。
+        // 匹配画面底部已经写出「经典至尊场」:不等牌桌,牌还没发,点左上角黄色返回箭头离开匹配,一下都不点牌。
+        // 2026-11-18 11:14 / 11:31:只停下不离开,人还坐在桌上,发牌后被游戏托管打完了整局(一次 +1.41 亿、一次 −1.06 亿)。
         val rooms = shot("human_classic_rooms")
         val matching = roomFrame("master_zhizun_matching")
         val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(rooms, matching) + List(4) { matching }))
         val dispatcher = toolDispatcher(game)
         val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","auto":true,"room":"master","advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
         assertEquals(result.toString(), "room_mismatch", result.text("error"))
-        assertEquals(listOf(872 to 723), game.taps)
+        assertEquals("离开了匹配: $result", "true", result.text("left"))
+        assertEquals(listOf(872 to 723, 168 to 56), game.taps)
         assertTrue("一下都不点牌: ${game.taps}", game.taps.none { it.second == DdzScreen.CARD_Y })
     }
 
