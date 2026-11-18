@@ -135,6 +135,8 @@ fun toolDispatcher(
     mainScreen: com.wangzan101.mika.core.userscreen.MainScreenPort? = null,
     /** 悬浮胶囊上闪一句字。 */
     hintHud: com.wangzan101.mika.core.userscreen.HintHud? = null,
+    /** 预设的麻将服务地址(见 [ToolConfig.mahjongAdvisor])。 */
+    mahjongAdvisor: String? = null,
 ): ToolDispatcher {
     val screenshotStore = sandbox?.takeIf {
         it.status() !is com.wangzan101.mika.core.cap.sandbox.SandboxStatus.Unsupported &&
@@ -144,7 +146,7 @@ fun toolDispatcher(
     val config = ToolConfig(visionEnabled, skills, recordFrames, vision, inlineScreen, adaptiveVision, memory, profile, utterances, conversationId,
         imageOps, scheduleTrigger, scheduleAdmin, runSpec, childHost, userScreens, personalSkills, selfConfig, runRecords, webSearch, self, selfOperate,
         screenshotStore?.let { store -> { path, png -> store.save(path, png) } }, taskMemory = taskMemory, notices = notices,
-        mainScreen = mainScreen, hintHud = hintHud)
+        mainScreen = mainScreen, hintHud = hintHud, mahjongAdvisor = mahjongAdvisor)
     val providers: List<CapabilityProvider> = listOf(
         object : CapabilityProvider {
             override val id = PHONE

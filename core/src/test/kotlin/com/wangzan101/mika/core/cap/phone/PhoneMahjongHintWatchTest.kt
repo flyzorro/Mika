@@ -274,6 +274,25 @@ class PhoneMahjongHintWatchTest {
         assertFalse(PhoneMahjongHint.available(ctx))
     }
 
+    /** 用户只说「开始麻将提示」不给地址时,用编译时预设的麻将服务地址。 */
+    @Test fun usesThePresetServiceWhenNoAdvisorIsGiven() = runTest {
+        main.busy = false
+        main.front = "com.tencent.mm"
+        PhoneMahjongHint.clock = { testScheduler.currentTime }
+        val r = PhoneMahjongHint.execute(
+            Args(PhoneMahjongHint.def, Json.parseToJsonElement("""{"action":"watch"}""").jsonObject),
+            toolDispatcher(screen, mainScreen = main, hintHud = hud, mahjongAdvisor = "http://preset:3428").ctx,
+        )
+        assertEquals("app_left", r.text("stopped"))
+    }
+
+    @Test fun asksForTheServiceWhenNothingIsPreset() = runTest {
+        val d = toolDispatcher(screen, visionEnabled = true, mainScreen = main, hintHud = hud)
+        val r = d.execute(Part.ToolCall("c1", "phone_mahjong_hint", """{"action":"watch"}"""))
+        assertEquals("invalid_arguments", r.content["error"]?.jsonPrimitive?.content)
+        assertTrue(r.content["message"]!!.jsonPrimitive.content.contains("advisor"))
+    }
+
     @Test fun rejectsAnUnknownAction() = runTest {
         val d = toolDispatcher(screen, visionEnabled = true, mainScreen = main, hintHud = hud)
         val r = d.execute(Part.ToolCall("c1", "phone_mahjong_hint", """{"action":"dance","advisor":"http://mac:3428"}"""))
