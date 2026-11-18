@@ -923,6 +923,7 @@ class TaskRun(
                 imageOps = BitmapImageOps, runSpec = runSpec,
                 userScreens = userScreens,
                 mainScreen = mainScreenWatch, hintHud = mainScreenWatch,
+                mahjongAdvisor = BuildConfig.MAHJONG_ADVISOR.ifBlank { null },
                 scheduleTrigger = if (provenance.origin == RunOrigin.Ui) { trigger -> TriggerRuntime.schedule(service, trigger) } else null,
                 scheduleAdmin = if (provenance.origin == RunOrigin.Ui) LocalScheduleAdmin(service) else null,
                 childHost = childRunner,
