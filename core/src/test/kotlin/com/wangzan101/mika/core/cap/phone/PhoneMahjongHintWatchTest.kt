@@ -89,7 +89,16 @@ class PhoneMahjongHintWatchTest {
         assertEquals("0", r.text("unsure"))
     }
 
-    @Test fun hintsOnlyAfterTwoIdenticalTurnsAndOnlyOnce() = runTest {
+    @Test fun aSingleTurnFrameBeforeWaitStillFlashes() = runTest {
+        // 用户摸牌后很快就打：服务只看到一帧 turn，接着就是 wait。第一帧就该闪。
+        reply = { i -> if (i == 1) hint(state = "turn") else if (i <= 3) hint(state = "wait") else null }
+        val r = watch()
+        assertEquals("service_down", r.text("stopped"))
+        assertEquals("the single turn frame flashed", 1, hud.flashes.size)
+        assertEquals("1", r.text("hinted"))
+    }
+
+    @Test fun theSameHandFlashesOnlyOnce() = runTest {
         // 同一手连着认出 5 帧，然后服务连不上。
         reply = { i -> if (i <= 5) hint(state = "turn") else null }
         val r = watch()
@@ -101,13 +110,13 @@ class PhoneMahjongHintWatchTest {
         assertEquals("the watch never reads the virtual screen", 0, screen.snapshots)
     }
 
-    @Test fun hintsAgainWhenTheHandChanges() = runTest {
+    @Test fun aChangedHandFlashesAgain() = runTest {
         val a = """["1m","2m","3m","4m","5m","6m","7m","8m","9m","1p","2p","3p","4p","5p"]"""
         val b = """["1m","2m","3m","4m","5m","6m","7m","8m","9m","1p","2p","3p","4p","6p"]"""
         reply = { i ->
             when (i) {
-                1, 2 -> hint(state = "turn", hand = a)
-                3, 4 -> hint(state = "turn", hand = b)
+                1 -> hint(state = "turn", hand = a)
+                2 -> hint(state = "turn", hand = b)
                 else -> null
             }
         }
@@ -117,7 +126,7 @@ class PhoneMahjongHintWatchTest {
         assertEquals("2", r.text("hinted"))
     }
 
-    @Test fun aWaitFrameBetweenTwoTurnsBreaksThePair() = runTest {
+    @Test fun aWaitBetweenTwoTurnsOfTheSameHandDoesNotFlashAgain() = runTest {
         reply = { i ->
             when (i) {
                 1 -> hint(state = "turn")
@@ -128,7 +137,41 @@ class PhoneMahjongHintWatchTest {
         }
         val r = watch()
         assertEquals("service_down", r.text("stopped"))
-        assertEquals("the wait frame broke the pair", 1, hud.flashes.size)
+        assertEquals("the same hand still flashes only once", 1, hud.flashes.size)
+    }
+
+    /**
+     * 胶囊还没显示出来时 flash 返回 false：这一次不算闪过，同一手下一帧再试，等胶囊在了才记上。
+     * 否则一次闪不出来就把整手记成「已提示」，后面相同的帧再也不闪。
+     */
+    @Test fun aFailedFlashIsRetriedOnTheNextFrameOfTheSameHand() = runTest {
+        hud.showing = false
+        reply = { i -> if (i <= 6) hint(state = "turn") else null }
+        PhoneMahjongHint.postHint = { url, body ->
+            posts += (url to body)
+            // 第 4 帧时胶囊才真的显示出来。
+            if (posts.size == 4) hud.showing = true
+            reply(posts.size)
+        }
+        val r = watch()
+        assertEquals("service_down", r.text("stopped"))
+        assertEquals("every failed attempt retried until the capsule could show it", 4, hud.flashes.size)
+        assertEquals("only the flash that really showed counts", "1", r.text("hinted"))
+        assertEquals("打 5万 · 冲清一色 · 期望 1.4倍", hud.flashes.last())
+    }
+
+    /** 定缺那句也一样：闪不出来不能记成已经闪过。 */
+    @Test fun aFailedQueSelectFlashIsRetriedToo() = runTest {
+        hud.showing = false
+        PhoneMahjongHint.postHint = { url, body ->
+            posts += (url to body)
+            if (posts.size == 3) hud.showing = true
+            hint(state = "que_select", que = "s")
+        }
+        val r = watch()
+        assertEquals("timeout", r.text("stopped"))
+        assertEquals("retried until it could show, then once", 3, hud.flashes.size)
+        assertEquals("1", r.text("hinted"))
     }
 
     @Test fun flashesTheDiscardAdvice() = runTest {
