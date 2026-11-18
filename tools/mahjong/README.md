@@ -92,7 +92,8 @@ curl -s http://127.0.0.1:3428/hint \
 - `wait`：不是用户出牌（别人出牌、动画、结算、大厅）。牌桌画面会带上认得出的
   `hand` / `melds` / `que` / `left`，大厅和结算只有 `state`。
 - `unsure`：有一张牌、一组碰杠、定缺或牌墙剩余认不出；`reason` 是 `tile` / `meld` /
-  `que` / `left`。这一手不给建议。认不出的牌面会存进 `unsure/`，攒够了补模板。
+  `que` / `left`。这一手不给建议。认不出的牌面会存进 `unsure/`，攒够了补模板；
+  碰杠认不出时也会存下那一组的牌面（可直接当 `templates/meld/flat_<tile>.png`）和整屏截图。
 
 `/hint` 的错误用 HTTP 200 + `{"error","detail"}`：图片解不开或格式不是 PNG/JPEG
 `bad_image`，分辨率不是 2412×1080 `unsupported_screen`。

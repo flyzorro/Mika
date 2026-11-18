@@ -1214,6 +1214,12 @@ def advise_hint(image_value):
         fields["left"] = left
     if total == 14:
         if any(meld is None for meld in melds):
+            for index, meld in enumerate(melds):
+                if meld is not None:
+                    continue
+                start = MELD_GROUP_X + MELD_GROUP_STEP * index
+                _save_unsure(image.crop((start + 6, 921, start + 86, 1026)), "meld")
+            _save_unsure(image, "meld_frame")
             return {"state": "unsure", "reason": "meld"}
         if que is None:
             return {"state": "unsure", "reason": "que"}

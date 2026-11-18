@@ -3,6 +3,7 @@ import base64
 import io
 import json
 import os
+import tempfile
 import threading
 import time
 import unittest
@@ -579,6 +580,28 @@ class HintMeldTest(unittest.TestCase):
                 self.assertNotIn("advice", body)
 
 
+class HintUnsureMeldTest(unittest.TestCase):
+    def test_unreadable_meld_saves_face_and_full_frame(self):
+        templates = {name: value for name, value in server.MELD_TEMPLATES.items()
+                     if name != "flat_7m"}  # 没有 7m 碰的模板,这一组认不出
+        with Image.open(os.path.join(server.TEMPLATE_DIR, "meld", "flat_7m.png")) as template:
+            expected = template.size
+        with tempfile.TemporaryDirectory() as unsure_dir, \
+                mock.patch.object(server, "MELD_TEMPLATES", templates), \
+                mock.patch.object(server, "UNSURE_DIR", unsure_dir):
+            status, body = hint_frame("shots_204850")
+            self.assertEqual(status, 200)
+            self.assertEqual(body, {"state": "unsure", "reason": "meld"})
+            names = os.listdir(unsure_dir)
+            faces = [name for name in names if name.endswith("_meld.png")]
+            frames = [name for name in names if name.endswith("_meld_frame.png")]
+            self.assertEqual(len(faces), 1)  # 每组认不出的碰杠各存一张牌面
+            self.assertEqual(len(frames), 1)  # 整屏存一张,方便查为什么没读出来
+            for name, size in ((faces[0], expected), (frames[0], (2412, 1080))):
+                with Image.open(os.path.join(unsure_dir, name)) as saved:
+                    self.assertEqual(saved.size, size)
+
+
 class HintQueSelectTest(unittest.TestCase):
     def test_que_select_returns_hand_and_que_advice(self):
         cases = {
@@ -712,7 +735,9 @@ class HintUnsureReasonTest(unittest.TestCase):
         image.paste(image.crop((x0, 921, x1, 1026)).transpose(Image.FLIP_LEFT_RIGHT), (x0, 921))
         buffer = io.BytesIO()
         image.save(buffer, format="PNG")
-        _, body = hint_bytes(buffer.getvalue())
+        with tempfile.TemporaryDirectory() as unsure_dir, \
+                mock.patch.object(server, "UNSURE_DIR", unsure_dir):
+            _, body = hint_bytes(buffer.getvalue())
         self.assertEqual(body, {"state": "unsure", "reason": "meld"})
 
 
