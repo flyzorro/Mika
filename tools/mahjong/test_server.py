@@ -563,6 +563,12 @@ class HintMeldTest(unittest.TestCase):
                 "hand": ["1m", "2m", "3m", "4m", "5m", "6m", "1s", "3s", "5s", "1p"],
                 "melds": [{"type": "kan", "tile": "7m"}], "que": "p", "left": 47,
             },
+            "shots_204945": {
+                "hand": ["6s", "6s", "7s", "7s"],
+                "melds": [{"type": "pon", "tile": "7m"}, {"type": "kan", "tile": "8m"},
+                          {"type": "pon", "tile": "8s"}],
+                "que": "p", "left": 0,
+            },
         }
         for name, expected in cases.items():
             with self.subTest(name=name):
