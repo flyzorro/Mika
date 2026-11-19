@@ -47,6 +47,18 @@ def is_bomb(move):
     return md.get_move_type(list(move))["type"] in (md.TYPE_4_BOMB, md.TYPE_5_KING_BOMB)
 
 
+def bomb_cards(hand):
+    """[hand] 里能当炸弹 / 王炸打出去的牌:每个点数的四张、大小王一对。
+
+    真人常把炸弹 / 王炸留到最后;估他之前那手杂牌像不像时,先把这些牌放一边,按剩下的牌打分。
+    """
+    counts = Counter(hand)
+    out = [rank for rank, n in counts.items() if rank < 20 and n >= 4 for _ in range(4)]
+    if counts[20] and counts[30]:
+        out += [20, 30]
+    return tuple(sorted(out))
+
+
 def moves(hand, rival):
     """[hand] 能出的牌:[rival] 是要压的那手([] 是自己先出);要压时含不出 []。同 DouZero 牌局的规则。"""
     mg = MovesGener(list(hand))
@@ -170,13 +182,21 @@ class Solver:
         return self.landlord_wins({**hands, turn: left}, nxt, move, turn)
 
 
-def splits(unknown, a, na, b, nb):
-    """把 [unknown] 分给 [a] [na] 张、[b] [nb] 张的各种分法,带上这种分法有几种摆法(同点数的牌不分花色)。"""
+def splits(unknown, a, na, b, nb, kept=()):
+    """把 [unknown] 分给 [a] [na] 张、[b] [nb] 张的各种分法,带上这种分法有几种摆法(同点数的牌不分花色)。
+
+    [kept] 是一定在 [a] 手里的牌:我是农民时,地主没打出去的底牌一定还在地主手里(同 server.sample_hands)。
+    """
+    fixed = tuple(sorted((Counter(unknown) & Counter(kept)).elements()))
+    pool = list((Counter(unknown) - Counter(fixed)).elements())
+    need = na - len(fixed)
+    if need < 0 or need + nb != len(pool):
+        return None
     seen = Counter()
-    for picked in combinations(range(len(unknown)), na):
+    for picked in combinations(range(len(pool)), need):
         chosen = set(picked)
-        ha = tuple(sorted(unknown[i] for i in picked))
-        hb = tuple(sorted(unknown[i] for i in range(len(unknown)) if i not in chosen))
+        ha = tuple(sorted(fixed + tuple(pool[i] for i in picked)))
+        hb = tuple(sorted(pool[i] for i in range(len(pool)) if i not in chosen))
         seen[(ha, hb)] += 1
         if len(seen) > MAX_SPLITS:
             return None
