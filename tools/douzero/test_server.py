@@ -41,6 +41,58 @@ def new_game(seed):
     return env
 
 
+def request_split(position):
+    """把一条实机请求拆成 likelihood 要用的东西:
+    (座位, 历史, 三家此刻剩的牌, 各家张数, 看不见的牌, 三家出过的牌)。"""
+    import server as server_module
+    seat = position["seat"]
+    hand = cards(position["hand"])
+    bottom = cards(position.get("bottom", []))
+    history = resolve(hand, [[str(c) if str(c).startswith("?") else cards([c])[0] for c in m]
+                             for m in position["history"]])
+    start = server_module.deal(seat, hand, bottom, history)
+    played = {s: [] for s in SEATS}
+    for i, move in enumerate(history):
+        played[SEATS[i % 3]] += move
+    left = {s: len(start[s]) - len(played[s]) for s in SEATS}
+    current = {s: server_module.minus(start[s], played[s]) for s in SEATS}
+    unseen = sorted(server_module.minus(DECK, current[seat] + sum(played.values(), [])))
+    return seat, history, current, left, unseen, played
+
+
+def has_bomb(hand):
+    """[hand] 里有没有炸弹 / 王炸。"""
+    counts = {card: list(hand).count(card) for card in set(hand)}
+    return any(n >= 4 for card, n in counts.items() if card < 20) or (20 in hand and 30 in hand)
+
+
+def short_bomb_mass(position, advisor=ADVISOR, auction=None, only_short=False, counted=True):
+    """牌最少的那家对手,按 [advisor].likelihood 加权后手里有炸弹的概率。
+
+    [only_short] 为真时只看他的出牌(同 Advisor.short_hand_plan):另一家很早以前的出牌
+    会在两百多种分法里把权重整个带走。[counted] 为假时每种不同的剩牌算一个假设,
+    不再按同点数的摆法数放大(同 short_hand_plan)。
+    """
+    import endgame
+    seat, history, current, left, unseen, _ = request_split(position)
+    others = [s for s in SEATS if s != seat]
+    short = min(others, key=lambda s: left[s])
+    far = others[0] if others[1] == short else others[1]
+    ways = endgame.splits(unseen, short, left[short], far, left[far])
+    if ways is None:
+        raise AssertionError("分法太多,这条测试请求不该枚举不完")
+    splits = [{seat: tuple(current[seat]), short: ha, far: hb} for ha, hb in ways]
+    likes = advisor.likelihood(history, seat, auction, seats=[short] if only_short else None)(
+        splits, time.monotonic() + 30)
+    total = bomb = 0.0
+    for ((ha, _), count), like in zip(ways.items(), likes):
+        weight = (count if counted else 1.0) * like
+        total += weight
+        if has_bomb(ha):
+            bomb += weight
+    return bomb / total
+
+
 class ServerTest(unittest.TestCase):
     def test_rebuilt_state_gives_the_same_move(self):
         checked = 0
@@ -564,6 +616,93 @@ class LikelihoodFloorTest(unittest.TestCase):
         self.assertEqual(1.0, max(likes))
         self.assertGreaterEqual(min(likes), server.LIKELIHOOD_FLOOR)
         self.assertEqual(server.LIKELIHOOD_FLOOR, min(likes))
+
+
+class KeepBombLikelihoodTest(unittest.TestCase):
+    """对手留着炸弹时,他出的杂牌按「炸弹先放一边」打分:真人把炸弹留到最后,先走杂牌。
+
+    2026-11-19 15:06 精英场,我是地主、超级加倍,输光 860 万。下家连出 9 8 7 6 5、K Q J 10 9,
+    剩 5 张时领单张 J,最后 4 张是 4 4 4 4。下面是 15:07:50 / 15:08:02 两条实机请求(照抄 /act)。
+    改前按两家 DouZero 出牌似然加权,P(下家剩的 4 张是炸弹) 只有 0.0003(均匀 0.0004)。
+    这两条请求里 DouZero 本来就觉得下家那两手很像(整手打分 log 0.0),所以「留炸弹」规则本身
+    在这手不加分;真正把炸弹抬起来的是只看他自己的出牌、每种剩牌一个假设(见 report.md)。
+    """
+
+    HAND = ["BJ", "SJ", "2", "K", "K", "7", "7", "5", "5", "5"]
+    BOTTOM = ["7", "K"]
+    BEFORE_J = [["3", "8", "8", "8"], [], ["10", "10", "10", "7"], ["Q", "A", "A", "A"], [], [],
+                ["9", "9"], ["2", "2"], [], [], ["9", "8", "7", "6", "5"], [], [],
+                ["K", "Q", "J", "10", "9"], []]
+    AFTER_J = BEFORE_J + [[], ["J"], []]
+    AUCTION = {"double": {"landlord_down": False, "landlord_up": False}}
+
+    def position(self, history):
+        return dict(seat="landlord", hand=self.HAND, bottom=self.BOTTOM, history=history)
+
+    def auction(self):
+        import server as server_module
+        return server_module.parse_auction(self.AUCTION)
+
+    def test_a_kept_bomb_lifts_the_observed_non_bomb_move(self):
+        # 只看这一条的因果:下家在第 4 手领出单张 3,按整手牌 4 4 4 4 + 3 打分 log 约 -1694,
+        # 把炸弹放一边只剩 3,log 是 0。所以「留着炸弹的 4 4 4 4」这种分法权重该是 1,
+        # 而不是被压到 LIKELIHOOD_FLOOR(改前就是 0.02 对 1)。
+        import server as server_module
+        history = [cards(["BJ"]), [], [], [], cards(["3"])]
+        splits = [{"landlord": (), "landlord_down": cards(hand), "landlord_up": ()}
+                  for hand in (["4", "4", "4", "4"], ["4", "4", "6", "6"])]
+        likes = ADVISOR.likelihood(history, "landlord")(splits, time.monotonic() + 30)
+        self.assertEqual(1.0, likes[0], "留着 4 4 4 4 领单张 3 的分法该是最可能的")
+        self.assertEqual(server_module.LIKELIHOOD_FLOOR, likes[1])
+
+    def test_the_short_hand_bomb_is_no_longer_nearly_impossible(self):
+        # 15:08:02:下家只剩 4 张,实际就是 4 4 4 4。改前按两家似然加权只有 0.0003;
+        # 只看他的出牌、每种剩牌一个假设后这手是唯一最像的分法。207 种分法里后验质量约 6.9%,
+        # 到不了 0.2 的原因见 report.md。
+        mass = short_bomb_mass(self.position(self.AFTER_J), advisor=ADVISOR, auction=None,
+                               only_short=True, counted=False)
+        self.assertGreaterEqual(mass, 0.05, f"P(下家剩的 4 张是炸弹) 只有 {mass:.4f}")
+
+
+class ShortHandSamplingTest(unittest.TestCase):
+    """对手牌少、又没进残局搜索时,现场模拟按枚举加权发牌,不再均匀随机。
+
+    用 15:08:02 那条请求:下家只剩 4 张,实际是 4 4 4 4。按公开入口 Advisor.sample_hands 抽 1000 手,
+    他这 4 张是炸弹的次数要接近似然权重,而不是均匀发牌时的千分之一。
+    """
+
+    POSITION = KeepBombLikelihoodTest().position(KeepBombLikelihoodTest.AFTER_J)
+
+    def infoset(self):
+        seat, history, current, left, unseen, played = request_split(self.POSITION)
+        return SimpleNamespace(
+            player_position=seat, player_hand_cards=current[seat], other_hand_cards=unseen,
+            num_cards_left_dict=left, three_landlord_cards=cards(self.POSITION["bottom"]),
+            played_cards=played, card_play_action_seq=[list(m) for m in history],
+            last_move=[], last_two_moves=[[], []], last_move_dict={s: [] for s in SEATS},
+            last_pid=None, bomb_num=0, all_handcards=None)
+
+    def test_the_shortest_opponent_is_dealt_his_likely_bomb(self):
+        import server as server_module
+        info = self.infoset()
+        played = info.played_cards["landlord_down"]
+        rng = random.Random(20261119)
+        draws = [ADVISOR.sample_hands(info, rng) for _ in range(1000)]
+        bombs = sum(1 for hand in draws if has_bomb(server_module.minus(hand["landlord_down"], played)))
+        # 改前均匀发牌 1000 手大约 0.4 手(0.0004),改后约 9 手;后验质量不到 0.2 的原因见 report.md
+        self.assertGreaterEqual(bombs / len(draws), 0.003, f"1000 手只发出 {bombs} 手炸弹")
+
+
+class ShortHandRolloutTest(unittest.TestCase):
+    """15:08:02 那条:下家剩 4 张 4 4 4 4,领单张 2 赢面不该再是 1.0(这一手怎么出都输,只验估计)。"""
+
+    def test_the_single_two_no_longer_wins_every_rollout(self):
+        pos = KeepBombLikelihoodTest()
+        report = {}
+        ROLLOUT_ADVISOR.act("landlord", pos.HAND, pos.BOTTOM, pos.AFTER_J, report,
+                            auction=pos.auction())
+        self.assertIn("rollout", report, "后半局应该现场模拟")
+        self.assertLess(report["rollout"]["rates"]["2"], 1.0)
 
 
 class MinPlaysTest(unittest.TestCase):
