@@ -167,6 +167,12 @@ ACT_ENDGAME_BUDGET_S = 2.5
 # 按 eval_finish_two.py 的配对自对弈 210 副(主角地主 / 农民,改前 vs 改后带这个门槛)定:
 # 配对差总额 +27、每副 +0.129(95% CI −0.009~+0.266),没亏;捷径触发 88 -> 90 次,没有挡掉有用的捷径。
 SHORTCUT_MARGIN = 0.5
+# 对手牌少、又没进残局搜索时,现场模拟不再均匀发牌:把牌最少的那家所有可能的剩牌枚举出来,
+# 按他最近两手出牌的 likelihood(含「留着炸弹先走杂牌」)加权,每种不同的剩牌算一个假设。
+# 2026-11-19 15:08:02 那手他剩 4 张、分法 207 种,枚举 + 打分实测约 0.3 秒;剩 5 张分法 398 种
+# (8568 种摆法)约 0.7 秒,都还在现场模拟 2.5 秒的预算里。再往上枚举就吃不满模拟局数,
+# 所以从 5 起,超时 / 分法太多(MAX_SPLITS)就退回原来的随机发牌。
+SHORT_HAND = 5
 # 残局分法似然:每家对手取最近 [LIKELIHOOD_MOVES] 手不是不出的出牌,各手概率相乘。取 2 是因为
 # 2026-11-16 20:51:41 土豪场那一手,下家倒数第二手 10 10 10 + Q:如果手里还留着 4、9 这种低单张,
 # 正常会拿小牌当带牌而不是 Q。只看最近一手 7 7 看不出这点,两手里的三带一才把「剩零散小牌」的分法压下去。
@@ -255,10 +261,13 @@ class Auction:
         """要按证据加权的对手:有证据、又不是我自己(我自己的叫分 / 加倍不参与)。"""
         return [s for s in SEATS if s != me and self.evidence(s)]
 
-    def log_weight(self, me, strength):
-        """这一局的证据在 [strength] 这种分法下的对数似然(<=0);[strength] 是 {座位: 开局整手牌的牌力}。"""
+    def log_weight(self, me, strength, seats=None):
+        """这一局的证据在 [strength] 这种分法下的对数似然(<=0);[strength] 是 {座位: 开局整手牌的牌力}。
+
+        [seats] 可选:只算这几家的证据(同 Advisor.likelihood 的 seats)。
+        """
         total = 0.0
-        for seat in self.seats(me):
+        for seat in (self.seats(me) if seats is None else [s for s in self.seats(me) if s in seats]):
             for kind, value in self.evidence(seat):
                 p = auction_probability(seat, kind, value, strength[seat])
                 total += math.log(min(max(p, 1e-9), 1 - 1e-9))
@@ -575,19 +584,26 @@ def history_frame(history, index):
     return after, before, last_move_dict, bomb_num, last
 
 
-def history_state(history, hands, seat, index, frame):
+def history_state(history, hands, seat, index, frame, without=()):
     """把 [history] 重放到第 [index] 手之前,用三家此刻剩的 [hands] 倒推出当时的手牌,造出 [seat] 那时的 info set。
 
     第 [index] 手是 [seat] 出的:他当时的手牌 = 此刻剩的牌 + 他在这手及以后出的牌。别的两家同理。
     legal_actions 用 endgame.moves 生成(同样剔掉大小王一起当带牌),模型在自己的席位上打分。
+    [without] 是先从 [seat] 手里放一边的牌(他留着没出的炸弹 / 王炸):按剩下的牌打分时用,
+    放一边的牌算回看不见的牌里。
     """
     after, before, last_move_dict, bomb_num, last = frame
     hand_before = {s: sorted(list(hands[s]) + after[s]) for s in SEATS}
+    removed = tuple(sorted((Counter(without) & Counter(hand_before[seat])).elements()))
+    if removed:
+        left = Counter(hand_before[seat])
+        left.subtract(Counter(removed))
+        hand_before[seat] = sorted(left.elements())
     legal = endgame.moves(tuple(hand_before[seat]), list(last))
     return SimpleNamespace(
         player_position=seat,
         player_hand_cards=list(hand_before[seat]),
-        other_hand_cards=sorted(sum((hand_before[s] for s in SEATS if s != seat), [])),
+        other_hand_cards=sorted(sum((hand_before[s] for s in SEATS if s != seat), []) + list(removed)),
         num_cards_left_dict={s: len(hand_before[s]) for s in SEATS},
         three_landlord_cards=[],
         card_play_action_seq=[list(m) for m in history[:index]],
@@ -1018,13 +1034,11 @@ class Agent:
                                   tuple(tuple(m) for m in infoset.card_play_action_seq))))
         history = [list(m) for m in infoset.card_play_action_seq]
         # 边打边淘汰:每个还活着的候选打同一批新发的牌,轮末去掉较差的一半,最后只剩两手用掉剩下的时间。
-        # 带 auction 时发牌按证据加权(拒绝采样),拒绝采样的时间也算在这份预算里;没有 auction 时一手不差地走原来的发牌
-        if auction is None:
-            sampler = lambda: sample_hands(infoset, rng)  # noqa: E731
-        else:
-            sampler_deadline = time.monotonic() + budget
-            sampler = lambda: self.advisor.sample_hands(  # noqa: E731
-                infoset, rng, auction, deadline=sampler_deadline)
+        # 带 auction 时发牌按证据加权(拒绝采样);对手牌少时按似然加权枚举他的剩牌。枚举 + 打分的时间
+        # 也算在这份预算里,算不完就退回原来的发牌(见 Advisor.sample_hands / short_hand_plan)。
+        sampler_deadline = time.monotonic() + budget
+        sampler = lambda: self.advisor.sample_hands(  # noqa: E731
+            infoset, rng, auction, deadline=sampler_deadline)
         # 局数上限显式传 ACT_ROLLOUT_GAMES:留作默认参数会被 def 时绑死,测试里改常量就不生效了
         # pairs 记每个候选和「不出」的逐局得分差:最后判断压牌是不是在噪声内要用配对标准误差
         pairs = {}
@@ -1172,19 +1186,85 @@ class Advisor:
     def __init__(self, weights, rollout=True):
         self.agents = {s: Agent(s, os.path.join(weights, f"{s}.ckpt")) for s in SEATS}
         self.plain = {s: Plain(self.agents[s]) for s in SEATS}
+        # 对手牌少时候选分法的枚举结果:一次现场模拟要发上百手牌,同一局面只算一次
+        self.short_plans = {}
         for agent in self.agents.values():
             agent.rollout = rollout
             agent.plain = self.plain
             agent.advisor = self
 
+    def short_hand_plan(self, infoset, auction=None, deadline=None):
+        """牌最少的那家对手剩 ≤ [SHORT_HAND] 张时,把他所有可能的剩牌按 likelihood 加权。
+
+        返回 ({座位: 这手牌}, 权重) 的列表,权重是 likelihood(只看他最近两手出牌,每种不同的剩牌
+        算一个假设);牌不少 / 枚举不完 / 算不出来(例如到 [deadline])时返回 None,调用方退回原来的发牌。
+        只枚举牌最少的那一家,另一家拿剩下的;
+        我是农民、牌最少的是地主时,他没打出去的底牌先留在他手里(同 sample_hands)。
+        枚举 + 打分要算进现场模拟的预算里,所以结果按局面缓存:一次模拟里只算一次。
+        """
+        me = infoset.player_position
+        others = [s for s in SEATS if s != me]
+        left = infoset.num_cards_left_dict
+        short = min(others, key=lambda s: (left[s], SEATS.index(s)))
+        if left[short] > SHORT_HAND:
+            return None
+        if deadline is not None and time.monotonic() > deadline:
+            return None
+        key = (me, tuple(sorted(infoset.player_hand_cards)), tuple(tuple(m) for m in infoset.card_play_action_seq),
+               tuple(left[s] for s in SEATS), tuple(sorted(infoset.other_hand_cards)),
+               tuple(sorted(infoset.three_landlord_cards)), repr(auction))
+        if key in self.short_plans:
+            return self.short_plans[key]
+        if len(self.short_plans) > 8:
+            self.short_plans.clear()
+        unknown = sorted(infoset.other_hand_cards)
+        if len(unknown) != left[others[0]] + left[others[1]]:
+            return None
+        far = others[0] if others[1] == short else others[1]
+        kept = ()
+        if me != "landlord" and short == "landlord":
+            kept = tuple(sorted((Counter(infoset.three_landlord_cards) & Counter(unknown)).elements()))
+        ways = endgame.splits(unknown, short, left[short], far, left[far], kept=kept)
+        if ways is None:
+            return None
+        splits = [{me: tuple(sorted(infoset.player_hand_cards)), short: ha, far: hb} for ha, hb in ways]
+        if deadline is None:
+            deadline = time.monotonic() + ACT_ROLLOUT_BUDGET_S
+        try:
+            # 只看他最近两手出牌(第 1 条),不掺叫分 / 加倍:这里估的是「他打这些牌时手里留了什么」,
+            # 叫分那一路已经在别的分支里用过。每种不同的剩牌算一个假设,不再按同点数的摆法数放大:
+            # 4 4 4 4 这种少见的留法不该仅仅因为摆法少就被压掉(2026-11-19 15:08:02 那手)。
+            likes = self.likelihood([list(m) for m in infoset.card_play_action_seq], me, None,
+                                    seats=[short])(splits, deadline)
+        except endgame.Timeout:
+            return None
+        weights = list(likes)
+        if sum(weights) <= 0:
+            return None
+        plan = []
+        for (ha, hb), weight in zip(ways, weights):
+            current = {me: tuple(sorted(infoset.player_hand_cards)), short: ha, far: hb}
+            plan.append(({s: sorted(list(current[s]) + list(infoset.played_cards[s])) for s in SEATS}, weight))
+        self.short_plans[key] = plan
+        return plan
+
     def sample_hands(self, infoset, rng, auction=None, deadline=None):
-        """现场模拟发牌:没有 auction 时完全走原来的 sample_hands(同一个种子一手不差)。
+        """现场模拟发牌:牌最少的那家对手剩 ≤ [SHORT_HAND] 张时,按 likelihood 加权枚举他的剩牌;
+        否则没有 auction 时完全走原来的 sample_hands(同一个种子一手不差)。
 
         有证据时一次发 K 手候选(K = [AUCTION_MAX_TRIES]),按证据座位把这 K 手的开局牌力攒成一批前向
         (每个座位一次,不再一手一手串行),再按权重从这 K 手里抽一手:权重是各条证据的似然相乘,在 0..1,
         即 importance resampling。权重全 0 / 牌力算不出来(例如到 [deadline])时收下第一手,不能让模拟卡死。
         只给我看不见的对手加权:我自己的叫分 / 加倍不算证据。
         """
+        plan = self.short_hand_plan(infoset, auction, deadline)
+        if plan is not None:
+            pick = rng.random() * sum(weight for _, weight in plan)
+            for hands, weight in plan:
+                pick -= weight
+                if pick <= 0:
+                    return hands
+            return plan[-1][0]
         me = infoset.player_position
         seats = auction.seats(me) if auction is not None else []
         if not seats:
@@ -1366,12 +1446,16 @@ class Advisor:
         # 局数不到 ROLLOUT_MIN_GAMES 时也报真实赢面,由端点按 games 决定不加倍;不能把「不知道」写成 0 赢面。
         return min(rates.values()), played * len(seats)
 
-    def likelihood(self, history, me, auction=None):
+    def likelihood(self, history, me, auction=None, seats=None):
         """给 endgame.best 的似然回调:按两家对手最近 [LIKELIHOOD_MOVES] 手不是不出的出牌,判断一种分法像不像他们当时会这么出。
 
+        [seats] 可选:只看这几家对手的出牌(默认两家都看)。现场模拟估计牌最少那一家的手牌时只传他,
+        另一家很早以前的出牌和这一手关系不大,却会在 200 多种分法里把权重整个带走。
+
         每个对手的每一手都把他当时的手牌和局面用 history 倒推出来,用他自己座位的 DouZero 模型给当时所有
-        合法出牌打分,取这一手的 log softmax 概率 P(那手 | 当时手牌);同一对手各手 log 概率相加,两家对手
-        再相加。只看最近一手不够:下家倒数第二手 10 10 10 + Q 才是「他手里没有 4/9 这种零散小牌」的证据。
+        合法出牌打分,取这一手的 log softmax 概率 P(那手 | 当时手牌);同一对手各手 log 概率相加,
+        [seats] 里的对手再相加。只看最近一手不够:下家倒数第二手 10 10 10 + Q 才是「他手里没有 4/9
+        这种零散小牌」的证据。
         用 float64 在对数空间算,再减去所有分法里最大的 log 似然后 exp:相对权重不变,但对手真出过一手
         模型觉得极差的牌时不会像 float32 概率相乘那样下溢成 0(那会让 total=0、残局搜索整个退回 DouZero)。
         软证据压出来的相对权重有下限 [LIKELIHOOD_FLOOR]:温度 0.02 下动作概率能差好几个数量级,
@@ -1384,18 +1468,20 @@ class Advisor:
         模型打分,把证据的 log 似然加进同一个对数空间;没有出牌历史、只有 auction 时也生效。
         我自己的叫分 / 加倍不算证据(auction.seats 已经把我排除)。
         """
+        watched = set(SEATS) - {me} if seats is None else set(seats)
+
         def callback(splits_hands, deadline):
             indices = {}
             for i in range(len(history) - 1, -1, -1):
-                if history[i] and SEATS[i % 3] != me:
-                    seat = SEATS[i % 3]
+                seat = SEATS[i % 3]
+                if history[i] and seat in watched:
                     moves = indices.setdefault(seat, [])
                     if len(moves) < LIKELIHOOD_MOVES:
                         moves.append(i)
             logs = [0.0] * len(splits_hands)
             # 硬约束:能一手走完却不出的人不会存在。某家在第 i 手不出,而按这种分法他那一刻的整手牌
             # (现在剩的 + 第 i 手之后出过的)本身就是一手能管上当时上家出牌的合法牌,这种分法权重记 0。
-            passes = pass_frames(history, me)
+            passes = [frame for frame in pass_frames(history, me) if frame[0] in watched]
             if passes:
                 for k, hands in enumerate(splits_hands):
                     if k % 32 == 0 and time.monotonic() > deadline:
@@ -1417,6 +1503,20 @@ class Advisor:
                         states.append(history_state(history, hands, seat, index, frame))
                     scores = self.state_values(seat, states, deadline)
                     observed = tuple(sorted(history[index]))
+                    # 真人会留着炸弹 / 王炸,先把杂牌走掉:这一手不是炸弹时,再按「炸弹先放一边」
+                    # 剩下的牌打一次分,这一手的 log 概率取两个里大的那个。放一边后不合法的分法
+                    # (这一手用到了炸弹里的牌)只用整手牌那一项。
+                    reduced = {}
+                    if not endgame.is_bomb(observed):
+                        bombs = {k: endgame.bomb_cards(state.player_hand_cards)
+                                 for k, state in enumerate(states)}
+                        placed = {k: cards for k, cards in bombs.items() if cards}
+                        if placed:
+                            items = [(k, history_state(history, splits_hands[k], seat, index, frame,
+                                                       without=cards))
+                                     for k, cards in placed.items()]
+                            rscores = self.state_values(seat, [state for _, state in items], deadline)
+                            reduced = {k: (state, values) for (k, state), values in zip(items, rscores)}
                     for k, (state, values) in enumerate(zip(states, scores)):
                         if not splits_hands[k][seat]:
                             continue
@@ -1425,25 +1525,33 @@ class Advisor:
                             logs[k] = float("-inf")
                             continue
                         j = actions.index(observed)
-                        logs[k] += float(torch.log_softmax(
+                        like = float(torch.log_softmax(
                             values.double() / LIKELIHOOD_TEMPERATURE, dim=0)[j])
+                        if k in reduced:
+                            rstate, rvalues = reduced[k]
+                            ractions = [tuple(sorted(m)) for m in rstate.legal_actions]
+                            if observed in ractions:
+                                rj = ractions.index(observed)
+                                like = max(like, float(torch.log_softmax(
+                                    rvalues.double() / LIKELIHOOD_TEMPERATURE, dim=0)[rj]))
+                        logs[k] += like
                     if time.monotonic() > deadline:
                         raise endgame.Timeout()
-            seats = auction.seats(me) if auction is not None else []
-            if seats:
+            evidence = [s for s in (auction.seats(me) if auction is not None else []) if s in watched]
+            if evidence:
                 # 每种分法的对手开局整手牌 = 这种分法下他还剩的 + 他已经出过的;按证据座位各攒一批前向
                 played = {s: [] for s in SEATS}
                 for i, move in enumerate(history):
                     played[SEATS[i % 3]] += move
                 strength = [dict() for _ in splits_hands]
-                for seat in seats:
+                for seat in evidence:
                     states = [opening_state(seat, sorted(list(hands[seat]) + played[seat]))
                               for hands in splits_hands]
                     values = self.state_values(seat, states, deadline)
                     for k, value in enumerate(values):
                         strength[k][seat] = float(value.max())
                 for k in range(len(logs)):
-                    logs[k] += auction.log_weight(me, strength[k])
+                    logs[k] += auction.log_weight(me, strength[k], seats=evidence)
             finite = [x for x in logs if x != float("-inf")]
             if not finite:
                 return [1.0] * len(splits_hands)
