@@ -11,7 +11,7 @@ from douzero.env.game import GameEnv
 from server import (
     ACT_BUDGET_SAFETY_S, ACT_ENDGAME_BUDGET_S, ACT_ROLLOUT_BUDGET_S, ACT_ROLLOUT_MIN_S, ACT_TOTAL_BUDGET_S, DECK,
     DOUBLE_WIN, FARMER_DOUBLE_WIN, NAMES, ROLLOUT_MIN_GAMES, SEATS, SUPER_DOUBLE_WIN, Advisor, Mismatch, WEIGHTS,
-    bid_level, cards, fewer_plays, handler, move_label, parse_auction, resolve, should_double,
+    bid_level, cards, fewer_plays, handler, is_bomb, move_label, parse_auction, resolve, should_double,
 )
 
 # 造局面时关掉「接近时现场模拟」:随机走一步有近一半的顶两手分差在 0.1 以内,开着会让原有测试慢到不可用。
@@ -509,6 +509,62 @@ class FinishInTwoTest(unittest.TestCase):
         legal = [cards(m) for m in (["3"], ["6"], ["3", "3"])]
         # any pair beats 3 3: no safe first move
         self.assertIsNone(endgame.finish_in_two(hand, legal, (), unknown, 9, 9))
+
+    def test_the_landlords_unplayed_bottom_cards_stay_in_his_hand(self):
+        # 我是农民时,地主没出过的底牌一定在他手里:同样是 Q Q Q Q 一手,给地主留一张 A,
+        # 他凑成 A A A A 炸回来的机会就该比纯随机发牌高(其余三张 A 更容易落在他手上)。
+        import endgame
+        hand = cards(["Q", "Q", "Q", "Q", "9", "9", "9", "7"])
+        legal = [cards(["Q", "Q", "Q", "Q"])]
+        unknown = cards(["A", "A", "A", "A", "3", "4", "5", "6"])
+        plain = endgame.finish_in_two(hand, legal, (), unknown, 5, 3, samples=2000, limit=1.0)
+        kept = endgame.finish_in_two(hand, legal, (), unknown, 5, 3, samples=2000, limit=1.0,
+                                     kept=cards(["A"]))
+        self.assertIsNotNone(plain)
+        self.assertIsNotNone(kept)
+        self.assertGreater(kept[1], plain[1])
+
+    def test_the_bomb_is_kept_for_the_last_of_the_two_moves(self):
+        # Q Q Q Q + 9 9 9 7 两种顺序都两手出完:先出 9 9 9 7,有人管就用 Q Q Q Q 炸回去,
+        # 只有对手留着 A A A A 拦得住;先甩 Q Q Q Q 等于给它一个用炸弹的靶子。
+        import endgame
+        hand = cards(["Q", "Q", "Q", "Q", "9", "9", "9", "7"])
+        # 对手有更大的三带一:9 9 9 7 会被管,QQQQ 却没人炸得动 —— 纯按被压机会会先甩炸弹
+        unknown = cards(["K", "K", "K", "J", "J", "J", "10", "10"])
+        legal = [cards(["Q", "Q", "Q", "Q"]), cards(["9", "9", "9", "7"])]
+        quick = endgame.finish_in_two(hand, legal, (), unknown, 4, 4, samples=100, limit=1.0)
+        self.assertEqual(cards(["9", "9", "9", "7"]), list(quick[0]))
+
+
+class FinishInTwoLiveTest(unittest.TestCase):
+    """2026-11-19 12:13:20 精英场那一手:捷径先甩 Q Q Q Q,地主 A A A A 炸回,炸弹 ×2 再 ×2。"""
+
+    # 我是地主下家(农民),手里 Q Q Q Q 9 9 9 7,我领出;地主剩 16 张、队友 15 张,底牌 4 7 A(地主手里至少一张 A)。
+    REQUEST = dict(seat="landlord_down",
+                   hand=["Q", "Q", "Q", "Q", "9", "9", "9", "7"],
+                   bottom=["4", "7", "A"],
+                   history=[["3"], ["4"], ["5"], ["7"], ["10"], ["J"], ["K"], ["2"], [], ["SJ"], ["BJ"], [], [],
+                            ["6", "6", "6", "J", "J"], [], []],
+                   auction={"double": {"landlord": False, "landlord_up": False}})
+
+    def act(self, advisor, report=None):
+        request = self.REQUEST
+        return advisor.act(request["seat"], request["hand"], request["bottom"], request["history"], report,
+                           auction=parse_auction(request["auction"]))
+
+    def test_the_shortcut_no_longer_throws_the_bomb_first(self):
+        move = self.act(ROLLOUT_ADVISOR)
+        self.assertNotEqual(["Q", "Q", "Q", "Q"], names(move), "捷径不该把炸弹先甩出去")
+        self.assertFalse(is_bomb(move), "这一手不是炸弹,炸弹留到最后一手")
+
+    def test_a_much_higher_douzero_choice_is_not_overridden(self):
+        # DouZero 首选 7 9 9 9 +2.282、捷径那手只有 +1.335:差 0.95 就不该盖。把捷径结果钉成 Q Q Q Q
+        # 验门槛本身(顺序那条规则另验);rollout 关掉,免得等模拟。
+        import endgame
+        bad = (tuple(cards(["Q", "Q", "Q", "Q"])), 0.01)
+        with mock.patch.object(endgame, "finish_in_two", return_value=bad):
+            move = self.act(ADVISOR)
+        self.assertNotEqual(["Q", "Q", "Q", "Q"], names(move), "DouZero 首选高出一大截时,捷径不该盖掉它")
 
 
 class TeammateFinishInTwoTest(unittest.TestCase):
