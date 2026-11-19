@@ -275,10 +275,11 @@ class ExpectedValueTest(unittest.TestCase):
         self.assertFalse(body["win"])
         self.assertIn(body["discard"], ("5s", "6s", "7s"))
         self.assertEqual(body["target"], "qingyise")
-        self.assertEqual(body["fan"], 2)
-        # 参考模拟:切 5s 冲清一色万 draws=14 约 0.25,4 倍后约 1.0
-        self.assertGreaterEqual(body["value"], 0.8)
-        self.assertLessEqual(body["value"], 1.3)
+        self.assertEqual(body["fan"], 2)  # 牌型番,不含自摸
+        # 参考模拟:切 5s 冲清一色万 draws=14 约 0.25 胡,自摸按 3 番(8 倍)约 2.0;
+        # 没胡的局大多已经听牌,每家没听收 4 倍、少数没听赔 2 倍,合计约 4.2。
+        self.assertGreaterEqual(body["value"], 3.0)
+        self.assertLessEqual(body["value"], 5.5)
         for option in body["options"]:
             self.assertIn(option["target"], ("fast", "qingyise", "pengpeng", "qidui"))
             self.assertIsInstance(option["fan"], int)
@@ -293,10 +294,68 @@ class ExpectedValueTest(unittest.TestCase):
         self.assertFalse(body["win"])
         self.assertEqual(body["discard"], "2m")
         self.assertEqual(body["target"], "fast")
-        self.assertEqual(body["fan"], 0)
-        # 参考模拟:切 2m 快胡 draws=6 约 0.36;冲清一色约 0.15(4 倍后)
-        self.assertGreaterEqual(body["value"], 0.25)
-        self.assertLessEqual(body["value"], 0.40)
+        self.assertEqual(body["fan"], 0)  # 牌型番,不含自摸
+        # 参考模拟:切 2m 快胡 draws=6 约 0.35 胡,自摸按 1 番(2 倍);
+        # 没胡的局已经听牌,每家没听收 1 倍,合计约 1.35。
+        self.assertGreaterEqual(body["value"], 1.2)
+        self.assertLessEqual(body["value"], 1.6)
+
+    def test_chating_moves_the_crossing_point_earlier(self):
+        # 改之前交叉点约 11 摸;查听把「先听牌」抬高,交叉点前移到 8–9 摸之间。
+        short = post(self.HAND, que="p", draws=8)[1]
+        long = post(self.HAND, que="p", draws=9)[1]
+        self.assertEqual(short["target"], "fast")
+        self.assertEqual(long["target"], "qingyise")
+
+
+class SelfDrawTest(unittest.TestCase):
+    """模拟里胡的全是自摸:同一副牌,胡了的那部分按 fan + 1 的倍数算。"""
+
+    HAND = ["1m", "2m", "2m", "3m", "4m", "5m", "6m", "7m", "8m", "9m", "9m",
+            "5s", "6s", "7s"]
+
+    def test_a_simulated_win_uses_one_more_fan(self):
+        mc = server.MonteCarlo([], "p")
+        with mock.patch.object(server.MonteCarlo, "won", return_value=True):
+            mean, variance = mc.run(self.HAND, "5s", "qingyise:m", 8, 20, 2)
+        self.assertEqual(mean, win_multiplier(3))  # 清一色 2 番 + 自摸 1 番 = 8 倍
+        self.assertEqual(variance, 0.0)
+        with mock.patch.object(server.MonteCarlo, "won", return_value=True):
+            mean, _ = mc.run(self.HAND, "5s", "qingyise:m", 8, 20, 0)
+        self.assertEqual(mean, win_multiplier(1))  # 0 番 + 自摸 1 番 = 2 倍
+
+
+class ChatingTest(unittest.TestCase):
+    """查听:牌摸完还没胡时,听牌收钱、没听赔钱;value 是每局平均得分,可以为负。"""
+
+    # 打 5p 马上听牌(快胡 0 番,听 3m/6m/9m);打 1m 保留七对(2 番)但还差一向听。
+    HAND = ["1m", "1m", "1m", "2m", "2m", "4m", "4m", "5m", "5m", "5p",
+            "6m", "6m", "8p", "9p"]
+
+    def test_tenpai_collects_and_the_bigger_fan_non_tenpai_pays(self):
+        status, body = post(self.HAND, que="s", draws=3)
+        self.assertEqual(status, 200)
+        self.assertEqual(body["discard"], "5p")
+        self.assertEqual(body["target"], "fast")
+        self.assertEqual(body["fan"], 0)  # fan 只有牌型番,自摸不算进去
+        self.assertEqual(body["shanten"], 0)
+        # 听牌:没胡的局每家没听收 CHATING_GAIN_OPPONENTS × win_multiplier(0) = 1
+        self.assertGreaterEqual(body["value"], 1.0)
+        self.assertLess(body["value"], 1.5)
+        qidui = [option for option in body["options"] if option["target"] == "qidui"]
+        self.assertTrue(qidui)
+        # 七对 2 番还差一向听:摸完没听要赔 CHATING_LOSS = win_multiplier(1) = 2
+        self.assertLess(qidui[0]["value"], 0)
+
+    def test_noise_is_measured_on_the_per_game_score(self):
+        # 每局得分不再是 0/1,噪声按它的样本方差算:SE² = (var1 + var2) / games。
+        first = {"target": "fast", "value": 1.0, "_score_var": 4.0, "_games": 100}
+        second = {"target": "fast", "value": 1.1, "_score_var": 4.0, "_games": 100}
+        self.assertTrue(server._within_noise(first, second))
+        far = {"target": "fast", "value": 2.0, "_score_var": 4.0, "_games": 100}
+        self.assertFalse(server._within_noise(first, far))
+        other = {"target": "qidui", "value": 1.0, "_score_var": 0.0, "_games": 100}
+        self.assertFalse(server._within_noise(first, other))
 
 
 class AcceptanceTest(unittest.TestCase):
@@ -325,13 +384,15 @@ class AcceptanceTest(unittest.TestCase):
 class ShantenRegressionTest(unittest.TestCase):
     """拆对子退向听换来的进张,不能盖过少一向听。
 
-    概率表把「高向听 × 大进张」这一格估高了,而 200 局蒙卡的标准误差(约 0.026)
-    比这些打法之间的真实差距还大;排序不能把噪声当成结论。
+    概率表把「高向听 × 大进张」这一格估高了,而 200 局蒙卡的平均每局得分标准误差
+    (含查听后约 0.1)比这些打法之间的真实差距还大;排序不能把噪声当成结论。
     """
 
     CASES = [
-        # 打 5p 拆对子退成 3 向听(59 进张),打孤张 9p 留 2 向听(20 进张)
-        (["1p", "1p", "1p", "2p", "5p", "5p", "9p", "2s", "4s", "6s", "8s", "8s", "9s", "4p"], "9p"),
+        # 打 5p 拆对子退成 3 向听(59 进张),打孤张 9p 或 9s 留 2 向听(20 进张);
+        # 9p 和 9s 的向听、进张、进张牌完全一样,value 只差蒙卡噪声,两个都对。
+        (["1p", "1p", "1p", "2p", "5p", "5p", "9p", "2s", "4s", "6s", "8s", "8s", "9s", "4p"],
+         ("9p", "9s")),
         # 打 1s 拆对子退成 2 向听(43 进张),打孤张 8s 留 1 向听(10 进张)
         (["1p", "2p", "2p", "4p", "5p", "6p", "7p", "8p", "9p", "1s", "1s", "5s", "5s", "8s"], "8s"),
         # 打 8s 拆对子退成 2 向听(59 进张),打孤张 7p 留 1 向听(13 进张)
@@ -349,7 +410,7 @@ class ShantenRegressionTest(unittest.TestCase):
                 first = body["options"][0]
                 same_target = [option for option in body["options"] if option["target"] == first["target"]]
                 self.assertEqual(first["shanten"], min(option["shanten"] for option in same_target))
-                self.assertEqual(body["discard"], expected)
+                self.assertIn(body["discard"], (expected,) if isinstance(expected, str) else expected)
 
 
 class QueTest(unittest.TestCase):

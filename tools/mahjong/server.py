@@ -1,7 +1,8 @@
 """四川麻将血战到底出牌建议服务:给 Mika 的安卓端用。只在本机或局域网里跑,没有鉴权。
 
-按期望得分推荐:每种打法对「快胡 / 清一色 / 碰碰胡 / 七对」各估一次
-「能胡的概率 × 胡了值几倍」,取期望最高的目标。默认端口 3428。
+按期望得分推荐:每种打法对「快胡 / 清一色 / 碰碰胡 / 七对」各模拟一遍,算
+「平均每局得分」(胡了按自摸 +1 番的倍数,没胡按查听加减),取期望最高的目标。
+默认端口 3428。
 
 POST /discard
   {"hand": ["1m", "2m", ...],                 # 自己此刻的手牌,14 张(或还没摸牌时 13 张)
@@ -11,17 +12,20 @@ POST /discard
 # 碰算 3 张、杠算 4 张;手牌张数 + 3 × 副露组数 = 14
 
 成功(14 张、合法):
-  {"win": false, "discard": "5s", "target": "qingyise", "fan": 2, "value": 1.35,
+  {"win": false, "discard": "5s", "target": "qingyise", "fan": 2, "value": 1.9,
    "shanten": 2, "ukeire": 12, "waits": ["1m", ...], "queLeft": 0,
-   "options": [{"discard": "5s", "target": "qingyise", "fan": 2, "value": 1.35,
+   "options": [{"discard": "5s", "target": "qingyise", "fan": 2, "value": 1.9,
                 "shanten": 2, "ukeire": 12, "waits": ["1m", ...]}, ...]}
   options 最多 3 个,第一个就是推荐;已胡时只返回 {"win": true}。
   target 是 fast(快胡,普通型或七对)、qingyise(清一色)、pengpeng(碰碰胡)或 qidui(七对)。
-  fan 是这个目标胡了的番数;value 是期望倍数(赢牌概率 × 番数倍数,保留 2 位)。
+  fan 是这个目标胡了的牌型番,不含自摸;value 是平均每局得分(保留 2 位,可以为负):
+  胡了按 win_multiplier(fan + 1)(模拟里胡的全是自摸,+1 番),没胡按查听加减 —— 这个目标的
+  向听为 0(听牌)收 CHATING_GAIN_OPPONENTS × win_multiplier(fan),否则赔 CHATING_LOSS。
   value 不是查表值:表只用来粗排,排在前面的 4 个(切牌 × 目标)会对这手牌本身做固定种子
   蒙特卡洛(牌墙 = 108 − 自己的牌,按目标贪心切牌;draws≤14 每候选 200 局,>14 100 局)。
-  排序时同一 target 下两个候选的赢牌率落在 95% 置信区间内就算分不出高低,先比向听、
-  再比进张(否则 200 局的噪声会把拆对子退向听的打法排到前面),所以 options 的 value 不保证单调。
+  排序时同一 target 下两个候选的平均每局得分落在 95% 置信区间内(噪声按每局得分的样本方差估)
+  就算分不出高低,先比向听、再比进张(否则 200 局的噪声会把拆对子退向听的打法排到前面),
+  所以 options 的 value 不保证单调。
   shanten/ukeire/waits 指的是这个目标的向听、理论进张和进张牌。
   waits/ukeire 只扣自己手牌和副露,不扣场上已经打出去的牌。
   queLeft 是切牌前手里还有几张定缺牌;有定缺牌时先切定缺牌,shanten/ukeire 只按非定缺门算。
@@ -29,11 +33,12 @@ POST /discard
 POST /que
   {"hand": ["1m", ... 13 或 14 张 ...], "draws": 8}   # 开局定缺建议;没有碰杠
 成功:
-  {"que": "s", "options": [{"que": "s", "target": "qingyise", "value": 1.2},
-                          {"que": "p", "target": "fast", "value": 0.9},
-                          {"que": "m", "target": "fast", "value": 0.4}]}
+  {"que": "s", "options": [{"que": "s", "target": "fast", "value": 0.31},
+                          {"que": "p", "target": "fast", "value": -0.77},
+                          {"que": "m", "target": "qidui", "value": -2.0}]}
   三门都列出,按期望从高到低;期望一样时选张数少的那门,再一样按 m<p<s。
-  value 同样是每门做固定种子蒙特卡洛得到的(draws≤14 70 局,>14 50 局)。
+  value 同样是每门做固定种子蒙特卡洛得到的平均每局得分(draws≤14 70 局,>14 50 局),
+  和 /discard 一样含自摸 +1 番和查听,可以为负。
 
 POST /hint
   {"image": "<2412×1080 整屏 PNG 或 JPEG 的 base64>"}   # JJ麻将主屏截图,按文件头识别
@@ -308,6 +313,14 @@ def win_multiplier(fan):
     return 8 + 4 * (fan - 3)
 
 
+# 查听:牌摸完还没人胡时,没听牌的玩家要赔付已听未胡的玩家「最大胡牌番数」。
+# 这里只按两个假设估算(真机结算核对后再调,不要为了让某手牌的推荐对上而动它们):
+# CHATING_GAIN_OPPONENTS 假设平均 1 家没听,我收 1 份该目标番数的倍数;
+# CHATING_LOSS 假设平均 1 家已经听了且约 1 番,我赔 win_multiplier(1) = 2 倍。
+CHATING_GAIN_OPPONENTS = 1
+CHATING_LOSS = win_multiplier(1)
+
+
 def is_pengpeng(hand, melds_count):
     """手牌部分能否拆成 (4 - 碰杠组数) 个刻子 + 1 个对子。"""
     counts = to_counts(hand)
@@ -506,12 +519,15 @@ RANK_Z = 1.96  # 95% 置信区间
 
 
 def _within_noise(first, second):
-    """同一个 target 下,两个候选的蒙卡赢牌率是不是区分不开(95% 置信区间)。"""
+    """同一个 target 下,两个候选的平均每局得分是不是区分不开(95% 置信区间)。
+
+    每局得分不再只是 0/1 的赢牌率(还含查听的加减,胡了也不是同一个倍数),
+    所以噪声按每局得分的样本方差估:SE² = (var1 + var2) / games。
+    """
     if first["target"] != second["target"]:
         return False
-    first_p, second_p = first["_prob"], second["_prob"]
-    variance = (first_p * (1 - first_p) + second_p * (1 - second_p)) / first["_games"]
-    return abs(first_p - second_p) <= RANK_Z * sqrt(variance)
+    variance = (first["_score_var"] + second["_score_var"]) / first["_games"]
+    return abs(first["value"] - second["value"]) <= RANK_Z * sqrt(variance)
 
 
 def _rank_key(result):
@@ -520,11 +536,11 @@ def _rank_key(result):
 
 
 def _rank_candidates(candidates):
-    """按蒙卡赢牌率排序;同一个 target 下区分不开时,先比向听、再比进张。
+    """按平均每局得分排序;同一个 target 下区分不开时,先比向听、再比进张。
 
-    蒙卡 200 局的赢牌率标准误差约 0.026,常常比两种打法之间的真实差距还大;
-    直接按点估计排序会把噪声当成结论,把拆对子退向听的打法排到前面。
-    向听只跟同一个 target 比:清一色、七对的向听口径不同,跨目标只能比 value。
+    每局得分含查听的加减(听牌收钱、没听赔钱),200 局的标准误差在 0.1 上下,常常比
+    两种打法之间的真实差距还大;直接按点估计排序会把噪声当成结论,把拆对子退向听的
+    打法排到前面。向听只跟同一个 target 比:清一色、七对的向听口径不同,跨目标只能比 value。
     """
     remaining = list(candidates)
     ordered = []
@@ -631,7 +647,13 @@ class MonteCarlo:
                 best = (score, tile)
         return best[1]
 
-    def run(self, hand, discard, target, draws, games):
+    def run(self, hand, discard, target, draws, games, fan):
+        """每局平均得分:胡了按「番数 + 1」的自摸倍数,没胡按查听加减。
+
+        听牌按**这个目标**的向听为 0 算,和返回给客户端的 shanten 同一个口径
+        (fast 是普通型/七对取小,清一色只看那一门,碰碰胡只看刻子)。
+        返回 (平均得分, 每局得分的方差);方差给排序判断两个候选是不是只差噪声。
+        """
         start = list(hand)
         if discard is not None:
             start.remove(discard)
@@ -642,27 +664,36 @@ class MonteCarlo:
         for tile in hand:
             wall.remove(tile)
         rng = random.Random(MC_SEED)
-        wins = 0
+        win_score = win_multiplier(fan + 1)          # 模拟里胡的全是自摸,+1 番
+        chating_win = CHATING_GAIN_OPPONENTS * win_multiplier(fan)   # 查听收的倍数不含自摸
+        total = 0.0
+        squares = 0.0
         for _ in range(games):
             shuffled = wall[:]
             rng.shuffle(shuffled)
             current = list(start)
+            score = None
             for turn in range(draws):
                 current.append(shuffled[turn])
                 if self.won(target, current):
-                    wins += 1
+                    score = win_score
                     break
                 current.remove(self.discard(target, current))
-        return wins / games
+            if score is None:
+                score = chating_win if self.shanten(target, current) == 0 else -CHATING_LOSS
+            total += score
+            squares += score * score
+        mean = total / games
+        return mean, max(squares / games - mean * mean, 0.0)
 
 
 def _run_monte_carlo(hand, melds, que, draws, candidates):
     mc = MonteCarlo(melds, que)
     games = mc_games(draws)
     for discard, result in candidates:
-        probability = mc.run(hand, discard, _mc_target(result), draws, games)
-        result["value"] = probability * win_multiplier(result["fan"])
-        result["_prob"] = probability
+        mean, variance = mc.run(hand, discard, _mc_target(result), draws, games, result["fan"])
+        result["value"] = mean
+        result["_score_var"] = variance
         result["_games"] = games
     return games
 
@@ -748,8 +779,10 @@ def advise(hand, melds, que, draws=None):
             remaining = list(hand)
             remaining.remove(tile)
             best = best_target(evaluate_hand(remaining, parsed_melds, que, draws))
-            probability = mc.run(hand, tile, _mc_target(best), draws, games)
-            best["value"] = probability * win_multiplier(best["fan"])
+            mean, variance = mc.run(hand, tile, _mc_target(best), draws, games, best["fan"])
+            best["value"] = mean
+            best["_score_var"] = variance
+            best["_games"] = games
             options.append(_option(tile, best))
         return {"win": False, **options[0], "queLeft": len(que_tiles), "options": options}
     pairs = []
@@ -792,8 +825,10 @@ def advise_que(hand, draws=None):
                     best = candidate
                     best_discard = tile
         mc = MonteCarlo([], que)
-        probability = mc.run(hand, best_discard, _mc_target(best), draws, games)
-        best["value"] = probability * win_multiplier(best["fan"])
+        mean, variance = mc.run(hand, best_discard, _mc_target(best), draws, games, best["fan"])
+        best["value"] = mean
+        best["_score_var"] = variance
+        best["_games"] = games
         count = sum(1 for tile in hand if tile[1] == que)
         options.append((best["value"], count, que, {"que": que, "target": best["target"],
                                                    "value": round(best["value"], 2)}))
