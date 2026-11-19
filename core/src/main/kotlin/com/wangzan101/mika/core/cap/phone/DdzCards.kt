@@ -268,8 +268,12 @@ internal object DdzCards {
      * 单机的场次页是 M 币、左边写着「经典模式」、上方 S11 赛季,颜色对不上。只认 Mika 的屏。
      *
      * 卡片会整体左右平移(2026-11-12 真机上比仓库里的老图右移约 50 px),所以不按死点 x 认:
-     * 在卡片顶部那几行里找绿、青、蓝三段连续的色块,要求从左到右排列、每段宽度约一张卡(400 px)、
+     * 在卡片顶部那几行里找绿、青、蓝三段连续的色块,要求从左到右排列、每段宽度约一张卡(400~510 px)、
      * 段与段之间隔着卡片间隙。这样横移 ±80 px 都还在。
+     *
+     * 2026-11-19 15:25(dev 0.1.42,金豆 324 万、精英场被高亮成选中):这一版的卡片比 11-12 的更高更宽,
+     * 纯色带在 200-252、卡片宽 488~503 px,老窗口(255-270)已经落到场次名和人数图标上、宽度也超过上限,
+     * 于是整页认不出来,被当成 unknown_popup。窗口和上限按这张真机图重新量过。
      */
     fun humanClassicRooms(frame: RawFrame): Boolean {
         if (frame.width != 2412 || frame.height != 1080 || DdzScreen.blackBar(frame) != 0) return false
@@ -277,7 +281,7 @@ internal object DdzCards {
         fun green(x: Int, y: Int) = rgb(x, y).let { (r, g, b) -> r < 120 && g > 165 && b > 100 && g - r > 60 }
         fun cyan(x: Int, y: Int) = rgb(x, y).let { (r, g, b) -> r < 80 && g > 170 && b > 160 }
         fun blue(x: Int, y: Int) = rgb(x, y).let { (r, g, b) -> b > 200 && r < 135 && g > 135 }
-        // 卡片顶部纯色带:老图在 253-272,新图在 252-272,取中间那几行最稳
+        // 卡片顶部纯色带:老图在 253-272,2026-11-19 的图在 200-252
         for (y in ROOMS_BAND_ROWS) {
             val g = DdzScreen.runs(frame.width, gap = 30, minWidth = ROOMS_CARD_MIN_W) { green(it, y) }
             val c = DdzScreen.runs(frame.width, gap = 30, minWidth = ROOMS_CARD_MIN_W) { cyan(it, y) }
@@ -293,11 +297,11 @@ internal object DdzCards {
         return false
     }
 
-    /** 场次卡顶部色带所在的行:老图 253 起、新图 252 起,取 255-270 这几行都干净。 */
-    private val ROOMS_BAND_ROWS = 255..270
-    /** 一张场次卡约 400 px 宽;色块至少这么宽才算一张卡,再宽就不像了。 */
+    /** 场次卡顶部色带所在的行:老图 253-272,2026-11-19 的图卡片更高、色带在 200-252。 */
+    private val ROOMS_BAND_ROWS = 200..272
+    /** 一张场次卡约 400~510 px 宽;色块至少这么宽才算一张卡,再宽就不像了。 */
     private const val ROOMS_CARD_MIN_W = 300
-    private const val ROOMS_CARD_MAX_W = 470
+    private const val ROOMS_CARD_MAX_W = 520
 
     /**
      * 单机模式的「经典模式」场次页(左上角「经典模式」、上方 S11 赛季、场次用 M 币):不是真人场,绝不能点。
@@ -486,7 +490,10 @@ internal object DdzCards {
             if (min(p) > 190) bright++
             pixels++
         }
-        return dark.toDouble() / pixels >= POPUP_DARK_DENSITY && bright.toDouble() / pixels >= POPUP_BRIGHT_DENSITY
+        return dark.toDouble() / pixels >= POPUP_DARK_DENSITY && bright.toDouble() / pixels >= POPUP_BRIGHT_DENSITY &&
+            // 真人场次页也是暗底 + 一排亮卡片,比例上刚好够暗够亮(2026-11-19 15:25 就是这样被当成弹窗的)。
+            // 它有三张确定的场次卡,认出来就绝不是弹窗。放在比例之后算:只有像弹窗的帧才多花这一次扫描。
+            !humanClassicRooms(frame)
     }
 
     /**
