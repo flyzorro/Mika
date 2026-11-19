@@ -30,7 +30,8 @@ POST /double {"seat": "landlord" | "landlord_down" | "landlord_up" | "farmer",
               "bottom": [三张]}                  # 三张明牌,归地主
 -> {"double": true | false, "super": true | false, "win": 0.83, "games": 300}
    # 自己这一方的赢面,够了才建议加倍;只有地主、且赢面到 SUPER_DOUBLE_WIN 才回 super
-   # games 是预算内实际打了几局:地主 / 单个农民座位 1.5 秒,farmer 两个座位共用 2 秒
+   # games 是预算内实际打了几局:地主 / 单个农民座位 1.5 秒,farmer 两个座位各打一局(计两局)、共用 2 秒;
+   # games 不到下限(其它座位 ROLLOUT_MIN_GAMES,farmer 2×)时 double / super 一律 false(赢面只是少数几局的比率)
 # farmer 是认不出地主坐哪边时用的:两个农民座位各算一遍(共用时间预算),取较低的赢面
 """
 import json
@@ -176,6 +177,16 @@ LIKELIHOOD_MOVES = 2
 # 0.2(只看最近一手时的温度)这一手仍是 9 9;取最近两手后 0.03 以下才翻成王炸,0.05 又回到 9 9。
 # 0.02 时王炸的加权权重是 9 9 的 6.6 倍、不出的 16 倍;0.01 更极端,0.03 只剩 2 倍。取 0.02 留余量。
 LIKELIHOOD_TEMPERATURE = 0.02
+# 残局分法似然的下限:软证据(出牌历史的 DouZero 动作概率、叫分 / 加倍)把一种分法相对最可能的分法压低时,
+# 权重不少于这个比例,不再往 0 压。硬约束(能一手走完却不出)仍是 0。
+# 2026-11-19 10:53:07 普通场,我是地主上家(农民),手 14 张,地主剩 4 张、队友 5 张,看不见的是
+# 4 4 9 J A A 2 2 BJ;地主之前已经把 2 2 2 2 拆开打过两次单张 2。温度 0.02 下 DouZero 给
+# 「地主还拿着另外两张 2」的 12 种分法压到 0~1.7e-5,残局里炸弹 5 5 5 5 的赢面 99% 全是假的,
+# 按 ×2 一算就炸了队友,翻倍输掉。只有最近两手出牌、模型给的概率远没有这么锋利,不能让软证据把
+# 一整类分法判死。取 0.02:2026-11-19 在 48 副配对自对弈上扫 0.02 / 0.05,
+# 配对差每副平均 −0.042(95% CI −0.123~+0.040)对 +0.021(−0.020~+0.062),两个下限分不出好坏;
+# 取更小的 0.02(最可能的分法最多 50 倍于最不像的分法),离原来不加下限最近,又已经能把 1e-5 那一档拉回来。
+LIKELIHOOD_FLOOR = 0.02
 # 叫分 / 加倍先验:每家牌力 s = 用自己座位的 DouZero 模型给开局整手牌(手里剩的 + 出过的,地主含底牌)
 # 打分,取所有合法出牌里的最高分。每条已知证据乘一个 logistic 似然因子:P = sigmoid((s - T) / AUCTION_TAU)。
 # 2026-11-17 用 calibrate_auction.py 随机发 4000 副牌(seed 20261117,地主 4000 手、两个农民座位共 8000 手)
@@ -823,7 +834,7 @@ class Agent:
             if left_s > 0 else None
         allowed = None
         if solved is not None:
-            wins, total = solved
+            wins, total, plain_wins, plain_total = solved
             score = {tuple(sorted(a)): float(values[i]) for i, a in enumerate(infoset.legal_actions)}
             # 残局也按金额比:每手的值 = Σ 分法权重 ×(赢 +m / 输 −m),炸弹 / 王炸 m=2,其它 m=1。
             # wins 是赢的分法权重,输的是 total − wins;一手都赢不了时炸弹值 −2×总权重 < 非炸弹 −1×总权重,
@@ -834,9 +845,20 @@ class Agent:
                 amount[m] = (2 if is_bomb(m) else 1) * (2 * weight - total)
             top = max(amount.values())
             allowed = {m for m in score if amount[m] == top}
+            picked = max(allowed, key=score.get)
+            # 炸弹 / 王炸的 ×2 是拿「猜牌猜出来的赢面」翻倍:不信猜牌、只按摆法数算时它也得
+            # 不比非炸弹里金额最高的一手差,不然就是不炸,改出那一手。×2 只会放大估值误差。
+            if is_bomb(picked):
+                plain = {m: (2 if is_bomb(m) else 1) * (2 * plain_wins.get(m, 0) - plain_total)
+                         for m in score}
+                alt = max((m for m in score if not is_bomb(m)), key=lambda m: amount[m], default=None)
+                if alt is not None and plain[picked] < plain[alt]:
+                    if report is not None:
+                        report["bomb_veto"] = move_label(picked)
+                    picked = alt
+                    allowed = {m for m in score if amount[m] == amount[alt]}
             if tuple(sorted(move)) not in allowed:
-                move = list(max(allowed, key=score.get))
-                return self.swap_high_kickers(infoset, move, ok=lambda m: tuple(sorted(m)) in allowed)
+                return self.swap_high_kickers(infoset, list(picked), ok=lambda m: tuple(sorted(m)) in allowed)
         mate = {"landlord_down": "landlord_up", "landlord_up": "landlord_down"}.get(infoset.player_position)
         if solved is None:
             # 剩的牌多、搜不动:自己能两手出完、第一手很难被压时,先出那手再出完(DouZero 偶尔先出一张会被王压的单张)
@@ -1256,7 +1278,9 @@ class Advisor:
 
         农民默认做条件抽样:每副随机发牌先看地主那 20 张会不会叫(landlord_would_call),不会叫就丢掉重发;
         地主座位的算法不变。seat="farmer" 时两个农民座位各算一遍、共用预算,返回较低的赢面。
-        condition=False 只给校准/对照用;min_games 给校准降低局数用。on_accept 每采纳一局回调三家手牌。"""
+        min_games 是地主模拟的局数下限;农民座位不受它限制,返回实际打过的局数(两个座位每副各一局),
+        调用方用 games 与门槛比较:端点不到 ROLLOUT_MIN_GAMES(seat="farmer" 为 2×)就按不加倍 / 不超级加倍。
+        condition=False 只给校准/对照用。on_accept 每采纳一局回调三家手牌。"""
         if seat not in SEATS and seat != "farmer":
             raise Mismatch("bad_seat")
         if budget is None:
@@ -1274,7 +1298,7 @@ class Advisor:
             wins = played = 0
             deadline = time.perf_counter() + budget
             for _ in range(games):
-                if played >= ROLLOUT_MIN_GAMES and time.perf_counter() > deadline:
+                if played >= min_games and time.perf_counter() > deadline:
                     break
                 played += 1
                 rng.shuffle(unseen)
@@ -1295,17 +1319,18 @@ class Advisor:
         if len(hand) != 17:
             raise Mismatch("hand_count_mismatch")
         seats = ["landlord_up", "landlord_down"] if seat == "farmer" else [seat]
-        return self._farmers_double(seats, hand, bottom, games, budget, condition, min_games, on_accept)
+        return self._farmers_double(seats, hand, bottom, games, budget, condition, on_accept)
 
-    def _farmers_double(self, seats, hand, bottom, games, budget, condition, min_games, on_accept):
+    def _farmers_double(self, seats, hand, bottom, games, budget, condition, on_accept):
         """农民座位:底牌归地主;看不见的 34 张随机分成地主的 17 张和队友的 17 张。
-        条件抽样只看地主那 20 张会不会叫。两个座位用同一批发牌(只差我坐地主的上家还是下家)。"""
+        条件抽样只看地主那 20 张会不会叫。两个座位用同一批发牌(只差我坐地主的上家还是下家)。
+        [games] 是模拟局数:一个座位一副牌一局,seat="farmer" 两个座位每副各一局(一副算两局)。"""
         unseen = minus(minus(DECK, hand), bottom)
         rng = random.Random(hash(tuple(sorted(hand + bottom))))
         wins = {s: 0 for s in seats}
         played = 0
         deadline = time.perf_counter() + budget
-        while played < games:
+        while played * len(seats) < games:
             if time.perf_counter() > deadline:
                 break
             # 一次抽一批再判:弱地主牌被丢掉的概率不低,一副一副判会把预算全花在判断上
@@ -1317,7 +1342,7 @@ class Advisor:
             for (landlord, teammate), accepted in zip(batch, keep):
                 if not accepted:
                     continue
-                if played >= games or time.perf_counter() > deadline:
+                if played * len(seats) >= games or time.perf_counter() > deadline:
                     break
                 played += 1
                 # 我坐地主上家:上家是我、下家是队友;我坐下家:下家是我、上家是队友。地主和队友的牌两边一样。
@@ -1334,11 +1359,12 @@ class Advisor:
                     while not env.game_over:
                         env.step()
                     wins[s] += bool(env.num_wins["farmer"])
-        if played < min_games:
-            # 预算内采纳不到下限:不知道赢面,按不加倍处理
-            return 0.0, played
+        if played == 0:
+            return 0.0, 0
         rates = {s: wins[s] / played for s in seats}
-        return min(rates.values()), played
+        # 每个采纳的牌局两个农民座位各打一局:games 报「局数」而不是「副数」。
+        # 局数不到 ROLLOUT_MIN_GAMES 时也报真实赢面,由端点按 games 决定不加倍;不能把「不知道」写成 0 赢面。
+        return min(rates.values()), played * len(seats)
 
     def likelihood(self, history, me, auction=None):
         """给 endgame.best 的似然回调:按两家对手最近 [LIKELIHOOD_MOVES] 手不是不出的出牌,判断一种分法像不像他们当时会这么出。
@@ -1348,6 +1374,8 @@ class Advisor:
         再相加。只看最近一手不够:下家倒数第二手 10 10 10 + Q 才是「他手里没有 4/9 这种零散小牌」的证据。
         用 float64 在对数空间算,再减去所有分法里最大的 log 似然后 exp:相对权重不变,但对手真出过一手
         模型觉得极差的牌时不会像 float32 概率相乘那样下溢成 0(那会让 total=0、残局搜索整个退回 DouZero)。
+        软证据压出来的相对权重有下限 [LIKELIHOOD_FLOOR]:温度 0.02 下动作概率能差好几个数量级,
+        可只有最近两手出牌,不能让「猜牌」把一整类分法判死(见 LIKELIHOOD_FLOOR 的注释)。
         某个观测出法在这种分法的合法出牌里找不到时(正常历史不该发生)这种分法权重记 0;
         如果所有分法都这样(全 -inf),这次退回不加权,不能把搜索关掉。
         一次把同一手的全部分法攒成一批前向;到 [deadline] 就抛 Timeout,best 退回不加权的摆法数。
@@ -1420,7 +1448,9 @@ class Advisor:
             if not finite:
                 return [1.0] * len(splits_hands)
             top = max(finite)
-            return [math.exp(x - top) if x != float("-inf") else 0.0 for x in logs]
+            # 软证据的权重下限:LIKELIHOOD_FLOOR 以下不再往下压。对数空间里就是
+            # log 权重 >= log(LIKELIHOOD_FLOOR) - log 最大值;硬约束(-inf)仍是 0。
+            return [max(math.exp(x - top), LIKELIHOOD_FLOOR) if x != float("-inf") else 0.0 for x in logs]
 
         return callback
 
@@ -1462,7 +1492,13 @@ def handler(advisor):
                 if self.path == "/double":
                     seat = body["seat"]
                     win, games = advisor.double(seat, body["hand"], body["bottom"])
-                    return self.reply(200, {"double": should_double(win, seat), "super": should_super(win, seat),
+                    # 局数不到下限时赢面只是打过的几局的比率,可能是运气:一律按不加倍 / 不超级加倍。
+                    # 地主总能打满下限;农民的条件抽样在极端强手 / 机器忙时会不到 40 局。
+                    # seat="farmer" 每副两个座位各打一局:要 40 副才是每个座位 40 局,所以门槛是 2 倍。
+                    need = 2 * ROLLOUT_MIN_GAMES if seat == "farmer" else ROLLOUT_MIN_GAMES
+                    enough = games >= need
+                    return self.reply(200, {"double": enough and should_double(win, seat),
+                                            "super": enough and should_super(win, seat),
                                             "win": round(win, 2), "games": games, "ms": ms()}, body)
                 report = {}
                 move = advisor.act(body["seat"], body["hand"], body.get("bottom", []), body.get("history", []),
