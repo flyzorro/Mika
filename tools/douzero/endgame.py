@@ -42,6 +42,11 @@ def without_double_joker_kickers(actions):
     return [m for m in actions if not double_joker_kickers(m)]
 
 
+def is_bomb(move):
+    """这手是不是炸弹或王炸。"""
+    return md.get_move_type(list(move))["type"] in (md.TYPE_4_BOMB, md.TYPE_5_KING_BOMB)
+
+
 def moves(hand, rival):
     """[hand] 能出的牌:[rival] 是要压的那手([] 是自己先出);要压时含不出 []。同 DouZero 牌局的规则。"""
     mg = MovesGener(list(hand))
@@ -233,14 +238,23 @@ SAMPLES = 300
 
 
 def finish_in_two(hand, legal, rival, unknown, left_a, left_b, samples=SAMPLES, limit=SAFE_FIRST, seed=0,
-                  deadline=None):
+                  deadline=None, kept=()):
     """剩的牌多、搜不动时的一条捷径:自己手里能两手出完(先出一手、剩下的正好是一手)时,挑第一手最不容易被压的。
 
     把 [unknown](两家手里合起来的牌)随机分成 [left_a]、[left_b] 张,看有没有一家压得住第一手;第一手没人压就接着出完。
+    [kept] 是一定在 [a] 手里的牌:我是农民时地主的底牌还没打出去的那几张(同 server.sample_hands 的守底牌)。
+    先出 [a] 再出 [b]。两种顺序都两手出完、其中一手是炸弹 / 王炸时,优先把炸弹 / 王炸留到最后:
+    炸弹留到最后能管任何牌,先甩出去只是给对手一个用炸弹的靶子。
     [legal] 是现在能出的牌,[rival] 是要压的那手(() 是自己先出)。返回 (第一手, 被压的机会),没有够安全的为 None。
     [deadline] 是这一手牌总预算的截止时刻(monotonic):到了就返回 None,照用 DouZero 的,别把现场模拟的时间也吃掉。
     """
+    kept = tuple(sorted((Counter(unknown) & Counter(kept)).elements()))
+    need_a = left_a - len(kept)
+    rest_pool = list((Counter(unknown) - Counter(kept)).elements())
+    if need_a < 0 or need_a + left_b > len(rest_pool):
+        return None
     best = None
+    best_key = None
     for move in legal:
         if not move:
             continue
@@ -251,16 +265,19 @@ def finish_in_two(hand, legal, rival, unknown, left_a, left_b, samples=SAMPLES, 
             continue
         rng = random.Random(seed)
         beaten = 0
-        pool = list(unknown)
+        pool = list(rest_pool)
         for _ in range(samples):
             if deadline is not None and time.monotonic() > deadline:
                 return None
             rng.shuffle(pool)
-            a, b = pool[:left_a], pool[left_a:left_a + left_b]
+            a = list(kept) + pool[:need_a]
+            b = pool[need_a:need_a + left_b]
             if any(m for m in moves(a, list(move))) or any(m for m in moves(b, list(move))):
                 beaten += 1
         chance = beaten / samples
-        if best is None or chance < best[1]:
-            best = (tuple(sorted(move)), chance)
+        # 先比「炸弹是不是留到了最后」,再比被压机会:炸弹先出的一律排在非炸弹先出的后面
+        key = (is_bomb(move) and not is_bomb(rest), chance)
+        if best_key is None or key < best_key:
+            best, best_key = (tuple(sorted(move)), chance), key
     return best if best is not None and best[1] <= limit else None
 
