@@ -1,5 +1,6 @@
 """按公开入口测:handle(body) 返回 (HTTP 状态码, JSON);另有一条走真实 HTTP 锁状态码。"""
 import base64
+import glob
 import io
 import json
 import os
@@ -274,10 +275,11 @@ class ExpectedValueTest(unittest.TestCase):
         self.assertFalse(body["win"])
         self.assertIn(body["discard"], ("5s", "6s", "7s"))
         self.assertEqual(body["target"], "qingyise")
-        self.assertEqual(body["fan"], 2)
-        # 参考模拟:切 5s 冲清一色万 draws=14 约 0.25,4 倍后约 1.0
-        self.assertGreaterEqual(body["value"], 0.8)
-        self.assertLessEqual(body["value"], 1.3)
+        self.assertEqual(body["fan"], 2)  # 牌型番,不含自摸
+        # 参考模拟:切 5s 冲清一色万 draws=14 约 0.25 胡,自摸按 3 番(8 倍)约 2.0;
+        # 没胡的局大多已经听牌,每家没听收 4 倍、少数没听赔 2 倍,合计约 4.2。
+        self.assertGreaterEqual(body["value"], 3.0)
+        self.assertLessEqual(body["value"], 5.5)
         for option in body["options"]:
             self.assertIn(option["target"], ("fast", "qingyise", "pengpeng", "qidui"))
             self.assertIsInstance(option["fan"], int)
@@ -292,10 +294,68 @@ class ExpectedValueTest(unittest.TestCase):
         self.assertFalse(body["win"])
         self.assertEqual(body["discard"], "2m")
         self.assertEqual(body["target"], "fast")
-        self.assertEqual(body["fan"], 0)
-        # 参考模拟:切 2m 快胡 draws=6 约 0.36;冲清一色约 0.15(4 倍后)
-        self.assertGreaterEqual(body["value"], 0.25)
-        self.assertLessEqual(body["value"], 0.40)
+        self.assertEqual(body["fan"], 0)  # 牌型番,不含自摸
+        # 参考模拟:切 2m 快胡 draws=6 约 0.35 胡,自摸按 1 番(2 倍);
+        # 没胡的局已经听牌,每家没听收 1 倍,合计约 1.35。
+        self.assertGreaterEqual(body["value"], 1.2)
+        self.assertLessEqual(body["value"], 1.6)
+
+    def test_chating_moves_the_crossing_point_earlier(self):
+        # 改之前交叉点约 11 摸;查听把「先听牌」抬高,交叉点前移到 8–9 摸之间。
+        short = post(self.HAND, que="p", draws=8)[1]
+        long = post(self.HAND, que="p", draws=9)[1]
+        self.assertEqual(short["target"], "fast")
+        self.assertEqual(long["target"], "qingyise")
+
+
+class SelfDrawTest(unittest.TestCase):
+    """模拟里胡的全是自摸:同一副牌,胡了的那部分按 fan + 1 的倍数算。"""
+
+    HAND = ["1m", "2m", "2m", "3m", "4m", "5m", "6m", "7m", "8m", "9m", "9m",
+            "5s", "6s", "7s"]
+
+    def test_a_simulated_win_uses_one_more_fan(self):
+        mc = server.MonteCarlo([], "p")
+        with mock.patch.object(server.MonteCarlo, "won", return_value=True):
+            mean, variance = mc.run(self.HAND, "5s", "qingyise:m", 8, 20, 2)
+        self.assertEqual(mean, win_multiplier(3))  # 清一色 2 番 + 自摸 1 番 = 8 倍
+        self.assertEqual(variance, 0.0)
+        with mock.patch.object(server.MonteCarlo, "won", return_value=True):
+            mean, _ = mc.run(self.HAND, "5s", "qingyise:m", 8, 20, 0)
+        self.assertEqual(mean, win_multiplier(1))  # 0 番 + 自摸 1 番 = 2 倍
+
+
+class ChatingTest(unittest.TestCase):
+    """查听:牌摸完还没胡时,听牌收钱、没听赔钱;value 是每局平均得分,可以为负。"""
+
+    # 打 5p 马上听牌(快胡 0 番,听 3m/6m/9m);打 1m 保留七对(2 番)但还差一向听。
+    HAND = ["1m", "1m", "1m", "2m", "2m", "4m", "4m", "5m", "5m", "5p",
+            "6m", "6m", "8p", "9p"]
+
+    def test_tenpai_collects_and_the_bigger_fan_non_tenpai_pays(self):
+        status, body = post(self.HAND, que="s", draws=3)
+        self.assertEqual(status, 200)
+        self.assertEqual(body["discard"], "5p")
+        self.assertEqual(body["target"], "fast")
+        self.assertEqual(body["fan"], 0)  # fan 只有牌型番,自摸不算进去
+        self.assertEqual(body["shanten"], 0)
+        # 听牌:没胡的局每家没听收 CHATING_GAIN_OPPONENTS × win_multiplier(0) = 1
+        self.assertGreaterEqual(body["value"], 1.0)
+        self.assertLess(body["value"], 1.5)
+        qidui = [option for option in body["options"] if option["target"] == "qidui"]
+        self.assertTrue(qidui)
+        # 七对 2 番还差一向听:摸完没听要赔 CHATING_LOSS = win_multiplier(1) = 2
+        self.assertLess(qidui[0]["value"], 0)
+
+    def test_noise_is_measured_on_the_per_game_score(self):
+        # 每局得分不再是 0/1,噪声按它的样本方差算:SE² = (var1 + var2) / games。
+        first = {"target": "fast", "value": 1.0, "_score_var": 4.0, "_games": 100}
+        second = {"target": "fast", "value": 1.1, "_score_var": 4.0, "_games": 100}
+        self.assertTrue(server._within_noise(first, second))
+        far = {"target": "fast", "value": 2.0, "_score_var": 4.0, "_games": 100}
+        self.assertFalse(server._within_noise(first, far))
+        other = {"target": "qidui", "value": 1.0, "_score_var": 0.0, "_games": 100}
+        self.assertFalse(server._within_noise(first, other))
 
 
 class AcceptanceTest(unittest.TestCase):
@@ -324,13 +384,15 @@ class AcceptanceTest(unittest.TestCase):
 class ShantenRegressionTest(unittest.TestCase):
     """拆对子退向听换来的进张,不能盖过少一向听。
 
-    概率表把「高向听 × 大进张」这一格估高了,而 200 局蒙卡的标准误差(约 0.026)
-    比这些打法之间的真实差距还大;排序不能把噪声当成结论。
+    概率表把「高向听 × 大进张」这一格估高了,而 200 局蒙卡的平均每局得分标准误差
+    (含查听后约 0.1)比这些打法之间的真实差距还大;排序不能把噪声当成结论。
     """
 
     CASES = [
-        # 打 5p 拆对子退成 3 向听(59 进张),打孤张 9p 留 2 向听(20 进张)
-        (["1p", "1p", "1p", "2p", "5p", "5p", "9p", "2s", "4s", "6s", "8s", "8s", "9s", "4p"], "9p"),
+        # 打 5p 拆对子退成 3 向听(59 进张),打孤张 9p 或 9s 留 2 向听(20 进张);
+        # 9p 和 9s 的向听、进张、进张牌完全一样,value 只差蒙卡噪声,两个都对。
+        (["1p", "1p", "1p", "2p", "5p", "5p", "9p", "2s", "4s", "6s", "8s", "8s", "9s", "4p"],
+         ("9p", "9s")),
         # 打 1s 拆对子退成 2 向听(43 进张),打孤张 8s 留 1 向听(10 进张)
         (["1p", "2p", "2p", "4p", "5p", "6p", "7p", "8p", "9p", "1s", "1s", "5s", "5s", "8s"], "8s"),
         # 打 8s 拆对子退成 2 向听(59 进张),打孤张 7p 留 1 向听(13 进张)
@@ -348,7 +410,7 @@ class ShantenRegressionTest(unittest.TestCase):
                 first = body["options"][0]
                 same_target = [option for option in body["options"] if option["target"] == first["target"]]
                 self.assertEqual(first["shanten"], min(option["shanten"] for option in same_target))
-                self.assertEqual(body["discard"], expected)
+                self.assertIn(body["discard"], (expected,) if isinstance(expected, str) else expected)
 
 
 class QueTest(unittest.TestCase):
@@ -626,13 +688,12 @@ class HintMeldTest(unittest.TestCase):
 
 
 class HintMeldHandTemplateTest(unittest.TestCase):
-    """碰/明杠的牌面不靠 templates/meld/flat_*.png,要能由 templates/hand/ 的 27 张生成。"""
+    """碰/明杠的牌面不靠 templates/meld/,要能由 templates/hand/ 的 27 张生成。"""
 
-    def test_melds_are_recognized_without_flat_templates(self):
-        # 每组都有 27 种牌面,全部从 templates/hand/ 生成,仓库里没有 flat_*.png。
+    def test_melds_are_recognized_without_meld_templates(self):
+        # 每组都有 27 种牌面,全部从 templates/hand/ 生成,仓库里没有 templates/meld/。
         self.assertEqual(sorted(server.MELD_FLAT_TEMPLATES[0]), sorted(HAND_TEMPLATES))
-        templates = {name: value for name, value in server.MELD_TEMPLATES.items()
-                     if not name.startswith("flat_")}
+        self.assertEqual(glob.glob(os.path.join(server.TEMPLATE_DIR, "meld", "*")), [])
         cases = {
             "shots8_172536": [{"type": "pon", "tile": "8s"}],
             "shots_204945": [{"type": "pon", "tile": "7m"}, {"type": "kan", "tile": "8m"},
@@ -640,11 +701,59 @@ class HintMeldHandTemplateTest(unittest.TestCase):
             "shots7_165550": [{"type": "pon", "tile": "2s"}],
             "shots7_170205": [{"type": "pon", "tile": "3m"}],
         }
-        with mock.patch.object(server, "MELD_TEMPLATES", templates):
-            for name, melds in cases.items():
-                with self.subTest(name=name):
-                    _, body = hint_frame(name)
-                    self.assertEqual(body["melds"], melds)
+        for name, melds in cases.items():
+            with self.subTest(name=name):
+                _, body = hint_frame(name)
+                self.assertEqual(body["melds"], melds)
+
+
+class HintAnkongTest(unittest.TestCase):
+    """暗杠抬起的那张牌,27 种牌都要认得出,模板由 templates/hand/ 生成。"""
+
+    def test_concealed_kan_of_every_tile_is_recognized(self):
+        # 2026-11-18 23:0x 真机帧,同一条命、定缺 m:第 1 组暗杠 2p,
+        # 手牌 10 张 + 暗杠 = 13 张,所以是 wait;之前这组认不出,整局后半段没有建议。
+        cases = {
+            "shots9_230144": ["3p", "4p", "8p", "8p", "2s", "3s", "4s", "4s", "7s", "8s"],
+            "shots9_230348": ["4p", "4p", "8p", "8p", "8p", "2s", "3s", "4s", "7s", "8s"],
+        }
+        for name, hand in cases.items():
+            with self.subTest(name=name):
+                _, body = hint_frame(name)
+                self.assertEqual(body["state"], "wait")
+                self.assertEqual(body["hand"], hand)
+                self.assertEqual(body["melds"], [{"type": "kan", "tile": "2p"}])
+                self.assertEqual(body["que"], "m")
+
+    def test_dark_kans_are_recognized_without_ankong_templates(self):
+        # templates/meld/ 里不再有逐张截的 ankong_*.png;1m、5p、7m 的暗杠由手牌模板生成。
+        self.assertEqual(glob.glob(os.path.join(server.TEMPLATE_DIR, "meld", "ankong_*.png")), [])
+        cases = {
+            "shots_205128": [{"type": "kan", "tile": "1m"}, {"type": "kan", "tile": "4m"}],
+            "shots5_145239_0051": [{"type": "kan", "tile": "7m"}, {"type": "kan", "tile": "5p"}],
+        }
+        for name, melds in cases.items():
+            with self.subTest(name=name):
+                _, body = hint_frame(name)
+                self.assertEqual(body["melds"], melds)
+
+
+class HintAnkongMarginTest(unittest.TestCase):
+    def test_every_concealed_kan_has_a_clear_lead(self):
+        # 暗杠认出的那张和「第二名」至少差 0.15:换一张牌不会被当成这一张。
+        with open(os.path.join(FIXTURES, "labels.json"), encoding="utf-8") as file:
+            labels = json.load(file)
+        for name, label in labels.items():
+            if name.startswith("_") or not label.get("melds"):
+                continue
+            image = load_frame(name)
+            for group, meld in enumerate(label["melds"]):
+                scores = server.ankong_scores(image, group)
+                if scores is None:  # 碰/明杠,走 MELD_FLAT_TEMPLATES
+                    continue
+                with self.subTest(name=name, group=group):
+                    self.assertEqual(scores[0][0], meld["tile"])
+                    self.assertGreater(scores[0][1] - scores[1][1], 0.15)
 
 
 class HintMeldMarginTest(unittest.TestCase):

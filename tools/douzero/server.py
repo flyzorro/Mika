@@ -127,6 +127,12 @@ ACT_ROLLOUT_MIN_GAMES_OPENING = 30
 # 边打边淘汰时,淘汰轮每个候选至少打这么多局才淘汰:8 手按 1/4 预算在这台机器上只分到 7 局,
 # 7 局里 0.76 和 0.62 的差距一半是运气(见 close_rollout 里 13:10:11 那一手,8 就是被 7 局淘汰掉的)。
 HALVING_MIN_ROUND_GAMES = 12
+# 农民接地主的牌:现场模拟最后选了不出、而某手不炸的压牌和不出差不到这么多倍「配对差的标准误差」时,
+# 改出压牌。2026-11-18 22:32:33 普通场,我是地主上家,手牌 5 5 6 7 7 7 7 8 A A,地主出 8 8 队友不出。
+# 模拟 71 局:不出 0.85 / A A 0.80、平均得分 1.239 / 1.099,差 0.14,配对标准误差 0.19,当时回了不出;
+# 地主接着走 AKQJ109,我们只能炸 7777,炸弹让输的翻倍。按可见信息明牌算到底 A A 0.977、不出 0.955:
+# 局数只够分出 ±4 个点时,压一手比把出牌权交回去更稳,所以差在 1 个标准误差内就压(见 beat_landlord)。
+BEAT_MARGIN_SE = 1.0
 # 一手牌总共只给这么多秒:手机 /act 最多等 4 秒(连接 2 秒 + 读 4 秒,失败还重试一次),超了就当服务挂了。
 # 2026-11-16 12:18:11 土豪场,我是地主下家,手里 A 5 4 4 4,三家还剩 19 张:残局搜索先花掉 1.5 秒没结论,
 # 现场模拟又打满 2.5 秒,回复 4903 毫秒;手机 4 秒超时,标成 douzero_unreachable 重发同一手,三次各约 4020 毫秒,
@@ -614,6 +620,40 @@ def fewer_plays(hand, keys, rates, scores, own, deadline=None):
     return None if picked is None else (picked, plays)
 
 
+def paired_error(stat):
+    """配对差均值的标准误差:[stat] = [Σ差, Σ差², 局数],差是同一批发牌下两手得分之差。
+    局数不到 2 时返回 None。"""
+    total, total_sq, n = stat
+    if n < 2:
+        return None
+    mean = total / n
+    variance = max(0.0, (total_sq - n * mean * mean) / (n - 1))
+    return math.sqrt(variance / n)
+
+
+def beat_landlord(infoset, keys, means, scores, played, pairs, games):
+    """农民接地主的牌:现场模拟最后选了不出时,某手不炸的压牌和不出差不到一个标准误差,就改出这手压牌。
+
+    只在「要压的是地主出的牌」时生效([infoset.last_pid] == "landlord"):桌上是队友的牌不动,
+    我当地主也不动。炸弹 / 王炸不算压牌(翻倍,已有专门逻辑)。
+    压牌要和决赛打一样多局([games])才认:淘汰得早、局数少的手不能因为标准误差大就翻案。
+    平均得分差 = 不出 − 压牌;不超过 BEAT_MARGIN_SE 个配对标准误差([pairs] 见 successive_halving)才算在噪声内。
+    在够格的手里挑平均得分最高的,再按 DouZero 分数。返回压牌,没有就返回 None。
+    """
+    if infoset.player_position == "landlord" or infoset.last_pid != "landlord" or () not in keys:
+        return None
+    best = None
+    for k in keys:
+        if not k or is_bomb(k) or played.get(k, 0) < games:
+            continue
+        error = paired_error(pairs[k]) if k in pairs else None
+        if error is None or means[()] - means[k] > BEAT_MARGIN_SE * error:
+            continue
+        if best is None or (means[k], scores[k]) > (means[best], scores[best]):
+            best = k
+    return best
+
+
 def sample_hands(infoset, rng):
     """只按看得见的信息随机发牌:别人两家合起来的手牌分给两家、张数对得上。
     我是农民时地主没打出去的底牌一定还在他手里,先把这几张留出来(sample 与 deal 是同一个意思)。"""
@@ -668,7 +708,8 @@ def round_shares(count):
 
 
 def successive_halving(keys, own, scores, deal, play, budget, cap=ACT_ROLLOUT_GAMES,
-                      min_round_games=HALVING_MIN_ROUND_GAMES, clock=time.monotonic):
+                      min_round_games=HALVING_MIN_ROUND_GAMES, clock=time.monotonic,
+                      pairs=None, anchor=None):
     """把 [budget] 秒分成几轮边打边淘汰:每轮还活着的候选都打同一批新发的牌,轮末去掉较差的一半。
 
     [deal]() 发一批牌(这一轮里所有还活着的候选共用),[play](hands, key) 拿这批牌打一局、返回这局的结果:
@@ -676,11 +717,14 @@ def successive_halving(keys, own, scores, deal, play, budget, cap=ACT_ROLLOUT_GA
     淘汰轮按 round_shares 分到的时间收手,但每个候选至少打满 [min_round_games] 局才淘汰——
     8 手按 1/4 预算只分到七八局,七八局的赢面差一半是运气,不能拿来淘汰。每个候选最多打 [cap] 局;
     最后一轮(只剩两手)用掉剩下的全部时间。轮末按累计平均得分淘汰,见 halve。
+    传 [pairs] 时顺便记下每个候选和 [anchor](默认 [own])在同一批发牌上的得分差,给 beat_landlord 算配对标准误差:
+    pairs[k] = [Σ差, Σ差², 局数]。
     返回 (每个候选累计赢的局数, 每个候选累计得分, played, 每轮 [留下的候选, 这一轮每个候选至少打了几局],
     最后还活着的候选)。赢的局数只用来在报告里算胜率;淘汰和最后比较都用平均得分,炸弹让这一局翻倍。
     [clock] 只为测试换成假时钟,线上就是 time.monotonic。
     """
     started = clock()
+    anchor = own if anchor is None else anchor
     rollout_deadline = started + budget
     wins = {k: 0 for k in keys}
     earned = {k: 0.0 for k in keys}
@@ -703,6 +747,7 @@ def successive_halving(keys, own, scores, deal, play, budget, cap=ACT_ROLLOUT_GA
 
         while not round_over() and any(played[k] < cap for k in alive):
             hands = deal()  # 这一批发牌,这一轮里所有候选都用
+            results = {}
             for k in alive:
                 if played[k] >= cap:
                     continue
@@ -710,9 +755,20 @@ def successive_halving(keys, own, scores, deal, play, budget, cap=ACT_ROLLOUT_GA
                     break
                 played[k] += 1
                 result = play(hands, k)
+                results[k] = float(result)
                 if result > 0:
                     wins[k] += 1
                 earned[k] += float(result)
+            if pairs is not None and anchor in results:
+                base = results[anchor]
+                for k, value in results.items():
+                    if k == anchor:
+                        continue
+                    stat = pairs.setdefault(k, [0.0, 0.0, 0])
+                    difference = value - base
+                    stat[0] += difference
+                    stat[1] += difference * difference
+                    stat[2] += 1
         games = min(played[k] - before[k] for k in alive)
         if len(alive) <= 2:
             rounds.append([list(alive), games])
@@ -884,6 +940,8 @@ class Agent:
         ACT_ROLLOUT_MIN_GAMES_OPENING 局,局数不到 60 时改用 OPENING_SWITCH_MARGIN 才换。
         差不到门槛时,赢面不低于 DouZero 那手的候选里出完剩下手数更少的胜出(见 fewer_plays);
         比手数最多 endgame.MIN_PLAYS_BUDGET_S 秒,且不超过总预算剩下的,没余量就不比。
+        最后要是还选了不出、而我是农民、桌上正是地主的牌,某手不炸的压牌和不出差不到一个配对标准误差,
+        就改出那手压牌(见 beat_landlord):把出牌权交回给地主往往就是让他一手走完。
         返回 (选定的一手, 写进回复的诊断);分数差得开、不用模拟时返回 None。
         """
         # 分数从高到低;同分时把 DouZero 挑的那手放最前,后面「仍听 DouZero」才有确定的参照
@@ -928,11 +986,14 @@ class Agent:
             sampler = lambda: self.advisor.sample_hands(  # noqa: E731
                 infoset, rng, auction, deadline=sampler_deadline)
         # 局数上限显式传 ACT_ROLLOUT_GAMES:留作默认参数会被 def 时绑死,测试里改常量就不生效了
+        # pairs 记每个候选和「不出」的逐局得分差:最后判断压牌是不是在噪声内要用配对标准误差
+        pairs = {}
+        anchor = () if () in keys else own
         wins, earned, played, rounds, finalists = successive_halving(
             keys, own, scores, sampler,
             lambda hands, k: self.play_out(hands, infoset.three_landlord_cards, history,
                                            infoset.player_position, by_key[k]),
-            budget, cap=ACT_ROLLOUT_GAMES)
+            budget, cap=ACT_ROLLOUT_GAMES, pairs=pairs, anchor=anchor)
         games = min(played[k] for k in finalists)
         if games == 0:
             return None
@@ -940,6 +1001,7 @@ class Agent:
         means = {k: (earned[k] / played[k] if played[k] else 0.0) for k in keys}
         chosen = move
         tie = None
+        beat = None
         min_games = ACT_ROLLOUT_MIN_GAMES_OPENING if sum(infoset.num_cards_left_dict.values()) >= OPENING_CARDS \
             else ACT_ROLLOUT_MIN_GAMES
         if games >= min_games:
@@ -965,6 +1027,12 @@ class Agent:
                                       time.monotonic() + min(endgame.MIN_PLAYS_BUDGET_S, tie_left))
                 if tie is not None:
                     chosen = by_key[tie[0]]
+            # 农民压地主的牌:模拟最后仍是「不出」、压牌又只在噪声内差一点时,压一手而不是把出牌权交回去。
+            # 和 fewer_plays 叠加:上一步已经挑出非不出的手就不动;只有还停在「不出」才看这条。
+            if not chosen:
+                beat = beat_landlord(infoset, keys, means, scores, played, pairs, games)
+                if beat is not None:
+                    chosen = by_key[beat]
         info = {"games": games, "min_games": min_games, "budget_left": round(left, 2),
                 "rates": {labels[k]: round(rates[k], 2) for k in keys},
                 "avg_score": {labels[k]: round(means[k], 3) for k in keys},
@@ -975,6 +1043,9 @@ class Agent:
         if tie is not None:
             info["tiebreak"] = "fewer_plays"
             info["plays"] = {labels[k]: n for k, n in tie[1].items()}
+        if beat is not None:
+            info["beat"] = labels[beat]
+            info["beat_margin"] = round(BEAT_MARGIN_SE * paired_error(pairs[beat]), 3)
         return chosen, info
 
     def play_out(self, hands, bottom, history, me, move):
