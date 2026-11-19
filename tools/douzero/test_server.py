@@ -998,12 +998,12 @@ class CloseCallRolloutTest(unittest.TestCase):
         self.assertEqual(30, rollout["min_games"])
         self.assertEqual("9", rollout["chosen"])
 
-    def test_a_mid_game_close_call_keeps_the_sixty_floor(self):
+    def test_a_mid_game_close_call_keeps_the_mid_game_floor(self):
         report = {}
         self.act(self.SECOND, report)
         rollout = report.get("rollout")
         self.assertIsNotNone(rollout, "顶两手只差 0.011,应该现场模拟")
-        self.assertEqual(60, rollout["min_games"])
+        self.assertEqual(50, rollout["min_games"])
 
     def test_a_clear_best_move_does_not_roll_out(self):
         report = {}

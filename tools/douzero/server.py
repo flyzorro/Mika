@@ -114,7 +114,10 @@ KEEP_MARGIN = 0.05
 # 但开局每局都长:2026-11-16 10:58:14 精英场,我当地主的第一手(2 2 A K K Q Q J 9 8 8 8 7 7 6 5 5 5 5 4),
 # 2.5 秒只跑了 43 局,不到 60 局就白模拟了;单张 9 赢面 0.4 比单张 6 的 0.27 高 13 个点也换不掉。
 # 三家手里还有 OPENING_CARDS 张以上算开局,下限降到 ACT_ROLLOUT_MIN_GAMES_OPENING 局;
-# 局数少更吵,不到 60 局时改用 OPENING_SWITCH_MARGIN 才换。
+# 局数少更吵,不到 ACT_ROLLOUT_MIN_GAMES 局时改用 OPENING_SWITCH_MARGIN 才换。
+# 中局下限原来是 60:2026-11-19 10:44:32 普通场,我是地主上家,手 2 10 9 9 9 8 7 6 4 3,模拟 59 局:
+# 6 7 8 9 10 平均得分 −0.083、DouZero 那手单张 10 −1.085,差了 1 分,只因少 1 局整个作废,拆了顺子。
+# 胜率 0.8 时 60 局和 50 局的标准误差是 0.052 对 0.057,差不多;先降到 50(以后改成按配对标准误差判断)。
 # 2026-11-19 10:22:39 普通场,我是地主(BJ 2 2 2 A Q Q 10 10 8 8 8 7 7 6 5 5 5),地主上家农民出单张 2、只剩 4 张,
 # 三家合计 37 张。DouZero:不出 -0.912、BJ -1.053,差 0.141,按 0.1 不模拟就信了分数,地主上家拿回出牌权,
 # 这一局输了 60 万。重放这一手把门槛临时放到 0.5:每次 103 局,不出胜率 0.81 / 平均得分 0.62~0.64,
@@ -126,7 +129,7 @@ SWITCH_MARGIN = 0.05
 OPENING_SWITCH_MARGIN = 0.1
 ACT_ROLLOUT_BUDGET_S = 2.5
 ACT_ROLLOUT_GAMES = 300
-ACT_ROLLOUT_MIN_GAMES = 60
+ACT_ROLLOUT_MIN_GAMES = 50
 OPENING_CARDS = 45
 ACT_ROLLOUT_MIN_GAMES_OPENING = 30
 # 边打边淘汰时,淘汰轮每个候选至少打这么多局才淘汰:8 手按 1/4 预算在这台机器上只分到 7 局,
@@ -942,7 +945,7 @@ class Agent:
         一手牌总共只有 ACT_TOTAL_BUDGET_S 秒,残局搜索花掉的要从这里扣,还要给比手数留出 0.2 秒。
         剩下的不到 ACT_ROLLOUT_MIN_S 就整个不模拟(回复里记 rollout_skipped: no_time),直接听 DouZero 的。
         每手不够 ACT_ROLLOUT_MIN_GAMES 局就当没模拟;开局(三家手里还够 OPENING_CARDS 张)只要求
-        ACT_ROLLOUT_MIN_GAMES_OPENING 局,局数不到 60 时改用 OPENING_SWITCH_MARGIN 才换。
+        ACT_ROLLOUT_MIN_GAMES_OPENING 局,局数不到 ACT_ROLLOUT_MIN_GAMES 时改用 OPENING_SWITCH_MARGIN 才换。
         差不到门槛时,赢面不低于 DouZero 那手的候选里出完剩下手数更少的胜出(见 fewer_plays);
         比手数最多 endgame.MIN_PLAYS_BUDGET_S 秒,且不超过总预算剩下的,没余量就不比。
         最后要是还选了不出、而我是农民、桌上正是地主的牌,某手不炸的压牌和不出差不到一个配对标准误差,
