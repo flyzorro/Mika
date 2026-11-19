@@ -2792,6 +2792,44 @@ class PhoneDdzTurnTest {
         }
     }
 
+    /**
+     * 2026-11-19 15:25 run 20261119-152540-pzgbxh(dev 0.1.42,金豆 324 万):普通场(5 万-200 万)进不去,
+     * 游戏把最低够得着的「精英场」高亮成选中(卡片带黄色描边);`phone_ddz_turn start room=auto` 连续三次回
+     * unknown_popup,模型只好自己点精英场。这一页必须照旧认成场次页,不是认不出的弹窗、也不是牌桌。
+     *
+     * 素材来源:Mika run 录的 720×322 jpg(scratchpad/rooms-0008.jpg),按设备分辨率 2412×1080 双线性放大
+     * 成 human_classic_rooms_elite_selected.png;jpg 本身是缩放图,不是原始分辨率,放大后色带位置(200-252)
+     * 和卡片宽度(488-503 px)仍是这一页自己的比例。
+     */
+    @Test fun theRoomsPageWithTheEliteCardSelectedIsStillTheRoomsPage() {
+        val rooms = shot("human_classic_rooms_elite_selected")
+        assertTrue("精英场高亮的场次页", DdzCards.humanClassicRooms(rooms))
+        assertFalse("场次页不是牌桌", DdzCards.classicHumanTable(rooms))
+        assertFalse("场次页不是认不出的弹窗", DdzCards.unknownPopup(rooms))
+    }
+
+    /** 同一页上 room=auto:普通场弹「豆豆太多」,工具自己点叉、往上换一场,点精英场进桌。 */
+    @Test fun humanAutoStartClimbsToTheEliteRoomWhenTheNormalRoomIsTooLow() = runTest {
+        val rooms = shot("human_classic_rooms_elite_selected")
+        val tooMany = shot("human_room_beans_too_many")
+        val close = DdzCards.humanBeansTooMany(tooMany)!!
+        val call = full("call")
+        val game = Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(
+            rooms, tooMany, rooms, call, call, lobbyFrame("vd_lobby"),
+        )))
+        val dispatcher = toolDispatcher(game)
+        val savedBid = PhoneDdzTurn.adviseBid
+        PhoneDdzTurn.adviseBid = { _, _ -> PhoneDdzTurn.BidAdvice(0) }
+        try {
+            val result = PhoneDdzTurn.execute(Args(PhoneDdzTurn.def, Json.parseToJsonElement("""{"action":"start","mode":"human","auto":true,"room":"auto","advisor":"http://mac:3426"}""").jsonObject), dispatcher.ctx)
+            assertNull(result.toString(), result.text("error"))
+            assertEquals(result.toString(), listOf(872 to 400, close, 1360 to 400), game.taps.take(3))
+            assertEquals("点的是精英场: $result", "elite", result.text("room"))
+        } finally {
+            PhoneDdzTurn.adviseBid = savedBid
+        }
+    }
+
     /** 场次卡整体左右平移 80 px(真机和老图已经差了约 50 px)仍认得出场次页,也仍不算牌桌。 */
     @Test fun theRoomsPageIsRecognisedWhenTheCardsShiftEightyPixels() {
         val image = ImageIO.read(javaClass.getResourceAsStream("/ddz/human_classic_rooms.png")!!)
@@ -2811,7 +2849,10 @@ class PhoneDdzTurnTest {
         val dir = File(javaClass.getResource("/ddz/human_main_lobby.png")!!.toURI()).parentFile
         val names = dir.listFiles()!!.map { it.name.substringBeforeLast('.') }
         assertTrue("fixtures: ${names.size}", names.size >= 100)
-        val rooms = setOf("human_classic_rooms", "human_classic_rooms_shifted", "human_rooms_beans_5wan_before", "human_rooms_beans_5wan_after")
+        val rooms = setOf(
+            "human_classic_rooms", "human_classic_rooms_shifted", "human_rooms_beans_5wan_before", "human_rooms_beans_5wan_after",
+            "human_classic_rooms_elite_selected",
+        )
         for (name in names) {
             val frame = shot(name)
             if (name in rooms) assertTrue("rooms $name", DdzCards.humanClassicRooms(frame))
