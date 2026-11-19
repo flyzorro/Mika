@@ -52,6 +52,7 @@ from douzero.env.game import GameEnv
 # 用 -I 起服务时脚本所在目录不在 sys.path 里:残局搜索和服务放在一起
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import endgame  # noqa: E402
+from endgame import is_bomb  # noqa: E402
 
 SEATS = ["landlord", "landlord_down", "landlord_up"]
 RANKS = {"3": 3, "4": 4, "5": 5, "6": 6, "7": 7, "8": 8, "9": 9, "10": 10, "J": 11, "Q": 12, "K": 13,
@@ -351,11 +352,6 @@ def splits_bomb(move):
     拆开就少一次 ×2;四张一起出、王炸、不出都不算。"""
     return md.get_move_type(sorted(move))["type"] != md.TYPE_4_BOMB \
         and any(n == 4 for n in Counter(move).values())
-
-
-def is_bomb(move):
-    """这手是不是炸弹或王炸(整手四张一起出 / 大小王一起出),不出不算。"""
-    return md.get_move_type(list(move))["type"] in (md.TYPE_4_BOMB, md.TYPE_5_KING_BOMB)
 
 
 def single_kickers(move):
