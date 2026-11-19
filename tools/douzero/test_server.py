@@ -932,9 +932,20 @@ class CloseCallRolloutTest(unittest.TestCase):
                     bottom=[],
                     history=[["9"], ["10"], ["Q"], ["2"], [], ["3", "3", "3", "3"], [], []])
 
+    # 2026-11-19 10:22:39 普通场:我是地主,手里 18 张(单张 BJ、2 2 2),地主上家农民出单张 2、只剩 4 张,
+    # 三家合计 37 张,不算后半局。DouZero 给出不出 -0.912、BJ -1.053,只差 0.141;按 0.1 不模拟就信了分数,
+    # 地主上家拿回出牌权,这一局输了 60 万。差 0.1~0.15 的出牌也要现场模拟,候选里要有 pass 和 BJ。
+    MARGIN_015 = dict(seat="landlord",
+                      hand=["BJ", "2", "2", "2", "A", "Q", "Q", "10", "10", "8", "8", "8", "7", "7", "6", "5", "5", "5"],
+                      bottom=["7", "J", "2"],
+                      history=[["3"], ["5"], ["A"], [], [], ["A", "K", "Q", "J", "10"], [], [],
+                               ["9", "9", "9", "7", "7"], [], [], ["6"], ["J"], ["A"], ["2"]],
+                      auction={"double": {"landlord_down": False, "landlord_up": False}})
+
     def act(self, position, report=None):
         return ROLLOUT_ADVISOR.act(position["seat"], position["hand"], position["bottom"],
-                                   position["history"], report)
+                                   position["history"], report,
+                                   auction=parse_auction(position.get("auction")))
 
     def test_the_live_close_call_keeps_pass(self):
         report = {}
@@ -961,8 +972,15 @@ class CloseCallRolloutTest(unittest.TestCase):
                            rollout["avg_score"]["5 6 7 8 9"])
 
     def test_a_close_call_the_rollout_prefers_the_second_move(self):
+        # CLOSE_MARGIN 到 0.15 后第三手 2 也进了候选:2.5 秒里三个候选各只打 50 局上下、够不到 60 局下限,
+        # 模拟就不算数(仍出 K)。这里给足总预算和局数,把「模拟换成比 DouZero 那手更好的牌」单独测出来:
+        # 150 局时 7 赢 0.61、K 0.50。2 和 7 谁高只差在噪声里(300 局时 2 反超),不在这里断言。
+        import server
         report = {}
-        move = self.act(self.SECOND, report)
+        with mock.patch.object(server, "ACT_TOTAL_BUDGET_S", 60.0), \
+                mock.patch.object(server, "ACT_ROLLOUT_BUDGET_S", 60.0), \
+                mock.patch.object(server, "ACT_ROLLOUT_GAMES", 150):
+            move = self.act(self.SECOND, report)
         self.assertEqual(["7"], [NAMES[c] for c in move])
         rollout = report.get("rollout")
         self.assertIsNotNone(rollout, "顶两手只差 0.011,应该现场模拟")
@@ -995,6 +1013,28 @@ class CloseCallRolloutTest(unittest.TestCase):
         # 不模拟时与关掉模拟的 advisor 完全一样
         self.assertEqual(sorted(ADVISOR.act(self.CLEAR["seat"], self.CLEAR["hand"], self.CLEAR["bottom"],
                                             self.CLEAR["history"])), sorted(move))
+
+    def test_a_gap_just_over_the_old_margin_still_rolls_out(self):
+        # 差 0.141:旧的 CLOSE_MARGIN 0.1 不模拟;放到 0.15 后 pass 和 BJ 都进候选。
+        # 模拟结果喂固定数据(每手 71 局,pass 平均得分 0.2、BJ -0.1),机器快慢不影响这一手。
+        games, means = 71, {"pass": 0.2, "BJ": -0.1}
+
+        def stub(keys, own, scores, deal, play, budget, cap=None, pairs=None, anchor=None, **kwargs):
+            by_label = {move_label(k): k for k in keys}
+            alive = [by_label["pass"], by_label["BJ"]]
+            return ({k: 0 for k in keys}, {k: means[move_label(k)] * games for k in keys},
+                    {k: games for k in keys}, [[list(alive), games]], alive)
+
+        report = {}
+        with mock.patch("server.successive_halving", stub):
+            move = self.act(self.MARGIN_015, report)
+        rollout = report.get("rollout")
+        self.assertIsNotNone(rollout, "差 0.141 超过旧的 0.1,CLOSE_MARGIN 到 0.15 后应该现场模拟")
+        self.assertNotIn("late", rollout, "三家还剩 37 张,不该走后半局那条路")
+        self.assertIn("pass", rollout["rates"])
+        self.assertIn("BJ", rollout["rates"])
+        self.assertEqual("pass", rollout["chosen"])
+        self.assertEqual([], move)
 
     def test_a_close_call_answers_within_the_turn_clock(self):
         started = time.monotonic()
