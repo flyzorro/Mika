@@ -821,7 +821,7 @@ class DoubleTest(unittest.TestCase):
         self.assertFalse(should_double(0.79))
         self.assertTrue(should_double(0.80))
 
-    def double_reply(self, seat, win, hand=None, bottom=None):
+    def double_reply(self, seat, win, hand=None, bottom=None, games=100):
         """按 /double 的公开入口走一遍:假服务只回固定的赢面,拿到 handler 实际写出的回复。"""
         import io
         import json
@@ -832,7 +832,7 @@ class DoubleTest(unittest.TestCase):
 
         class FakeAdvisor:
             def double(self, seat, hand, bottom):
-                return win, 100
+                return win, games
 
         class Handler(server_module.handler(FakeAdvisor())):
             def reply(self, code, data, request=None):
@@ -921,9 +921,33 @@ class DoubleTest(unittest.TestCase):
         hand, bottom = self.STRONG[:17], ["3", "4", "5"]
         up, _ = ADVISOR.double("landlord_up", hand, bottom, games=20, budget=30, min_games=5)
         down, _ = ADVISOR.double("landlord_down", hand, bottom, games=20, budget=30, min_games=5)
-        both, played = ADVISOR.double("farmer", hand, bottom, games=20, budget=30, min_games=5)
-        self.assertEqual(20, played)
+        # farmer 座位的 games 是局数:20 副两个座位各打一局,正好 40 局(单个座位 40 局)
+        both, played = ADVISOR.double("farmer", hand, bottom, games=40, budget=30, min_games=5)
+        self.assertEqual(40, played)
         self.assertEqual(min(up, down), both)
+
+    def test_an_under_sampled_combined_farmer_still_reports_its_win_rate(self):
+        # 2026-11-19 10:36:58 那手:双王 + 四个 J + 四个 3,剩下的牌太弱,条件抽样只采纳二三十副。
+        # 采纳不到下限时原来直接回 0.0,端点看起来像 0% 赢面;至少要把打过的局数的真实赢面报出来。
+        hand = ["BJ", "SJ", "2", "K", "J", "J", "J", "J", "8", "8", "7", "7", "5", "3", "3", "3", "3"]
+        bottom = ["9", "2", "K"]
+        win, played = ADVISOR.double("farmer", hand, bottom, games=20, budget=30, min_games=40)
+        self.assertEqual(20, played)  # 10 副 × 两个座位
+        self.assertGreater(win, 0.0)
+
+    def test_the_endpoint_does_not_act_on_an_under_sampled_rate(self):
+        # 局数不到下限时,不管表面赢面多高都不加倍 / 不超级加倍
+        short = self.double_reply("landlord", 0.99, games=ROLLOUT_MIN_GAMES - 1)
+        self.assertFalse(short["double"])
+        self.assertFalse(short["super"])
+        enough = self.double_reply("landlord", 0.99, games=ROLLOUT_MIN_GAMES)
+        self.assertTrue(enough["double"])
+        self.assertTrue(enough["super"])
+        # farmer 每副牌两个座位各打一局:40 副才是每个座位 40 局,门槛 2×
+        farmer_short = self.double_reply("farmer", 0.99, games=2 * ROLLOUT_MIN_GAMES - 1)
+        self.assertFalse(farmer_short["double"])
+        farmer_enough = self.double_reply("farmer", 0.99, games=2 * ROLLOUT_MIN_GAMES)
+        self.assertTrue(farmer_enough["double"])
 
     def test_a_farmer_deal_that_cannot_be_accepted_is_not_doubled(self):
         # 预算为 0 时一局都采纳不到:返回 0 局、赢面 0,端点据此点「不加倍」
