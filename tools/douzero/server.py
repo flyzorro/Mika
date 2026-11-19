@@ -30,7 +30,8 @@ POST /double {"seat": "landlord" | "landlord_down" | "landlord_up" | "farmer",
               "bottom": [三张]}                  # 三张明牌,归地主
 -> {"double": true | false, "super": true | false, "win": 0.83, "games": 300}
    # 自己这一方的赢面,够了才建议加倍;只有地主、且赢面到 SUPER_DOUBLE_WIN 才回 super
-   # games 是预算内实际打了几局:地主 / 单个农民座位 1.5 秒,farmer 两个座位共用 2 秒
+   # games 是预算内实际打了几局:地主 / 单个农民座位 1.5 秒,farmer 两个座位各打一局(计两局)、共用 2 秒;
+   # games 不到下限(其它座位 ROLLOUT_MIN_GAMES,farmer 2×)时 double / super 一律 false(赢面只是少数几局的比率)
 # farmer 是认不出地主坐哪边时用的:两个农民座位各算一遍(共用时间预算),取较低的赢面
 """
 import json
@@ -1277,7 +1278,9 @@ class Advisor:
 
         农民默认做条件抽样:每副随机发牌先看地主那 20 张会不会叫(landlord_would_call),不会叫就丢掉重发;
         地主座位的算法不变。seat="farmer" 时两个农民座位各算一遍、共用预算,返回较低的赢面。
-        condition=False 只给校准/对照用;min_games 给校准降低局数用。on_accept 每采纳一局回调三家手牌。"""
+        min_games 是地主模拟的局数下限;农民座位不受它限制,返回实际打过的局数(两个座位每副各一局),
+        调用方用 games 与门槛比较:端点不到 ROLLOUT_MIN_GAMES(seat="farmer" 为 2×)就按不加倍 / 不超级加倍。
+        condition=False 只给校准/对照用。on_accept 每采纳一局回调三家手牌。"""
         if seat not in SEATS and seat != "farmer":
             raise Mismatch("bad_seat")
         if budget is None:
@@ -1295,7 +1298,7 @@ class Advisor:
             wins = played = 0
             deadline = time.perf_counter() + budget
             for _ in range(games):
-                if played >= ROLLOUT_MIN_GAMES and time.perf_counter() > deadline:
+                if played >= min_games and time.perf_counter() > deadline:
                     break
                 played += 1
                 rng.shuffle(unseen)
@@ -1316,17 +1319,18 @@ class Advisor:
         if len(hand) != 17:
             raise Mismatch("hand_count_mismatch")
         seats = ["landlord_up", "landlord_down"] if seat == "farmer" else [seat]
-        return self._farmers_double(seats, hand, bottom, games, budget, condition, min_games, on_accept)
+        return self._farmers_double(seats, hand, bottom, games, budget, condition, on_accept)
 
-    def _farmers_double(self, seats, hand, bottom, games, budget, condition, min_games, on_accept):
+    def _farmers_double(self, seats, hand, bottom, games, budget, condition, on_accept):
         """农民座位:底牌归地主;看不见的 34 张随机分成地主的 17 张和队友的 17 张。
-        条件抽样只看地主那 20 张会不会叫。两个座位用同一批发牌(只差我坐地主的上家还是下家)。"""
+        条件抽样只看地主那 20 张会不会叫。两个座位用同一批发牌(只差我坐地主的上家还是下家)。
+        [games] 是模拟局数:一个座位一副牌一局,seat="farmer" 两个座位每副各一局(一副算两局)。"""
         unseen = minus(minus(DECK, hand), bottom)
         rng = random.Random(hash(tuple(sorted(hand + bottom))))
         wins = {s: 0 for s in seats}
         played = 0
         deadline = time.perf_counter() + budget
-        while played < games:
+        while played * len(seats) < games:
             if time.perf_counter() > deadline:
                 break
             # 一次抽一批再判:弱地主牌被丢掉的概率不低,一副一副判会把预算全花在判断上
@@ -1338,7 +1342,7 @@ class Advisor:
             for (landlord, teammate), accepted in zip(batch, keep):
                 if not accepted:
                     continue
-                if played >= games or time.perf_counter() > deadline:
+                if played * len(seats) >= games or time.perf_counter() > deadline:
                     break
                 played += 1
                 # 我坐地主上家:上家是我、下家是队友;我坐下家:下家是我、上家是队友。地主和队友的牌两边一样。
@@ -1355,11 +1359,12 @@ class Advisor:
                     while not env.game_over:
                         env.step()
                     wins[s] += bool(env.num_wins["farmer"])
-        if played < min_games:
-            # 预算内采纳不到下限:不知道赢面,按不加倍处理
-            return 0.0, played
+        if played == 0:
+            return 0.0, 0
         rates = {s: wins[s] / played for s in seats}
-        return min(rates.values()), played
+        # 每个采纳的牌局两个农民座位各打一局:games 报「局数」而不是「副数」。
+        # 局数不到 ROLLOUT_MIN_GAMES 时也报真实赢面,由端点按 games 决定不加倍;不能把「不知道」写成 0 赢面。
+        return min(rates.values()), played * len(seats)
 
     def likelihood(self, history, me, auction=None):
         """给 endgame.best 的似然回调:按两家对手最近 [LIKELIHOOD_MOVES] 手不是不出的出牌,判断一种分法像不像他们当时会这么出。
@@ -1487,7 +1492,13 @@ def handler(advisor):
                 if self.path == "/double":
                     seat = body["seat"]
                     win, games = advisor.double(seat, body["hand"], body["bottom"])
-                    return self.reply(200, {"double": should_double(win, seat), "super": should_super(win, seat),
+                    # 局数不到下限时赢面只是打过的几局的比率,可能是运气:一律按不加倍 / 不超级加倍。
+                    # 地主总能打满下限;农民的条件抽样在极端强手 / 机器忙时会不到 40 局。
+                    # seat="farmer" 每副两个座位各打一局:要 40 副才是每个座位 40 局,所以门槛是 2 倍。
+                    need = 2 * ROLLOUT_MIN_GAMES if seat == "farmer" else ROLLOUT_MIN_GAMES
+                    enough = games >= need
+                    return self.reply(200, {"double": enough and should_double(win, seat),
+                                            "super": enough and should_super(win, seat),
                                             "win": round(win, 2), "games": games, "ms": ms()}, body)
                 report = {}
                 move = advisor.act(body["seat"], body["hand"], body.get("bottom", []), body.get("history", []),
