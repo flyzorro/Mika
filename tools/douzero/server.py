@@ -176,6 +176,16 @@ LIKELIHOOD_MOVES = 2
 # 0.2(只看最近一手时的温度)这一手仍是 9 9;取最近两手后 0.03 以下才翻成王炸,0.05 又回到 9 9。
 # 0.02 时王炸的加权权重是 9 9 的 6.6 倍、不出的 16 倍;0.01 更极端,0.03 只剩 2 倍。取 0.02 留余量。
 LIKELIHOOD_TEMPERATURE = 0.02
+# 残局分法似然的下限:软证据(出牌历史的 DouZero 动作概率、叫分 / 加倍)把一种分法相对最可能的分法压低时,
+# 权重不少于这个比例,不再往 0 压。硬约束(能一手走完却不出)仍是 0。
+# 2026-11-19 10:53:07 普通场,我是地主上家(农民),手 14 张,地主剩 4 张、队友 5 张,看不见的是
+# 4 4 9 J A A 2 2 BJ;地主之前已经把 2 2 2 2 拆开打过两次单张 2。温度 0.02 下 DouZero 给
+# 「地主还拿着另外两张 2」的 12 种分法压到 0~1.7e-5,残局里炸弹 5 5 5 5 的赢面 99% 全是假的,
+# 按 ×2 一算就炸了队友,翻倍输掉。只有最近两手出牌、模型给的概率远没有这么锋利,不能让软证据把
+# 一整类分法判死。取 0.02:2026-11-19 在 48 副配对自对弈上扫 0.02 / 0.05,
+# 配对差每副平均 −0.042(95% CI −0.123~+0.040)对 +0.021(−0.020~+0.062),两个下限分不出好坏;
+# 取更小的 0.02(最可能的分法最多 50 倍于最不像的分法),离原来不加下限最近,又已经能把 1e-5 那一档拉回来。
+LIKELIHOOD_FLOOR = 0.02
 # 叫分 / 加倍先验:每家牌力 s = 用自己座位的 DouZero 模型给开局整手牌(手里剩的 + 出过的,地主含底牌)
 # 打分,取所有合法出牌里的最高分。每条已知证据乘一个 logistic 似然因子:P = sigmoid((s - T) / AUCTION_TAU)。
 # 2026-11-17 用 calibrate_auction.py 随机发 4000 副牌(seed 20261117,地主 4000 手、两个农民座位共 8000 手)
@@ -823,7 +833,7 @@ class Agent:
             if left_s > 0 else None
         allowed = None
         if solved is not None:
-            wins, total = solved
+            wins, total, plain_wins, plain_total = solved
             score = {tuple(sorted(a)): float(values[i]) for i, a in enumerate(infoset.legal_actions)}
             # 残局也按金额比:每手的值 = Σ 分法权重 ×(赢 +m / 输 −m),炸弹 / 王炸 m=2,其它 m=1。
             # wins 是赢的分法权重,输的是 total − wins;一手都赢不了时炸弹值 −2×总权重 < 非炸弹 −1×总权重,
@@ -834,9 +844,20 @@ class Agent:
                 amount[m] = (2 if is_bomb(m) else 1) * (2 * weight - total)
             top = max(amount.values())
             allowed = {m for m in score if amount[m] == top}
+            picked = max(allowed, key=score.get)
+            # 炸弹 / 王炸的 ×2 是拿「猜牌猜出来的赢面」翻倍:不信猜牌、只按摆法数算时它也得
+            # 不比非炸弹里金额最高的一手差,不然就是不炸,改出那一手。×2 只会放大估值误差。
+            if is_bomb(picked):
+                plain = {m: (2 if is_bomb(m) else 1) * (2 * plain_wins.get(m, 0) - plain_total)
+                         for m in score}
+                alt = max((m for m in score if not is_bomb(m)), key=lambda m: amount[m], default=None)
+                if alt is not None and plain[picked] < plain[alt]:
+                    if report is not None:
+                        report["bomb_veto"] = move_label(picked)
+                    picked = alt
+                    allowed = {m for m in score if amount[m] == amount[alt]}
             if tuple(sorted(move)) not in allowed:
-                move = list(max(allowed, key=score.get))
-                return self.swap_high_kickers(infoset, move, ok=lambda m: tuple(sorted(m)) in allowed)
+                return self.swap_high_kickers(infoset, list(picked), ok=lambda m: tuple(sorted(m)) in allowed)
         mate = {"landlord_down": "landlord_up", "landlord_up": "landlord_down"}.get(infoset.player_position)
         if solved is None:
             # 剩的牌多、搜不动:自己能两手出完、第一手很难被压时,先出那手再出完(DouZero 偶尔先出一张会被王压的单张)
@@ -1348,6 +1369,8 @@ class Advisor:
         再相加。只看最近一手不够:下家倒数第二手 10 10 10 + Q 才是「他手里没有 4/9 这种零散小牌」的证据。
         用 float64 在对数空间算,再减去所有分法里最大的 log 似然后 exp:相对权重不变,但对手真出过一手
         模型觉得极差的牌时不会像 float32 概率相乘那样下溢成 0(那会让 total=0、残局搜索整个退回 DouZero)。
+        软证据压出来的相对权重有下限 [LIKELIHOOD_FLOOR]:温度 0.02 下动作概率能差好几个数量级,
+        可只有最近两手出牌,不能让「猜牌」把一整类分法判死(见 LIKELIHOOD_FLOOR 的注释)。
         某个观测出法在这种分法的合法出牌里找不到时(正常历史不该发生)这种分法权重记 0;
         如果所有分法都这样(全 -inf),这次退回不加权,不能把搜索关掉。
         一次把同一手的全部分法攒成一批前向;到 [deadline] 就抛 Timeout,best 退回不加权的摆法数。
@@ -1420,7 +1443,9 @@ class Advisor:
             if not finite:
                 return [1.0] * len(splits_hands)
             top = max(finite)
-            return [math.exp(x - top) if x != float("-inf") else 0.0 for x in logs]
+            # 软证据的权重下限:LIKELIHOOD_FLOOR 以下不再往下压。对数空间里就是
+            # log 权重 >= log(LIKELIHOOD_FLOOR) - log 最大值;硬约束(-inf)仍是 0。
+            return [max(math.exp(x - top), LIKELIHOOD_FLOOR) if x != float("-inf") else 0.0 for x in logs]
 
         return callback
 

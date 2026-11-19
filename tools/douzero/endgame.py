@@ -184,11 +184,14 @@ def splits(unknown, a, na, b, nb):
 
 
 def best(infoset, budget=1.5, likelihood=None):
-    """残局时每一手能出的牌在多少种分法下能赢:{move: 赢的摆法数}, 总摆法数。不在残局、算不完为 None。
+    """残局时每一手能出的牌在多少种分法下能赢,两种口径一起给:
+    (按 [likelihood] 加权的 {move: 赢的权重}, 总权重, 只按摆法数的 {move: 赢的摆法数}, 总摆法数)。
+    不在残局、算不完为 None。
 
     [likelihood] 可选: `likelihood(splits, deadline)` 给每种分法一个权重(和摆法数相乘), splits 是
     [{座位: 这种分法下此刻剩的牌}], 返回同样长的浮点列表。默认 None 就是原来的摆法数权重。
     回调要在 [deadline] 前算完, 来不及就抛 Timeout, 这一次退回不加权的摆法数。
+    两种口径在同一遍搜索里一起累加:不加权的摆法数是不信「猜牌」时炸弹敢不敢翻倍的依据(见 Agent.act)。
     """
     me = infoset.player_position
     left = infoset.num_cards_left_dict
@@ -216,20 +219,24 @@ def best(infoset, budget=1.5, likelihood=None):
         likes = [1.0] * len(splits_hands)
     solver = Solver(deadline)
     wins = Counter()
+    plain = Counter()
     total = 0.0
+    plain_total = 0
     try:
-        for ((ha, hb), weight), like in zip(ways.items(), likes):
+        for ((ha, hb), count), like in zip(ways.items(), likes):
             hands = {me: hand, others[0]: ha, others[1]: hb}
-            weight *= like
+            weight = count * like
+            plain_total += count
             total += weight
             for action in infoset.legal_actions:
                 move = tuple(sorted(action))
                 landlord = solver.after(hands, me, rival, owner, move)
                 if landlord == (me == "landlord"):
                     wins[move] += weight
+                    plain[move] += count
     except Timeout:
         return None
-    return wins, total
+    return wins, total, plain, plain_total
 
 
 # 两手出完:第一手被压的机会不超过这么多才换;把未知牌随机分给两家这么多次来估

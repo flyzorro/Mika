@@ -446,6 +446,126 @@ class EndgameUnknownTest(unittest.TestCase):
         self.assertLess(time.monotonic() - started, ACT_TOTAL_BUDGET_S)
 
 
+class BombRestraintTest(unittest.TestCase):
+    """残局不拿「猜牌猜出来的赢面」当翻倍理由:炸弹 / 王炸在加权金额上最高,可不信猜牌、
+    只按摆法数算时还不如非炸弹,就不炸。按公开入口 ROLLOUT_ADVISOR.act 测两处实机请求。
+
+    2026-11-19 10:53:07 普通场,我是地主上家(农民),手 14 张,地主剩 4 张、队友剩 5 张;看不见的 9 张是
+    4 4 9 J A A 2 2 BJ,地主之前已经把 2 2 2 2 拆开打过两次单张 2。残局按加权赢面 99% 出炸弹 5 5 5 5:
+    total 18.725、不出 wins 18.7249、5 5 5 5 wins 18.563,金额 2×(2×18.563−18.725)≈36.8 > 18.7,
+    于是炸了队友(地主手里正是 2 2),翻倍输掉。温度 0.02 的 softmax 把「地主还拿着另外两张 2」的分法
+    压到 0~1.7e-5,赢面 99% 是假的。改后:似然有下限,炸弹还要过「只按摆法数」这一关(这边 87/126 对
+    不出 120/126),于是不出。
+    """
+
+    # 10:53:07 的原始请求(照抄服务日志):炸弹这一手。
+    BOMB = dict(seat="landlord_up",
+                hand=["K", "8", "8", "7", "7", "7", "6", "5", "5", "5", "5", "4", "4", "3"],
+                bottom=[],
+                history=[["3", "3"], ["6", "6"], [], ["A", "A"], [], [], ["10", "10", "9", "9", "8", "8"],
+                         ["Q", "Q", "J", "J", "10", "10"], [], [], ["3"], ["Q"], ["K"], [], [], ["6"], ["7"],
+                         ["9"], ["J"], ["K"], [], ["2"], [], [], ["Q"], [], ["K"], ["2"], ["SJ"]],
+                auction={"double": {"landlord": False, "landlord_down": False}})
+
+    # 10:53:14 的原始请求:炸弹之后我领出。改前残局按加权的 99% 领出 8 8,地主 2 2 接住走完;
+    # 改后 6 7 7 7 / 3 7 7 7 的金额 19.018 高过 8 8 的 18.918。不把具体出法钉死,只要求别再把 8 8
+    # 送进 2 2(那 0.1 的差就是猜牌猜出来的)。
+    FOLLOW_UP = dict(seat="landlord_up",
+                     hand=["K", "8", "8", "7", "7", "7", "6", "4", "4", "3"],
+                     bottom=[],
+                     history=[["3", "3"], ["6", "6"], [], ["A", "A"], [], [], ["10", "10", "9", "9", "8", "8"],
+                              ["Q", "Q", "J", "J", "10", "10"], [], [], ["3"], ["Q"], ["K"], [], [], ["6"], ["7"],
+                              ["9"], ["J"], ["K"], [], ["2"], [], [], ["Q"], [], ["K"], ["2"], ["SJ"],
+                              ["5", "5", "5", "5"], [], []],
+                     auction={"double": {"landlord": False, "landlord_down": False}})
+
+    def act(self, position, report=None):
+        return ROLLOUT_ADVISOR.act(position["seat"], position["hand"], position["bottom"],
+                                   position["history"], report,
+                                   auction=parse_auction(position.get("auction")))
+
+    def test_the_bomb_is_not_played_on_guessed_splits(self):
+        report = {}
+        started = time.monotonic()
+        move = self.act(self.BOMB, report)
+        self.assertEqual([], move)
+        self.assertEqual("5 5 5 5", report.get("bomb_veto"))
+        self.assertLess(time.monotonic() - started, ACT_TOTAL_BUDGET_S)
+
+    def test_the_next_lead_does_not_walk_into_the_two_twos(self):
+        report = {}
+        move = self.act(self.FOLLOW_UP, report)
+        self.assertNotEqual(["8", "8"], names(move))
+
+
+class BombVetoRuleTest(unittest.TestCase):
+    """只按摆法数的那一关:加权金额最高的炸弹,不加权时不如非炸弹就不炸,改出非炸弹里加权金额最高的;
+    不加权时也不差就照旧炸。用打桩的 endgame.best 单独测这条规则。"""
+
+    def play(self, bomb_wins, pass_wins, bomb_plain, pass_plain):
+        import endgame
+        import torch
+        total = 100
+        info = SimpleNamespace(
+            player_position="landlord_down",
+            player_hand_cards=[3, 3, 3, 3, 4],
+            legal_actions=[[3, 3, 3, 3], []],
+            num_cards_left_dict={s: 5 for s in SEATS},
+            three_landlord_cards=[], card_play_action_seq=[], last_move=[], last_two_moves=[[], []],
+            last_move_dict={s: [] for s in SEATS}, played_cards={s: [] for s in SEATS},
+            bomb_num=0, last_pid=None, all_handcards=None)
+        agent = ADVISOR.agents["landlord_down"]
+        # DouZero 永远更想炸:炸弹 9 分、不出 1 分;选哪手只由残局搜索的金额决定
+        values = torch.tensor([9.0, 1.0])
+        wins = {(3, 3, 3, 3): bomb_wins * total, (): pass_wins * total}
+        plain = {(3, 3, 3, 3): bomb_plain * total, (): pass_plain * total}
+        report = {}
+        with mock.patch.object(agent, "values", return_value=values), \
+                mock.patch.object(endgame, "best", return_value=(wins, total, plain, total)):
+            move = agent.act(info, report)
+        return names(move), report
+
+    def test_a_bomb_that_only_wins_on_guessed_splits_is_dropped(self):
+        # 加权:炸弹 0.9 对不出 0.5,炸弹金额 2×(2×0.9−1) = 1.6 最高;只按摆法数炸弹 40% 对不出 60%,
+        # 炸弹金额 2×(2×0.4−1) = −0.4 < 不出 0.2,不炸
+        move, report = self.play(0.9, 0.5, 0.4, 0.6)
+        self.assertEqual([], move)
+        self.assertEqual("3 3 3 3", report.get("bomb_veto"))
+
+    def test_a_bomb_that_also_wins_without_guessing_is_kept(self):
+        # 只按摆法数炸弹 0.7 对不出 0.6,炸弹金额 0.8 > 不出 0.2:炸弹本身站得住,照旧炸
+        move, report = self.play(0.9, 0.5, 0.7, 0.6)
+        self.assertEqual(["3", "3", "3", "3"], move)
+        self.assertNotIn("bomb_veto", report)
+
+
+class LikelihoodFloorTest(unittest.TestCase):
+    """似然下限:软证据把一种分法压到最可能分法的 LIKELIHOOD_FLOOR 以下时按下限算,不再往 0 压。
+
+    用 10:53:07 那一手:48 种分法(126 种摆法),温度 0.02 下「地主还拿着两张 2」被压到 0~1.7e-5;
+    加下限后每种分法的相对权重都在 [LIKELIHOOD_FLOOR, 1] 里。硬约束(能一手走完却不出)仍记 0。
+    """
+
+    def splits(self):
+        import endgame
+        import server
+        body = BombRestraintTest.BOMB
+        hand = cards(body["hand"])
+        played = [c for m in body["history"] for c in cards(m)]
+        unknown = sorted(server.minus(DECK, hand + played))
+        ways = endgame.splits(unknown, "landlord", 4, "landlord_down", 5)
+        return [{"landlord_up": tuple(hand), "landlord": ha, "landlord_down": hb} for (ha, hb) in ways]
+
+    def test_soft_evidence_does_not_push_a_split_to_near_zero(self):
+        import server
+        history = [cards(m) for m in BombRestraintTest.BOMB["history"]]
+        callback = ROLLOUT_ADVISOR.likelihood(history, "landlord_up", None)
+        likes = callback(self.splits(), time.monotonic() + 5)
+        self.assertEqual(1.0, max(likes))
+        self.assertGreaterEqual(min(likes), server.LIKELIHOOD_FLOOR)
+        self.assertEqual(server.LIKELIHOOD_FLOOR, min(likes))
+
+
 class MinPlaysTest(unittest.TestCase):
     """出完一手以后还剩几手:自己每次都先出,把牌拆成最少的几手合规牌(同 DouZero 的牌型,大小王不当带牌)。"""
 
@@ -1743,7 +1863,7 @@ class LostEndgameRuleTest(unittest.TestCase):
         values = torch.tensor([9.0, 1.0])
         wins = {(3, 3, 3, 3): bomb_wins * total, (): pass_wins * total}
         with mock.patch.object(agent, "values", return_value=values), \
-                mock.patch.object(endgame, "best", return_value=(wins, total)):
+                mock.patch.object(endgame, "best", return_value=(wins, total, wins, total)):
             return names(agent.act(info))
 
     def test_a_zero_win_endgame_drops_the_bomb(self):
@@ -1762,7 +1882,7 @@ class LostEndgameRuleTest(unittest.TestCase):
         values = torch.tensor([9.0, 1.0, 2.0, 3.0])
         zero = {(3, 3, 3, 3): 0, (4,): 0, (5,): 0, (6,): 0}
         with mock.patch.object(agent, "values", return_value=values), \
-                mock.patch.object(endgame, "best", return_value=(zero, 1)):
+                mock.patch.object(endgame, "best", return_value=(zero, 1, zero, 1)):
             move = agent.act(info)
         self.assertEqual([6], move)
 
