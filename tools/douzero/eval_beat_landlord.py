@@ -213,8 +213,9 @@ def main():
     summary = print_summary(rows)
     firings = [f for r in rows for f in r["firings"]]
     print(f"触发决策点 {len(firings)} 个(存进 JSON,可用更多发牌深算)")
-    json.dump({"args": vars(args), "rows": rows, "summary": summary, "firings": firings},
-              open(args.out, "w"), ensure_ascii=False, indent=1)
+    with open(args.out, "w") as out:
+        json.dump({"args": vars(args), "rows": rows, "summary": summary, "firings": firings},
+                  out, ensure_ascii=False, indent=1)
     print(f"\n{len(rows)} 副 -> {args.out}, {time.time() - started:.0f}s")
 
 

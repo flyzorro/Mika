@@ -11,7 +11,7 @@ from douzero.env.game import GameEnv
 from server import (
     ACT_BUDGET_SAFETY_S, ACT_ENDGAME_BUDGET_S, ACT_ROLLOUT_BUDGET_S, ACT_ROLLOUT_MIN_S, ACT_TOTAL_BUDGET_S, DECK,
     DOUBLE_WIN, FARMER_DOUBLE_WIN, NAMES, ROLLOUT_MIN_GAMES, SEATS, SUPER_DOUBLE_WIN, Advisor, Mismatch, WEIGHTS,
-    bid_level, cards, fewer_plays, handler, move_label, resolve, should_double,
+    bid_level, cards, fewer_plays, handler, move_label, parse_auction, resolve, should_double,
 )
 
 # 造局面时关掉「接近时现场模拟」:随机走一步有近一半的顶两手分差在 0.1 以内,开着会让原有测试慢到不可用。
@@ -1097,31 +1097,38 @@ class BeatLandlordTest(unittest.TestCase):
     局数 / 平均得分 / 配对差都可控,机器快慢不会让测试偶尔变绿。"""
 
     # 2026-11-18 22:32:33 普通场:我是地主上家(农民),手牌 5 5 6 7 7 7 7 8 A A;地主出 8 8、队友不出。
-    # 回复 71 局:不出 0.85 / A A 0.80、平均得分 1.239 / 1.099,差 0.14 在 1 个标准误差(约 0.19)内,当时回了不出。
-    # 地主接着走 AKQJ109,我们只能炸 7777,炸弹让输的翻倍;按可见信息明牌算到底 A A 才赢。
+    # 请求原样取自实机 douzero 服务打印的请求 / 回复日志(ddz-hint-lifted 那个会话的 advisor.log 第 541 行,
+    # t=22:32:33),带 auction:地主、队友都没加倍。回复 71 局:不出 0.85 / A A 0.80、平均得分 1.239 / 1.099,
+    # 差 0.14 在 1 个标准误差(约 0.19)内,当时回了不出。地主接着走 AKQJ109,我们只能炸 7777,
+    # 炸弹让输的翻倍;按可见信息明牌算到底 A A 才赢。重放这条完整请求(真代码、不 stub)5 次都回 A A;
+    # 同样 5 次去掉 auction 就都回不出,所以 auction 必须留在 fixture 里。
     LOGGED = dict(seat="landlord_up",
                   hand=["A", "A", "8", "7", "7", "7", "7", "6", "5", "5"],
                   bottom=["SJ", "4", "6"],
                   history=[["5"], ["9"], ["K"], [], [], ["9"], ["A"], [], ["2"], [], [], ["10", "10"], [],
                            ["J", "J"], ["Q", "Q"], ["K", "K"], ["2", "2"], [], [], ["3", "3"], [], ["4", "4"],
-                           ["6", "6"], [], ["8", "8"], []])
+                           ["6", "6"], [], ["8", "8"], []],
+                  auction={"double": {"landlord": False, "landlord_down": False}})
+
+    # 同一手但把一张 7 换成 J:候选里没有炸弹(A A 照样能接 8 8),用来单独测「差太大」。
+    NO_BOMB = dict(LOGGED, hand=["A", "A", "8", "7", "7", "7", "6", "5", "5", "J"])
 
     def act(self, position, report=None):
         return ROLLOUT_ADVISOR.act(position["seat"], position["hand"], position["bottom"],
-                                   position["history"], report)
+                                   position["history"], report,
+                                   auction=parse_auction(position.get("auction")))
 
     @staticmethod
-    def stub_rollout(means, games=71, gap_sd=1.6):
+    def stub_rollout(means, games=71, gap_sd=1.6, finalists=("pass", "7 7 7 7")):
         """喂固定的模拟结果:每手 [games] 局;配对差的标准差 [gap_sd]。
 
-        [means] 是 {标签: 平均得分}。候选固定是 pass / A A / 7 7 7 7,决赛是 pass 和 7 7 7 7
-        (和实机那一手一样,A A 在唯一一轮淘汰时排在后面)。配对差的标准误差 = gap_sd / sqrt(games)。
+        [means] 是 {标签: 平均得分},[finalists] 是最后还活着的两手(和实机那一手一样,淘汰轮会把其余候选筛掉)。
+        配对差的标准误差 = gap_sd / sqrt(games)。
         """
         def stub(keys, own, scores, deal, play, budget, cap=None, pairs=None, anchor=None, **kwargs):
             by_label = {move_label(k): k for k in keys}
-            pass_key = by_label["pass"]
-            finalists = [pass_key, by_label["7 7 7 7"]]
-            wins = {pass_key: 60, by_label["A A"]: 57, by_label["7 7 7 7"]: 61}
+            alive = [by_label[label] for label in finalists]
+            wins = {k: int(round((means[move_label(k)] + 1) / 2 * games)) for k in keys}
             played = {k: games for k in keys}
             earned = {k: means[move_label(k)] * games for k in keys}
             if pairs is not None:
@@ -1131,7 +1138,7 @@ class BeatLandlordTest(unittest.TestCase):
                         continue
                     gap = means[move_label(k)] - means[move_label(base)]
                     pairs[k] = [gap * games, (gap * gap + gap_sd * gap_sd) * games, games]
-            return wins, earned, played, [[list(finalists), games]], finalists
+            return wins, earned, played, [[list(alive), games]], alive
         return stub
 
     def test_the_logged_farmer_beats_the_landlord_when_the_gap_is_noise(self):
@@ -1146,12 +1153,14 @@ class BeatLandlordTest(unittest.TestCase):
         self.assertEqual("A A", rollout.get("beat"))
 
     def test_a_gap_bigger_than_the_standard_error_keeps_pass(self):
+        # 候选里只有 pass 和 A A(没有炸弹):A A 差 0.239,超过 1 个标准误差 0.19,不换
         report = {}
-        stub = self.stub_rollout({"pass": 1.239, "A A": 1.000, "7 7 7 7": 1.239})
+        stub = self.stub_rollout({"pass": 1.239, "A": 1.000, "A A": 1.000}, finalists=("pass", "A A"))
         with mock.patch("server.successive_halving", stub):
-            move = self.act(self.LOGGED, report)
+            move = self.act(self.NO_BOMB, report)
         self.assertEqual([], move)
         self.assertNotIn("beat", report["rollout"])
+        self.assertNotIn("7 7 7 7", report["rollout"]["rates"], "这一手不该有炸弹候选")
 
     def test_a_bomb_is_not_treated_as_a_beat(self):
         # A A 差得开、只剩炸弹和不出差不多:炸弹翻倍,不能拿来接地主,继续不出
@@ -1161,6 +1170,7 @@ class BeatLandlordTest(unittest.TestCase):
             move = self.act(self.LOGGED, report)
         self.assertEqual([], move)
         self.assertNotIn("beat", report["rollout"])
+        self.assertEqual(1.239, report["rollout"]["avg_score"]["7 7 7 7"], "炸弹和不出分一样也照样不接")
 
     def test_only_plays_against_the_landlord_are_forced(self):
         # 桌上要是队友的牌,或者我当地主,这条都不生效
