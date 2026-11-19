@@ -1003,7 +1003,7 @@ class CloseCallRolloutTest(unittest.TestCase):
         self.act(self.SECOND, report)
         rollout = report.get("rollout")
         self.assertIsNotNone(rollout, "顶两手只差 0.011,应该现场模拟")
-        self.assertEqual(50, rollout["min_games"])
+        self.assertEqual(30, rollout["min_games"])
 
     def test_a_clear_best_move_does_not_roll_out(self):
         report = {}
