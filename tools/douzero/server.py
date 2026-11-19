@@ -935,25 +935,31 @@ class Agent:
         return self.swap_high_kickers(infoset, move, ok)
 
     def swap_high_kickers(self, infoset, move, ok):
-        """三带一/飞机带单的带牌里有 A 或 2 时,换成手里最小的零散小单张:带牌只是凑数,留着 A/2 当控制牌。
+        """三带一/飞机带单的带牌比手里最小的零散小单张大,或这张带牌在手里不止一张(拆了对子 / 三条)时,
+        换成那张小单张:带牌只是凑数,留着大牌和整副对子当控制牌。
 
         2026-11-16 10:04 实机:地主出 10 10 10 + 7,我 K K K + A;丢掉的 A 正是后来被 2 2 2 + J 压住的关键。
+        2026-11-19 用户实机观察:打三张总带一个大牌,不只 A/2。单张王(20/30)不换。
         没有能换的小牌、换完不合规、或者残局搜索认为原来那手更好时,保持 DouZero 的选择。
         """
         if not move or len(move) == len(infoset.player_hand_cards):
             return move
-        high = [r for r in single_kickers(move) if r in (RANKS["A"], RANKS["2"])]
-        if not high:
-            return move
         hand = infoset.player_hand_cards
+        in_hand = Counter(hand)
         rest = list(hand)
         for r in move:
             rest.remove(r)
         swapped = list(move)
-        for rank in sorted(high):
-            pick = next((c for c in sorted(set(rest)) if loose_single(c, hand, rest)), None)
+        for rank in sorted(single_kickers(move)):
+            if rank >= RANKS["SJ"]:
+                continue
+            pick = next((c for c in sorted(rest) if loose_single(c, hand, rest)), None)
             if pick is None:
-                return move
+                if in_hand[rank] > 1 or rank in (RANKS["A"], RANKS["2"]):
+                    return move
+                continue
+            if rank not in (RANKS["A"], RANKS["2"]) and in_hand[rank] == 1 and rank <= pick:
+                continue
             rest.remove(pick)
             swapped.remove(rank)
             swapped.append(pick)

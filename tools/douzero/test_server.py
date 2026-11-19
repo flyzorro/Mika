@@ -321,6 +321,81 @@ class KickerTest(unittest.TestCase):
         self.assertEqual(["K", "K", "K", "A"], [NAMES[c] for c in ADVISOR.agents["landlord_up"].act(info)])
 
 
+class KickerChoiceTest(unittest.TestCase):
+    """2026-11-19 实机五手三带一:带牌比手里最小的零散单张大,或者拆了对子 / 三条,就换成最小的零散单张,不只 A/2。
+
+    DouZero 自己的出牌用打桩的 values 钉成当时回复的那手(实机是现场模拟选的,重跑不保证一样);
+    act 末尾的换带牌规则照旧,按公开入口 Advisor.act 测。
+    """
+
+    def advise(self, seat, hand, bottom, history, chosen):
+        import torch
+        agent = ADVISOR.agents[seat]
+        target = sorted(cards(chosen))
+
+        def values(info):
+            scores = torch.zeros(len(info.legal_actions))
+            for i, action in enumerate(info.legal_actions):
+                if sorted(action) == target:
+                    scores[i] = 100.0
+            return scores
+
+        with mock.patch.object(agent, "values", values):
+            return names(ADVISOR.act(seat, hand, bottom, history))
+
+    def test_a_q_kicker_is_replaced_with_the_loose_5(self):
+        # 12:06:46 地主:JJJ+Q,Q 是单张、比手里最小的散牌 5 大
+        hand = ["BJ", "SJ", "2", "2", "A", "A", "A", "Q", "J", "J", "J",
+                "10", "10", "10", "9", "9", "8", "7", "6", "5"]
+        self.assertEqual(sorted(["J", "J", "J", "5"]),
+                         sorted(self.advise("landlord", hand, [], [], ["J", "J", "J", "Q"])))
+
+    def test_a_k_kicker_is_replaced_with_the_loose_8(self):
+        # 13:35:08 我是地主下家:AAA+K,K 是单张、比手里最小的散牌 8 大
+        hand = ["2", "A", "A", "A", "K", "Q", "Q", "10", "9", "9", "8", "7", "7", "7", "7", "4", "4"]
+        history = [["Q", "Q", "J", "J", "10", "10", "9", "9", "8", "8"], [], [], ["6", "6", "6", "3"]]
+        self.assertEqual(sorted(["A", "A", "A", "8"]),
+                         sorted(self.advise("landlord_down", hand, [], history, ["K", "A", "A", "A"])))
+
+    def test_a_10_kicker_from_a_pair_is_replaced_with_the_loose_4(self):
+        # 13:14:37 地主:555+10,10 在手里是一对,换成最小的散牌 4
+        hand = ["SJ", "2", "2", "A", "A", "K", "Q", "J", "10", "10",
+                "9", "8", "8", "8", "6", "6", "5", "5", "5", "4"]
+        self.assertEqual(sorted(["5", "5", "5", "4"]),
+                         sorted(self.advise("landlord", hand, [], [], ["5", "5", "5", "10"])))
+
+    def test_a_10_kicker_from_a_pair_is_replaced_with_the_loose_3(self):
+        # 15:37:58 我是地主上家:444+10,10 在手里是一对,换成最小的散牌 3
+        hand = ["BJ", "K", "K", "Q", "J", "10", "10", "8", "7", "6", "6",
+                "5", "5", "4", "4", "4", "3"]
+        bottom = ["6", "10", "A"]
+        history = [["Q", "J", "10", "9", "8", "7", "6"], [], [], ["3", "3", "3", "7"], []]
+        self.assertEqual(sorted(["4", "4", "4", "3"]),
+                         sorted(self.advise("landlord_up", hand, bottom, history, ["4", "4", "4", "10"])))
+
+    def test_a_paired_9_kicker_with_no_loose_card_is_kept(self):
+        # 12:06:59 地主:101010+9。9 在手里是一对,但 5~9 是五连顺,拿掉哪张都拆不出顺子:
+        # 没有可换的零散单张,保持原样(反例)
+        hand = ["BJ", "SJ", "2", "2", "A", "A", "A", "10", "10", "10", "9", "9", "8", "7", "6", "5"]
+        history = [["J", "J", "J", "Q"], [], []]
+        self.assertEqual(sorted(["9", "10", "10", "10"]),
+                         sorted(self.advise("landlord", hand, [], history, ["9", "10", "10", "10"])))
+
+    def test_a_paired_3_kicker_is_replaced_by_a_bigger_loose_4(self):
+        # 构造的局面:(b) 单独生效——带牌 3 是手里的一对、比最小的散牌 4 还小,仍换成 4,不拆对子
+        hand = ["3", "3", "4", "5", "5", "5", "6", "7", "8", "9", "10", "J",
+                "Q", "K", "A", "2", "K", "Q", "A", "2"]
+        self.assertEqual(sorted(["5", "5", "5", "4"]),
+                         sorted(self.advise("landlord", hand, [], [], ["5", "5", "5", "3"])))
+
+    def test_a_plane_replaces_both_single_kickers_in_order(self):
+        # 构造的局面:飞机带单 333444+QK,两张带牌都换成最小的零散单张,依次是 5、6
+        hand = ["3", "3", "3", "4", "4", "4", "5", "6", "7", "8", "9", "10",
+                "J", "Q", "K", "A", "2", "2", "2", "A"]
+        self.assertEqual(sorted(["3", "3", "3", "4", "4", "4", "5", "6"]),
+                         sorted(self.advise("landlord", hand, [], [], ["3", "3", "3", "4", "4", "4", "Q", "K"])))
+
+
 class EndgameTest(unittest.TestCase):
     def test_the_search_finds_the_forced_win_douzero_missed(self):
         # 地主只剩一张(最大到 J)、我小王是场上最大:小王接过来,再出对子、A、Q、8 一路走完
