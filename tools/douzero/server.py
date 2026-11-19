@@ -52,6 +52,7 @@ from douzero.env.game import GameEnv
 # 用 -I 起服务时脚本所在目录不在 sys.path 里:残局搜索和服务放在一起
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import endgame  # noqa: E402
+from endgame import is_bomb  # noqa: E402
 
 SEATS = ["landlord", "landlord_down", "landlord_up"]
 RANKS = {"3": 3, "4": 4, "5": 5, "6": 6, "7": 7, "8": 8, "9": 9, "10": 10, "J": 11, "Q": 12, "K": 13,
@@ -159,6 +160,12 @@ ACT_ROLLOUT_MIN_S = 0.8
 # 可明牌求解只有 6 6 能赢。给 2.5 秒,比实测最慢的 1.84 秒还多 0.66 秒;扣掉搜索,剩下的 1.0 秒还在
 # ACT_ROLLOUT_MIN_S 之上,现场模拟不会被整个跳过。
 ACT_ENDGAME_BUDGET_S = 2.5
+# 两手出完捷径要盖掉 DouZero 时,DouZero 首选比捷径那手高出这么多分就不盖,走原来的流程。
+# 2026-11-19 12:13:20 精英场那手(DouZero 7 9 9 9 +2.282、捷径 Q Q Q Q 只有 +1.335,差 0.95)就是这么被盖掉的。
+# 取 0.5:比 KEEP_MARGIN / CLOSE_MARGIN(0.05 / 0.1)大得多,只拦「DouZero 明显更看好」的情况。
+# 按 eval_finish_two.py 的配对自对弈 210 副(主角地主 / 农民,改前 vs 改后带这个门槛)定:
+# 配对差总额 +27、每副 +0.129(95% CI −0.009~+0.266),没亏;捷径触发 88 -> 90 次,没有挡掉有用的捷径。
+SHORTCUT_MARGIN = 0.5
 # 残局分法似然:每家对手取最近 [LIKELIHOOD_MOVES] 手不是不出的出牌,各手概率相乘。取 2 是因为
 # 2026-11-16 20:51:41 土豪场那一手,下家倒数第二手 10 10 10 + Q:如果手里还留着 4、9 这种低单张,
 # 正常会拿小牌当带牌而不是 Q。只看最近一手 7 7 看不出这点,两手里的三带一才把「剩零散小牌」的分法压下去。
@@ -345,11 +352,6 @@ def splits_bomb(move):
     拆开就少一次 ×2;四张一起出、王炸、不出都不算。"""
     return md.get_move_type(sorted(move))["type"] != md.TYPE_4_BOMB \
         and any(n == 4 for n in Counter(move).values())
-
-
-def is_bomb(move):
-    """这手是不是炸弹或王炸(整手四张一起出 / 大小王一起出),不出不算。"""
-    return md.get_move_type(list(move))["type"] in (md.TYPE_4_BOMB, md.TYPE_5_KING_BOMB)
 
 
 def single_kickers(move):
@@ -841,16 +843,23 @@ class Agent:
             others = [p for p in endgame.SEATS if p != infoset.player_position]
             left = infoset.num_cards_left_dict
             rival = tuple(sorted(infoset.last_move)) if [] in infoset.legal_actions else ()
+            # 我是农民时,地主没出过的底牌一定还在他手里:先从看不见的牌里留出来,别让捷径按纯随机发牌估被压机会
+            kept = tuple((Counter(infoset.three_landlord_cards) & Counter(infoset.other_hand_cards)).elements()) \
+                if infoset.player_position != "landlord" else ()
             quick = endgame.finish_in_two(tuple(sorted(infoset.player_hand_cards)), infoset.legal_actions, rival,
                                           sorted(infoset.other_hand_cards), left[others[0]], left[others[1]],
-                                          deadline=deadline - ACT_BUDGET_SAFETY_S)
+                                          deadline=deadline - ACT_BUDGET_SAFETY_S, kept=kept)
             # 桌上那手是队友出的:捷径不能直接压他,把它和「不出」一起交给下面的现场模拟比;地主没有队友,照旧走捷径
             forced = None
             if quick is not None and tuple(sorted(move)) != quick[0]:
+                scores = {tuple(sorted(a)): float(values[i]) for i, a in enumerate(infoset.legal_actions)}
                 if mate and infoset.last_pid == mate and [] in infoset.legal_actions:
                     forced = [list(quick[0]), []]
                 elif splits_bomb(quick[0]) or splits_bomb(minus(infoset.player_hand_cards, quick[0])):
                     # 捷径把炸弹拆成四带二(或塞进别的牌型)会少一次 ×2:回到正常流程,让炸弹能单独炸出去
+                    pass
+                elif max(scores.values()) - scores.get(quick[0], float("-inf")) > SHORTCUT_MARGIN:
+                    # DouZero 首选比捷径那手高出一大截:分数差得开,捷径不该盖掉它,照原来的流程出
                     pass
                 else:
                     return list(quick[0])
