@@ -4,4 +4,3 @@ __pycache__/
 eval_endgame_weighting.json
 eval_beat_landlord.json
 eval_finish_two.json
-eval_bomb_restraint*.json

@@ -182,14 +182,10 @@ LIKELIHOOD_TEMPERATURE = 0.02
 # 4 4 9 J A A 2 2 BJ;地主之前已经把 2 2 2 2 拆开打过两次单张 2。温度 0.02 下 DouZero 给
 # 「地主还拿着另外两张 2」的 12 种分法压到 0~1.7e-5,残局里炸弹 5 5 5 5 的赢面 99% 全是假的,
 # 按 ×2 一算就炸了队友,翻倍输掉。只有最近两手出牌、模型给的概率远没有这么锋利,不能让软证据把
-# 一整类分法判死。取 0.02:2026-11-19 用 eval_bomb_restraint.py 在 48 副配对自对弈上扫 0.02 / 0.05,
+# 一整类分法判死。取 0.02:2026-11-19 在 48 副配对自对弈上扫 0.02 / 0.05,
 # 配对差每副平均 −0.042(95% CI −0.123~+0.040)对 +0.021(−0.020~+0.062),两个下限分不出好坏;
 # 取更小的 0.02(最可能的分法最多 50 倍于最不像的分法),离原来不加下限最近,又已经能把 1e-5 那一档拉回来。
 LIKELIHOOD_FLOOR = 0.02
-# 残局因为炸弹 / 王炸的 ×2 而选它(加权金额最高)时,还要求它在不信猜牌、只按摆法数算的金额下
-# 也不比非炸弹里金额最高的一手差;不满足就是不炸,改出那一手。炸弹 ×2 只是放大估值误差,
-# 不能拿「猜牌猜出来的赢面」当翻倍的理由。
-ENDGAME_BOMB_CHECK = True
 # 叫分 / 加倍先验:每家牌力 s = 用自己座位的 DouZero 模型给开局整手牌(手里剩的 + 出过的,地主含底牌)
 # 打分,取所有合法出牌里的最高分。每条已知证据乘一个 logistic 似然因子:P = sigmoid((s - T) / AUCTION_TAU)。
 # 2026-11-17 用 calibrate_auction.py 随机发 4000 副牌(seed 20261117,地主 4000 手、两个农民座位共 8000 手)
@@ -849,9 +845,9 @@ class Agent:
             top = max(amount.values())
             allowed = {m for m in score if amount[m] == top}
             picked = max(allowed, key=score.get)
-            # 炸弹 / 王炸的 ×2 是拿「猜牌猜出来的赢面」翻倍:不信猜牌、只按摆法数算时它也得比
-            # 非炸弹里最好的一手强,不然就是不炸(见 ENDGAME_BOMB_CHECK)
-            if ENDGAME_BOMB_CHECK and is_bomb(picked):
+            # 炸弹 / 王炸的 ×2 是拿「猜牌猜出来的赢面」翻倍:不信猜牌、只按摆法数算时它也得
+            # 不比非炸弹里金额最高的一手差,不然就是不炸,改出那一手。×2 只会放大估值误差。
+            if is_bomb(picked):
                 plain = {m: (2 if is_bomb(m) else 1) * (2 * plain_wins.get(m, 0) - plain_total)
                          for m in score}
                 alt = max((m for m in score if not is_bomb(m)), key=lambda m: amount[m], default=None)
