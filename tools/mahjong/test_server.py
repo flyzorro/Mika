@@ -1,5 +1,6 @@
 """按公开入口测:handle(body) 返回 (HTTP 状态码, JSON);另有一条走真实 HTTP 锁状态码。"""
 import base64
+import glob
 import io
 import json
 import os
@@ -626,13 +627,12 @@ class HintMeldTest(unittest.TestCase):
 
 
 class HintMeldHandTemplateTest(unittest.TestCase):
-    """碰/明杠的牌面不靠 templates/meld/flat_*.png,要能由 templates/hand/ 的 27 张生成。"""
+    """碰/明杠的牌面不靠 templates/meld/,要能由 templates/hand/ 的 27 张生成。"""
 
-    def test_melds_are_recognized_without_flat_templates(self):
-        # 每组都有 27 种牌面,全部从 templates/hand/ 生成,仓库里没有 flat_*.png。
+    def test_melds_are_recognized_without_meld_templates(self):
+        # 每组都有 27 种牌面,全部从 templates/hand/ 生成,仓库里没有 templates/meld/。
         self.assertEqual(sorted(server.MELD_FLAT_TEMPLATES[0]), sorted(HAND_TEMPLATES))
-        templates = {name: value for name, value in server.MELD_TEMPLATES.items()
-                     if not name.startswith("flat_")}
+        self.assertEqual(glob.glob(os.path.join(server.TEMPLATE_DIR, "meld", "*")), [])
         cases = {
             "shots8_172536": [{"type": "pon", "tile": "8s"}],
             "shots_204945": [{"type": "pon", "tile": "7m"}, {"type": "kan", "tile": "8m"},
@@ -640,11 +640,59 @@ class HintMeldHandTemplateTest(unittest.TestCase):
             "shots7_165550": [{"type": "pon", "tile": "2s"}],
             "shots7_170205": [{"type": "pon", "tile": "3m"}],
         }
-        with mock.patch.object(server, "MELD_TEMPLATES", templates):
-            for name, melds in cases.items():
-                with self.subTest(name=name):
-                    _, body = hint_frame(name)
-                    self.assertEqual(body["melds"], melds)
+        for name, melds in cases.items():
+            with self.subTest(name=name):
+                _, body = hint_frame(name)
+                self.assertEqual(body["melds"], melds)
+
+
+class HintAnkongTest(unittest.TestCase):
+    """暗杠抬起的那张牌,27 种牌都要认得出,模板由 templates/hand/ 生成。"""
+
+    def test_concealed_kan_of_every_tile_is_recognized(self):
+        # 2026-11-18 23:0x 真机帧,同一条命、定缺 m:第 1 组暗杠 2p,
+        # 手牌 10 张 + 暗杠 = 13 张,所以是 wait;之前这组认不出,整局后半段没有建议。
+        cases = {
+            "shots9_230144": ["3p", "4p", "8p", "8p", "2s", "3s", "4s", "4s", "7s", "8s"],
+            "shots9_230348": ["4p", "4p", "8p", "8p", "8p", "2s", "3s", "4s", "7s", "8s"],
+        }
+        for name, hand in cases.items():
+            with self.subTest(name=name):
+                _, body = hint_frame(name)
+                self.assertEqual(body["state"], "wait")
+                self.assertEqual(body["hand"], hand)
+                self.assertEqual(body["melds"], [{"type": "kan", "tile": "2p"}])
+                self.assertEqual(body["que"], "m")
+
+    def test_dark_kans_are_recognized_without_ankong_templates(self):
+        # templates/meld/ 里不再有逐张截的 ankong_*.png;1m、5p、7m 的暗杠由手牌模板生成。
+        self.assertEqual(glob.glob(os.path.join(server.TEMPLATE_DIR, "meld", "ankong_*.png")), [])
+        cases = {
+            "shots_205128": [{"type": "kan", "tile": "1m"}, {"type": "kan", "tile": "4m"}],
+            "shots5_145239_0051": [{"type": "kan", "tile": "7m"}, {"type": "kan", "tile": "5p"}],
+        }
+        for name, melds in cases.items():
+            with self.subTest(name=name):
+                _, body = hint_frame(name)
+                self.assertEqual(body["melds"], melds)
+
+
+class HintAnkongMarginTest(unittest.TestCase):
+    def test_every_concealed_kan_has_a_clear_lead(self):
+        # 暗杠认出的那张和「第二名」至少差 0.15:换一张牌不会被当成这一张。
+        with open(os.path.join(FIXTURES, "labels.json"), encoding="utf-8") as file:
+            labels = json.load(file)
+        for name, label in labels.items():
+            if name.startswith("_") or not label.get("melds"):
+                continue
+            image = load_frame(name)
+            for group, meld in enumerate(label["melds"]):
+                scores = server.ankong_scores(image, group)
+                if scores is None:  # 碰/明杠,走 MELD_FLAT_TEMPLATES
+                    continue
+                with self.subTest(name=name, group=group):
+                    self.assertEqual(scores[0][0], meld["tile"])
+                    self.assertGreater(scores[0][1] - scores[1][1], 0.15)
 
 
 class HintMeldMarginTest(unittest.TestCase):
