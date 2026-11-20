@@ -718,7 +718,7 @@ def halve(alive, own, rates, scores, protected=None):
     """一轮打完:按累计平均得分去掉较差的一半(向上取整),DouZero 选的那手 [own] 永远留着。
 
     留几名向上取整:8 手留 4、5~7 手留 3~4、3 手留 2、2 手不再淘汰。
-    [own] 和可选的 [protected] 排在淘汰区时换进来,顶掉分数最低的非保留候选,留的人数不变。
+    [own] 和可选的 [protected] 排在淘汰区时换进来,顶掉分数最低的非保留候选;第一名不能淘汰,必要时多留一手。
     """
     keep = (len(alive) + 1) // 2
     ranked = sorted(alive, key=lambda k: (-rates[k], -scores[k], k))
@@ -728,13 +728,16 @@ def halve(alive, own, rates, scores, protected=None):
     required = [k for k in (own, protected) if k in alive]
     for k in required:
         if k not in survivors:
-            survivors.remove(next(candidate for candidate in reversed(survivors) if candidate not in required))
+            removable = next((candidate for candidate in reversed(survivors)
+                              if candidate not in required and candidate != ranked[0]), None)
+            if removable is not None:
+                survivors.remove(removable)
             survivors.append(k)
     return survivors
 
 
 def round_shares(count):
-    """每个候选时每一轮拿多少预算:淘汰轮各拿 1/(淘汰轮数+2),最后两手拿剩下的。
+    """每个候选时每一轮拿多少预算:淘汰轮各拿 1/(淘汰轮数+2),决赛拿剩下的。
 
     8 手是 [1/4, 1/4, 1/2]:第一轮每手约 0.6 秒,按每局 4 毫秒够打 12~15 局,先把差的 4 手筛掉;
     4 手再筛到 2 手;最后两手用掉剩下的一半时间。4~7 手有两次淘汰,也是 [1/4, 1/4, 1/2];
@@ -760,7 +763,7 @@ def successive_halving(keys, own, scores, deal, play, budget, cap=ACT_ROLLOUT_GA
     赢了是正的 2^k、输了是负的 2^k(k 是这一手起打出的炸弹 / 王炸个数);布尔值 True/False 也照收。
     淘汰轮按 round_shares 分到的时间收手,但每个候选至少打满 [min_round_games] 局才淘汰——
     8 手按 1/4 预算只分到七八局,七八局的赢面差一半是运气,不能拿来淘汰。每个候选最多打 [cap] 局;
-    最后一轮(只剩两手)用掉剩下的全部时间。轮末按累计平均得分淘汰,见 halve。
+    最后一轮用掉剩下的全部时间,决赛可以有三手。淘汰轮按累计平均得分淘汰,见 halve。
     [protected] 是同 [own] 一样保留到决赛的候选。
     传 [pairs] 时顺便记下每个候选和 [anchor](默认 [own])在同一批发牌上的得分差,给 beat_landlord 算配对标准误差:
     pairs[k] = [Σ差, Σ差², 局数]。
@@ -815,7 +818,7 @@ def successive_halving(keys, own, scores, deal, play, budget, cap=ACT_ROLLOUT_GA
                     stat[1] += difference * difference
                     stat[2] += 1
         games = min(played[k] - before[k] for k in alive)
-        if len(alive) <= 2:
+        if last or len(alive) <= 2:
             rounds.append([list(alive), games])
             break
         means = {k: (earned[k] / played[k] if played[k] else 0.0) for k in keys}
@@ -1057,7 +1060,7 @@ class Agent:
         rng = random.Random(hash((tuple(sorted(infoset.player_hand_cards)),
                                   tuple(tuple(m) for m in infoset.card_play_action_seq))))
         history = [list(m) for m in infoset.card_play_action_seq]
-        # 边打边淘汰:每个还活着的候选打同一批新发的牌,轮末去掉较差的一半,最后只剩两手用掉剩下的时间。
+        # 边打边淘汰:每个还活着的候选打同一批新发的牌,轮末淘汰较差的候选,决赛用掉剩下的时间。
         # 带 auction 时发牌按证据加权(拒绝采样);对手牌少时按似然加权枚举他的剩牌。枚举 + 打分的时间
         # 也算在这份预算里,算不完就退回原来的发牌(见 Advisor.sample_hands / short_hand_plan)。
         sampler_deadline = time.monotonic() + budget
@@ -1082,7 +1085,7 @@ class Agent:
         beat = None
         min_games = ACT_ROLLOUT_MIN_GAMES
         if games >= min_games:
-            # 只在最后两手(淘汰掉的不再参选)里挑平均得分最高的;同分仍按 DouZero 分数顺序。
+            # 只在决赛候选(淘汰掉的不再参选)里挑平均得分最高的;同分仍按 DouZero 分数顺序。
             # 炸弹让这一局翻倍,所以要按得分比,不能只看胜率。
             best = max((k for k in keys if k in finalists), key=lambda k: means[k])
             margin = SWITCH_MARGIN if games >= ACT_ROLLOUT_FULL_GAMES else OPENING_SWITCH_MARGIN
