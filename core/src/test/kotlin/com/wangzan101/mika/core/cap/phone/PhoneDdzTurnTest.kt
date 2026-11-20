@@ -1,5 +1,6 @@
 package com.wangzan101.mika.core.cap.phone
 
+import com.sun.net.httpserver.HttpServer
 import com.wangzan101.mika.core.assembly.toolDispatcher
 import com.wangzan101.mika.core.run.SteerSignal
 import com.wangzan101.mika.core.tool.ArgError
@@ -34,14 +35,22 @@ import org.junit.Test
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.PrintStream
+import java.net.InetSocketAddress
 import javax.imageio.ImageIO
 
 class PhoneDdzTurnTest {
-    /** 叫分、加倍默认不连网:服务连不上,按牌力的老规则叫、不加倍。 */
-    @org.junit.Before fun noBidService() {
+    /** 画面测试用假地址，叫分、加倍默认按规则。开局探活测试走本机 HTTP 服务。 */
+    @org.junit.Before fun stubAdvisor() {
+        DdzAdvisor.lastReachableUrl = null
+        PhoneDdzTurn.probeAdvisor = { url -> url == "http://mac:3426" || DdzAdvisor.probe(url) }
         PhoneDdzTurn.adviseBid = { _, _ -> null }
         PhoneDdzTurn.adviseDouble = { _, _, _, _ -> null }
         PhoneDdzTurn.clock = System::currentTimeMillis
+    }
+
+    @org.junit.After fun restoreAdvisorProbe() {
+        PhoneDdzTurn.probeAdvisor = DdzAdvisor::probe
+        DdzAdvisor.lastReachableUrl = null
     }
 
     private fun frame(name: String): RawFrame {
@@ -1152,6 +1161,59 @@ class PhoneDdzTurnTest {
     private fun lobbyFrame(name: String): RawFrame {
         val image = ImageIO.read(javaClass.getResourceAsStream("/ddz/$name.jpg")!!)
         return RawFrame(image.width, image.height, (DdzScreen.ROWS + DdzCards.ROWS + DdzCards.LOBBY_ROWS).distinct().associateWith { image.getRGB(0, it, image.width, 1, null, 0, image.width) })
+    }
+
+    private fun classicLobbyGame() =
+        Game(PhoneDdzTurn.PACKAGE, ArrayDeque(listOf(lobbyFrame("vd_lobby"), fullBlank, full("call"))))
+
+    private fun advisorReturningBadRequest(): HttpServer =
+        HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0).apply {
+            createContext("/act") { exchange ->
+                exchange.requestBody.use { it.readBytes() }
+                exchange.sendResponseHeaders(400, -1)
+                exchange.close()
+            }
+            start()
+        }
+
+    @Test fun advisorStartRejectsUnreachableAddressBeforeTapping() = runTest {
+        val game = classicLobbyGame()
+        val result = run(game, """{"action":"start","advisor":"http://["}""")
+
+        assertEquals("advisor_unreachable", result.text("error"))
+        assertEquals("http://[", result.text("advisorGiven"))
+        assertTrue(game.taps.isEmpty())
+    }
+
+    @Test fun advisorStartUsesLastReachableAddressAcrossSessions() = runTest {
+        val server = advisorReturningBadRequest()
+        try {
+            val url = "http://127.0.0.1:${server.address.port}"
+            assertEquals("true", run(classicLobbyGame(), """{"action":"start","advisor":"$url"}""").text("ok"))
+
+            val game = classicLobbyGame()
+            val result = run(game, """{"action":"start","advisor":"http://["}""")
+            assertEquals("true", result.text("ok"))
+            assertEquals(url, result.text("advisorFallback"))
+            assertEquals("http://[", result.text("advisorGiven"))
+            assertEquals(2140 to 995, game.taps.first())
+        } finally {
+            server.stop(0)
+        }
+    }
+
+    @Test fun advisorStartAcceptsAnHttpErrorResponse() = runTest {
+        val server = advisorReturningBadRequest()
+        try {
+            val url = "http://127.0.0.1:${server.address.port}"
+            val game = classicLobbyGame()
+            val result = run(game, """{"action":"start","advisor":"$url"}""")
+            assertEquals("true", result.text("ok"))
+            assertNull(result.text("advisorFallback"))
+            assertEquals(2140 to 995, game.taps.first())
+        } finally {
+            server.stop(0)
+        }
     }
 
     @Test fun theSinglePlayerLobbyStartsAClassicGame() = runTest {
