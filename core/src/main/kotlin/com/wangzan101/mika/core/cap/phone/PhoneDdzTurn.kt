@@ -268,6 +268,9 @@ internal object PhoneDdzTurn : PhoneTool {
     /** 问 DouZero;测试里换掉。返回响应正文,连不上为 null。 */
     internal var advise: suspend (url: String, body: String) -> String? = { url, body -> DdzAdvisor.post(url, body) }
 
+    /** 开局探活;测试里换掉。 */
+    internal var probeAdvisor: suspend (String) -> Boolean = DdzAdvisor::probe
+
     /** DouZero 服务的叫分建议:几分,和它自己算的当地主赢面(老服务不回 win 时为 null)。 */
     internal data class BidAdvice(val level: Int, val win: Double? = null)
 
@@ -485,7 +488,10 @@ internal object PhoneDdzTurn : PhoneTool {
             put("description", "start: explicit session mode; omitted keeps the existing single-player default.")
         },
         "auto" to buildJsonObject { put("type", "boolean"); put("description", "start human mode: keep call, double, and DouZero play inside this tool until a pause or result.") },
-        "advisor" to buildJsonObject { put("type", "string"); put("description", "start: DouZero service URL, required for both modes.") },
+        "advisor" to buildJsonObject {
+            put("type", "string")
+            put("description", "start: DouZero service URL, required for both modes. Copy the URL from the task exactly. If neither this URL nor the last reachable URL responds, start returns advisor_unreachable.")
+        },
         "room" to buildJsonObject {
             put("type", "string")
             put("enum", JsonArray(listOf("normal", "elite", "tuhao", "master", "supreme", AUTO_ROOM).map(::JsonPrimitive)))
@@ -728,14 +734,30 @@ internal object PhoneDdzTurn : PhoneTool {
      * (点黄色再来一局,下一局继续交给 DouZero),和单机模式里闯关页的报名(首次免费,过关奖励金币)。
      */
     private suspend fun start(a: Args, ctx: ToolContext, turn: Turn): ToolExecution {
-        val advisor = a.str("advisor") ?: throw ArgError("advisor", "required")
+        val given = a.str("advisor") ?: throw ArgError("advisor", "required")
         val mode = a.str("mode")?.trim()?.lowercase() ?: DdzMode.Single.wire
+        if (mode != DdzMode.Human.wire && mode != DdzMode.Single.wire) throw ArgError("mode", "must be single or human")
         turn.stopped = false
-        return when (mode) {
-            DdzMode.Human.wire -> startHuman(a, ctx, turn, advisor)
-            DdzMode.Single.wire -> startSingle(a, ctx, turn, advisor)
-            else -> throw ArgError("mode", "must be single or human")
+        val advisor = if (probeAdvisor(given)) given else {
+            val previous = DdzAdvisor.lastReachableUrl
+            previous?.takeIf { it != given && probeAdvisor(it) }
         }
+        if (turn.stopped) return stopped(turn)
+        if (advisor == null) return ToolExecution(buildJsonObject {
+            put("ok", false)
+            put("error", "advisor_unreachable")
+            put("advisorGiven", given)
+        })
+        if (advisor != given) println("DDZTRACE advisor_fallback given=$given used=$advisor")
+
+        val result = if (mode == DdzMode.Human.wire) startHuman(a, ctx, turn, advisor)
+        else startSingle(a, ctx, turn, advisor)
+        if (advisor == given) return result
+        return result.with(content = buildJsonObject {
+            result.content.forEach { (key, value) -> put(key, value) }
+            put("advisorFallback", advisor)
+            put("advisorGiven", given)
+        })
     }
 
     private suspend fun startHuman(a: Args, ctx: ToolContext, turn: Turn, advisor: String): ToolExecution {
