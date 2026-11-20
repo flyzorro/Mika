@@ -8,6 +8,14 @@ import java.net.URI
 /** 本机或局域网里的 DouZero 出牌服务(tools/douzero)。一手要在倒计时里出完,连不上就快点放弃。 */
 internal object DdzAdvisor {
     private const val CONNECT_TIMEOUT_MS = 2_000
+    private const val PROBE_READ_TIMEOUT_MS = 2_000
+
+    @Volatile
+    var lastReachableUrl: String? = null
+
+    /** /act 拒绝空请求也算可达。只等响应状态，不读正文。 */
+    suspend fun probe(url: String): Boolean =
+        once(url, "{}", "act", CONNECT_TIMEOUT_MS, PROBE_READ_TIMEOUT_MS, probeOnly = true) != null
 
     /** 出牌:服务在顶两手分数接近时会现场模拟 2.5 秒(tools/douzero ACT_ROLLOUT_BUDGET_S),读完给 4 秒。 */
     private const val ACT_READ_TIMEOUT_MS = 4_000
@@ -31,18 +39,33 @@ internal object DdzAdvisor {
         url: String,
         body: String,
         path: String,
-        connectTimeoutMs: Int = CONNECT_TIMEOUT_MS,
-        readTimeoutMs: Int = ACT_READ_TIMEOUT_MS,
+        connectTimeoutMs: Int,
+        readTimeoutMs: Int,
+        probeOnly: Boolean = false,
     ): String? = withContext(Dispatchers.IO) {
         runCatching {
             val conn = URI("${url.trimEnd('/')}/$path").toURL().openConnection() as HttpURLConnection
-            conn.connectTimeout = connectTimeoutMs
-            conn.readTimeout = readTimeoutMs
-            conn.requestMethod = "POST"
-            conn.doOutput = true
-            conn.setRequestProperty("Content-Type", "application/json")
-            conn.outputStream.use { it.write(body.toByteArray()) }
-            conn.inputStream.bufferedReader().use { it.readText() }.also { conn.disconnect() }
+            try {
+                conn.connectTimeout = connectTimeoutMs
+                conn.readTimeout = readTimeoutMs
+                conn.requestMethod = "POST"
+                conn.doOutput = true
+                conn.setRequestProperty("Content-Type", "application/json")
+                if (probeOnly) conn.instanceFollowRedirects = false
+                conn.outputStream.use { it.write(body.toByteArray()) }
+                val response = if (probeOnly) {
+                    check(conn.responseCode != -1) { "no HTTP response" }
+                    ""
+                } else {
+                    conn.inputStream.bufferedReader().use { it.readText() }
+                }
+                lastReachableUrl = url
+                response
+            } finally {
+                conn.disconnect()
+            }
+        }.onFailure { e ->
+            println("DDZTRACE advisor_error url=$url path=$path err=${e::class.simpleName}: ${e.message}")
         }.getOrNull()
     }
 }

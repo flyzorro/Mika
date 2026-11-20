@@ -27,10 +27,17 @@ import javax.imageio.ImageIO
  * 只留了 [DdzCards.DOUBLE_ROWS] 和 [DdzScreen.blackBar] 读的那一行。
  */
 class DdzDoubleBadgeTest {
-    @org.junit.Before fun noBidService() {
+    @org.junit.Before fun stubAdvisor() {
+        DdzAdvisor.lastReachableUrl = null
+        PhoneDdzTurn.probeAdvisor = { url -> url == "http://mac:3426" }
         PhoneDdzTurn.adviseBid = { _, _ -> null }
         PhoneDdzTurn.adviseDouble = { _, _, _, _ -> null }
         PhoneDdzTurn.clock = System::currentTimeMillis
+    }
+
+    @org.junit.After fun restoreAdvisorProbe() {
+        PhoneDdzTurn.probeAdvisor = DdzAdvisor::probe
+        DdzAdvisor.lastReachableUrl = null
     }
 
     private fun image(name: String): BufferedImage =
