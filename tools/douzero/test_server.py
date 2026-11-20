@@ -2153,6 +2153,53 @@ class LostEndgameRuleTest(unittest.TestCase):
         self.assertEqual(["3", "3", "3", "3"], self.play(0.60, 0.55))
 
 
+class KeepComboRolloutTest(unittest.TestCase):
+    LIVE = dict(seat="landlord_down",
+                hand=["2", "2", "K", "Q", "J", "9", "9", "9", "8", "4", "4", "3", "3"],
+                bottom=[], history=[["5", "5"], ["A", "A"], [], [], ["7"], [], ["K"], ["SJ"], [],
+                                    ["BJ"], [], [], ["8", "7", "6", "5", "4"], [],
+                                    ["J", "10", "9", "8", "7"], [], [],
+                                    ["8", "7", "6", "5", "4", "3"], [], [], ["3"], ["6"]],
+                auction={"double": {"landlord": False, "landlord_up": False}})
+
+    def test_keep_combo_reaches_final_despite_early_noise(self):
+        import server as server_module
+        seen = {}
+
+        def play_out(hands, bottom, history, me, move):
+            key = " ".join(NAMES[c] for c in move) or "pass"
+            n = seen.get(key, 0)
+            seen[key] = n + 1
+            if key == "8":
+                return -1 if n < 20 else 1
+            if key == "9":
+                return -1 if 20 <= n < 40 else 1
+            return 1 if n < 20 else -1
+
+        original = server_module.successive_halving
+        def halving(*args, **kwargs):
+            return original(*args, **kwargs, clock=lambda: min(seen.get("9", 0) // 13, 2))
+
+        agent = ROLLOUT_ADVISOR.agents[self.LIVE["seat"]]
+        def values(infoset):
+            return server_module.torch.tensor([{"9": 0.30, "8": 0.29, "pass": 0.28, "J": 0.27}.get(
+                " ".join(NAMES[c] for c in action) or "pass", 0.1) for action in infoset.legal_actions])
+
+        report = {}
+        with mock.patch.object(agent, "values", values), \
+                mock.patch.object(agent, "play_out", play_out), \
+                mock.patch.object(ROLLOUT_ADVISOR, "sample_hands", return_value={}), \
+                mock.patch.object(server_module, "successive_halving", halving), \
+                mock.patch.object(server_module, "ACT_ROLLOUT_GAMES", 100):
+            move = ROLLOUT_ADVISOR.act(self.LIVE["seat"], self.LIVE["hand"], self.LIVE["bottom"],
+                                       self.LIVE["history"], report,
+                                       auction=server_module.parse_auction(self.LIVE["auction"]))
+        self.assertEqual(["8"], names(move))
+        self.assertIn("8", report["rollout"]["rounds"][-1][0])
+        self.assertEqual(100, seen["8"])
+        self.assertEqual(seen["9"], seen["8"])
+
+
 class LostBombAmountTest(unittest.TestCase):
     """现场模拟按输赢金额比,不按胜率比:赢 +2^k、输 −2^k,k 是这一手起打出的炸弹 / 王炸个数。
 

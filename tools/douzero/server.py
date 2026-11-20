@@ -714,19 +714,22 @@ def sample_hands(infoset, rng):
     return {s: sorted(hands[s] + list(infoset.played_cards[s])) for s in SEATS}
 
 
-def halve(alive, own, rates, scores):
+def halve(alive, own, rates, scores, protected=None):
     """一轮打完:按累计平均得分去掉较差的一半(向上取整),DouZero 选的那手 [own] 永远留着。
 
     留几名向上取整:8 手留 4、5~7 手留 3~4、3 手留 2、2 手不再淘汰。
-    [own] 排在淘汰区时把它换进来、顶掉落选名次最高的那个,留的人数不变。返回按平均得分从高到低排好的名单。
+    [own] 和可选的 [protected] 排在淘汰区时换进来,顶掉分数最低的非保留候选,留的人数不变。
     """
     keep = (len(alive) + 1) // 2
     ranked = sorted(alive, key=lambda k: (-rates[k], -scores[k], k))
     if len(ranked) <= 2:
         return ranked
     survivors = ranked[:keep]
-    if own in alive and own not in survivors:
-        survivors = ranked[:keep - 1] + [own]
+    required = [k for k in (own, protected) if k in alive]
+    for k in required:
+        if k not in survivors:
+            survivors.remove(next(candidate for candidate in reversed(survivors) if candidate not in required))
+            survivors.append(k)
     return survivors
 
 
@@ -750,7 +753,7 @@ def round_shares(count):
 
 def successive_halving(keys, own, scores, deal, play, budget, cap=ACT_ROLLOUT_GAMES,
                       min_round_games=HALVING_MIN_ROUND_GAMES, clock=time.monotonic,
-                      pairs=None, anchor=None):
+                      pairs=None, anchor=None, protected=None):
     """把 [budget] 秒分成几轮边打边淘汰:每轮还活着的候选都打同一批新发的牌,轮末去掉较差的一半。
 
     [deal]() 发一批牌(这一轮里所有还活着的候选共用),[play](hands, key) 拿这批牌打一局、返回这局的结果:
@@ -758,6 +761,7 @@ def successive_halving(keys, own, scores, deal, play, budget, cap=ACT_ROLLOUT_GA
     淘汰轮按 round_shares 分到的时间收手,但每个候选至少打满 [min_round_games] 局才淘汰——
     8 手按 1/4 预算只分到七八局,七八局的赢面差一半是运气,不能拿来淘汰。每个候选最多打 [cap] 局;
     最后一轮(只剩两手)用掉剩下的全部时间。轮末按累计平均得分淘汰,见 halve。
+    [protected] 是同 [own] 一样保留到决赛的候选。
     传 [pairs] 时顺便记下每个候选和 [anchor](默认 [own])在同一批发牌上的得分差,给 beat_landlord 算配对标准误差:
     pairs[k] = [Σ差, Σ差², 局数]。
     返回 (每个候选累计赢的局数, 每个候选累计得分, played, 每轮 [留下的候选, 这一轮每个候选至少打了几局],
@@ -815,7 +819,7 @@ def successive_halving(keys, own, scores, deal, play, budget, cap=ACT_ROLLOUT_GA
             rounds.append([list(alive), games])
             break
         means = {k: (earned[k] / played[k] if played[k] else 0.0) for k in keys}
-        alive = halve(alive, own, means, scores)
+        alive = halve(alive, own, means, scores, protected)
         rounds.append([list(alive), games])
     return wins, earned, played, rounds, alive
 
@@ -994,6 +998,7 @@ class Agent:
         [required] 是必须放进候选的几手(桌上是队友的牌时,两手出完那手和「不出」):不管分差、牌型都塞进来,
         其余候选仍按原来的方式挑;不在合法出牌里的跳过。
 
+        若 [own] 是拆牌的简单牌型,把 keep_combos 挑出的不拆牌候选保留到决赛。
         后半局(三家手里合起来不超过 LATE_CARDS 张)不管分差多大都模拟:每种牌型先留 DouZero 分数最高的一手,
         名额还有剩再按分数补满 LATE_TOP 手(见 late_picks)。
         模拟不把所有候选平分到最后:分几轮边打边淘汰,见 successive_halving。2026-11-16 13:10:11 土豪场,
@@ -1021,6 +1026,11 @@ class Agent:
         late = sum(infoset.num_cards_left_dict.values()) <= LATE_CARDS
         picks = late_picks(order, infoset.legal_actions) if late \
             else [i for i in order if top - float(values[i]) < CLOSE_MARGIN][:CLOSE_TOP]
+        keep = self.keep_combos(infoset, values, move) if is_simple_combo(move) \
+            and breaks_combo(move, infoset.player_hand_cards) else move
+        protected = tuple(sorted(keep)) if keep != move else None
+        if protected is not None:
+            required = list(required or []) + [keep]
         if required:
             index = {tuple(sorted(a)): i for i, a in enumerate(infoset.legal_actions)}
             forced = [index[k] for k in (tuple(sorted(m)) for m in required) if k in index]
@@ -1059,7 +1069,7 @@ class Agent:
             keys, own, scores, sampler,
             lambda hands, k: self.play_out(hands, infoset.three_landlord_cards, history,
                                            infoset.player_position, by_key[k]),
-            budget, cap=ACT_ROLLOUT_GAMES, pairs=pairs, anchor=anchor)
+            budget, cap=ACT_ROLLOUT_GAMES, pairs=pairs, anchor=anchor, protected=protected)
         games = min(played[k] for k in finalists)
         if games == 0:
             return None
