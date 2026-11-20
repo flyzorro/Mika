@@ -1700,6 +1700,24 @@ class HalvingScheduleTest(unittest.TestCase):
                                           cap=10 ** 9, clock=clock)
         return result, now
 
+    def test_leader_survives_both_protected_moves(self):
+        import server
+        keys = ["9", "J", "8", "pass"]
+        rates = dict(zip(keys, [0.9, 0.8, 0.7, 0.6]))
+        survivors = server.halve(keys, "pass", rates, rates, protected="8")
+        self.assertEqual({"9", "8", "pass"}, set(survivors))
+
+    def test_final_round_keeps_all_three_candidates(self):
+        import server
+        keys = ["8", "9", "pass"]
+        scores = {"8": 3, "9": 2, "pass": 1}
+        _, _, played, rounds, finalists = server.successive_halving(
+            keys, "pass", scores, lambda: None, lambda _, key: scores[key],
+            1, cap=2, clock=lambda: 0, protected="8")
+        self.assertEqual(set(keys), set(finalists))
+        self.assertEqual(set(keys), set(rounds[-1][0]))
+        self.assertEqual({key: 2 for key in keys}, played)
+
     def test_the_worse_half_is_dropped_and_the_final_two_get_most_games(self):
         ((wins, earned, played, rounds, finalists), _) = (self.run_halving("pass"))
         # 8 -> 4 -> 2,最后一轮只剩两手不再淘汰
@@ -2151,6 +2169,127 @@ class LostEndgameRuleTest(unittest.TestCase):
     def test_a_bomb_that_wins_more_amount_is_still_kept(self):
         # 炸弹赢 60% 权重、不出 55%:炸弹 2×(0.6−0.4) = +0.4,不出 0.1,仍然炸
         self.assertEqual(["3", "3", "3", "3"], self.play(0.60, 0.55))
+
+
+class KeepComboRolloutTest(unittest.TestCase):
+    """复现 2026-11-20 10:20:22 普通场的出牌。"""
+
+    LIVE = dict(seat="landlord_down",
+                hand=["2", "2", "K", "Q", "J", "9", "9", "9", "8", "4", "4", "3", "3"],
+                bottom=[], history=[["5", "5"], ["A", "A"], [], [], ["7"], [], ["K"], ["SJ"], [],
+                                    ["BJ"], [], [], ["8", "7", "6", "5", "4"], [],
+                                    ["J", "10", "9", "8", "7"], [], [],
+                                    ["8", "7", "6", "5", "4", "3"], [], [], ["3"], ["6"]],
+                auction={"double": {"landlord": False, "landlord_up": False}})
+
+    def test_keep_combo_reaches_final_despite_early_noise(self):
+        import server as server_module
+        seen = {}
+
+        def play_out(hands, bottom, history, me, move):
+            key = " ".join(NAMES[c] for c in move) or "pass"
+            n = seen.get(key, 0)
+            seen[key] = n + 1
+            if key in ("8", "pass"):
+                return -1 if n < 20 else 1
+            if key == "9":
+                return -1 if 20 <= n < 40 else 1
+            return -1
+
+        original = server_module.successive_halving
+        def halving(*args, **kwargs):
+            return original(*args, **kwargs, clock=lambda: min(seen.get("9", 0) // 13, 2))
+
+        agent = ROLLOUT_ADVISOR.agents[self.LIVE["seat"]]
+        report = {}
+        with mock.patch.object(agent, "play_out", play_out), \
+                mock.patch.object(ROLLOUT_ADVISOR, "sample_hands", return_value={}), \
+                mock.patch.object(server_module, "successive_halving", halving), \
+                mock.patch.object(server_module, "ACT_ROLLOUT_GAMES", 100):
+            move = ROLLOUT_ADVISOR.act(self.LIVE["seat"], self.LIVE["hand"], self.LIVE["bottom"],
+                                       self.LIVE["history"], report,
+                                       auction=server_module.parse_auction(self.LIVE["auction"]))
+        self.assertEqual(["8"], names(move))
+        self.assertIn("8", report["rollout"]["rounds"][-1][0])
+        self.assertIn("9", report["rollout"]["rounds"][-1][0])
+        self.assertEqual("fewer_plays", report["rollout"]["tiebreak"])
+        self.assertEqual(100, seen["9"])
+        self.assertEqual(100, seen["8"])
+        self.assertEqual(seen["pass"], seen["8"])
+
+
+    def test_split_move_can_win_when_own_is_pass(self):
+        import server as server_module
+        seen = {}
+
+        def play_out(hands, bottom, history, me, move):
+            key = " ".join(NAMES[c] for c in move) or "pass"
+            seen[key] = seen.get(key, 0) + 1
+            return 1 if key == "9" else -1
+
+        original = server_module.successive_halving
+        def halving(*args, **kwargs):
+            return original(*args, **kwargs, clock=lambda: min(seen.get("9", 0) // 13, 2))
+
+        agent = ROLLOUT_ADVISOR.agents[self.LIVE["seat"]]
+        report = {}
+        with mock.patch.object(agent, "play_out", play_out), \
+                mock.patch.object(ROLLOUT_ADVISOR, "sample_hands", return_value={}), \
+                mock.patch.object(server_module, "successive_halving", halving), \
+                mock.patch.object(server_module, "ACT_ROLLOUT_GAMES", 100):
+            move = ROLLOUT_ADVISOR.act(self.LIVE["seat"], self.LIVE["hand"], self.LIVE["bottom"],
+                                       self.LIVE["history"], report,
+                                       auction=server_module.parse_auction(self.LIVE["auction"]))
+        self.assertEqual(["9"], names(move))
+        self.assertEqual({"9", "8", "pass"}, set(report["rollout"]["rounds"][-1][0]))
+        self.assertEqual(100, seen["9"])
+        self.assertEqual(seen["9"], seen["8"])
+        self.assertEqual(seen["9"], seen["pass"])
+
+
+    def act_with_rates(self, rate8, rate9):
+        import server as server_module
+        seen = {}
+
+        def play_out(hands, bottom, history, me, move):
+            key = " ".join(NAMES[c] for c in move) or "pass"
+            n = seen.get(key, 0)
+            seen[key] = n + 1
+            return 1 if (n * 37) % 100 < {"8": rate8, "9": rate9, "pass": 50}.get(key, 0) else -1
+
+        def values(infoset):
+            scores = {"pass": 0.30, "9": 0.29, "8": 0.28}
+            return server_module.torch.tensor([scores.get(
+                " ".join(NAMES[c] for c in action) or "pass", 0.1) for action in infoset.legal_actions])
+
+        original = server_module.successive_halving
+        def halving(*args, **kwargs):
+            return original(*args, **kwargs, clock=lambda: min(seen.get("9", 0) // 13, 2))
+
+        agent = ROLLOUT_ADVISOR.agents[self.LIVE["seat"]]
+        report = {}
+        with mock.patch.object(agent, "values", values), \
+                mock.patch.object(agent, "play_out", play_out), \
+                mock.patch.object(ROLLOUT_ADVISOR, "sample_hands", return_value={}), \
+                mock.patch.object(server_module, "successive_halving", halving), \
+                mock.patch.object(server_module, "ACT_ROLLOUT_GAMES", 100):
+            move = ROLLOUT_ADVISOR.act(self.LIVE["seat"], self.LIVE["hand"], self.LIVE["bottom"],
+                                       self.LIVE["history"], report,
+                                       auction=server_module.parse_auction(self.LIVE["auction"]))
+        return names(move), report["rollout"]
+
+    def test_similar_better_split_move_keeps_combo(self):
+        move, rollout = self.act_with_rates(80, 80)
+        self.assertEqual(["8"], move)
+        self.assertEqual("8", rollout["keep_combo"])
+        self.assertEqual(rollout["avg_score"]["8"], rollout["avg_score"]["9"])
+        self.assertGreater(rollout["avg_score"]["9"] - rollout["avg_score"]["pass"], 0.1)
+
+    def test_clearly_better_split_move_still_wins(self):
+        move, rollout = self.act_with_rates(70, 90)
+        self.assertEqual(["9"], move)
+        self.assertNotIn("keep_combo", rollout)
+        self.assertGreater(rollout["avg_score"]["9"] - rollout["avg_score"]["8"], 0.1)
 
 
 class LostBombAmountTest(unittest.TestCase):

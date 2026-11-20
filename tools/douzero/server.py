@@ -714,24 +714,30 @@ def sample_hands(infoset, rng):
     return {s: sorted(hands[s] + list(infoset.played_cards[s])) for s in SEATS}
 
 
-def halve(alive, own, rates, scores):
+def halve(alive, own, rates, scores, protected=None):
     """一轮打完:按累计平均得分去掉较差的一半(向上取整),DouZero 选的那手 [own] 永远留着。
 
     留几名向上取整:8 手留 4、5~7 手留 3~4、3 手留 2、2 手不再淘汰。
-    [own] 排在淘汰区时把它换进来、顶掉落选名次最高的那个,留的人数不变。返回按平均得分从高到低排好的名单。
+    [own] 和可选的 [protected] 排在淘汰区时换进来,顶掉分数最低的非保留候选;第一名不能淘汰,必要时多留一手。
     """
     keep = (len(alive) + 1) // 2
     ranked = sorted(alive, key=lambda k: (-rates[k], -scores[k], k))
     if len(ranked) <= 2:
         return ranked
     survivors = ranked[:keep]
-    if own in alive and own not in survivors:
-        survivors = ranked[:keep - 1] + [own]
+    required = [k for k in (own, protected) if k in alive]
+    for k in required:
+        if k not in survivors:
+            removable = next((candidate for candidate in reversed(survivors)
+                              if candidate not in required and candidate != ranked[0]), None)
+            if removable is not None:
+                survivors.remove(removable)
+            survivors.append(k)
     return survivors
 
 
 def round_shares(count):
-    """每个候选时每一轮拿多少预算:淘汰轮各拿 1/(淘汰轮数+2),最后两手拿剩下的。
+    """每个候选时每一轮拿多少预算:淘汰轮各拿 1/(淘汰轮数+2),决赛拿剩下的。
 
     8 手是 [1/4, 1/4, 1/2]:第一轮每手约 0.6 秒,按每局 4 毫秒够打 12~15 局,先把差的 4 手筛掉;
     4 手再筛到 2 手;最后两手用掉剩下的一半时间。4~7 手有两次淘汰,也是 [1/4, 1/4, 1/2];
@@ -750,14 +756,15 @@ def round_shares(count):
 
 def successive_halving(keys, own, scores, deal, play, budget, cap=ACT_ROLLOUT_GAMES,
                       min_round_games=HALVING_MIN_ROUND_GAMES, clock=time.monotonic,
-                      pairs=None, anchor=None):
+                      pairs=None, anchor=None, protected=None):
     """把 [budget] 秒分成几轮边打边淘汰:每轮还活着的候选都打同一批新发的牌,轮末去掉较差的一半。
 
     [deal]() 发一批牌(这一轮里所有还活着的候选共用),[play](hands, key) 拿这批牌打一局、返回这局的结果:
     赢了是正的 2^k、输了是负的 2^k(k 是这一手起打出的炸弹 / 王炸个数);布尔值 True/False 也照收。
     淘汰轮按 round_shares 分到的时间收手,但每个候选至少打满 [min_round_games] 局才淘汰——
     8 手按 1/4 预算只分到七八局,七八局的赢面差一半是运气,不能拿来淘汰。每个候选最多打 [cap] 局;
-    最后一轮(只剩两手)用掉剩下的全部时间。轮末按累计平均得分淘汰,见 halve。
+    最后一轮用掉剩下的全部时间,决赛可以有三手。淘汰轮按累计平均得分淘汰,见 halve。
+    [protected] 是同 [own] 一样保留到决赛的候选。
     传 [pairs] 时顺便记下每个候选和 [anchor](默认 [own])在同一批发牌上的得分差,给 beat_landlord 算配对标准误差:
     pairs[k] = [Σ差, Σ差², 局数]。
     返回 (每个候选累计赢的局数, 每个候选累计得分, played, 每轮 [留下的候选, 这一轮每个候选至少打了几局],
@@ -811,11 +818,11 @@ def successive_halving(keys, own, scores, deal, play, budget, cap=ACT_ROLLOUT_GA
                     stat[1] += difference * difference
                     stat[2] += 1
         games = min(played[k] - before[k] for k in alive)
-        if len(alive) <= 2:
+        if last or len(alive) <= 2:
             rounds.append([list(alive), games])
             break
         means = {k: (earned[k] / played[k] if played[k] else 0.0) for k in keys}
-        alive = halve(alive, own, means, scores)
+        alive = halve(alive, own, means, scores, protected)
         rounds.append([list(alive), games])
     return wins, earned, played, rounds, alive
 
@@ -994,6 +1001,7 @@ class Agent:
         [required] 是必须放进候选的几手(桌上是队友的牌时,两手出完那手和「不出」):不管分差、牌型都塞进来,
         其余候选仍按原来的方式挑;不在合法出牌里的跳过。
 
+        候选中有拆牌的简单牌型时,把分数最高的不拆牌简单牌型候选保留到决赛。
         后半局(三家手里合起来不超过 LATE_CARDS 张)不管分差多大都模拟:每种牌型先留 DouZero 分数最高的一手,
         名额还有剩再按分数补满 LATE_TOP 手(见 late_picks)。
         模拟不把所有候选平分到最后:分几轮边打边淘汰,见 successive_halving。2026-11-16 13:10:11 土豪场,
@@ -1025,6 +1033,13 @@ class Agent:
             index = {tuple(sorted(a)): i for i, a in enumerate(infoset.legal_actions)}
             forced = [index[k] for k in (tuple(sorted(m)) for m in required) if k in index]
             picks += [i for i in forced if i not in picks]
+        hand = infoset.player_hand_cards
+        actions = infoset.legal_actions
+        protected = None
+        if any(is_simple_combo(actions[i]) and breaks_combo(actions[i], hand) for i in picks):
+            intact = [i for i in picks if is_simple_combo(actions[i]) and not breaks_combo(actions[i], hand)]
+            if intact:
+                protected = tuple(sorted(actions[max(intact, key=lambda i: float(values[i]))]))
         if len(picks) < 2:
             return None
         # 总预算快用完了:模拟来不及打满下限,不如直接听 DouZero 的,别让手机等到超时
@@ -1045,7 +1060,7 @@ class Agent:
         rng = random.Random(hash((tuple(sorted(infoset.player_hand_cards)),
                                   tuple(tuple(m) for m in infoset.card_play_action_seq))))
         history = [list(m) for m in infoset.card_play_action_seq]
-        # 边打边淘汰:每个还活着的候选打同一批新发的牌,轮末去掉较差的一半,最后只剩两手用掉剩下的时间。
+        # 边打边淘汰:每个还活着的候选打同一批新发的牌,轮末淘汰较差的候选,决赛用掉剩下的时间。
         # 带 auction 时发牌按证据加权(拒绝采样);对手牌少时按似然加权枚举他的剩牌。枚举 + 打分的时间
         # 也算在这份预算里,算不完就退回原来的发牌(见 Advisor.sample_hands / short_hand_plan)。
         sampler_deadline = time.monotonic() + budget
@@ -1059,7 +1074,7 @@ class Agent:
             keys, own, scores, sampler,
             lambda hands, k: self.play_out(hands, infoset.three_landlord_cards, history,
                                            infoset.player_position, by_key[k]),
-            budget, cap=ACT_ROLLOUT_GAMES, pairs=pairs, anchor=anchor)
+            budget, cap=ACT_ROLLOUT_GAMES, pairs=pairs, anchor=anchor, protected=protected)
         games = min(played[k] for k in finalists)
         if games == 0:
             return None
@@ -1068,16 +1083,22 @@ class Agent:
         chosen = move
         tie = None
         beat = None
+        keep_combo = None
         min_games = ACT_ROLLOUT_MIN_GAMES
         if games >= min_games:
-            # 只在最后两手(淘汰掉的不再参选)里挑平均得分最高的;同分仍按 DouZero 分数顺序。
+            # 只在决赛候选(淘汰掉的不再参选)里挑平均得分最高的;同分仍按 DouZero 分数顺序。
             # 炸弹让这一局翻倍,所以要按得分比,不能只看胜率。
             best = max((k for k in keys if k in finalists), key=lambda k: means[k])
             margin = SWITCH_MARGIN if games >= ACT_ROLLOUT_FULL_GAMES else OPENING_SWITCH_MARGIN
             # 不炸的局得分 ±1,平均得分 = 2×胜率−1:同样的胜率差,平均得分差是它的 2 倍。
             # 原来的 0.05 / 0.1 是按胜率定的门槛,按平均得分比要 ×2,不然等于把换手门槛减半。
             if means[best] - means[own] >= 2 * margin:
-                chosen = by_key[best]
+                if is_simple_combo(best) and breaks_combo(best, hand) and protected in finalists \
+                        and means[best] - means[protected] < 2 * margin:
+                    keep_combo = protected
+                    chosen = by_key[protected]
+                else:
+                    chosen = by_key[best]
             else:
                 # 差不到门槛时挑出完剩下手数更少的:2026-11-16 11:58:20 土豪场,我是地主上家领出,
                 # 手里 BJ 2 J 9 8 7 6 5 5 5 5 4。DouZero 出 5 6 7 8 9,模拟 152 局 5..9 赢 0.59、4..9 赢 0.64,
@@ -1105,6 +1126,8 @@ class Agent:
                 "chosen": move_label(chosen)}
         if late:
             info["late"] = True
+        if keep_combo is not None:
+            info["keep_combo"] = labels[keep_combo]
         if tie is not None:
             info["tiebreak"] = "fewer_plays"
             info["plays"] = {labels[k]: n for k, n in tie[1].items()}
