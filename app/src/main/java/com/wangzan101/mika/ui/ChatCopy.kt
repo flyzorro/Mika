@@ -1,7 +1,7 @@
 package com.wangzan101.mika.ui
 
 import com.wangzan101.mika.core.agent.QuoteMessage
-import com.wangzan101.mika.core.cap.web.AttachedPage
+import com.wangzan101.mika.core.agent.AttachedPage
 import com.wangzan101.mika.R
 import com.wangzan101.mika.i18n.tr
 import com.wangzan101.mika.i18n.trPlural
@@ -18,22 +18,26 @@ object ChatCopy {
     }
 
     val EMPTY_PROMPT get() = tr(R.string.chat_empty_prompt)
+    /** 空对话里的一句价值主张:说明 Mika 能干嘛。 */
+    val EMPTY_VALUE get() = tr(R.string.chat_empty_value)
 
     /**
      * 内置推荐任务的原文。只在本机还没有保存过推荐任务时用来初始化一次;
      * 标题和提示词都用这一句,之后用户在设置里改,不会因为换语言或升级被加回来。
      */
     enum class ExampleKind { App, Web, File, Schedule, Device }
-    data class Example(val kind: ExampleKind, val text: String)
+    data class Example(val kind: ExampleKind, val title: String, val prompt: String)
 
     val examples get() = listOf(
-        Example(ExampleKind.Web, tr(R.string.chat_example_github_star)),
-        Example(ExampleKind.App, tr(R.string.chat_example_follow)),
-        Example(ExampleKind.App, tr(R.string.chat_example_group_summary)),
-        Example(ExampleKind.Device, tr(R.string.chat_example_alarms)),
+        Example(ExampleKind.Web, tr(R.string.chat_example_github_star_title), tr(R.string.chat_example_github_star)),
+        Example(ExampleKind.App, tr(R.string.chat_example_follow_title), tr(R.string.chat_example_follow)),
+        Example(ExampleKind.App, tr(R.string.chat_example_group_summary_title), tr(R.string.chat_example_group_summary)),
+        Example(ExampleKind.Device, tr(R.string.chat_example_alarms_title), tr(R.string.chat_example_alarms)),
+        Example(ExampleKind.File, tr(R.string.chat_example_pdf_title), tr(R.string.chat_example_pdf)),
+        Example(ExampleKind.Schedule, tr(R.string.chat_example_schedule_title), tr(R.string.chat_example_schedule)),
     )
 
-    fun recommendationSeeds(): List<Pair<String, String>> = examples.map { it.text to it.text }
+    fun recommendationSeeds(): List<Pair<String, String>> = examples.map { it.title to it.prompt }
 
     /** 对话页顶栏的标题:固定是 App 名;副标题说此刻在做什么。 */
     const val APP_TITLE = "Mika"
@@ -135,15 +139,15 @@ object ChatCopy {
     fun actionLine(a: StepAction): String =
         listOfNotNull(a.label, a.target?.takeIf(String::isNotBlank), effectLabel(a.effect).takeIf(String::isNotBlank)).joinToString(" · ")
 
-    fun placeholder(mode: ComposerMode, hasHistory: Boolean, followUp: FollowUpMode = FollowUpMode.Steer): String = when (mode) {
-        ComposerMode.Busy -> tr(if (followUp == FollowUpMode.Queue) R.string.chat_placeholder_queue else R.string.chat_placeholder_busy)
+    fun placeholder(mode: ComposerMode, hasHistory: Boolean): String = when (mode) {
+        ComposerMode.Busy -> tr(R.string.chat_placeholder_busy)
         ComposerMode.Answer -> tr(R.string.chat_placeholder_answer)
         ComposerMode.Idle -> if (hasHistory) tr(R.string.chat_placeholder_more) else EMPTY_PROMPT
     }
 
-    /** 能按住说话时的居中灰字:告诉人能按住说、点一下打字;任务在跑时说的就是插话或排队。 */
-    fun voicePlaceholder(mode: ComposerMode, followUp: FollowUpMode = FollowUpMode.Steer): String = when (mode) {
-        ComposerMode.Busy -> tr(if (followUp == FollowUpMode.Queue) R.string.voice_placeholder_queue else R.string.voice_placeholder_busy)
+    /** 能按住说话时的居中灰字:告诉人能按住说、点一下打字;任务在跑时说的就是补充消息。 */
+    fun voicePlaceholder(mode: ComposerMode): String = when (mode) {
+        ComposerMode.Busy -> tr(R.string.voice_placeholder_busy)
         ComposerMode.Answer -> tr(R.string.voice_placeholder_answer)
         ComposerMode.Idle -> tr(R.string.voice_placeholder_idle)
     }

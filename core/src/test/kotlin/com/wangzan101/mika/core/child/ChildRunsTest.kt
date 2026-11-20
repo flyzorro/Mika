@@ -13,9 +13,13 @@ import com.wangzan101.mika.core.run.RunOrigin
 import com.wangzan101.mika.core.run.RunProvenance
 import com.wangzan101.mika.core.run.RunSpec
 import com.wangzan101.mika.core.testing.answerReply
+import com.wangzan101.mika.core.testing.fakeModel
 import com.wangzan101.mika.core.tool.ActionPass
 import com.wangzan101.mika.core.tool.FakeScreen
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -142,6 +146,7 @@ class ChildRunsTest {
         val (spec, content) = spawnWith("""{"goal":"查一条"}""")
         assertEquals(15, spec.stepBudget)
         assertTrue(spec.readOnly)
+        assertFalse(spec.parallelChild)
         assertEquals(setOf("web", "sandbox"), spec.capabilities)
         assertEquals(4000, resultLength(content))
         assertEquals("true", content["truncated"].toString())
@@ -166,5 +171,60 @@ class ChildRunsTest {
             childHost = ChildRunHost { _, _ -> error("must not spawn") })
         val r = tools.execute(Part.ToolCall("s", "spawn_agent", """{"goal":"g","maxSteps":2.5}"""), ActionPass())
         assertEquals("invalid_arguments", r.content["error"].toString().trim('"'))
+    }
+
+    @Test fun tasksRunSeveralChildrenInParallelAndMerge() = runBlocking {
+        val seen = mutableListOf<RunSpec>()
+        val host = ChildRunHost { spec, _ ->
+            seen += spec
+            ChildResult(spec.id, ChildPhase.Completed, "结果-${spec.goal}")
+        }
+        val tools = toolDispatcher(FakeScreen(), runSpec = RunSpec(RunId("parent"), "goal", "thread"), childHost = host)
+        val r = tools.execute(Part.ToolCall("s", "spawn_agent", """{"tasks":["查甲","查乙","查丙"]}"""), ActionPass())
+        assertEquals(setOf("查甲", "查乙", "查丙"), seen.map { it.goal }.toSet())
+        assertTrue(seen.all { it.parallelChild })
+        assertEquals("3", r.content["ranInParallel"].toString())
+        assertEquals("true", r.content["ok"].toString())
+        val merged = (r.content["result"] as kotlinx.serialization.json.JsonPrimitive).content
+        assertTrue("查甲" in merged && "查乙" in merged && "查丙" in merged)
+        assertEquals(3, r.observations.size)
+    }
+
+    @Test fun failedChildIsRecordedAsFailedNotCompleted() = runBlocking {
+        val store = MemoryChildRunStore()
+        val runner = ChildAgentRunner({ spec ->
+            AgentLoop(fakeModel { serverError(401) },
+                toolDispatcher(FakeScreen(), web = FakeWebPort(), runSpec = spec), "BASE", confirmations = null)
+        }, store)
+        val parent = RunSpec(RunId("p"), "goal", "thread")
+        val child = RunSpec(RunId("c"), "research", "thread",
+            provenance = RunProvenance(RunOrigin.Child, Attendance.Unattended), parent = parent.id)
+        val result = runner.spawn(child, null)
+        assertEquals(ChildPhase.Failed, result.phase)
+        assertEquals(ChildPhase.Failed, store.get("c")?.phase)
+    }
+
+    @Test fun batchReportsEachChildStatusAndStartupErrorInTaskOrder() = runBlocking {
+        val host = ChildRunHost { spec, _ ->
+            when (spec.goal) {
+                "查甲" -> ChildResult(RunId("child-a"), ChildPhase.Completed, "x".repeat(750))
+                "查乙" -> ChildResult(RunId("child-b"), ChildPhase.Failed, "网页未加载")
+                else -> error("子任务存储不可用")
+            }
+        }
+        val tools = toolDispatcher(FakeScreen(), runSpec = RunSpec(RunId("parent"), "goal", "thread"), childHost = host)
+        val result = tools.execute(Part.ToolCall("s", "spawn_agent",
+            """{"tasks":["查甲","查乙","查丙"],"maxResultChars":500}"""), ActionPass())
+        val entries = checkNotNull(result.content["results"]).jsonArray.map { it.jsonObject }
+
+        assertEquals("false", result.content["ok"].toString())
+        assertEquals(listOf("查甲", "查乙", "查丙"), entries.map { it.getValue("goal").jsonPrimitive.content })
+        assertEquals(listOf("completed", "failed", "failed"), entries.map { it.getValue("status").jsonPrimitive.content })
+        assertEquals("child-a", entries[0].getValue("childRunId").jsonPrimitive.content)
+        assertEquals("true", entries[0]["truncated"].toString())
+        assertEquals("750", entries[0]["fullLength"].toString())
+        assertEquals("child-b", entries[1].getValue("childRunId").jsonPrimitive.content)
+        assertTrue(entries[2].getValue("error").jsonPrimitive.content.contains("子任务存储不可用"))
+        assertTrue(result.content.getValue("result").jsonPrimitive.content.contains("网页未加载"))
     }
 }

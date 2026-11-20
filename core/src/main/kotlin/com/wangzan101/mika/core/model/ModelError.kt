@@ -4,11 +4,19 @@ import com.wangzan101.mika.core.net.ProxyFailure
 
 sealed class ModelError(message: String, cause: Throwable? = null) : Exception(message, cause) {
     class Auth : ModelError("API Key 无效或没有权限")
+    /**
+     * 请求头的值含有 OkHttp 拒绝的字符(换行、其它控制字符、非 ASCII)。在调用 `header()` 之前抛出,
+     * 避免构造 Request 时 [IllegalArgumentException] 把进程打掉。消息里不带头的原文,免得把 Key 打进日志。
+     * [header] 只是头的名字。
+     */
+    class IllegalHeader(val header: String) : ModelError("请求头含有无法使用的字符")
     class QuotaExceeded : ModelError("额度已用完")
     /** 本任务的已报告用量达到预算；不再发起任何收尾或重试请求。 */
     class TaskBudgetExceeded(val limit: Long, val used: Long) : ModelError("本任务的 Token 预算已用完")
     /** 这家服务商今天在本地已报告的用量达到预算；[providerName] 只用于给用户说明是哪一家。 */
-    class DailyBudgetExceeded(val providerName: String, val limit: Long, val used: Long) : ModelError("服务商今日的 Token 预算已用完")
+    class DailyBudgetExceeded(
+        val providerName: String, val limit: Long, val used: Long, val providerId: String? = null,
+    ) : ModelError("服务商今日的 Token 预算已用完")
     /**
      * 主动能力今天(本地日历日,各服务商合计)的已报告用量达到它自己的预算;不发请求。
      * [byCalls] 为真时到的是请求次数的上限,[limit]、[used] 是次数;否则是 Token。
@@ -49,7 +57,10 @@ sealed class ModelError(message: String, cause: Throwable? = null) : Exception(m
      * 回复不完整、不能用,重发同一个请求通常就好;和接口配置无关。
      */
     class StreamCut : ModelError("回复还没传完,连接就被断开了")
-    class Server(val status: Int) : ModelError("模型服务出错(HTTP $status)")
+    /** [detail] 保住服务商的报错原话:分类归 Server 走切换,原话给连接探测等诊断场景看(MK-1 第 2 批)。 */
+    class Server(val status: Int, val detail: String? = null) : ModelError(
+        "模型服务出错(HTTP $status)" + (detail?.takeIf { it.isNotBlank() }?.let { ":" + it.take(200) } ?: ""),
+    )
     class ContentRefused : ModelError("模型拒绝处理该内容")
     /** 服务端明确拒绝思考强度参数:保留服务端原话,引导改档位,不能误报成地址或接口错误。 */
     class ReasoningEffortRejected(val detail: String) : ModelError("模型不接受所选的思考强度")
@@ -68,4 +79,10 @@ sealed class ModelError(message: String, cause: Throwable? = null) : Exception(m
         ModelError("你的${account}订阅档位不能用这个接口")
     class BadResponse(detail: String = "", cause: Throwable? = null) :
         ModelError(if (detail.isEmpty()) "模型返回了无法解析的内容" else "模型返回了无法解析的内容: $detail", cause)
+    /**
+     * 主模型链整条都试过、全部失败(MK-1 第 2 批):[primary] 是主模型最初的错误,失败说法以它为主;
+     * [entries] 按尝试顺序记每个模型(名字、它犯的错误),主模型自己是第一条。任务/每日预算错误不包这层,原样交出。
+     */
+    class ChainFailed(val primary: ModelError, val entries: List<Pair<String, ModelError>>) :
+        ModelError(primary.message.orEmpty())
 }

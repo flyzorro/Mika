@@ -2,6 +2,7 @@ package com.wangzan101.mika.chat
 
 import android.content.Context
 import com.wangzan101.mika.cap.sandbox.SandboxDirs
+import com.wangzan101.mika.cap.sandbox.WorkspaceKey
 import com.wangzan101.mika.core.workspace.SandboxPaths
 import com.wangzan101.mika.core.workspace.SandboxError
 import com.wangzan101.mika.core.workspace.WorkspaceFileGate
@@ -57,13 +58,23 @@ interface BranchWorkspace {
 }
 
 /** 手机上的实现:两个工作区都在 files/sandbox/ 里,复制时拿同一把树锁,和重置、任务共用工作区互斥。 */
-class AndroidBranchWorkspace(private val dirs: SandboxDirs) : BranchWorkspace {
-    constructor(context: Context) : this(SandboxDirs(context))
+class AndroidBranchWorkspace(
+    private val dirs: SandboxDirs,
+    private val resolveWorkspace: (String) -> WorkspaceKey = WorkspaceKey::Conversation,
+) : BranchWorkspace {
+    constructor(context: Context) : this(SandboxDirs(context), WorkspaceResolver.resolver(context))
 
     override suspend fun copyInbox(sourceId: String, targetId: String, maxBytes: Long): BranchCopyResult? =
         dirs.tree.shared {
             withContext(Dispatchers.IO) {
-                copyInboxTree(dirs.workspace(sourceId), dirs.workspace(targetId), maxBytes)
+                val src = resolveWorkspace(sourceId)
+                val dst = resolveWorkspace(targetId)
+                if (src == dst) return@withContext null
+                val srcDir = dirs.workspace(src)
+                val dstDir = dirs.workspace(dst)
+                val inbox = copyInboxTree(srcDir, dstDir, maxBytes) ?: return@withContext null
+                val audio = copyGeneratedAudioTree(srcDir, dstDir, maxBytes) ?: return@withContext inbox
+                BranchCopyResult(inbox.copied + audio.copied, inbox.skipped + audio.skipped, inbox.truncated || audio.truncated)
             }
         }
 
@@ -71,13 +82,16 @@ class AndroidBranchWorkspace(private val dirs: SandboxDirs) : BranchWorkspace {
         sourceId: String, targetId: String, paths: List<String>, maxBytes: Long,
     ): List<RetryAttachmentResult> = dirs.tree.shared {
         withContext(Dispatchers.IO) {
+            val src = resolveWorkspace(sourceId)
+            val dst = resolveWorkspace(targetId)
+            if (src == dst) return@withContext checkRetryAttachments(dirs.workspace(dst), paths, dirs.gate)
             val context = currentCoroutineContext()
-            copyRetryAttachments(dirs.workspace(sourceId), dirs.workspace(targetId), paths, maxBytes, dirs.gate) { context.ensureActive() }
+            copyRetryAttachments(dirs.workspace(src), dirs.workspace(dst), paths, maxBytes, dirs.gate) { context.ensureActive() }
         }
     }
 
     override suspend fun checkInboxAttachments(targetId: String, paths: List<String>): List<RetryAttachmentResult> =
-        dirs.tree.shared { withContext(Dispatchers.IO) { checkRetryAttachments(dirs.workspace(targetId), paths, dirs.gate) } }
+        dirs.tree.shared { withContext(Dispatchers.IO) { checkRetryAttachments(dirs.workspace(resolveWorkspace(targetId)), paths, dirs.gate) } }
 }
 
 private const val INBOX = "inbox"
@@ -189,6 +203,76 @@ internal fun copyInboxTree(source: File, target: File, maxBytes: Long): BranchCo
     val dest = File(target, INBOX)
     if (dest.exists() || Files.isSymbolicLink(dest.toPath())) return BranchCopyResult(copied = 0, skipped = 1)
     val tmp = File(target, ".inbox-tmp-${UUID.randomUUID()}")
+    if (!tmp.mkdirs()) return null
+    val tmpRoot = tmp.canonicalFile.toPath()
+    var copied = 0
+    var skipped = 0
+    var bytes = 0L
+    var truncated = false
+
+    fun walk(dir: File, rel: Path) {
+        val children = dir.listFiles() ?: throw IOException("cannot list: $dir")
+        for (child in children.sortedBy { it.name }) {
+            if (truncated) return
+            if (Files.isSymbolicLink(child.toPath())) {
+                skipped++
+                continue
+            }
+            val real = child.canonicalFile.toPath()
+            if (!real.startsWith(sourceRoot)) {
+                skipped++
+                continue
+            }
+            val dst = tmpRoot.resolve(rel.resolve(child.name)).normalize()
+            if (!dst.startsWith(tmpRoot)) {
+                skipped++
+                continue
+            }
+            when {
+                child.isDirectory -> {
+                    mkdirs(dst)
+                    walk(child, rel.resolve(child.name))
+                }
+                child.isFile -> {
+                    val written = copyFile(child, dst, maxBytes - bytes)
+                    if (written == null) {
+                        truncated = true
+                        return
+                    }
+                    bytes += written
+                    copied++
+                }
+                // 管道、套接字等用户附件没有的东西不复制
+                else -> skipped++
+            }
+        }
+    }
+
+    try {
+        walk(sourceInbox, Paths.get(""))
+    } catch (e: Exception) {
+        tmp.deleteRecursively()
+        return null
+    }
+    if (truncated) {
+        tmp.deleteRecursively()
+        return BranchCopyResult(copied = 0, truncated = true)
+    }
+    if (!tmp.renameTo(dest)) {
+        tmp.deleteRecursively()
+        return null
+    }
+    return BranchCopyResult(copied, skipped)
+}
+
+internal fun copyGeneratedAudioTree(source: File, target: File, maxBytes: Long): BranchCopyResult? {
+    val sourceInbox = File(source, "out/audio")
+    if (!sourceInbox.isDirectory || Files.isSymbolicLink(sourceInbox.toPath())) return null
+    val sourceRoot = sourceInbox.canonicalFile.toPath()
+    if (!target.isDirectory && !target.mkdirs()) return null
+    val dest = File(target, "out/audio")
+    if (dest.exists() || Files.isSymbolicLink(dest.toPath())) return BranchCopyResult(copied = 0, skipped = 1)
+    val tmp = File(target, ".audio-tmp-${UUID.randomUUID()}")
     if (!tmp.mkdirs()) return null
     val tmpRoot = tmp.canonicalFile.toPath()
     var copied = 0

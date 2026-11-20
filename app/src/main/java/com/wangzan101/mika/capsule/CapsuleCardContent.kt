@@ -26,6 +26,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
@@ -46,10 +47,12 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
@@ -108,15 +111,21 @@ import com.wangzan101.mika.ui.components.ButtonKind
 import com.wangzan101.mika.ui.components.ButtonSize
 import com.wangzan101.mika.ui.components.MikaButton
 import com.wangzan101.mika.ui.components.MikaLogo
+import com.wangzan101.mika.ui.components.ScrollToBottomButton
 import com.wangzan101.mika.ui.components.StepItem
 import com.wangzan101.mika.ui.components.StepState
+import com.wangzan101.mika.ui.components.glassSource
+import com.wangzan101.mika.ui.components.rememberGlassBackdrop
+import com.wangzan101.mika.ui.components.scrollListToBottom
 import com.wangzan101.mika.ui.theme.MikaIcons
 import com.wangzan101.mika.ui.theme.MikaMotion
 import com.wangzan101.mika.ui.theme.MikaShapes
 import com.wangzan101.mika.ui.theme.MikaTheme
 import com.wangzan101.mika.voice.HoldToTalk
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 
 private val CardShape = RoundedCornerShape(22.dp)
@@ -268,6 +277,7 @@ fun CapsuleCard(
  * 缩放和透明度从 [origin] 那边长出来(按此刻的大小给出方位,例如卡片从胶囊那边),真开始出来时调 [onOpened];
  * [open] 变成 false 时缩回那边、淡掉,做完调 [onClosed]。
  * 只动图层,不改布局,也就不逐帧改窗口。关了动画时直接到位,收起时马上调 [onClosed]。
+ * 展开、收起都等不了没完没了的帧:浮层收不到下一帧时超时就位(见 [runOverlayOpen]、[runOverlayClose]),不把卡片留在半开。
  */
 @Composable
 fun OverlayMotion(
@@ -284,10 +294,19 @@ fun OverlayMotion(
                 shown.snapTo(1f)
                 opened()
             } else {
-                // 刚出来那一帧要排版、窗口换大小,最慢:等它画完再起步,动画的头几帧不被它吃掉
-                if (shown.value == 0f) repeat(SETTLE_FRAMES) { withFrameNanos { } }
-                opened()
-                shown.animateTo(1f, tween(CARD_IN_MS, easing = MikaMotion.Decelerate))
+                var openedCalled = false
+                var finished = false
+                runOverlayOpen(still) {
+                    // 刚出来那一帧要排版、窗口换大小,最慢:等它画完再起步,动画的头几帧不被它吃掉
+                    if (shown.value == 0f) repeat(SETTLE_FRAMES) { withFrameNanos { } }
+                    openedCalled = true
+                    opened()
+                    shown.animateTo(1f, tween(CARD_IN_MS, easing = MikaMotion.Decelerate))
+                    finished = true
+                }
+                // 帧停了(浮层收不到下一帧)时上面走不完:值归位、回调补上,卡片不留在半开的缩放上,窗口状态也不卡在 opening(#323)
+                if (!finished) shown.snapTo(1f)
+                if (!openedCalled) opened()
             }
         } else {
             runOverlayClose(still) {
@@ -324,9 +343,21 @@ internal suspend fun runOverlayClose(reduceMotion: Boolean, animate: suspend () 
     withTimeoutOrNull((CARD_OUT_MS * scale).toLong() + CLOSE_GRACE_MS) { animate() }
 }
 
+/**
+ * 等展开动画走完,但浮层拿不到后续帧时也必须落位:与收起([runOverlayClose])同一形状,帧停超时后由调用处
+ * 直接把值归位并补上展开回调。等待时长跟随系统的动画速度;极大的慢动作倍率最多按十倍算,避免卡在中间缩放的时间无限长。
+ */
+internal suspend fun runOverlayOpen(reduceMotion: Boolean, animate: suspend () -> Unit) {
+    if (reduceMotion) return
+    val scale = currentCoroutineContext()[MotionDurationScale]?.scaleFactor
+        ?.takeIf { it.isFinite() && it > 0f }?.coerceAtMost(10f) ?: 1f
+    withTimeoutOrNull((CARD_IN_MS * scale).toLong() + OPEN_GRACE_MS) { animate() }
+}
+
 private const val CARD_IN_MS = 240
 private const val CARD_OUT_MS = 180
 private const val CLOSE_GRACE_MS = 500L
+private const val OPEN_GRACE_MS = 500L
 private const val CARD_FROM_SCALE = 0.6f
 private const val SETTLE_FRAMES = 2
 
@@ -839,23 +870,35 @@ private fun FooterLinks(actions: CardActions, primary: Pair<String, () -> Unit>?
 @Composable
 internal fun ThreadList(thread: ChatThread, conversationId: String?, actions: CardActions, footer: (@Composable () -> Unit)? = null) {
     val c = MikaTheme.colors
+    val backdrop = rememberGlassBackdrop()
+    val density = LocalDensity.current
+    val reduceMotion = MikaTheme.reduceMotion
+    val scope = rememberCoroutineScope()
     val state = rememberLazyListState(initialFirstVisibleItemIndex = thread.anchor)
     var following by remember { mutableStateOf(false) }
+    var settled by remember { mutableStateOf(false) }
+    var scrollingToBottom by remember { mutableStateOf(false) }
+    var scrollToBottomJob by remember { mutableStateOf<Job?>(null) }
     LaunchedEffect(state) {
         snapshotFlow { state.layoutInfo.totalItemsCount }.first { it > 0 }
         following = !state.canScrollForward
+        settled = true
         var wasScrolling = false
         snapshotFlow { state.isScrollInProgress to !state.canScrollForward }.collect { (scrolling, atEnd) ->
-            if (scrolling || wasScrolling) following = atEnd
+            if (!scrollingToBottom && (scrolling || wasScrolling)) following = atEnd
             wasScrolling = scrolling
         }
     }
+    val canScrollForward by remember { derivedStateOf { state.canScrollForward } }
+    val showScrollToBottom = settled && thread.items.isNotEmpty() && !following && canScrollForward
     val anchorKey = thread.items.getOrNull(thread.anchor)?.key
     var lastAnchor by remember { mutableStateOf(anchorKey) }
     LaunchedEffect(anchorKey) {
         if (anchorKey == lastAnchor) return@LaunchedEffect
         lastAnchor = anchorKey
+        scrollToBottomJob?.cancel()
         state.scrollToItem(thread.anchor)
+        following = !state.canScrollForward
     }
     // 回答按 Markdown 排版(流式时在后台解析),排好了高度才变:按条数和最后一条排出来的高度跟,不按字数
     LaunchedEffect(state) {
@@ -870,40 +913,64 @@ internal fun ThreadList(thread: ChatThread, conversationId: String?, actions: Ca
         snapshotFlow { state.firstVisibleItemIndex == 0 }.first { it }
         actions.loadEarlier()
     }
-    LazyColumn(Modifier.testTag("capsule-thread").fillMaxWidth().fillMaxHeight(), state = state) {
-        items(thread.items, key = { it.key }) { item ->
-            when (item) {
-                // 带着屏幕的那句:缩略图和「你此刻的屏幕 · App · 时刻」,附言另起一个气泡
-                is ThreadItem.User -> BoxWithConstraints(Modifier.fillMaxWidth().padding(top = 6.dp, bottom = 8.dp), contentAlignment = Alignment.CenterEnd) {
-                    val maxWidth = maxWidth
-                    Column(horizontalAlignment = Alignment.End) {
-                        UserMessage(conversationId, item.text, ThreadThumbWidth) { text ->
-                            Text(
-                                text,
-                                Modifier.widthIn(max = maxWidth * 0.8f).background(c.accent, BubbleShape).padding(horizontal = 11.dp, vertical = 7.dp),
-                                style = Body, color = c.onAccent,
-                            )
+    Box(Modifier.fillMaxSize()) {
+        LazyColumn(Modifier.testTag("capsule-thread").fillMaxSize().glassSource(backdrop), state = state) {
+            items(thread.items, key = { it.key }) { item ->
+                when (item) {
+                    // 带着屏幕的那句:缩略图和「你此刻的屏幕 · App · 时刻」,附言另起一个气泡
+                    is ThreadItem.User -> BoxWithConstraints(Modifier.fillMaxWidth().padding(top = 6.dp, bottom = 8.dp), contentAlignment = Alignment.CenterEnd) {
+                        val maxWidth = maxWidth
+                        Column(horizontalAlignment = Alignment.End) {
+                            UserMessage(conversationId, item.text, ThreadThumbWidth) { text ->
+                                Text(
+                                    text,
+                                    Modifier.widthIn(max = maxWidth * 0.8f).background(c.accent, BubbleShape).padding(horizontal = 11.dp, vertical = 7.dp),
+                                    style = Body, color = c.onAccent,
+                                )
+                            }
+                            // 插的话的去向(已收到、已加入、下一件事)
+                            item.note?.let { Text(it, Modifier.padding(top = 2.dp, end = 4.dp), style = Sub, color = c.ink3) }
                         }
-                        // 插的话的去向(已收到、已加入、下一件事)
-                        item.note?.let { Text(it, Modifier.padding(top = 2.dp, end = 4.dp), style = Sub, color = c.ink3) }
+                    }
+                    is ThreadItem.Note -> Text(
+                        item.text, Modifier.padding(bottom = 4.dp), style = Sub,
+                        color = if (item.kind.needsYou) c.warn else c.ink3, maxLines = 2, overflow = TextOverflow.Ellipsis,
+                    )
+                    // 表格、代码块在自己那块里左右滑,不撑宽卡片;链接另开任务打开,浮层里也能点
+                    is ThreadItem.Answer -> if (!item.cut) {
+                        MarkdownText(item.text, Body.copy(color = c.ink), Modifier.fillMaxWidth().padding(bottom = 8.dp), streaming = item.streaming)
+                    } else Column(Modifier.fillMaxWidth().padding(bottom = 8.dp)) {
+                        // 被插话打断的那段:淡色,下面一行小字(和对话页同一句话)
+                        MarkdownText(item.text, Body.copy(color = c.ink2), Modifier.fillMaxWidth(), streaming = false)
+                        Text(tr(R.string.steer_interrupted_reply), Modifier.padding(top = 2.dp), style = Sub, color = c.ink3)
                     }
                 }
-                is ThreadItem.Note -> Text(
-                    item.text, Modifier.padding(bottom = 4.dp), style = Sub,
-                    color = if (item.kind.needsYou) c.warn else c.ink3, maxLines = 2, overflow = TextOverflow.Ellipsis,
-                )
-                // 表格、代码块在自己那块里左右滑,不撑宽卡片;链接另开任务打开,浮层里也能点
-                is ThreadItem.Answer -> if (!item.cut) {
-                    MarkdownText(item.text, Body.copy(color = c.ink), Modifier.fillMaxWidth().padding(bottom = 8.dp), streaming = item.streaming)
-                } else Column(Modifier.fillMaxWidth().padding(bottom = 8.dp)) {
-                    // 被插话打断的那段:淡色,下面一行小字(和对话页同一句话)
-                    MarkdownText(item.text, Body.copy(color = c.ink2), Modifier.fillMaxWidth(), streaming = false)
-                    Text(tr(R.string.steer_interrupted_reply), Modifier.padding(top = 2.dp), style = Sub, color = c.ink3)
-                }
             }
+            // 接在来回后面的一段(浏览器页面板里此刻的步骤):紧跟着最后一条,跟到底部时一起往下
+            footer?.let { f -> item(FOOTER_KEY) { f() } }
         }
-        // 接在来回后面的一段(浏览器页面板里此刻的步骤):紧跟着最后一条,跟到底部时一起往下
-        footer?.let { f -> item(FOOTER_KEY) { f() } }
+        ScrollToBottomButton(
+            visible = showScrollToBottom,
+            onClick = {
+                scrollToBottomJob?.cancel()
+                following = true
+                scrollToBottomJob = scope.launch {
+                    scrollingToBottom = true
+                    try {
+                        scrollListToBottom(state, density, reduceMotion)
+                        following = !state.canScrollForward
+                    } finally {
+                        scrollingToBottom = false
+                    }
+                }
+            },
+            modifier = Modifier.align(Alignment.BottomEnd).padding(end = 4.dp, bottom = 6.dp),
+            backdrop = backdrop,
+            reduceMotion = reduceMotion,
+            buttonSize = KeySize,
+            iconSize = 18.dp,
+            tag = "capsule-scroll-to-bottom",
+        )
     }
 }
 

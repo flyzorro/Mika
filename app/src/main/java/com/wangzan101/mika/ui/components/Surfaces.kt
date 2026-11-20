@@ -194,7 +194,7 @@ private val GlassBlur = BlurEffect(30f, 30f, TileMode.Clamp)
 fun GlassBar(
     modifier: Modifier = Modifier,
     backdrop: GlassBackdrop? = null,
-    shape: Shape = MikaShapes.Pill,
+    shape: Shape = MikaShapes.Composer,
     content: @Composable RowScope.() -> Unit,
 ) {
     val c = MikaTheme.colors
@@ -219,6 +219,40 @@ fun GlassBar(
                 .heightIn(min = MikaSize.Composer).padding(6.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(4.dp),
+            content = content,
+        )
+    }
+}
+
+/**
+ * 一小块悬浮磨砂玻璃:白 72% + 背景模糊 + 细描边 + 悬浮阴影,尺寸随内容(顶栏的菜单/标题/新建按钮用)。
+ * [backdrop] 为 null(不支持模糊、或后面没有内容)时用不透明底。
+ */
+@Composable
+fun GlassSurface(
+    modifier: Modifier = Modifier,
+    backdrop: GlassBackdrop? = null,
+    shape: Shape = MikaShapes.Pill,
+    content: @Composable BoxScope.() -> Unit,
+) {
+    val c = MikaTheme.colors
+    var origin by remember { mutableStateOf(Offset.Zero) }
+    Box(
+        modifier.floatShadow(c, shape).clip(shape)
+            .then(if (backdrop != null) Modifier.onGloballyPositioned { origin = it.positionInRoot() } else Modifier),
+    ) {
+        if (backdrop != null) {
+            Box(
+                Modifier.matchParentSize().graphicsLayer { renderEffect = GlassBlur; clip = true }
+                    .drawBehind {
+                        val d = backdrop.origin - origin
+                        translate(d.x, d.y) { drawLayer(backdrop.layer) }
+                    },
+            )
+        }
+        Box(
+            Modifier.background(if (backdrop != null) c.glass else c.surface)
+                .border(0.5.dp, c.glassEdge, shape),
             content = content,
         )
     }

@@ -9,7 +9,8 @@ from their signed metadata, so apk inside the runtime sees a consistent database
 Usage:
   build-runtime.py --resolve   re-resolve the package closure from the signed v3.22 APKINDEX, rewrite runtime/sources.lock
   build-runtime.py             build from runtime/sources.lock; write the asset, BundledRuntime.kt and runtime/packages.json
-  build-runtime.py --check     build into a temp dir and compare with the committed BundledRuntime.kt; exit 1 on mismatch
+  build-runtime.py --check     build into a temp dir and compare every committed artifact with it;
+                               exit 1 on a mismatch or on a missing artifact
 
 Every download is https only and verified: the minirootfs by SHA-256; each .apk by SHA-256 from the lock,
 by its own RSA signature (keys from the pinned minirootfs), by its control checksum (the APKINDEX `C:` value),
@@ -497,8 +498,10 @@ def build(out_asset):
     manifest.sort(key=lambda e: e["name"])
 
     # Remove PEP668 EXTERNALLY-MANAGED marker so pip can install into system
-    # site-packages directly (required for on-demand package installs).
-    tree.entries.pop("usr/lib/python3.12/EXTERNALLY-MANAGED", None)
+    # site-packages directly (required for on-demand package installs). The directory is read from
+    # the image: python3 comes from WANT, and its minor version moves with Alpine, so a path pinned
+    # here leaves the real marker in place and turns into "pip refuses to install" on the phone.
+    tree.entries.pop(f"{python_lib(tree)}/EXTERNALLY-MANAGED", None)
 
     # Bake the pinned pip wheels into site-packages (SHA-256-verified, reproducible).
     pip_wheels = bake_pip_wheels(tree, epoch)
@@ -606,9 +609,30 @@ def read_pip_lock():
     return data["wheels"]
 
 
-def site_packages():
-    # python3 in this runtime (from WANT) is 3.12; PEP668 marker removal above confirms the path.
-    return "usr/lib/python3.12/site-packages"
+def python_lib(tree):
+    """The runtime's CPython library directory, read from the image rather than pinned in code."""
+    found = sorted({name.split("/")[2] for name in tree.entries
+                    if name.startswith("usr/lib/python3.") and name.count("/") >= 2})
+    if len(found) != 1:
+        die(f"expected one usr/lib/python3.* directory in the runtime, found {', '.join(found) or 'none'}")
+    return "usr/lib/" + found[0]
+
+
+def wheel_requires(filename):
+    """The CPython a wheel is built for, as (minor, exact), or None when any Python 3 will do.
+
+    `cp312`-`cp312` runs on 3.12 alone; `cp311`-`abi3` is the stable ABI, so 3.11 and later; a
+    `py3`/`none` wheel names no version at all. A wheel's own tags are the authority here, so the
+    check needs no table kept in step with the lock.
+    """
+    parts = filename[:-len(".whl")].split("-") if filename.endswith(".whl") else filename.split("-")
+    if len(parts) < 3:
+        return None
+    python, abi = parts[-3], parts[-2]
+    m = re.fullmatch(r"cp3(\d+)", python)
+    if not m:
+        return None
+    return int(m.group(1)), abi != "abi3"
 
 
 def bake_pip_wheels(tree, epoch):
@@ -616,9 +640,19 @@ def bake_pip_wheels(tree, epoch):
     (package dir + .dist-info), so unzip == install for both pure and native wheels; no pip runs.
     Every wheel is SHA-256-verified against the lock, and each non-regular member is rejected."""
     wheels = read_pip_lock()
-    sp = site_packages()
+    lib = python_lib(tree)
+    sp = f"{lib}/site-packages"
+    minor = int(lib.rpartition(".")[2])
     for w in wheels:
         name = w["filename"]
+        # A wheel built for one CPython lands in site-packages either way and only fails at import
+        # on the phone, where nothing in the build would have said why.
+        need = wheel_requires(name)
+        if need is not None:
+            need_minor, exact = need
+            if (minor != need_minor if exact else minor < need_minor):
+                die(f"{name} needs CPython 3.{need_minor}{'' if exact else ' or newer'}, "
+                    f"the runtime has 3.{minor}: re-resolve the wheels in runtime/pip-requires.lock")
         data = cached(w["url"], f"pip-{name}", w["sha256"])
         zf = zipfile.ZipFile(io.BytesIO(data))
         for zi in zf.infolist():
@@ -653,6 +687,12 @@ object BundledRuntime {{
 """
 
 
+def manifest(r):
+    """The committed packages.json, byte for byte: the asset, the Kotlin file and this are one build's output."""
+    return json.dumps({"version": version_id(r), "alpine": r["alpine"], "packages": r["packages"]},
+                      indent=1, ensure_ascii=False) + "\n"
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     g = ap.add_mutually_exclusive_group()
@@ -665,18 +705,23 @@ def main():
     if a.check:
         with tempfile.TemporaryDirectory() as d:
             r = build(os.path.join(d, "rootfs.tar.xz"))
-        committed = open(KOTLIN, encoding="utf-8").read() if os.path.isfile(KOTLIN) else ""
+        # --check proves the committed artifacts match a rebuild, so an absent one fails here:
+        # skipping its comparison would report "ok" for an artifact it never looked at.
+        for path in (KOTLIN, ASSET, MANIFEST):
+            if not os.path.isfile(path):
+                die(f"{os.path.relpath(path, ROOT)} is missing; --check compares it with a rebuild")
+        committed = open(KOTLIN, encoding="utf-8").read()
         if kotlin(r) != committed:
             die(f"rebuilt runtime {r['sha256']} differs from BundledRuntime.kt")
-        if os.path.isfile(ASSET) and sha256(open(ASSET, "rb").read()) != r["sha256"]:
+        if sha256(open(ASSET, "rb").read()) != r["sha256"]:
             die("assets/runtime/rootfs.tar.xz differs from the rebuild")
+        if open(MANIFEST, encoding="utf-8").read() != manifest(r):
+            die(f"{os.path.relpath(MANIFEST, ROOT)} differs from the rebuild")
         print(f"ok {version_id(r)} ({r['bytes']} bytes)")
         return
     r = build(ASSET)
     open(KOTLIN, "w", encoding="utf-8").write(kotlin(r))
-    json.dump({"version": version_id(r), "alpine": r["alpine"], "packages": r["packages"]},
-              open(MANIFEST, "w", encoding="utf-8"), indent=1, ensure_ascii=False)
-    open(MANIFEST, "a").write("\n")
+    open(MANIFEST, "w", encoding="utf-8").write(manifest(r))
     print(f"built {version_id(r)}: {r['bytes']} bytes compressed, {r['fileBytes']} bytes of files, {r['entries']} entries")
 
 

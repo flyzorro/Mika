@@ -1,5 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="chat_confirmed_goals">Objetivos confirmados: %1$d/%2$d</string>
+    <string name="chat_last_confirmed_goals">Última confirmación: %1$d/%2$d</string>
     <string name="chat_greeting_morning">Buenos días</string>
     <string name="chat_greeting_noon">Buen mediodía</string>
     <string name="chat_greeting_afternoon">Buenas tardes</string>
@@ -13,14 +15,14 @@
     <string name="chat_example_replace_title">¿Reemplazar el borrador actual?</string>
     <string name="chat_example_replace_body">La tarea recomendada reemplazará lo que ya escribiste.</string>
     <string name="chat_example_replace_action">Reemplazar borrador</string>
-    <string name="recommendations_title">Tareas recomendadas</string>
+    <string name="recommendations_title">Tareas guardadas</string>
     <string name="recommendations_drag">Arrastra para cambiar el orden</string>
     <string name="recommendations_drag_hint">Arrastra el control para cambiar el orden.</string>
     <string name="recommendations_move_up">Subir</string>
     <string name="recommendations_move_down">Bajar</string>
     <string name="recommendations_sub">Administra las tareas y los prompts de la pantalla de inicio</string>
-    <string name="recommendations_add">Añadir tarea recomendada</string>
-    <string name="recommendations_edit">Editar tarea recomendada</string>
+    <string name="recommendations_add">Añadir tarea</string>
+    <string name="recommendations_edit">Editar tarea</string>
     <string name="recommendations_empty">No hay tareas recomendadas</string>
     <string name="recommendations_empty_sub">Las tareas añadidas aparecen en un chat nuevo</string>
     <string name="recommendations_title_label">Título</string>
@@ -80,6 +82,7 @@
     <string name="chat_attach_rejected">No se pudo añadir: %1$s (cada archivo debe pesar menos de 200 MB)</string>
     <string name="chat_stop">Detener</string>
     <string name="chat_send">Enviar</string>
+    <string name="chat_scroll_to_bottom">Ir al final</string>
     <string name="drawer_running_task">Tarea en ejecución</string>
     <string name="drawer_running">En ejecución</string>
     <string name="drawer_yesterday">Ayer</string>
@@ -237,6 +240,9 @@
     <string name="zoom_in">Acercar</string>
     <string name="chat_message_actions">Opciones del mensaje</string>
     <string name="chat_copy">Copiar</string>
+    <string name="share_card_question">Pregunta</string>
+    <string name="share_card_answer">Respuesta</string>
+    <string name="share_card_made_by">Completado por Mika</string>
     <string name="chat_quote">Citar</string>
     <string name="chat_select_text">Seleccionar texto</string>
     <string name="chat_copied">Copiado</string>
@@ -271,6 +277,9 @@
     <string name="pip_closed_hint">Cerrada para esta tarea. Toca “Mostrar pantalla” abajo a la derecha, o abre “Pantallas en segundo plano” en el menú lateral.</string>
     <string name="chat_conversation_tokens">Esta conversación: %1$s</string>
     <string name="chat_conversation_tokens_partial">Esta conversación: al menos %1$s</string>
+    <string name="chat_task_cost_estimate">Aprox. %1$s</string>
+    <string name="chat_task_cost_partial">%1$s (parcial)</string>
+    <string name="chat_task_cost_unavailable">Coste no disponible</string>
     <string name="follow_up_steer">Guiar</string>
     <string name="follow_up_queue">En cola</string>
     <string name="follow_up_steer_hint">El siguiente paso ajustará la tarea actual</string>
@@ -296,4 +305,25 @@
         <item quantity="many">%1$d sin archivar</item>
         <item quantity="other">%1$d sin archivar</item>
     </plurals>
+    <string name="chat_example_github_star_title">Dale una estrella a un proyecto de GitHub</string>
+    <string name="chat_example_follow_title">Sigue a un creador</string>
+    <string name="chat_example_group_summary_title">Resume un chat grupal</string>
+    <string name="chat_example_alarms_title">Pon algunas alarmas</string>
+    <string name="chat_example_pdf_title">Resume un PDF</string>
+    <string name="chat_example_schedule_title">Pon un recordatorio diario</string>
+    <string name="chat_example_pdf">Resume el PDF que te envío en un resumen corto.</string>
+    <string name="chat_example_schedule">Cada mañana a las 8, recuérdame consultar el tiempo.</string>
+    <string name="chat_empty_value">Dilo en una frase y usaré tus apps, navegaré por la web y lo dejaré hecho.</string>
+    <string name="saved_task_save">Guardar como tarea</string>
+    <string name="task_field_add">Añadir campo</string>
+    <string name="task_field_name">Nombre del campo</string>
+    <string name="task_field_name_invalid">Usa entre 1 y 40 caracteres, sin llaves ni saltos de línea.</string>
+    <string name="task_field_insert">Insertar</string>
+    <string name="task_fields_too_many">Usa como máximo %1$d campos diferentes.</string>
+    <string name="task_fill_apply">Rellenar entrada</string>
+    <string name="chat_read_aloud">Read aloud</string>
+    <string name="chat_stop_speaking">Stop speaking</string>
+    <string name="chat_audio">Audio</string>
+    <string name="chat_audio_play">Play</string>
+    <string name="chat_audio_stop">Stop</string>
 </resources>

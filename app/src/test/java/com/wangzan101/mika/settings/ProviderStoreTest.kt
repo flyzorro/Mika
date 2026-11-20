@@ -14,6 +14,8 @@ import com.wangzan101.mika.core.model.ModelSession
 import com.wangzan101.mika.core.model.StopReason
 import com.wangzan101.mika.core.model.ToolSpec
 import com.wangzan101.mika.core.model.Usage
+import com.wangzan101.mika.core.search.GoogleGroundingSearch
+import com.wangzan101.mika.core.search.WebSearchResult
 import com.wangzan101.mika.core.usage.ProactiveBudget
 import com.wangzan101.mika.core.usage.UsageKey
 import com.wangzan101.mika.core.usage.UsageLedger
@@ -64,6 +66,151 @@ class ProviderStoreTest {
     private fun ProviderStore.saveAsMain(c: ProviderConfig, apiKey: String?) {
         save(c, apiKey)
         assertTrue(choose(ModelRole.Main, RoleChoice.Model(c.id)))
+    }
+
+    // ---------- 主模型备援链(项目 3) ----------
+
+    @Test fun mainFallbackGapSlotAppendsAtEnd() {
+        val s = store()
+        s.save(cfg("a"), "sk-a")
+        assertTrue(s.setMainFallback(1, "a"))
+        assertEquals(listOf("a"), s.roles.value.mainFallbacks)
+    }
+
+    @Test fun mainFallbackAppendReplaceAndClear() {
+        val s = store()
+        s.save(cfg("a"), "sk-a")
+        assertTrue(s.setMainFallback(0, "a"))
+        s.save(cfg("b"), "sk-b")
+        assertTrue(s.setMainFallback(1, "b"))
+        assertEquals(listOf("a", "b"), s.roles.value.mainFallbacks)
+        s.save(cfg("c"), "sk-c")
+        assertTrue(s.setMainFallback(0, "c"))
+        assertEquals(listOf("c", "b"), s.roles.value.mainFallbacks)
+        assertTrue(s.setMainFallback(0, null))
+        assertEquals(listOf("b"), s.roles.value.mainFallbacks)
+    }
+
+    @Test fun mainFallbackMoveDedupes() {
+        val s = store()
+        s.save(cfg("a"), "sk-a")
+        assertTrue(s.setMainFallback(0, "a"))
+        s.save(cfg("b"), "sk-b")
+        assertTrue(s.setMainFallback(1, "b"))
+        assertTrue(s.setMainFallback(0, "b"))
+        assertEquals(listOf("b", "a"), s.roles.value.mainFallbacks)
+        assertTrue(s.setMainFallback(1, "b"))
+        assertEquals(listOf("a", "b"), s.roles.value.mainFallbacks)
+    }
+
+    @Test fun mainFallbackRejectsUnknownConfig() {
+        val s = store()
+        assertFalse(s.setMainFallback(0, "nope"))
+        assertEquals(emptyList<String>(), s.roles.value.mainFallbacks)
+    }
+
+    @Test fun mainFallbackRejectsSlotAtMax() {
+        // 位子只有 0..MAX-1(UI 也只显示这些):slot == MAX 要拒(MK-1 B-D3)。
+        val s = store()
+        s.save(cfg("a"), "sk-a")
+        assertFalse(s.setMainFallback(MAX_MAIN_FALLBACKS, "a"))
+        assertEquals(emptyList<String>(), s.roles.value.mainFallbacks)
+    }
+
+    @Test fun mainFallbackChainSkipsMainItself() {
+        // 旧设定若把主模型自己排进备援,组链时略过(MK-1 B-D2)。
+        // 顺序要注意:setMainFallback 会 prune 掉还没被引用的配置,所以先把 a 排上再存 b。
+        val s = store()
+        s.saveAsMain(cfg("a"), "sk-a")
+        assertTrue(s.setMainFallback(0, "a"))
+        s.save(cfg("b"), "sk-b")
+        assertTrue(s.setMainFallback(1, "b"))
+        val (models, _) = s.mainFallbackChain()
+        assertEquals(1, models.size)
+    }
+
+    @Test fun fallbackChainIdentifiesProvidersWithTheSameDisplayNameSeparately() {
+        val s = store()
+        val primary = connected(s, name = "Gateway")
+        val backup = s.connect("Gateway", ProviderConfig.Kind.OpenAiCompat,
+            "https://backup.test/v1", "backup-key", listOf(ListedModel("m1")))
+        s.use(ModelRole.Main, primary.id, "m1", none)
+        s.use(ModelRole.Light, backup.id, "m1", none)
+        assertTrue(s.setMainFallback(0, s.configFor(ModelRole.Light)!!.id))
+
+        assertEquals(listOf(backup.id), s.mainFallbackChain().second)
+    }
+
+    @Test fun isMainModelMatchesCurrentMain() {
+        // 手填备援时挡主模型自己,靠这个判断(MK-1 D1)。
+        val s = store()
+        val p = connected(s)
+        s.use(ModelRole.Main, p.id, "m1", none)
+        assertTrue(s.isMainModel(p.id, "m1"))
+        assertFalse(s.isMainModel(p.id, "m2"))
+        assertFalse(s.isMainModel("nope", "m1"))
+    }
+
+    @Test fun choosingFallbackAsMainClearsItFromFallbacks() {
+        // 把备援改选为主模型:它不能同时留在备援链里(MK-1 D2)。
+        val s = store()
+        val p = connected(s)
+        s.use(ModelRole.Main, p.id, "m1", none)
+        val fbId = s.ensureConfigId(p.id, "m2", none)!!
+        assertTrue(s.setMainFallback(0, fbId))
+        assertTrue(s.use(ModelRole.Main, p.id, "m2", none))
+        assertEquals(emptyList<String>(), s.roles.value.mainFallbacks)
+    }
+
+    @Test fun storedMainDuplicateClearedOnReload() {
+        // 旧文件里主模型自己排在备援链里:重新载入时清掉,界面与实际链一致(MK-1 D2)。
+        val s = store()
+        s.saveAsMain(cfg("a"), "sk-a")
+        assertTrue(s.setMainFallback(0, "a"))
+        s.save(cfg("b"), "sk-b")
+        assertTrue(s.setMainFallback(1, "b"))
+        val reopened = store()
+        assertEquals(listOf("b"), reopened.roles.value.mainFallbacks)
+    }
+
+    @Test fun settingMainAsFallbackIsDroppedImmediately() {
+        // 任何路径把主模型写进备援位,存的当下就清掉,不等下次载入(审 T-1112-74a8f2 D2)。
+        val s = store()
+        s.saveAsMain(cfg("a"), "sk-a")
+        assertTrue(s.setMainFallback(0, "a"))
+        assertTrue(s.roles.value.mainFallbacks.isEmpty())
+    }
+
+    @Test fun fallbackInheritsMainReasoningEffortWhenSupported() {
+        // 主模型设了思考强度、备援写明支持同一档:建备援时带上(MK-1 B-D1)。
+        val s = store()
+        val mainP = s.connect("MainP", ProviderConfig.Kind.OpenAiCompat, "https://mainp.test/v1", "k",
+            listOf(ListedModel("m1", reasoningEfforts = listOf("low", "high"))))
+        s.use(ModelRole.Main, mainP.id, "m1", none)
+        assertTrue(s.setReasoningEffort(ModelRole.Main, "high"))
+        val fbP = s.connect("FbP", ProviderConfig.Kind.OpenAiCompat, "https://fbp.test/v1", "k",
+            listOf(ListedModel("m9", reasoningEfforts = listOf("low", "high"))))
+        val fbId = s.ensureConfigId(fbP.id, "m9", none)!!
+        assertTrue(s.setMainFallback(0, fbId))
+        setups.clear()
+        s.modelForConfig(fbId)
+        assertEquals("high", setups.last().reasoningEffort)
+    }
+
+    @Test fun fallbackOmitsMainReasoningEffortWhenUnsupported() {
+        // 备援没写明支持主模型那个档位:不带,用它自己的默认,不能让请求因参数被拒(MK-1 B-D1)。
+        val s = store()
+        val mainP = s.connect("MainP", ProviderConfig.Kind.OpenAiCompat, "https://mainp.test/v1", "k",
+            listOf(ListedModel("m1", reasoningEfforts = listOf("low", "high"))))
+        s.use(ModelRole.Main, mainP.id, "m1", none)
+        assertTrue(s.setReasoningEffort(ModelRole.Main, "high"))
+        val fbP = s.connect("FbP", ProviderConfig.Kind.OpenAiCompat, "https://fbp.test/v1", "k",
+            listOf(ListedModel("m9", reasoningEfforts = listOf("low"))))
+        val fbId = s.ensureConfigId(fbP.id, "m9", none)!!
+        assertTrue(s.setMainFallback(0, fbId))
+        setups.clear()
+        s.modelForConfig(fbId)
+        assertNull(setups.last().reasoningEffort)
     }
 
     private fun connected(s: ProviderStore, name: String = "P", key: String = "k") =
@@ -1040,6 +1187,7 @@ class ProviderStoreTest {
             fail("达到每日预算的服务商应停止下一次请求")
         } catch (e: ModelError.DailyBudgetExceeded) {
             assertEquals("Limited", e.providerName)
+            assertEquals(limited.id, e.providerId)
             assertEquals(10_000L, e.limit)
             assertEquals(10_000L, e.used)
         }
@@ -1291,6 +1439,135 @@ class ProviderStoreTest {
         assertEquals(TriageTargetOf(p.id, "P", "m2"), light.target)
         assertEquals("m2", built.last().first.model)
         assertEquals(s.proactiveTarget(), light.target)
+    }
+
+    @Test fun geminiDeveloperApiKeyOnlyUsesValidGeminiProviderAndPrefersMain() {
+        val s = store()
+        assertNull(s.geminiDeveloperApiKey())
+
+        val openAi = s.connect(
+            "OpenAI", ProviderConfig.Kind.OpenAiCompat, "https://api.openai.com/v1",
+            "sk-openai-key", listOf(ListedModel("gpt-5")),
+        )
+        val anthropic = s.connect(
+            "Anthropic", ProviderConfig.Kind.Anthropic, "https://api.anthropic.com",
+            "sk-ant-key", listOf(ListedModel("claude-sonnet-4-5")),
+        )
+        assertTrue(s.use(ModelRole.Main, openAi.id, "gpt-5", none))
+        assertNull(s.geminiDeveloperApiKey())
+
+        s.connect(
+            "Gemini Invalid", ProviderConfig.Kind.Gemini, "https://generativelanguage.googleapis.com",
+            "bad\nkey", listOf(ListedModel("gemini-2.5-flash")),
+        )
+        s.connect(
+            "Gemini Whitespace", ProviderConfig.Kind.Gemini, "https://generativelanguage.googleapis.com",
+            "AIza bad key", listOf(ListedModel("gemini-2.5-flash")),
+        )
+        s.connect(
+            "Gemini Blank", ProviderConfig.Kind.Gemini, "https://generativelanguage.googleapis.com",
+            "   ", listOf(ListedModel("gemini-2.5-flash")),
+        )
+        assertNull(s.geminiDeveloperApiKey())
+
+        val gemFirst = s.connect(
+            "Gemini First", ProviderConfig.Kind.Gemini, "https://generativelanguage.googleapis.com",
+            "  AIza-first  ", listOf(ListedModel("gemini-2.5-flash")),
+        )
+        val gemMain = s.connect(
+            "Gemini Main", ProviderConfig.Kind.Gemini, "https://generativelanguage.googleapis.com",
+            "AIza-main", listOf(ListedModel("gemini-2.5-pro")),
+        )
+        assertEquals("AIza-first", s.geminiDeveloperApiKey())
+
+        assertTrue(s.use(ModelRole.Main, gemMain.id, "gemini-2.5-pro", none))
+        assertEquals("AIza-main", s.geminiDeveloperApiKey())
+
+        assertTrue(s.use(ModelRole.Main, anthropic.id, "claude-sonnet-4-5", none))
+        assertEquals("AIza-first", s.geminiDeveloperApiKey())
+
+        s.removeProvider(gemFirst.id)
+        s.removeProvider(gemMain.id)
+        assertNull(s.geminiDeveloperApiKey())
+    }
+
+    @Test fun googleGroundingAvailabilityFollowsMainModelProviderKind() {
+        val s = store()
+        assertEquals(GroundingStatus(available = false, providerName = null), s.groundingStatus())
+        assertNull(s.googleGroundingSearch())
+
+        val gemini = s.connect(
+            "Gemini", ProviderConfig.Kind.Gemini, "https://generativelanguage.googleapis.com",
+            "gem-key", listOf(ListedModel("gemini-2.5-flash")),
+        )
+        assertTrue(s.use(ModelRole.Main, gemini.id, "gemini-2.5-flash", none))
+        assertEquals(GroundingStatus(available = true, providerName = "Gemini"), s.groundingStatus())
+        assertTrue(s.googleGroundingSearch() is GoogleGroundingSearch)
+
+        val gemNoKey = s.connect(
+            "Gemini Empty", ProviderConfig.Kind.Gemini, "https://generativelanguage.googleapis.com",
+            "", listOf(ListedModel("gemini-2.5-flash")),
+        )
+        assertTrue(s.use(ModelRole.Main, gemNoKey.id, "gemini-2.5-flash", none))
+        assertEquals(GroundingStatus(available = false, providerName = "Gemini Empty"), s.groundingStatus())
+        assertNull(s.googleGroundingSearch())
+
+        val local = s.connect(
+            "LM Studio", ProviderConfig.Kind.OpenAiCompat, "http://127.0.0.1:1234/v1",
+            "local-key", listOf(ListedModel("qwen-local")),
+        )
+        assertTrue(s.use(ModelRole.Main, local.id, "qwen-local", none))
+        assertEquals(GroundingStatus(available = false, providerName = "LM Studio"), s.groundingStatus())
+        assertNull(s.googleGroundingSearch())
+
+        val anthropic = s.connect(
+            "Anthropic", ProviderConfig.Kind.Anthropic, "https://api.anthropic.com",
+            "sk-ant", listOf(ListedModel("claude-sonnet-4-6")),
+        )
+        assertTrue(s.use(ModelRole.Main, anthropic.id, "claude-sonnet-4-6", none))
+        assertEquals(GroundingStatus(available = false, providerName = "Anthropic"), s.groundingStatus())
+        assertNull(s.googleGroundingSearch())
+
+        val responses = s.connect(
+            "OpenAI Responses", ProviderConfig.Kind.OpenAiResponses, "https://api.openai.com/v1",
+            "sk-oai", listOf(ListedModel("gpt-5")),
+        )
+        assertTrue(s.use(ModelRole.Main, responses.id, "gpt-5", none))
+        assertEquals(GroundingStatus(available = false, providerName = "OpenAI Responses"), s.groundingStatus())
+        assertNull(s.googleGroundingSearch())
+    }
+
+    @Test fun googleGroundingSearchExecutesGeminiRequestAndSessionHeadersAgainstMockServer() = runTest {
+        val server = MockWebServer().also { it.start() }
+        try {
+            val dir = tmp.newFolder("grounding-gem")
+            val s = ProviderStore(dir, AesGcmKeyCipher { key }, userAgent = "Mika/1.2.3")
+            val base = server.url("/").toString().trimEnd('/')
+            val p = s.connect(
+                "Gemini", ProviderConfig.Kind.Gemini, base, "gem-secret",
+                listOf(ListedModel("gemini-2.5-flash")), sessionHeader = "x-test-session",
+            )
+            assertTrue(s.use(ModelRole.Main, p.id, "gemini-2.5-flash", none))
+            server.enqueue(
+                MockResponse().setHeader("Content-Type", "application/json").setBody(
+                    """{"candidates":[{"content":{"parts":[{"text":"Sunny in Tokyo."}]},"groundingMetadata":{"groundingChunks":[{"web":{"uri":"https://example.com/wx","title":"Tokyo Weather"}}],"groundingSupports":[{"segment":{"text":"Sunny in Tokyo."},"groundingChunkIndices":[0]}]}}]}""",
+                ),
+            )
+            val result = s.googleGroundingSearch(ModelSession.of("conv-g"))!!.search("tokyo weather", 3)
+            val success = result as WebSearchResult.Success
+            assertEquals(1, success.hits.size)
+            assertEquals("Tokyo Weather", success.hits[0].title)
+            assertEquals("https://example.com/wx", success.hits[0].url)
+
+            val req = server.takeRequest()
+            assertEquals("/v1beta/models/gemini-2.5-flash:generateContent", req.path)
+            assertEquals("gem-secret", req.getHeader("x-goog-api-key"))
+            assertEquals("Mika/1.2.3", req.getHeader("User-Agent"))
+            assertEquals(ModelSession.of("conv-g").id, req.getHeader("x-test-session"))
+            assertTrue(req.body.readUtf8().contains("googleSearch"))
+        } finally {
+            server.shutdown()
+        }
     }
 
     @Suppress("TestFunctionName")

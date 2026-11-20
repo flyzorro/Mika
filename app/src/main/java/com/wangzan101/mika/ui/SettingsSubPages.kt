@@ -30,9 +30,16 @@ import androidx.compose.runtime.rememberCoroutineScope
 import kotlinx.coroutines.launch
 import com.wangzan101.mika.ui.components.MikaSwitch
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
+import com.wangzan101.mika.core.shell.ShellTransport
+import com.wangzan101.mika.ui.components.SelectChip
 import com.wangzan101.mika.ui.components.MikaDialog
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
@@ -61,6 +68,7 @@ import com.wangzan101.mika.settings.SystemStatus
 import com.wangzan101.mika.settings.notificationOverview
 import com.wangzan101.mika.task.ParallelLimit
 import com.wangzan101.mika.ui.components.FooterNote
+import com.wangzan101.mika.ui.components.DetailNote
 import com.wangzan101.mika.ui.components.GroupCard
 import com.wangzan101.mika.ui.components.GroupLabel
 import com.wangzan101.mika.ui.components.ListRow
@@ -82,6 +90,7 @@ import kotlin.math.roundToInt
 // ---------- 手机操作 ----------
 
 /** 设置 › 手机操作:权限与配对的状态,重新配对、解除配对。Root 能力集中在高级与其他的独立页面。 */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun PhoneOpsScreen(
     status: SystemStatus,
@@ -90,7 +99,12 @@ fun PhoneOpsScreen(
     onRepair: () -> Unit,
     onUnpair: () -> Unit,
     onBack: () -> Unit,
+    onSelectTransport: (ShellTransport) -> Unit = {},
+    onGrantShizuku: () -> Unit = {},
+    onOpenShizukuGuide: () -> Unit = {},
+    onRefreshShizuku: () -> Unit = {},
 ) {
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { onRefreshShizuku() }
     val check = Prerequisites.check(status, hasMainModel = true)
     var confirmUnpair by remember { mutableStateOf(false) }
     PageScaffold(stringResource(R.string.settings_phone_ops), onBack) {
@@ -109,9 +123,40 @@ fun PhoneOpsScreen(
                 ListRow(
                     MikaIcons.Link, PhoneSetupCopy.ROW_TITLE,
                     if (reconnect && helper is BuiltinShellStatus.Failed) PhoneSetupCopy.failure(helper.reason).title
-                    else PhoneSetupCopy.statusLine(helper, status.usbDebugging, status.rootStart),
+                    else PhoneSetupCopy.statusLine(helper, status.usbDebugging, status.rootStart, status.shizukuStart),
                     onClick = { onProblem(Problem.PhoneHelper(helper)) },
                 ) { if (reconnect) RowValue(PhoneSetupCopy.RECONNECT, ValueTone.Link) else RowValue(hText, hTone) }
+                val shizuku = status.shizuku
+                val shizukuValue = stringResource(
+                    when {
+                        !shizuku.installed -> R.string.phone_shizuku_not_installed
+                        !shizuku.running -> R.string.phone_shizuku_not_running
+                        !shizuku.permissionGranted -> R.string.phone_shizuku_perm_needed
+                        else -> R.string.phone_shizuku_ready
+                    }
+                )
+                val shizukuTone = when {
+                    shizuku.ready -> ValueTone.Ok
+                    !shizuku.permissionGranted && shizuku.running -> ValueTone.Bad
+                    status.shellTransport == ShellTransport.Shizuku -> ValueTone.Bad
+                    else -> ValueTone.Plain
+                }
+                val yes = stringResource(R.string.phone_shizuku_yes)
+                val no = stringResource(R.string.phone_shizuku_no)
+                val shizukuDetail = stringResource(
+                    R.string.phone_shizuku_detail,
+                    if (shizuku.installed) yes else no,
+                    if (shizuku.running) yes else no,
+                    if (shizuku.permissionGranted) stringResource(R.string.phone_shizuku_perm_granted)
+                    else stringResource(R.string.phone_shizuku_perm_missing),
+                )
+                ListRow(
+                    MikaIcons.Shield,
+                    stringResource(R.string.phone_shizuku_group),
+                    shizukuDetail,
+                    onClick = if (shizuku.installed || shizuku.running) onGrantShizuku else onOpenShizukuGuide,
+                    modifier = Modifier.testTag("phone-shizuku-status"),
+                ) { RowValue(shizukuValue, shizukuTone) }
             }
             val tooOld = status.sdkInt < Prerequisites.MIN_SDK
             val focusWarning = Problem.FocusMayLeak in check.problems
@@ -132,12 +177,72 @@ fun PhoneOpsScreen(
             }
         }
         if (status.sdkInt >= Prerequisites.MIN_SDK) {
+            GroupLabel(stringResource(R.string.phone_transport_title))
+            GroupCard {
+                Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp)) {
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        val options = listOf(
+                            ShellTransport.Auto to stringResource(R.string.phone_transport_auto),
+                            ShellTransport.WirelessDebugging to stringResource(R.string.phone_transport_wireless),
+                            ShellTransport.Shizuku to stringResource(R.string.phone_transport_shizuku),
+                        )
+                        options.forEach { (transport, label) ->
+                            SelectChip(
+                                label,
+                                status.shellTransport == transport,
+                                { onSelectTransport(transport) },
+                                Modifier.testTag("phone-transport-${transport.name}"),
+                            )
+                        }
+                    }
+                }
+            }
+            FooterNote(stringResource(R.string.phone_transport_sub))
+
+            val shizuku = status.shizuku
+            GroupLabel(stringResource(R.string.phone_shizuku_group))
+            GroupCard {
+                val actionTitle = stringResource(
+                    if (shizuku.running && !shizuku.permissionGranted) R.string.phone_shizuku_grant
+                    else R.string.phone_shizuku_open_app
+                )
+                val actionSub = stringResource(
+                    when {
+                        !shizuku.installed -> R.string.phone_shizuku_action_install_sub
+                        !shizuku.running -> R.string.phone_shizuku_action_start_sub
+                        !shizuku.permissionGranted -> R.string.phone_shizuku_action_grant_sub
+                        else -> R.string.phone_shizuku_action_ready_sub
+                    }
+                )
+                ListRow(
+                    MikaIcons.Shield,
+                    actionTitle,
+                    actionSub,
+                    first = true,
+                    onClick = if (shizuku.installed || shizuku.running) onGrantShizuku else onOpenShizukuGuide,
+                    modifier = Modifier.testTag("phone-shizuku-action"),
+                ) { RowChevron() }
+                if (!shizuku.installed || !shizuku.running) {
+                    ListRow(
+                        MikaIcons.Book,
+                        stringResource(R.string.phone_shizuku_guide),
+                        stringResource(R.string.phone_shizuku_guide_sub),
+                        onClick = onOpenShizukuGuide,
+                        modifier = Modifier.testTag("phone-shizuku-guide"),
+                    ) { RowChevron() }
+                }
+            }
+            FooterNote(stringResource(R.string.phone_shizuku_footer))
+
             GroupLabel(stringResource(R.string.phone_channel))
             GroupCard {
                 ListRow(MikaIcons.Link, PhoneSetupCopy.REPAIR, PhoneSetupCopy.REPAIR_SUBTITLE, first = true, onClick = onRepair) {
                     RowChevron()
                 }
-                val paired = status.builtinShell != BuiltinShellStatus.NotPaired
+                val paired = status.wirelessPaired ?: (status.builtinShell != BuiltinShellStatus.NotPaired)
                 ListRow(
                     MikaIcons.Close, PhoneSetupCopy.UNPAIR, PhoneSetupCopy.UNPAIR_SUBTITLE,
                     titleColor = if (paired) MikaTheme.colors.bad else MikaTheme.colors.ink3,
@@ -145,7 +250,11 @@ fun PhoneOpsScreen(
                     onClick = if (paired) ({ confirmUnpair = true }) else null,
                 )
             }
-            FooterNote(PhoneSetupCopy.usageNote(status.helperRestart))
+            DetailNote(
+                PhoneSetupCopy.usageSummary(status.helperRestart),
+                PhoneSetupCopy.usageNote(status.helperRestart),
+                Modifier.padding(start = 16.dp, end = 16.dp, bottom = 12.dp),
+            )
         }
     }
     if (confirmUnpair) {
@@ -192,6 +301,12 @@ fun NotificationsScreen(status: SystemStatus, onFix: (Fix) -> Unit, onBack: () -
             ChannelRowItem(StatusCopy.ATTENTION_CHANNEL, StatusCopy.NOTIF_ATTENTION_WHEN, o.attention, Fix.OpenAttentionChannel, onFix, first = true)
             ChannelRowItem(StatusCopy.RESULT_CHANNEL, StatusCopy.NOTIF_RESULT_WHEN, o.result, Fix.OpenResultChannel, onFix)
             ChannelRowItem(StatusCopy.PROGRESS_CHANNEL, StatusCopy.NOTIF_PROGRESS_WHEN, o.progress, Fix.OpenProgressChannel, onFix)
+            if (status.sdkInt >= 36) {
+                ListRow(MikaIcons.Bell, stringResource(R.string.settings_live_task_updates),
+                    stringResource(R.string.settings_live_task_updates_detail), onClick = { onFix(Fix.OpenLiveTaskSettings) }) {
+                    RowChevron()
+                }
+            }
         }
         FooterNote(StatusCopy.NOTIF_FOOTER)
         GroupCard {
@@ -264,16 +379,23 @@ fun DuringWorkScreen(
     keepScreenOn: Boolean, onKeepScreenOn: (Boolean) -> Unit,
     muteTarget: Boolean, onMuteTarget: (Boolean) -> Unit,
     parallel: ParallelSetting?, onParallelMax: (Int) -> Unit, onBack: () -> Unit,
+    pocketGuard: Boolean = false, onPocketGuard: (Boolean) -> Unit = {},
+    pocketCompletionLock: Boolean = false, onPocketCompletionLock: (Boolean) -> Unit = {},
     autonomous: Boolean = false, onAutonomous: (Boolean) -> Unit = {},
     operatingPace: OperatingPace = OperatingPace.DEFAULT, onOperatingPace: (OperatingPace) -> Unit = {},
+    onOpenAppPace: () -> Unit = {},
     selfConfig: Boolean = false, onSelfConfig: (Boolean) -> Unit = {},
     selfOperate: Boolean = false, onSelfOperate: (Boolean) -> Unit = {},
     pipOperate: Boolean = false, onPipOperate: (Boolean) -> Unit = {},
     externalSchedule: Boolean = false, onExternalSchedule: (Boolean) -> Unit = {},
     stepLimit: Int? = null, onStepLimit: (Int?) -> Unit = {},
+    triggerRunMinutes: Int? = null, onTriggerRunMinutes: (Int?) -> Unit = {},
     tokenBudget: Long? = null, onTokenBudget: (Long?) -> Unit = {},
+    showTaskCost: Boolean = false, onShowTaskCost: (Boolean) -> Unit = {},
 ) {
+    val context = LocalContext.current
     var editingLimit by remember { mutableStateOf(false) }
+    var editingTriggerLimit by remember { mutableStateOf(false) }
     var customLimit by remember { mutableStateOf("") }
     var editingTokenBudget by remember { mutableStateOf(false) }
     var customTokenBudget by remember { mutableStateOf("") }
@@ -288,6 +410,13 @@ fun DuringWorkScreen(
             ListRow(MikaIcons.Sun, stringResource(R.string.settings_keep_on), stringResource(R.string.settings_keep_on_sub), first = true, onClick = { onKeepScreenOn(!keepScreenOn) }) {
                 MikaSwitch(keepScreenOn, onKeepScreenOn, Modifier.testTag("work-keep-screen-on"))
             }
+            val pocketAvailable = remember { com.wangzan101.mika.pocket.PocketGuardManager.sensorsAvailable(context) }
+            ListRow(MikaIcons.Shield, stringResource(R.string.pocket_guard_title), stringResource(if (pocketAvailable) R.string.pocket_guard_summary else R.string.pocket_guard_unavailable), onClick = { if (pocketAvailable || pocketGuard) onPocketGuard(!pocketGuard) }) {
+                MikaSwitch(pocketGuard, onPocketGuard, Modifier.testTag("work-pocket-guard"), enabled = pocketAvailable || pocketGuard)
+            }
+            ListRow(MikaIcons.Lock, stringResource(R.string.pocket_completion_lock_title), stringResource(if (pocketAvailable) R.string.pocket_completion_lock_summary else R.string.pocket_guard_unavailable), onClick = { if (pocketAvailable || pocketCompletionLock) onPocketCompletionLock(!pocketCompletionLock) }) {
+                MikaSwitch(pocketCompletionLock, onPocketCompletionLock, Modifier.testTag("work-pocket-completion-lock"), enabled = pocketAvailable || pocketCompletionLock)
+            }
             ListRow(MikaIcons.Mute, stringResource(R.string.settings_mute), stringResource(R.string.settings_mute_sub), onClick = { onMuteTarget(!muteTarget) }) {
                 MikaSwitch(muteTarget, onMuteTarget, Modifier.testTag("work-mute-target"))
             }
@@ -299,6 +428,12 @@ fun DuringWorkScreen(
                 onClick = { customLimit = stepLimit?.takeIf { it !in STEP_LIMIT_PRESETS }?.toString().orEmpty(); editingLimit = true },
             )
             ListRow(
+                MikaIcons.Clock, stringResource(R.string.settings_trigger_run_limit),
+                triggerRunMinutes?.let { trPlural(R.plurals.settings_trigger_run_minutes_n, it) }
+                    ?: stringResource(R.string.settings_step_limit_off),
+                onClick = { editingTriggerLimit = true },
+            )
+            ListRow(
                 MikaIcons.Clock, stringResource(R.string.settings_task_token_budget),
                 tokenBudget?.let(::tokenBudgetNumber) ?: stringResource(R.string.settings_token_budget_unlimited),
                 onClick = {
@@ -306,6 +441,12 @@ fun DuringWorkScreen(
                     editingTokenBudget = true
                 },
             )
+            ListRow(
+                null, stringResource(R.string.settings_show_task_cost), stringResource(R.string.settings_show_task_cost_sub),
+                onClick = { onShowTaskCost(!showTaskCost) },
+            ) {
+                MikaSwitch(showTaskCost, onShowTaskCost, Modifier.testTag("work-show-task-cost"))
+            }
             parallel?.let { ParallelRow(it, onParallelMax) }
         }
         if (editingLimit) StepLimitDialog(
@@ -314,6 +455,11 @@ fun DuringWorkScreen(
             onCustom = { customLimit = it.filter(Char::isDigit).take(3) },
             onPick = { onStepLimit(it); editingLimit = false },
             onDismiss = { editingLimit = false },
+        )
+        if (editingTriggerLimit) TriggerRunLimitDialog(
+            current = triggerRunMinutes,
+            onPick = { onTriggerRunMinutes(it); editingTriggerLimit = false },
+            onDismiss = { editingTriggerLimit = false },
         )
         if (editingTokenBudget) TokenBudgetDialog(
             title = stringResource(R.string.settings_task_token_budget),
@@ -373,6 +519,11 @@ fun DuringWorkScreen(
             OperatingPace.entries.forEachIndexed { i, p ->
                 RadioRow(paceLabel(p), selected = p == operatingPace, onClick = { onOperatingPace(p) }, subtitle = paceDetail(p), first = i == 0)
             }
+            // 按应用覆盖:单个 App 单独设快慢,没设的跟着上面选的全局档
+            ListRow(
+                null, stringResource(R.string.settings_pace_per_app), stringResource(R.string.settings_pace_per_app_sub),
+                onClick = onOpenAppPace,
+            )
         }
         FooterNote(stringResource(R.string.settings_pace_foot))
     }
@@ -380,6 +531,26 @@ fun DuringWorkScreen(
 
 /** 步数上限的几个现成选项;别的数在输入框里填。 */
 private val STEP_LIMIT_PRESETS = listOf(30, 60, 120, 240)
+
+/** 定时任务最长运行时间:不限制或几档分钟数,选了就生效。 */
+@Composable
+private fun TriggerRunLimitDialog(current: Int?, onPick: (Int?) -> Unit, onDismiss: () -> Unit) {
+    MikaDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(R.string.settings_trigger_run_limit)) },
+        text = {
+            Column {
+                Text(stringResource(R.string.settings_trigger_run_limit_sub), Modifier.padding(bottom = 8.dp))
+                RadioRow(stringResource(R.string.settings_step_limit_off), selected = current == null, onClick = { onPick(null) }, first = true)
+                FeatureFlags.TRIGGER_RUN_MINUTES.forEach { m ->
+                    RadioRow(trPlural(R.plurals.settings_trigger_run_minutes_n, m), selected = current == m, onClick = { onPick(m) })
+                }
+            }
+        },
+        confirmButton = {},
+        dismissButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.cancel)) } },
+    )
+}
 
 @Composable
 private fun StepLimitDialog(
@@ -453,12 +624,12 @@ private fun ParallelRow(p: ParallelSetting, onMax: (Int) -> Unit) {
         }
         Text(
             "−", Modifier.clickable(enabled = p.max > 1) { onMax(p.max - 1) }.padding(horizontal = 10.dp, vertical = 4.dp),
-            fontSize = 18.sp, color = if (p.max > 1) MikaTheme.colors.accent else MikaTheme.colors.ink3,
+            style = MikaType.Title, color = if (p.max > 1) MikaTheme.colors.accent else MikaTheme.colors.ink3,
         )
         RowValue(trPlural(R.plurals.settings_count_tasks, p.max))
         Text(
             "+", Modifier.clickable(enabled = p.max < 3) { onMax(p.max + 1) }.padding(horizontal = 10.dp, vertical = 4.dp),
-            fontSize = 18.sp, color = if (p.max < 3) MikaTheme.colors.accent else MikaTheme.colors.ink3,
+            style = MikaType.Title, color = if (p.max < 3) MikaTheme.colors.accent else MikaTheme.colors.ink3,
         )
     }
 }
@@ -667,6 +838,7 @@ fun languageLabel(l: AppLanguage): String = stringResource(
         AppLanguage.Portuguese -> R.string.language_portuguese
         AppLanguage.Russian -> R.string.language_russian
         AppLanguage.Indonesian -> R.string.language_indonesian
+        AppLanguage.Turkish -> R.string.language_turkish
     },
 )
 

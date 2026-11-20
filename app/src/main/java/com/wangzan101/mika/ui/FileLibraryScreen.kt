@@ -46,10 +46,14 @@ import com.wangzan101.mika.chat.FileLibrary
 import com.wangzan101.mika.chat.FileLibrarySnapshot
 import com.wangzan101.mika.chat.FileSource
 import com.wangzan101.mika.chat.LibraryFile
+import com.wangzan101.mika.task.DeviceImportStore
+import kotlinx.coroutines.flow.catch
 import com.wangzan101.mika.ui.components.*
 import com.wangzan101.mika.ui.theme.MikaIcons
 import com.wangzan101.mika.ui.theme.MikaTheme
 import com.wangzan101.mika.ui.theme.MikaType
+import com.wangzan101.mika.ui.theme.MikaRadius
+import com.wangzan101.mika.ui.theme.MikaShapes
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -68,7 +72,8 @@ private data class LibraryRow(
     val input: Boolean,
     val handle: LibraryFileHandle,
     /** 最近一次出现的位置,「在对话中查看」跳到这里。 */
-    val source: FileSource,
+    val source: FileSource?,
+    val deviceImport: Boolean = false,
 ) {
     val type = LibraryFileType.of(name)
 }
@@ -80,7 +85,21 @@ private data class LibraryLoaded(
     val archived: Set<String>,
     val partial: Boolean,
     val failed: Boolean = false,
+    /** 对话所属的项目编号,用于把项目名一并标出。 */
+    val projectIds: Map<String, String> = emptyMap(),
 )
+
+/** 拼接对话显示名:属于项目时带上项目名,没项目时只显示对话标题。 */
+internal fun libraryConversationDisplay(
+    id: String,
+    titles: Map<String, String>,
+    projectIds: Map<String, String>,
+    projectNames: Map<String, String>,
+): String? {
+    val title = titles[id] ?: return null
+    val project = projectIds[id]?.let(projectNames::get)?.takeIf { it.isNotBlank() }
+    return if (project != null) "$project / $title" else title
+}
 
 /** 「在对话中查看」跳到哪一行:输入文件回到附上它的那条用户消息,产物回到这一轮的文件卡片。 */
 internal fun fileLibraryTarget(source: FileSource, input: Boolean): ChatTarget =
@@ -93,6 +112,7 @@ internal data class LibraryLoadResult(
     val titles: Map<String, String>,
     val archived: Set<String>,
     val partial: Boolean,
+    val projectIds: Map<String, String> = emptyMap(),
 )
 
 /** 索引和会话标题分别读取，一边出错不能阻止另一边显示。取消仍交给协程处理。 */
@@ -116,6 +136,7 @@ internal fun loadLibraryData(
     val names = listed?.associate { it.id to ChatCopy.plainTitle(it.title) }?.toMutableMap() ?: draftTitles.toMutableMap()
     // 归档状态和标题来自同一次读取,不额外扫一遍对话目录
     val archived = listed.orEmpty().filter { it.archivedAt != null }.map { it.id }.toSet()
+    val projectIds = listed.orEmpty().mapNotNull { s -> s.projectId?.let { s.id to it } }.toMap()
     draftTitles.forEach { (id, title) -> names.putIfAbsent(id, title) }
     files?.files?.forEach { file ->
         val ids = when (file) {
@@ -126,7 +147,7 @@ internal fun loadLibraryData(
             if (id !in names) names[id] = attempt { fallbackTitle(id) } ?: id
         }
     }
-    return LibraryLoadResult(files, names, archived, partial || files?.hasReadFailures == true)
+    return LibraryLoadResult(files, names, archived, partial || files?.hasReadFailures == true, projectIds)
 }
 
 @OptIn(ExperimentalLayoutApi::class)
@@ -147,9 +168,11 @@ internal fun FileLibraryScreen(
 ) {
     val context = LocalContext.current
     val store = remember(conversationStore) { conversationStore ?: ConversationStore.shared(context) }
+    val imports = remember(context) { DeviceImportStore.get(context) }
     val scope = rememberCoroutineScope()
     var revision by remember { mutableIntStateOf(0) }
     LaunchedEffect(store) { store.changes.collect { revision++ } }
+    LaunchedEffect(imports) { imports.recordsFlow().catch { revision++ }.collect { revision++ } }
     val drafts by vm.draftConversations.collectAsState()
     val loaded by produceState<LibraryLoaded?>(null, revision, drafts) {
         value = try { withContext(Dispatchers.IO) {
@@ -159,6 +182,11 @@ internal fun FileLibraryScreen(
                 draftTitles = drafts.associate { it.id to ChatCopy.plainTitle(it.title) },
                 fallbackTitle = { id -> store.title(id)?.let(ChatCopy::plainTitle) },
             )
+            var importReadFailed = false
+            val importRecords = try { imports.allRecords() } catch (_: Exception) {
+                importReadFailed = true
+                emptyList()
+            }
             val rows = result.snapshot?.files.orEmpty().mapNotNull { file ->
                 when (file) {
                     is LibraryFile.Input -> file.sources.maxByOrNull { it.source.atMs ?: Long.MIN_VALUE }?.let { latest ->
@@ -179,8 +207,17 @@ internal fun FileLibraryScreen(
                         )
                     }
                 }
-            }.sortedByDescending { it.at ?: Long.MIN_VALUE }
-            LibraryLoaded(rows, result.titles, result.archived, result.partial, failed = result.snapshot == null)
+            } + importRecords.map { record ->
+                LibraryRow(
+                    "device-import:${record.id}", record.workspacePath.substringAfterLast('/'),
+                    ChatViewModel.sizeLabel(record.size), record.importedAt, listOf(record.conversationId), true,
+                    LibraryFileHandle.Workspace(record.conversationId, record.workspacePath), null, deviceImport = true,
+                )
+            }
+            val titles = result.titles.toMutableMap()
+            importRecords.forEach { record -> titles.putIfAbsent(record.conversationId, record.conversationId) }
+            LibraryLoaded(rows.sortedByDescending { it.at ?: Long.MIN_VALUE }, titles, result.archived,
+                result.partial || importReadFailed, failed = result.snapshot == null && importReadFailed, projectIds = result.projectIds)
         } } catch (e: CancellationException) {
             throw e
         } catch (_: Exception) {
@@ -216,6 +253,10 @@ internal fun FileLibraryScreen(
             (type == null || type == it.type)
     }
     val titles = loaded?.titles.orEmpty()
+    val projectIds = loaded?.projectIds.orEmpty()
+    val projects by vm.projects.collectAsState()
+    val projectNames = remember(projects) { projects.associate { it.id to it.name } }
+    fun displayTitle(id: String): String? = libraryConversationDisplay(id, titles, projectIds, projectNames)
     val archivedIds = loaded?.archived.orEmpty()
     val rowKeys = allRows.map { it.key }
     LaunchedEffect(rowKeys) {
@@ -259,7 +300,8 @@ internal fun FileLibraryScreen(
     /** 跳到文件最近一次出现的消息:输入文件回到那条用户消息,产物回到这一轮的文件卡片。 */
     fun openInChat(item: LibraryRow) {
         if (working) return
-        if (!onOpenSource(item.source.conversationId, fileLibraryTarget(item.source, item.input))) {
+        val source = item.source ?: return
+        if (!onOpenSource(source.conversationId, fileLibraryTarget(source, item.input))) {
             error = R.string.file_library_open_failed
         }
     }
@@ -325,7 +367,7 @@ internal fun FileLibraryScreen(
         2 -> R.string.file_library_output
         else -> R.string.file_library_sources
     })
-    val conversationLabel = conversation?.let { titles[it] ?: stringResource(R.string.file_library_current) }
+    val conversationLabel = conversation?.let { displayTitle(it) ?: stringResource(R.string.file_library_current) }
         ?: stringResource(R.string.file_library_all)
     val typeLabel = stringResource(type?.label ?: R.string.file_library_type_all)
     PageBackground {
@@ -377,7 +419,7 @@ internal fun FileLibraryScreen(
                                 conversationMenu = false
                             }
                             titles.forEach { (id, title) ->
-                                FilterMenuItem(title, conversation == id) {
+                                FilterMenuItem(displayTitle(id) ?: title, conversation == id) {
                                     conversation = id
                                     conversationMenu = false
                                 }
@@ -470,9 +512,9 @@ internal fun FileLibraryScreen(
                                     selected = item.key in selected,
                                     selecting = selecting,
                                     working = working,
-                                    conversationLabel = item.conversations.joinToString(" · ") { titles[it] ?: it },
+                                    conversationLabel = item.conversations.joinToString(" · ") { displayTitle(it) ?: it },
                                     fromArchived = item.conversations.any { it in archivedIds },
-                                    sourceLabel = stringResource(if (item.input) R.string.file_library_input else R.string.file_library_output),
+                                    sourceLabel = stringResource(if (item.deviceImport) R.string.dev_device_files else if (item.input) R.string.file_library_input else R.string.file_library_output),
                                     divider = index > 0,
                                     onOpen = { preview(item) },
                                     onLongPress = { enterSelection(item) },
@@ -509,7 +551,7 @@ internal fun FileLibraryScreen(
     }
     actionsFor?.let { item ->
         // 来源会话打不开(任务进行中且没开并行、又不是当前会话)时不给这一项
-        val canOpenInChat = item.source.conversationId == vm.ui.value.conversationId || vm.canSwitch()
+        val canOpenInChat = item.source?.let { it.conversationId == vm.ui.value.conversationId || vm.canSwitch() } == true
         val openInChatAction = SheetAction(
             stringResource(R.string.file_library_open_in_chat), icon = MikaIcons.Message,
         ) { openInChat(item) }
@@ -531,7 +573,7 @@ internal fun FileLibraryScreen(
                     choosing = null
                     add(item, store.newConversation())
                 }.padding(vertical = 12.dp))
-                titles.filter { (id, _) -> vm.canSwitch() || id == vm.ui.value.conversationId }.forEach { (id, title) -> Text(title, Modifier.fillMaxWidth().clickable {
+                titles.filter { (id, _) -> vm.canSwitch() || id == vm.ui.value.conversationId }.forEach { (id, title) -> Text(displayTitle(id) ?: title, Modifier.fillMaxWidth().clickable {
                     choosing = null
                     add(item, id)
                 }.padding(vertical = 12.dp), maxLines = 1, overflow = TextOverflow.Ellipsis) }
@@ -549,7 +591,7 @@ internal fun FileLibraryScreen(
                     choosingBatch = false
                     addSelected(store.newConversation())
                 }.padding(vertical = 12.dp))
-                titles.filter { (id, _) -> vm.canSwitch() || id == vm.ui.value.conversationId }.forEach { (id, title) -> Text(title, Modifier.fillMaxWidth().clickable {
+                titles.filter { (id, _) -> vm.canSwitch() || id == vm.ui.value.conversationId }.forEach { (id, title) -> Text(displayTitle(id) ?: title, Modifier.fillMaxWidth().clickable {
                     choosingBatch = false
                     addSelected(id)
                 }.padding(vertical = 12.dp), maxLines = 1, overflow = TextOverflow.Ellipsis) }
@@ -628,9 +670,7 @@ internal fun FileLibraryScreen(
     if (savedElsewhere) AlertDialog(onDismissRequest = { savedElsewhere = false }, text = { Text(stringResource(R.string.file_library_draft_saved)) }, confirmButton = { TextButton(onClick = { savedElsewhere = false }) { Text(stringResource(R.string.done)) } })
 }
 
-private val LibraryTitleStyle = TextStyle(
-    fontSize = 26.sp, lineHeight = 32.sp, fontWeight = FontWeight.SemiBold, letterSpacing = (-0.4).sp,
-)
+internal val LibraryTitleStyle = MikaType.LargeTitle.copy(fontWeight = FontWeight.SemiBold, letterSpacing = (-0.4).sp)
 
 /** 文件库顶栏:返回、左对齐大标题、右边「多选」胶囊。 */
 @Composable
@@ -647,7 +687,7 @@ private fun LibraryTopBar(canSelect: Boolean, working: Boolean, onBack: () -> Un
             style = LibraryTitleStyle, color = c.ink, maxLines = 1,
         )
         Row(
-            Modifier.clip(RoundedCornerShape(13.dp)).background(c.fill)
+            Modifier.clip(MikaShapes.Chip).background(c.fill)
                 .clickable(enabled = canSelect && !working, role = Role.Button, onClick = onSelect)
                 .testTag("file-library-select")
                 .alpha(if (canSelect && !working) 1f else 0.4f)
@@ -716,7 +756,7 @@ private fun LibraryFilterPill(
     content: @Composable ColumnScope.() -> Unit,
 ) {
     val c = MikaTheme.colors
-    val shape = RoundedCornerShape(20.dp)
+    val shape = RoundedCornerShape(MikaRadius.Bubble)
     Box(modifier) {
         Row(
             Modifier.heightIn(min = 40.dp).clip(shape)
@@ -737,7 +777,7 @@ private fun LibraryFilterPill(
             expanded = expanded,
             onDismissRequest = onDismiss,
             offset = DpOffset(0.dp, 6.dp),
-            shape = RoundedCornerShape(18.dp),
+            shape = MikaShapes.Card,
             containerColor = c.surface,
             tonalElevation = 0.dp,
             shadowElevation = 10.dp,
@@ -753,7 +793,7 @@ private fun LibraryFilterPill(
 private fun FilterMenuItem(label: String, selected: Boolean, onClick: () -> Unit) {
     val c = MikaTheme.colors
     Row(
-        Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp))
+        Modifier.fillMaxWidth().clip(MikaShapes.Chip)
             .background(if (selected) c.accentSoft else Color.Transparent)
             .selectable(selected = selected, role = Role.RadioButton, onClick = onClick)
             .padding(horizontal = 12.dp, vertical = 10.dp),
@@ -811,7 +851,7 @@ private fun LibraryFileRow(
     onMore: () -> Unit,
 ) {
     val c = MikaTheme.colors
-    val shape = RoundedCornerShape(13.dp)
+    val shape = MikaShapes.Chip
     Column(Modifier.fillMaxWidth()) {
         if (divider && !selected) {
             Box(Modifier.fillMaxWidth().padding(start = 70.dp, end = 4.dp).height(0.5.dp).background(c.hair))
@@ -875,14 +915,14 @@ private fun LibraryFileRow(
             }
             if (selecting) {
                 Box(
-                    Modifier.width(56.dp).height(48.dp).clip(RoundedCornerShape(10.dp)).clickable(enabled = !working, onClick = onOpen),
+                    Modifier.width(56.dp).height(48.dp).clip(MikaShapes.Tile).clickable(enabled = !working, onClick = onOpen),
                     contentAlignment = Alignment.Center,
                 ) {
                     Text(stringResource(R.string.file_library_preview), style = MikaType.Label, color = c.accent)
                 }
             } else {
                 Box(
-                    Modifier.width(56.dp).height(48.dp).clip(RoundedCornerShape(10.dp)).clickable(enabled = !working, onClick = onMore),
+                    Modifier.width(56.dp).height(48.dp).clip(MikaShapes.Tile).clickable(enabled = !working, onClick = onMore),
                     contentAlignment = Alignment.Center,
                 ) {
                     Icon(MikaIcons.More, stringResource(R.string.more), Modifier.size(20.dp), tint = c.ink3)
@@ -898,7 +938,7 @@ private fun LibraryFileRow(
 private fun ArchivedTag() {
     val c = MikaTheme.colors
     Row(
-        Modifier.clip(RoundedCornerShape(6.dp)).background(c.accentSoft).padding(horizontal = 5.dp, vertical = 1.dp)
+        Modifier.clip(RoundedCornerShape(MikaRadius.BubbleTail)).background(c.accentSoft).padding(horizontal = 5.dp, vertical = 1.dp)
             .testTag("file-library-archived"),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(3.dp),
@@ -910,25 +950,25 @@ private fun ArchivedTag() {
 
 /** 文件类型块:上面一个图形,下面扩展名。 */
 @Composable
-private fun FileTypeTile(name: String) {
+internal fun FileTypeTile(name: String) {
     val c = MikaTheme.colors
     val (icon, label) = fileBadge(name)
     Column(
-        Modifier.size(width = 48.dp, height = 54.dp).clip(RoundedCornerShape(11.dp)).background(c.fill),
+        Modifier.size(width = 48.dp, height = 54.dp).clip(MikaShapes.Chip).background(c.fill),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
         Icon(icon, null, Modifier.size(22.dp), tint = c.ink2)
         Text(
             label, Modifier.padding(top = 2.dp),
-            style = TextStyle(fontSize = 9.sp, lineHeight = 11.sp, fontWeight = FontWeight.Medium, letterSpacing = 0.6.sp),
+            style = MikaType.Micro.copy(fontWeight = FontWeight.Medium, letterSpacing = 0.6.sp),
             color = c.ink2, maxLines = 1,
         )
     }
 }
 
 /** 文件块的图形和扩展名;图片、代码、文档各一种图形。 */
-private fun fileBadge(name: String): Pair<ImageVector, String> {
+internal fun fileBadge(name: String): Pair<ImageVector, String> {
     val ext = name.substringAfterLast('.', "").uppercase(Locale.ROOT)
     val icon = if (LibraryFileType.of(name) == LibraryFileType.Image) MikaIcons.Photo else when (ext) {
         "HTML", "HTM", "CSS", "JS", "JSX", "TS", "TSX", "JSON", "KT", "KTS", "JAVA", "PY", "SH",
@@ -960,7 +1000,7 @@ private fun LibraryBatchBar(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Row(
-                Modifier.height(48.dp).clip(RoundedCornerShape(14.dp)).background(c.fill)
+                Modifier.height(48.dp).clip(MikaShapes.Button).background(c.fill)
                     .clickable(enabled = enabled, role = Role.Button, onClick = onShare)
                     .testTag("file-library-share-selected")
                     .padding(horizontal = 16.dp),
@@ -974,7 +1014,7 @@ private fun LibraryBatchBar(
                 )
             }
             Row(
-                Modifier.weight(1f).height(48.dp).clip(RoundedCornerShape(14.dp))
+                Modifier.weight(1f).height(48.dp).clip(MikaShapes.Button)
                     .background(if (enabled) c.accent else c.accent.copy(alpha = 0.35f))
                     .clickable(enabled = enabled, role = Role.Button, onClick = onAdd)
                     .testTag("file-library-add-selected")

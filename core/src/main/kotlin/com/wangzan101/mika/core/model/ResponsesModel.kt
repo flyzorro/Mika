@@ -107,7 +107,7 @@ class ResponsesModel(
     private suspend fun request(bearer: String?, system: String, messages: List<Message>, tools: List<ToolSpec>, includeReasoning: Boolean): Request =
         Request.Builder().url(endpoint)
             .withHeaders(headers)
-            .apply { if (!bearer.isNullOrEmpty()) header("Authorization", "Bearer $bearer") }
+            .apply { if (!bearer.isNullOrEmpty()) headerOrReject("Authorization", "Bearer $bearer") }
             .header("Accept", "text/event-stream")
             .postInference(InferenceProtocol.Responses, body(system, messages, tools, includeReasoning)) {
                 if (chatGptPlan || endpoint.toHttpUrlOrNull()?.host == "api.openai.com") "openai" else "openai_compatible"
@@ -208,7 +208,7 @@ class ResponsesModel(
             ModelHttp.contextTooLong(status, body) -> ModelError.ContextTooLong()
             status == 404 -> ModelError.ModelNotFound(model, ModelAccessErrors.jsonDetail(body))
             status in 500..599 -> ModelError.Server(status)
-            else -> ModelError.BadResponse("HTTP $status ${body.take(200)}")
+            else -> if (status >= 400) ModelError.Server(status, ModelAccessErrors.detail(body)) else ModelError.BadResponse("HTTP $status ${body.take(200)}")
         }
 
     private companion object {
@@ -325,9 +325,9 @@ private class ResponsesStream(
         val u = el as? JsonObject ?: return null
         fun int(o: JsonObject?, k: String) = (o?.get(k) as? JsonPrimitive)?.intOrNull
         val input = int(u, "input_tokens") ?: return null
-        val cached = int(u["input_tokens_details"] as? JsonObject, "cached_tokens") ?: 0
+        val cached = int(u["input_tokens_details"] as? JsonObject, "cached_tokens")
         val output = int(u, "output_tokens") ?: 0
         val reasoning = (int(u["output_tokens_details"] as? JsonObject, "reasoning_tokens") ?: 0).coerceIn(0, output)
-        return Usage(input, output, cached.coerceAtMost(input), reasoning)
+        return Usage(input, output, (cached ?: 0).coerceAtMost(input), reasoning, cacheReported = cached != null)
     }
 }

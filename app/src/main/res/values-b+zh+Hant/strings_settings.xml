@@ -5,7 +5,6 @@
     <string name="language_title">語言</string>
     <string name="language_system">跟隨系統</string>
     <string name="language_system_detail">系統語言 Mika 有譯文時用它,沒有時用英文</string>
-    <string name="settings_basic">常用</string>
     <string name="settings_language_appearance">語言與外觀</string>
     <string name="settings_model">模型</string>
     <string name="settings_model_sub">模型、服務商與 Token 用量</string>
@@ -14,7 +13,6 @@
     <string name="settings_during_work">任務運行</string>
     <string name="settings_during_work_sub">自主模式、操作節奏、步數上限與聲音</string>
     <string name="settings_notif_sub">什麼時候彈出、去系統裡改</string>
-    <string name="settings_privacy">我的資料</string>
     <string name="settings_memory_data">記憶與資料</string>
     <string name="settings_memory_sub">記憶、技能、操作路線與網站登入</string>
     <string name="settings_saved_data">儲存的資料</string>
@@ -22,10 +20,8 @@
     <plurals name="settings_count_sites">
         <item quantity="other">%1$d 個</item>
     </plurals>
-    <string name="settings_other">其他</string>
-    <string name="settings_advanced">進階與其他</string>
-    <string name="settings_advanced_sub">代理、計算環境、連接與修復</string>
-    <string name="settings_connections">網路與連接</string>
+    <string name="settings_advanced">進階</string>
+    <string name="settings_advanced_sub">擴充、網路、執行環境與維護</string>
     <string name="settings_maintenance">維護</string>
     <string name="settings_sandbox">檔案與計算環境</string>
     <string name="settings_routes">記住的操作路線</string>
@@ -54,6 +50,8 @@
     <string name="settings_notif_master">通知總開關</string>
     <string name="settings_allowed">已允許</string>
     <string name="settings_task_notifs">任務通知</string>
+    <string name="settings_live_task_updates">即時任務通知</string>
+    <string name="settings_live_task_updates_detail">在系統設定中選擇是否在狀態列顯示進行中的任務</string>
     <string name="settings_keep_on">螢幕保持常亮</string>
     <string name="settings_keep_on_sub">任務進行時螢幕不熄滅(沒在用時照常變暗),結束後恢復</string>
     <string name="settings_mute">被操作的 App 靜音</string>
@@ -66,6 +64,15 @@
     <string name="settings_pace_human">像人</string>
     <string name="settings_pace_human_detail">在所有 App 裡都放慢，每個畫面先看一會兒再往下點</string>
     <string name="settings_pace_foot">有的 App 發現操作太快會退出登入或要求驗證。節奏越慢，任務用時越長。</string>
+    <string name="settings_pace_per_app">按應用設定</string>
+    <string name="settings_pace_per_app_sub">給風控嚴的 App 單獨放慢，或把不需要等的單獨加快；沒設的跟隨上面的全域檔</string>
+    <string name="settings_pace_per_app_intro">列表裡的 App 按自己的檔位執行；未列入的跟隨全域檔位（現在是 %1$s）。</string>
+    <string name="settings_pace_per_app_empty">還沒有按應用設定的 App。</string>
+    <string name="settings_pace_per_app_add">新增 App</string>
+    <string name="settings_pace_per_app_search">搜尋 App</string>
+    <string name="settings_pace_per_app_none">沒有相符的 App</string>
+    <string name="settings_pace_per_app_pick">選它</string>
+    <string name="settings_pace_per_app_remove">刪除（跟隨全域檔位）</string>
     <string name="settings_parallel">同時進行的任務</string>
     <string name="settings_parallel_sub">不同對話的任務各佔一塊虛擬螢幕</string>
     <plurals name="settings_count_tasks">
@@ -102,6 +109,8 @@
     <string name="net_proxy">網路代理</string>
     <string name="net_proxy_row_sub">呼叫模型、下載更新、內建瀏覽器和指令都走它</string>
     <string name="net_proxy_hint">Mika 呼叫模型（對話、模型清單、帳號登入）、在 App 裡下載更新、內建瀏覽器，以及「檔案與計算環境」裡的指令（那裡允許連網時）都走這個代理。這台手機和區域網路裡的位址（localhost、192.168.x.x、10.x.x.x、以 .local 結尾的名稱）一律直連，本機模型照常能用。可以帶「使用者:密碼@」，加密保存在這台手機上。留空表示直連。</string>
+    <string name="net_proxy_summary">模型請求、更新、內建瀏覽器和檔案環境的命令走這個代理</string>
+    <string name="details">詳情</string>
     <string name="net_proxy_invalid">寫成 http://主機:連接埠 的樣子（也可以是 socks5、socks5h、https），主機前面可以帶「使用者:密碼@」。</string>
     <string name="net_proxy_container_only">https:// 代理只給「檔案與計算環境」裡的指令用，Mika 自己的連線照舊直連。想全部走代理，請用 http:// 或 socks5://。</string>
     <string name="net_proxy_browser_unsupported">這台手機的 WebView 不支援單獨設定代理，內建瀏覽器直連。</string>
@@ -192,6 +201,8 @@
     <string name="mcp_servers_status_fail">連線失敗:%1$s</string>
     <string name="mcp_servers_refresh_all">測試全部</string>
     <string name="mcp_servers_allowlist">允許的工具(英文逗號分隔,留空為全部)</string>
+    <string name="settings_show_task_cost">顯示任務費用</string>
+    <string name="settings_show_task_cost_sub">以人民幣估算新任務的 DeepSeek API 費用。</string>
     <string name="quit_title">完全結束 Mika</string>
     <string name="quit_row_sub">停止背景任務，收起浮動膠囊</string>
     <string name="quit_confirm_body">正在進行的任務會停止，浮動膠囊和通知都會收起。下次開啟 Mika 就回來。</string>
@@ -204,7 +215,7 @@
     <string name="settings_token_budget_invalid">請輸入 %1$s 到 %2$s 的整數。</string>
     <string name="settings_auto_archive">自動歸檔對話</string>
     <string name="settings_auto_archive_sub">太久沒有新訊息的對話自動收進歸檔</string>
-    <string name="settings_auto_archive_hint">超過選定的時間沒有新訊息的對話會收進歸檔。置頂的對話和有任務在運行的對話不歸檔；隨時可以在對話列表的歸檔裡恢復。</string>
+    <string name="settings_auto_archive_hint">超過選定的時間沒有新訊息的對話會收進歸檔。</string>
     <plurals name="settings_auto_archive_days">
         <item quantity="other">%1$d 天</item>
     </plurals>
@@ -213,4 +224,15 @@
     <string name="settings_scheduled_quiet_start">開始時間</string>
     <string name="settings_scheduled_quiet_end">結束時間</string>
     <string name="settings_scheduled_quiet_equal">請設定不同的開始與結束時間，通知才會靜音。</string>
+    <string name="settings_capabilities">能力</string>
+    <string name="settings_preferences">偏好</string>
+    <string name="settings_data">資料</string>
+    <string name="settings_extensions">擴充與連線</string>
+    <string name="settings_network">網路</string>
+    <string name="settings_runtime">執行環境</string>
+    <string name="settings_trigger_run_limit">定時任務最長執行時間</string>
+    <string name="settings_trigger_run_limit_sub">定時任務執行時沒人看著。關著表示不限制；到時間任務會停下，並說明是逾時。</string>
+    <plurals name="settings_trigger_run_minutes_n">
+        <item quantity="other">%1$d 分鐘</item>
+    </plurals>
 </resources>

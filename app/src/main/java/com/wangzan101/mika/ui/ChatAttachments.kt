@@ -84,6 +84,8 @@ import com.wangzan101.mika.ui.theme.MikaColors
 import com.wangzan101.mika.ui.theme.MikaIcons
 import com.wangzan101.mika.ui.theme.MikaTheme
 import com.wangzan101.mika.ui.theme.MikaType
+import com.wangzan101.mika.ui.theme.MikaRadius
+import com.wangzan101.mika.ui.theme.MikaShapes
 import kotlinx.coroutines.launch
 
 /** 对话页附件的说法。 */
@@ -121,6 +123,7 @@ internal fun AttachPanelHost(
     selected: List<PendingAttachment>,
     onPicked: (List<String>) -> Unit,
     onToggle: (PendingAttachment) -> Boolean,
+    onDeviceFiles: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
@@ -189,6 +192,7 @@ internal fun AttachPanelHost(
         },
         onAlbum = openAlbum,
         onFiles = { files.launch(arrayOf("*/*")) },
+        onDeviceFiles = onDeviceFiles,
         onToggle = { if (!onToggle(it)) Toast.makeText(context, AttachCopy.FULL, Toast.LENGTH_SHORT).show() },
         onGrant = {
             val activity = context.findActivity()
@@ -218,6 +222,7 @@ internal fun AttachPanel(
     onToggle: (PendingAttachment) -> Unit,
     onGrant: () -> Unit,
     modifier: Modifier = Modifier,
+    onDeviceFiles: (() -> Unit)? = null,
 ) {
     val c = MikaTheme.colors
     Column(modifier.fillMaxSize().testTag("attach-panel").padding(start = 12.dp, end = 12.dp, top = 12.dp, bottom = 8.dp)) {
@@ -225,6 +230,7 @@ internal fun AttachPanel(
             Tile(MikaIcons.PhotoCamera, AttachCopy.CAMERA, onCamera)
             Tile(MikaIcons.Photo, AttachCopy.ALBUM, onAlbum)
             Tile(MikaIcons.Paperclip, AttachCopy.FILES, onFiles)
+            if (onDeviceFiles != null) Tile(MikaIcons.Folder, stringResource(R.string.device_browser_title), onDeviceFiles)
         }
         if (access == PhotoAccess.None) {
             Column(
@@ -280,7 +286,7 @@ private fun RowScope.Tile(icon: ImageVector, label: String, onClick: () -> Unit)
 @Composable
 private fun PanelLink(text: String, onClick: () -> Unit) {
     Text(
-        text, Modifier.clip(RoundedCornerShape(8.dp)).clickable(role = Role.Button, onClick = onClick).padding(horizontal = 6.dp, vertical = 4.dp),
+        text, Modifier.clip(MikaShapes.Tile).clickable(role = Role.Button, onClick = onClick).padding(horizontal = 6.dp, vertical = 4.dp),
         style = LinkText, color = MikaTheme.colors.accent,
     )
 }
@@ -310,9 +316,14 @@ private fun RecentCell(photo: PendingAttachment, order: Int?, onClick: () -> Uni
 
 // ---------- 待发 ----------
 
-/** 输入框上方一排待发的附件:照片是方块缩略图,文件是小卡片(类型、名字、大小),右上角 × 去掉。 */
+/** 输入框上方一排待发的附件:照片是方块缩略图,文件是小卡片(类型、名字、大小),点一下预览或打开,右上角 × 去掉。 */
 @Composable
-internal fun PendingTray(items: List<PendingAttachment>, onRemove: (String) -> Unit, modifier: Modifier = Modifier) {
+internal fun PendingTray(
+    items: List<PendingAttachment>,
+    onRemove: (String) -> Unit,
+    modifier: Modifier = Modifier,
+    onOpen: ((PendingAttachment) -> Unit)? = null,
+) {
     val c = MikaTheme.colors
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -324,18 +335,23 @@ internal fun PendingTray(items: List<PendingAttachment>, onRemove: (String) -> U
             val conversationId = a.workspaceConversationId
             val path = a.workspacePath
             val workspaceImage = if (conversationId != null && path != null) AttachImage.Sent(conversationId, path) else null
-            val openModifier = if (workspaceImage != null) {
-                Modifier.clickable(
-                    role = if (a.photo) Role.Image else Role.Button,
-                    onClickLabel = stringResource(if (a.photo) R.string.attach_view_large else R.string.chat_open),
-                ) {
+            val openModifier = Modifier.clickable(
+                role = if (a.photo) Role.Image else Role.Button,
+                onClickLabel = stringResource(if (a.photo) R.string.attach_view_large else R.string.chat_open),
+            ) {
+                if (onOpen != null) {
+                    onOpen(a)
+                } else {
                     scope.launch {
-                        if (!AttachFiles.openSent(context, workspaceImage.conversationId, workspaceImage.path)) {
-                            Toast.makeText(context, AttachCopy.GONE, Toast.LENGTH_SHORT).show()
+                        val opened = if (workspaceImage != null) {
+                            AttachFiles.openSent(context, workspaceImage.conversationId, workspaceImage.path)
+                        } else {
+                            AttachFiles.openPending(context, a.uri, a.name)
                         }
+                        if (!opened) Toast.makeText(context, AttachCopy.GONE, Toast.LENGTH_SHORT).show()
                     }
                 }
-            } else Modifier
+            }
             Box {
                 if (a.photo) {
                     val thumb = rememberAttachImage(workspaceImage ?: AttachImage.Picked(a.uri), TRAY_PX)
@@ -383,6 +399,19 @@ internal fun SentAttachments(parsed: AttachmentMessage.Parsed, conversationId: S
         for (f in parsed.files) SentFileCard(f, maxWidth) { onOpen(f) }
     }
 }
+
+/** 回答里模型产出的 `/workspace/...` 引用:照片排格子、文件画卡片,和回答一起左对齐。 */
+@Composable
+internal fun OutputRefs(answer: String, conversationId: String?, onOpen: (AttachmentMessage.Item) -> Unit) {
+    val parsed = remember(answer) { outputRefsParsed(answer) }
+    if (!parsed.hasAttachments) return
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        if (parsed.photos.isNotEmpty()) SentPhotos(parsed.photos, conversationId, OutputRefMaxWidth, onOpen)
+        for (f in parsed.files) SentFileCard(f, OutputRefMaxWidth) { onOpen(f) }
+    }
+}
+
+private val OutputRefMaxWidth = 320.dp
 
 @Composable
 private fun SentPhotos(photos: List<AttachmentMessage.Item>, conversationId: String?, maxWidth: Dp, onOpen: (AttachmentMessage.Item) -> Unit) {
@@ -441,7 +470,7 @@ private fun SentFileCard(f: AttachmentMessage.Item, maxWidth: Dp, onClick: () ->
 /** 文件类型角标:按扩展名配色,上面写扩展名。 */
 @Composable
 private fun TypeBadge(name: String, modifier: Modifier, small: Boolean) {
-    val shape = RoundedCornerShape(if (small) 5.dp else 7.dp)
+    val shape = RoundedCornerShape(if (small) MikaRadius.Micro else MikaRadius.Tile)
     Box(modifier.background(badgeColor(FileBadge.kind(name), MikaTheme.colors), shape), contentAlignment = Alignment.Center) {
         Text(FileBadge.text(name), style = if (small) BadgeSmall else BadgeLarge, color = Color.White, maxLines = 1)
     }
@@ -462,18 +491,18 @@ private const val SINGLE_PX = 640
 
 private val SingleWidth = 200.dp
 private val NeutralBadge = Color(0xFF8E8E93)
-private val TileShape = RoundedCornerShape(16.dp)
-private val GridShape = RoundedCornerShape(12.dp)
-private val CellShape = RoundedCornerShape(6.dp)
-private val ChipShape = RoundedCornerShape(12.dp)
-private val GridPhotoShape = RoundedCornerShape(14.dp)
-private val FileCardShape = RoundedCornerShape(14.dp)
-private val PanelText = TextStyle(fontSize = 13.5.sp, lineHeight = 21.sp)
-private val TileText = TextStyle(fontSize = 12.5.sp, lineHeight = 16.sp)
-private val LinkText = TextStyle(fontSize = 12.5.sp, lineHeight = 16.sp)
-private val BadgeText = TextStyle(fontSize = 12.sp, lineHeight = 14.sp, fontWeight = FontWeight.SemiBold)
-private val BadgeSmall = TextStyle(fontSize = 8.5.sp, lineHeight = 10.sp, fontWeight = FontWeight.Bold)
-private val BadgeLarge = TextStyle(fontSize = 10.5.sp, lineHeight = 12.sp, fontWeight = FontWeight.Bold)
-private val ChipName = TextStyle(fontSize = 12.5.sp, lineHeight = 16.sp, fontWeight = FontWeight.Medium)
-private val ChipMeta = TextStyle(fontSize = 11.5.sp, lineHeight = 15.sp)
-private val FileCardName = TextStyle(fontSize = 14.sp, lineHeight = 19.sp, fontWeight = FontWeight.Medium)
+private val TileShape = MikaShapes.Card
+private val GridShape = MikaShapes.Chip
+private val CellShape = RoundedCornerShape(MikaRadius.BubbleTail)
+private val ChipShape = MikaShapes.Chip
+private val GridPhotoShape = MikaShapes.Button
+private val FileCardShape = MikaShapes.Button
+private val PanelText = MikaType.Caption
+private val TileText = MikaType.Hint
+private val LinkText = MikaType.Hint
+private val BadgeText = MikaType.Hint.copy(fontWeight = FontWeight.SemiBold)
+private val BadgeSmall = MikaType.Micro.copy(fontWeight = FontWeight.Bold)
+private val BadgeLarge = MikaType.Micro.copy(fontWeight = FontWeight.Bold)
+private val ChipName = MikaType.Hint.copy(fontWeight = FontWeight.Medium)
+private val ChipMeta = MikaType.Micro
+private val FileCardName = MikaType.Body.copy(fontWeight = FontWeight.Medium)

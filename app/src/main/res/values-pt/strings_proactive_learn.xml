@@ -20,6 +20,9 @@
     <string name="proactive_learn_topic_detail">%1$s · %2$s · %3$d dias · visto por último %4$s</string>
     <string name="proactive_learn_topic_outcomes">%1$d apps · abertas %2$d · dispensadas %3$d</string>
     <string name="proactive_learn_delete">Excluir</string>
+    <string name="proactive_learn_topic_merge">Mesclar…</string>
+    <string name="proactive_learn_topic_merge_title">Mesclar “%1$s” com</string>
+    <string name="proactive_learn_topic_merge_body">Os dias e as contagens dele são somados ao tema que você escolher, e esse nome passa a contar lá. Não é possível desfazer.</string>
     <string name="proactive_learn_clear_all">Limpar tudo o que o Mika reuniu</string>
     <string name="proactive_learn_clear_all_body">Apagar todos os temas, contatos e resumos que o Mika reuniu, e o texto de notificações guardado? Não dá para desfazer. O Mika voltará a reunir a partir das novas notificações.</string>
     <string name="proactive_learn_clear_app">Limpar o que veio de %1$s</string>
@@ -76,6 +79,7 @@
     <string name="proactive_learn_level_balanced_sub">Um tema conta depois de 2 dias. Até 20 conversas por dia por app são sinalizadas. O que foi reunido dos apps em nível Alto entra nas tarefas.</string>
     <string name="proactive_learn_level_aggressive_sub">Um tema conta depois de 1 dia. Sem limite de conversas sinalizadas. O que foi reunido dos apps em nível Médio ou Alto entra nas tarefas.</string>
     <string name="proactive_learn_level_note">“Entra nas tarefas” significa que cada tarefa que você inicia neste telefone recebe o resumo de hoje e de ontem e o que o Mika notou sobre você, marcado como vindo das notificações e não de você. Em nenhum nível o Mika fala sem ser chamado nem responde por você. O que é levado vai para o modelo que executa a tarefa, que pode não ser o que você confirmou para a triagem das notificações. Uma tarefa também pode ler o texto das notificações de hoje e de ontem desses apps quando precisar. Quando há espaço, os resumos da semana passada e do mês passado também são anexados, e uma tarefa que precise de mais pode ler os resumos diários, semanais e mensais guardados. Depois de uma tarefa que recebeu isso, nenhuma memória é extraída automaticamente do que você disse; o que você mesmo disser para lembrar continua sendo salvo.</string>
+    <string name="proactive_learn_level_summary">Vai para as tarefas = cada tarefa recebe o resumo de hoje e ontem, marcado como vindo de notificações.</string>
     <string name="proactive_learn_tier_title">Nível de fonte de %1$s</string>
     <string name="proactive_learn_tier_low">Baixo</string>
     <string name="proactive_learn_tier_mid">Médio</string>

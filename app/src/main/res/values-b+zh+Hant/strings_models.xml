@@ -13,6 +13,9 @@
     <string name="models_lead">每件事用哪個模型，在「用途」裡選；模型來自下面連好的服務商。</string>
     <string name="models_roles">用途</string>
     <string name="models_providers">服務商</string>
+    <plurals name="models_providers_count">
+        <item quantity="other">%1$d 家</item>
+    </plurals>
     <string name="models_add_provider">新增服務商</string>
     <string name="models_key_note">API Key 只儲存在這臺手機上，加密存放。</string>
     <string name="models_main_add_first">先新增一個服務商</string>
@@ -60,9 +63,15 @@
     <string name="role_main_what">思考和辦事</string>
     <string name="role_vision_what">讀取螢幕時看截圖</string>
     <string name="role_light_what">判斷、記東西這類小事</string>
-    <string name="role_main_hint">思考和辦事都靠它。選支援工具呼叫的模型，辦事才靠得住。</string>
-    <string name="role_vision_hint">讀取螢幕時把截圖給它看，介面複雜時更準。不選也能用，只靠文字讀取螢幕。</string>
-    <string name="role_light_hint">判斷任務有沒有辦完、整理記憶這類小事用它。選便宜、快的更合適。</string>
+    <string name="role_main_hint">選支援工具呼叫的模型，辦事才靠得住。</string>
+    <string name="main_fallback_name">備援模型 %1$d</string>
+    <string name="main_fallback_what">主模型不能用時接手</string>
+    <string name="main_fallback_pick">選一個備援模型</string>
+    <string name="main_fallback_clear">不設定備援</string>
+    <string name="main_fallback_failed">備援模型設定失敗</string>
+    <string name="main_fallback_is_main">這個模型就是目前主模型，不能同時當備援</string>
+    <string name="role_vision_hint">不選也能用，只靠文字讀取螢幕。</string>
+    <string name="role_light_hint">選便宜、快的更合適。</string>
     <string name="models_delete_title">刪除「%1$s」？</string>
     <string name="models_delete_body">這家的 API Key 會一起刪掉。</string>
     <string name="models_delete_unused">它沒在給任何用途幹活。</string>
@@ -171,7 +180,7 @@
     <!-- 設定 › 模型：語音轉文字這個用途和它的選擇頁 -->
     <string name="role_speech">語音轉文字</string>
     <string name="role_speech_what">按住說話時用</string>
-    <string name="speech_hint">可使用手機自帶識別、邊說邊轉的語音服務，或說完再轉的服務商模型；線上服務使用你的服務商額度。</string>
+    <string name="speech_hint">線上服務使用你的服務商額度。</string>
     <string name="speech_system">手機自帶</string>
     <string name="speech_system_offline">可離線</string>
     <string name="speech_system_online">需連網</string>
@@ -192,4 +201,35 @@
     <string name="models_daily_token_budget">服務商每日 Token 預算</string>
     <string name="models_daily_token_budget_sub">按本地日曆日統計這家所有模型和用途的已回報輸入與輸出 Token。達到預算後不再發起下一次請求；進行中的請求可能超量，未回報用量按 0 計。本地日期變更後自動恢復。</string>
     <string name="models_daily_token_budget_save_failed">預算儲存失敗，原設定未變。</string>
+    <string name="role_voice">Voice model</string>
+    <string name="role_voice_what">Lets Mika speak and read answers aloud</string>
+    <string name="voice_enable">Allow Mika to speak</string>
+    <string name="voice_enable_note">Speech is only made when you tap Read aloud, unless auto-read is on</string>
+    <string name="voice_provider">Service</string>
+    <string name="voice_no_providers">Add a model service first (speech uses the same service and key).</string>
+    <string name="voice_model_name">Model</string>
+    <string name="voice_protocol">API</string>
+    <string name="voice_protocol_openai">OpenAI Speech</string>
+    <string name="voice_protocol_gemini">Gemini TTS</string>
+    <string name="voice_name">Voice</string>
+    <string name="voice_speed">Speed</string>
+    <string name="voice_auto_read">Read every answer aloud</string>
+    <string name="voice_speak_tool">Let Mika speak on its own</string>
+    <string name="voice_max_chars">Longest read (characters)</string>
+    <string name="voice_test">Say a test line</string>
+    <string name="voice_testing">Making a test line…</string>
+    <string name="voice_test_ok">Playing the test line.</string>
+    <string name="voice_test_failed">The test failed: %1$s</string>
+    <string name="voice_footer">Answers are sent to the speech service when you read them. Auto-read and speaking on its own are off by default.</string>
+    <string name="tool_speak">Speak</string>
+    <string name="voice_playing">Speaking…</string>
+    <string name="voice_loading">Preparing the voice…</string>
+    <string name="voice_play_failed">Could not play the voice: %1$s</string>
+    <string name="voice_save_enabled">Allow saving audio to the music library</string>
+    <string name="voice_save_note">Off by default. Saving writes to Music/Mika</string>
+    <string name="voice_ask_before_save">Ask before each audio save</string>
+    <string name="tool_audio_generate">Generate speech</string>
+    <string name="tool_audio_save">Save audio</string>
+    <string name="tool_share_audio">Share audio to app</string>
+    <string name="tool_audio_transcribe">Transcribe audio</string>
 </resources>

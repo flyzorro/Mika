@@ -87,7 +87,7 @@ class AgentLoopTest {
     /** 只有手机、展开了手机一组之后的系统提示词:几组的入口、交给用户的规矩、手机一段(去掉没提供的工具那几行)。 */
     private fun phoneOpenedPrompt(base: String) = listOf(
         base, com.wangzan101.mika.core.capability.PromptEnv(setOf("phone_launch_app", "phone_set_alarm"), false).gate(SystemPrompt.read("groups")), SystemPrompt.read("handover"),
-        SystemPrompt.read("phone").lines().filterNot { "<!-- needs: phone_open_link -->" in it || "<!-- needs: phone_find_visually -->" in it }.joinToString("\n"),
+        SystemPrompt.read("phone").lines().filterNot { "<!-- needs: phone_open_link -->" in it || "<!-- needs: phone_find_visually -->" in it || "<!-- needs: phone_sms_login -->" in it }.joinToString("\n"),
     ).joinToString("\n\n")
 
     private fun loop(
@@ -108,6 +108,21 @@ class AgentLoopTest {
         assertTrue(main.offeredTools.last().isEmpty())
         assertTrue(events.none { it is RunEvent.ToolResult })
         assertTrue(events.filterIsInstance<RunEvent.State>().any { it.name == "intent_gate" && it.detail == "Discuss" })
+    }
+
+    @Test fun typedIntentDecisionUsesExistingDiscussionGateAndIsRecorded() = runTest {
+        val main = FakeModel(tools(call("phone_list_apps")), finish("可以，先讨论具体流程。"))
+        val judge = FakeModel()
+        val events = mutableListOf<RunEvent>()
+        val end = AgentLoop(main, toolDispatcher(FakeScreen()), "BASE", intentJudge = judge,
+            intentDecision = com.wangzan101.mika.core.decision.DecisionModel { _, _, _, _ ->
+                com.wangzan101.mika.core.decision.DecisionChoice("DISCUSS", 0.98)
+            }, sink = object : RunSink { override fun event(e: RunEvent) { events += e } })
+            .run("以后可以帮我把内容同步到公众号并发送，对吧？")
+        assertTrue(end is TaskState.Succeeded)
+        assertTrue(judge.requests.isEmpty())
+        assertTrue(events.none { it is RunEvent.ToolResult })
+        assertTrue(events.filterIsInstance<RunEvent.State>().any { it.name == "jev_intent" && it.detail == "selected:Discuss" })
     }
 
     // 判断不出意图(判断模型和兜底的主模型都没给出三个词之一)时照主模型原来的决定执行,不改成文字回答
@@ -711,7 +726,7 @@ class AgentLoopTest {
         val m = FakeModel(*(1..4).map { tools(call("phone_tap", """{"x":500,"y":500}""")) }.toTypedArray())
         val r = AgentLoop(m, toolDispatcher(s), "BASE", retry = FIXED_RETRY).run("t")
         assertTrue("$r", r is TaskState.Failed && r.kind == FailKind.Guard)
-        assertTrue("$r", r is TaskState.Failed && "无法确认操作是否生效" in r.reason)
+        assertTrue("$r", r is TaskState.Failed && "不响应" in r.reason)
         assertEquals(3, m.requests.size)
     }
 
@@ -755,6 +770,72 @@ class AgentLoopTest {
         assertTrue("elementsText" in last.withoutRuntime().last().results().single().content)
         // 回看是只读的诊断类工具,不算动作
         assertTrue(verb("view_past_screens") in DIAGNOSTIC_VERBS)
+    }
+
+    @Test fun coffeeTaskConfirmsGoalsWithoutCountingClicksOrClosingOnFiveNotes() = runTest {
+        val events = mutableListOf<RunEvent>()
+        val sink = object : RunSink { override fun event(e: RunEvent) { events += e } }
+        fun block(json: String) = "<task_progress>$json</task_progress>"
+        fun step(seconds: Double, narration: String, json: String? = null) =
+            reply(Part.Text(narration + json?.let(::block).orEmpty()), call("wait", """{"seconds":$seconds}"""))
+        val address = """{"confirmed":[{"id":1,"evidence":"高德地址卡显示天目里地址"}]}"""
+        val m = FakeModel(
+            reply(Part.Text(block("""{"criteria":["确认地址","确认店名","根据五篇笔记给出推荐"],"metric":{"name":"步骤完成","done":0,"total":3}}""")),
+                call("phone_launch_app", """{"packageName":"com.x","reason":"查看地址卡"}""")),
+            step(0.2, "地址已核实", address),
+            step(0.3, "打开点评"),
+            step(0.4, "打开店铺页", address), // 重报地址不会当作确认店名
+            reply(Part.Text(block("""{"confirmed":[{"id":2,"evidence":"店铺页标题为山池咖啡"}]}""")), call("phone_observe")),
+            step(0.6, "笔记已读完", """{"metric":{"name":"已读笔记","done":5,"total":5},"complete":true}"""),
+            finish(block("""{"confirmed":[{"id":3,"evidence":"根据五篇笔记给出推荐：拿铁"}]}""") + "推荐拿铁"),
+        )
+        val end = AgentLoop(m, toolDispatcher(FakeScreen()), "BASE", sink = sink).run("找咖啡馆并推荐咖啡")
+        com.wangzan101.mika.core.testing.assertAnswered("推荐拿铁", end)
+        val updates = events.filterIsInstance<RunEvent.Criteria>()
+        assertEquals(listOf(0, 1, 2, 2, 3), updates.map { it.confirmedIds?.size })
+        assertEquals(listOf(false, false, false, false, true), updates.map { it.complete })
+        assertEquals(7, m.requests.size)
+        assertTrue(events.none { it is RunEvent.State && it.name == "task_progress_plan_reminder" })
+        assertTrue("phone_observe" in m.offeredTools.last())
+        fun runtime(i: Int) = m.requests[i].last().parts.filterIsInstance<Part.Text>().last().text
+        assertTrue("2: " in runtime(4) && "1: " !in runtime(4))
+        assertTrue("report its ID and evidence" in runtime(4))
+        assertTrue("report its ID and evidence" !in runtime(5))
+        assertTrue("3: " in runtime(6) && "2: " !in runtime(6))
+    }
+
+    @Test fun missingChecklistCanBeBackfilledOnTheNextCoffeeTaskReply() = runTest {
+        val events = mutableListOf<RunEvent>()
+        val sink = object : RunSink { override fun event(e: RunEvent) { events += e } }
+        val screen = object : ScreenPort by FakeScreen() {
+            override suspend fun listApps() = listOf("com.autonavi.minimap" to "高德地图")
+        }
+        val m = FakeModel(
+            tools(call("phone_list_apps")), // 首次调用没建清单，但工具结果已经能确认第一项。
+            reply(Part.Text("""<task_progress>{"criteria":["确认有高德地图","确认咖啡店名","给出推荐"],"confirmed":[{"id":1,"evidence":"已安装列表有高德地图"}]}</task_progress>"""),
+                call("wait", """{"seconds":0.2}""")),
+            finish("高德已安装，店名和推荐尚未核实。"),
+        )
+        AgentLoop(m, toolDispatcher(screen), "BASE", sink = sink).run("确认高德已安装，再找咖啡馆并给出推荐")
+        val runtime = m.requests.map { request -> request.last().parts.filterIsInstance<Part.Text>().last().text }
+        assertEquals(3, runtime.size)
+        assertFalse("No goal checklist" in runtime[0])
+        assertTrue("No goal checklist" in runtime[1] && "<task_progress>" in runtime[1])
+        assertTrue("Pending goal IDs: 2:" in runtime[2] && "3:" in runtime[2])
+        val reported = events.filterIsInstance<RunEvent.Criteria>().single()
+        assertEquals(setOf(1), reported.confirmedIds)
+        assertEquals(3, reported.criteria.size)
+    }
+
+    @Test fun ignoredChecklistReminderDoesNotRepeatOrInventProgress() = runTest {
+        val events = mutableListOf<RunEvent>()
+        val sink = object : RunSink { override fun event(e: RunEvent) { events += e } }
+        val m = FakeModel(finish(""), tools(call("phone_list_apps")), tools(call("wait", """{"seconds":0.2}""")), finish())
+        com.wangzan101.mika.core.testing.assertAnswered(DONE, loop(m, sink = sink).run("查店"))
+        val runtime = m.requests.map { it.last().parts.filterIsInstance<Part.Text>().last().text }
+        assertEquals(listOf(false, false, true, false), runtime.map { "No goal checklist" in it })
+        assertTrue(events.none { it is RunEvent.Criteria })
+        assertEquals(1, events.filterIsInstance<RunEvent.State>().count { it.name == "task_progress_plan_reminder" })
     }
 
     @Test fun completedQuantityClosesOutInsteadOfRecheckingForever() = runTest {

@@ -57,6 +57,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.wangzan101.mika.core.chatgpt.SignInFailure
+import com.wangzan101.mika.core.model.ApiKeyText
 import com.wangzan101.mika.core.model.ModelRole
 import com.wangzan101.mika.settings.ModelOption
 import com.wangzan101.mika.settings.ModelOptions
@@ -70,6 +71,7 @@ import com.wangzan101.mika.ui.components.ButtonKind
 import com.wangzan101.mika.ui.components.ButtonSize
 import com.wangzan101.mika.ui.components.MikaButton
 import com.wangzan101.mika.ui.components.MikaSwitch
+import com.wangzan101.mika.ui.components.FieldClearButton
 import com.wangzan101.mika.ui.components.FooterNote
 import com.wangzan101.mika.ui.components.GroupCard
 import com.wangzan101.mika.ui.components.GroupLabel
@@ -97,17 +99,25 @@ import com.wangzan101.mika.voice.SpeechOptions
 
 /** 设置 › 模型:和上手时的配置模型是同一页([ModelSetupScreen]),不在引导流程里。 */
 @Composable
-fun ModelsScreen(store: ProviderStore, onBack: () -> Unit, onOpenSpeech: (() -> Unit)? = null, onOpenUsage: (() -> Unit)? = null) {
-    ModelSetupScreen(store, onboarding = false, onBack = onBack, onDone = onBack, onOpenSpeech = onOpenSpeech, onOpenUsage = onOpenUsage)
+fun ModelsScreen(
+    store: ProviderStore, onBack: () -> Unit,
+    onOpenSpeech: (() -> Unit)? = null,
+    onOpenVoice: (() -> Unit)? = null,
+    onOpenUsage: (() -> Unit)? = null,
+) {
+    ModelSetupScreen(store, onboarding = false, onBack = onBack, onDone = onBack, onOpenSpeech = onOpenSpeech, onOpenVoice = onOpenVoice, onOpenUsage = onOpenUsage)
 }
 
 /** 子页面共用的骨架:顶栏 + 可滚动内容。 */
 @Composable
 internal fun Page(title: String, onBack: () -> Unit, content: @Composable () -> Unit) {
+    val scrollState = rememberSaveable(saver = androidx.compose.foundation.ScrollState.Saver) {
+        androidx.compose.foundation.ScrollState(0)
+    }
     PageBackground {
         Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.navigationBars).windowInsetsPadding(WindowInsets.ime)) {
             TopBar(title, MikaIcons.Back, onBack, stringResource(R.string.back))
-            Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(start = 16.dp, end = 16.dp, bottom = 24.dp)) {
+            Column(Modifier.weight(1f).verticalScroll(scrollState).padding(start = 16.dp, end = 16.dp, bottom = 24.dp)) {
                 content()
             }
         }
@@ -128,9 +138,9 @@ internal fun RoleCard(icon: ImageVector, label: String, line: ModelsCopy.RoleLin
                 Icon(icon, null, Modifier.size(21.dp), tint = c.ink)
             }
             Column(Modifier.weight(1f)) {
-                Text(label, fontSize = 12.5.sp, lineHeight = 17.sp, color = c.ink3)
+                Text(label, style = MikaType.Hint, color = c.ink3)
                 Text(
-                    line.title, Modifier.padding(top = 1.dp), fontSize = 16.sp, lineHeight = 22.sp, fontWeight = FontWeight.SemiBold,
+                    line.title, Modifier.padding(top = 1.dp), style = MikaType.BodyStrong,
                     fontFamily = if (line.isModel) FontFamily.Monospace else null, color = if (line.unset) c.ink3 else c.ink,
                     maxLines = 1, overflow = TextOverflow.Ellipsis,
                 )
@@ -146,7 +156,7 @@ internal fun RoleCard(icon: ImageVector, label: String, line: ModelsCopy.RoleLin
     }
 }
 
-private val RoleTileShape = RoundedCornerShape(12.dp)
+private val RoleTileShape = MikaShapes.Chip
 
 /** 服务商一行:左边是名字首字的图标块;[warning] 是要提醒的一句(用提醒色另起一行)。 */
 @Composable
@@ -159,11 +169,13 @@ internal fun ProviderRow(p: Provider, line: String, first: Boolean, warning: Str
             verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp),
         ) {
             Box(Modifier.size(MikaSize.Tile).background(c.neutralSoft, MikaShapes.Tile), contentAlignment = Alignment.Center) {
-                Text(p.name.take(1).uppercase(), fontSize = 13.sp, fontWeight = FontWeight.Bold, color = c.ink)
+                Text(p.name.take(1).uppercase(), style = MikaType.Caption.copy(fontWeight = FontWeight.Bold), color = c.ink)
             }
             Column(Modifier.weight(1f)) {
                 Text(ModelsCopy.providerName(p), style = MikaType.Body, color = c.ink, maxLines = 1)
-                Text(line, Modifier.padding(top = 2.dp), style = MikaType.Caption, color = c.ink3)
+                val poolCount = com.wangzan101.mika.core.model.KeyPoolManager.shared.keyCount(p.id)
+                val poolTag = if (poolCount > 1) " · Key Pool ($poolCount keys)" else ""
+                Text(line + poolTag, Modifier.padding(top = 2.dp), style = MikaType.Caption, color = if (poolCount > 1) c.ok else c.ink3)
                 warning?.let { Text(it, Modifier.padding(top = 2.dp).testTag("provider-warning-${p.name}"), style = MikaType.Caption, color = c.warn) }
             }
             RowChevron()
@@ -195,14 +207,22 @@ internal fun fixedChoices(role: ModelRole): List<RoleChoice> = when (role) {
  * 标签只作参考,不按能力过滤或置灰;每家下面都能手动填模型名(列表里没有、或这家不提供列表),手填的标「手填」。点一下就生效并返回。
  */
 @Composable
-fun RolePickerContent(ui: ModelSetupUi, role: ModelRole, actions: RolePickerActions, onBack: () -> Unit) {
+fun RolePickerContent(ui: ModelSetupUi, role: ModelRole, actions: RolePickerActions, onBack: () -> Unit,
+    titleOverride: String? = null, hintOverride: String? = null,
+    pickedOverride: ((String, String) -> Boolean)? = null,
+    exclude: ((String, String) -> Boolean)? = null,
+    clearAction: (() -> Unit)? = null, clearSelected: Boolean = false,
+) {
     val c = MikaTheme.colors
     var filter by rememberSaveable { mutableStateOf("") }
     val groups = ui.providers.map { it to ui.options(it) }
     val total = groups.sumOf { it.second.size }
     val q = filter.trim()
-    Page(ModelsCopy.roleName(role), onBack) {
-        Text(ModelsCopy.roleHint(role), Modifier.padding(top = 4.dp, bottom = 12.dp), fontSize = 14.5.sp, lineHeight = 22.sp, color = c.ink2)
+    Page(titleOverride ?: ModelsCopy.roleName(role), onBack) {
+        val hint = hintOverride ?: ModelsCopy.roleHint(role)
+        if (hint.isNotEmpty()) {
+            Text(hint, Modifier.padding(top = 4.dp, bottom = 12.dp), style = MikaType.Body, color = c.ink2)
+        }
         val fixed = fixedChoices(role)
         if (fixed.isNotEmpty()) {
             GroupCard {
@@ -214,6 +234,11 @@ fun RolePickerContent(ui: ModelSetupUi, role: ModelRole, actions: RolePickerActi
                 }
             }
         }
+        if (clearAction != null) {
+            GroupCard {
+                RadioRow(ModelsCopy.FALLBACK_CLEAR, selected = clearSelected, onClick = clearAction, first = true)
+            }
+        }
         if (total > FILTER_FROM) {
             GroupLabel(ModelsCopy.PICK_FROM, Modifier.padding(top = 8.dp))
             Box(Modifier.padding(bottom = 4.dp)) {
@@ -222,7 +247,7 @@ fun RolePickerContent(ui: ModelSetupUi, role: ModelRole, actions: RolePickerActi
         }
         var anyShown = false
         groups.forEach { (p, options) ->
-            val shown = options.filter { q.isEmpty() || it.id.contains(q, ignoreCase = true) }
+            val shown = options.filter { (q.isEmpty() || it.id.contains(q, ignoreCase = true)) && exclude?.invoke(p.id, it.id) != true }
             // 这家列不出模型:手填是唯一的选法
             val noList = p.models?.isEmpty() == true
             if (q.isNotEmpty() && shown.isEmpty()) return@forEach
@@ -232,7 +257,7 @@ fun RolePickerContent(ui: ModelSetupUi, role: ModelRole, actions: RolePickerActi
             GroupCard {
                 shown.take(PICK_AT_MOST).forEachIndexed { i, o ->
                     RadioRow(
-                        o.id, selected = ui.picked(role, p.id, o.id), onClick = { actions.pick(p.id, o.id) }, first = i == 0,
+                        o.id, selected = pickedOverride?.invoke(p.id, o.id) ?: ui.picked(role, p.id, o.id), onClick = { actions.pick(p.id, o.id) }, first = i == 0,
                         titleStyle = ModelIdStyle, below = { Tags(o, forVision = role == ModelRole.Vision) },
                     )
                 }
@@ -267,7 +292,7 @@ internal fun ManualModel(p: Provider, state: ListState?, first: Boolean, onUse: 
     InputRow(ModelsCopy.MODEL_NAME, name, { name = it }, example, first = first, modifier = Modifier.testTag("manual-model")) {
         Text(
             if (running) ModelSetupCopy.TESTING else ModelsCopy.USE, Modifier.clickable(enabled = enabled) { onUse(name.trim()) }.testTag("manual-model-use"),
-            fontSize = 13.sp, fontWeight = FontWeight.Medium, color = if (enabled) MikaTheme.colors.accent else MikaTheme.colors.ink3,
+            style = MikaType.Label, color = if (enabled) MikaTheme.colors.accent else MikaTheme.colors.ink3,
         )
     }
 }
@@ -283,6 +308,8 @@ internal const val MODEL_PREVIEW = 3
 class ProviderDetailActions(
     val refresh: () -> Unit = {},
     val changeKey: (String) -> Unit = {},
+    val addKey: (String) -> Unit = {},
+    val removeKey: (String) -> Unit = {},
     val remove: () -> Unit = {},
     /** 把这家的一个模型用作某个用途(「用作」面板里点的)。 */
     val use: (ModelRole, String) -> Unit = { _, _ -> },
@@ -309,6 +336,8 @@ class ProviderDetailActions(
 fun ProviderDetailContent(ui: ModelSetupUi, p: Provider, actions: ProviderDetailActions, onBack: () -> Unit) {
     val c = MikaTheme.colors
     var changingKey by remember { mutableStateOf(false) }
+    var addingKey by remember { mutableStateOf(false) }
+    var showKeys by remember { mutableStateOf(false) }
     var confirmDelete by remember { mutableStateOf(false) }
     var editingBudget by remember { mutableStateOf(false) }
     var customBudget by remember { mutableStateOf("") }
@@ -317,12 +346,16 @@ fun ProviderDetailContent(ui: ModelSetupUi, p: Provider, actions: ProviderDetail
     val state = ui.listing[p.id]
     val list = ui.sortedOptions(p)
     Page(ModelsCopy.providerName(p), onBack) {
-        GroupLabel(ModelsCopy.CONNECTION)
+        // ── Connection status ──────────────────────────────────────────────
         if (p.kind == ProviderConfig.Kind.ChatGpt) {
+            GroupLabel(ModelsCopy.CONNECTION)
             ChatGptConnection(ui, state, actions)
         } else if (p.kind == ProviderConfig.Kind.Xai || p.signIn == ProviderStore.OPENROUTER_SIGN_IN) {
+            GroupLabel(ModelsCopy.CONNECTION)
             AccountConnection(ui, p, state, actions)
         } else {
+            // Status pill + endpoint at a glance
+            GroupLabel(ModelsCopy.CONNECTION)
             GroupCard {
                 ListRow(null, ModelsCopy.STATUS, first = true) {
                     when (state) {
@@ -331,15 +364,77 @@ fun ProviderDetailContent(ui: ModelSetupUi, p: Provider, actions: ProviderDetail
                         else -> RowValue(ModelsCopy.CONNECTED, ValueTone.Ok)
                     }
                 }
-                ListRow(null, ModelsCopy.KIND) { RowValue(ModelsCopy.kindLabel(p.kind)) }
                 ListRow(null, ModelsCopy.BASE_URL) { RowValue(ModelsCopy.shortUrl(p.baseUrl)) }
-                ListRow(null, ModelsCopy.API_KEY, onClick = { changingKey = true }) {
-                    RowValue(if (p.id in ui.keyed) ModelsCopy.KEY_SAVED else ModelsCopy.KEY_NONE)
-                    RowValue(ModelsCopy.CHANGE, ValueTone.Link)
+            }
+            (state as? ListState.Failed)?.let { FooterNote(ModelSetupCopy.failed(it.message), color = c.bad) }
+
+            // ── API Key Pool ───────────────────────────────────────────────
+            val keys = ui.providerKeyMap[p.id].orEmpty()
+            val poolHealthy = keys.size
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                GroupLabel(
+                    if (poolHealthy == 0) "API Keys"
+                    else if (poolHealthy == 1) "API Key Pool  ·  1 key"
+                    else "API Key Pool  ·  $poolHealthy keys  ·  auto-rotating",
+                    Modifier.weight(1f),
+                )
+                if (keys.isNotEmpty()) {
+                    Text(
+                        if (showKeys) "Hide Keys" else "Show Keys",
+                        color = c.accent,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Medium,
+                        modifier = Modifier
+                            .clickable { showKeys = !showKeys }
+                            .padding(end = 4.dp, top = 8.dp, bottom = 4.dp)
+                            .testTag("toggle-show-keys"),
+                    )
                 }
             }
+            GroupCard {
+                if (keys.isEmpty()) {
+                    // No keys yet — prominent empty state
+                    ListRow(null, "No key configured", subtitle = "Add a key to connect this provider", first = true) {
+                        RowValue("Required", ValueTone.Bad)
+                    }
+                } else {
+                    keys.forEachIndexed { i, k ->
+                        val displayKey = if (showKeys) k else when {
+                            k.length > 14 -> "${k.take(8)}…${k.takeLast(4)}"
+                            k.length > 8  -> "${k.take(4)}…${k.takeLast(4)}"
+                            else          -> "••••••••"
+                        }
+                        ListRow(null, "Key ${i + 1}", subtitle = displayKey, first = i == 0) {
+                            RowValue("Active", ValueTone.Ok)
+                            if (keys.size > 1) {
+                                Text(
+                                    "Remove",
+                                    color = c.bad,
+                                    style = MikaType.Caption,
+                                    modifier = Modifier
+                                        .clickable { actions.removeKey(k) }
+                                        .padding(start = 12.dp, top = 2.dp, bottom = 2.dp)
+                                        .testTag("remove-key-$i"),
+                                )
+                            }
+                        }
+                    }
+                }
+                // Add key — always visible
+                ListRow(
+                    icon = MikaIcons.Plus,
+                    title = "Add API Key",
+                    subtitle = if (keys.isEmpty()) "Paste your key to connect" else "Add another key to the rotation pool",
+                    first = keys.isEmpty(),
+                    onClick = { addingKey = true },
+                ) { RowChevron() }
+            }
+            if (keys.size > 1) {
+                FooterNote("Keys rotate automatically. Any key that hits a 429 rate-limit or timeout is skipped until it recovers — zero downtime.")
+            } else if (keys.size == 1) {
+                FooterNote("Add more keys to enable automatic failover rotation.")
+            }
         }
-        (state as? ListState.Failed)?.let { FooterNote(ModelSetupCopy.failed(it.message), color = c.bad) }
 
         GroupCard {
             ListRow(
@@ -411,28 +506,162 @@ fun ProviderDetailContent(ui: ModelSetupUi, p: Provider, actions: ProviderDetail
     using?.let { o -> UseAsSheet(ui, p, o.id, onUse = { role -> actions.use(role, o.id) }, onVision = { actions.setVision(o.id, it) }, onDismiss = { using = null }) }
     if (changingKey) {
         var key by remember { mutableStateOf("") }
+        var notice by remember { mutableStateOf(ApiKeyText.Notice.None) }
+        val blocked = notice == ApiKeyText.Notice.IllegalCharacters
+        val parsedKeys = remember(key) { com.wangzan101.mika.core.model.KeyPoolManager.shared.parseKeys(key) }
         MikaDialog(
             onDismissRequest = { changingKey = false },
             title = { Text(ModelsCopy.CHANGE_KEY) },
             text = {
                 KeyboardDismissArea {
-                    Box(Modifier.fillMaxWidth().keepsKeyboard().background(c.fill, MikaShapes.Button).padding(12.dp)) {
-                        if (key.isEmpty()) Text(ModelsCopy.NEW_KEY_HINT, style = MikaType.Body, color = c.ink3)
-                        BasicTextField(
-                            key, { key = it }, Modifier.fillMaxWidth().testTag("new-key"), singleLine = true,
-                            textStyle = MikaType.Body.copy(color = c.ink), cursorBrush = SolidColor(c.accent),
-                            visualTransformation = PasswordVisualTransformation(),
-                        )
+                    Column(Modifier.fillMaxWidth()) {
+                        Row(
+                            Modifier.fillMaxWidth().keepsKeyboard().background(c.fill, MikaShapes.Button)
+                                .padding(start = 12.dp, end = 4.dp, top = 12.dp, bottom = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Box(Modifier.weight(1f)) {
+                                if (key.isEmpty()) Text("Paste one or more keys (comma or newline separated)", style = MikaType.Body, color = c.ink3)
+                                BasicTextField(
+                                    key,
+                                    { raw ->
+                                        val accepted = ApiKeyText.accept(raw)
+                                        key = accepted.text
+                                        notice = accepted.notice
+                                    },
+                                    Modifier.fillMaxWidth().testTag("new-key"), singleLine = false, maxLines = 4,
+                                    textStyle = MikaType.Body.copy(color = c.ink), cursorBrush = SolidColor(c.accent),
+                                    visualTransformation = PasswordVisualTransformation(),
+                                )
+                            }
+                            if (key.isNotEmpty()) {
+                                FieldClearButton(
+                                    stringResource(R.string.model_key_clear),
+                                    {
+                                        val cleared = ApiKeyText.accept("")
+                                        key = cleared.text
+                                        notice = cleared.notice
+                                    },
+                                    Modifier.testTag("new-key-clear"),
+                                )
+                            }
+                        }
+                        if (parsedKeys.size > 1) {
+                            Text(
+                                "✓ Key Pool: ${parsedKeys.size} API keys detected (auto-rotating on 429/timeout)",
+                                style = MikaType.Caption,
+                                color = c.ok,
+                                modifier = Modifier.padding(top = 6.dp),
+                            )
+                        } else {
+                            ApiKeyNoticeNote(notice, tag = "new-key-notice")
+                        }
                     }
                 }
             },
             confirmButton = {
-                TextButton({
-                    changingKey = false
-                    if (key.isNotBlank()) actions.changeKey(key)
-                }) { Text(ModelsCopy.SAVE) }
+                TextButton(
+                    onClick = {
+                        val parsed = com.wangzan101.mika.core.model.KeyPoolManager.shared.parseKeys(key.trim())
+                        if (blocked || parsed.isEmpty() || !parsed.all { ApiKeyText.isHeaderLegal(it) }) return@TextButton
+                        changingKey = false
+                        actions.changeKey(key)
+                    },
+                    enabled = key.isNotBlank() && !blocked,
+                ) { Text(ModelsCopy.SAVE) }
             },
             dismissButton = { TextButton({ changingKey = false }) { Text(ModelSetupCopy.CANCEL) } },
+        )
+    }
+    if (addingKey) {
+        var newKeyText by remember { mutableStateOf("") }
+        var showAddKey by remember { mutableStateOf(false) }
+        var notice by remember { mutableStateOf(ApiKeyText.Notice.None) }
+        val blocked = notice == ApiKeyText.Notice.IllegalCharacters
+        val parsedAdding = remember(newKeyText) { com.wangzan101.mika.core.model.KeyPoolManager.shared.parseKeys(newKeyText) }
+        MikaDialog(
+            onDismissRequest = { addingKey = false },
+            title = {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Text("Add API Key", Modifier.weight(1f))
+                    if (newKeyText.isNotEmpty()) {
+                        Text(
+                            if (showAddKey) "Hide" else "Show",
+                            color = c.accent,
+                            fontSize = 13.sp,
+                            modifier = Modifier
+                                .clickable { showAddKey = !showAddKey }
+                                .padding(horizontal = 4.dp, vertical = 2.dp),
+                        )
+                    }
+                }
+            },
+            text = {
+                KeyboardDismissArea {
+                    Column(Modifier.fillMaxWidth()) {
+                        Text(
+                            "Paste one key, or multiple keys separated by commas or new lines to add them all at once.",
+                            style = MikaType.Caption, color = c.ink2,
+                            modifier = Modifier.padding(bottom = 10.dp),
+                        )
+                        Box(
+                            Modifier.fillMaxWidth().keepsKeyboard()
+                                .background(c.fill, MikaShapes.Button)
+                                .padding(horizontal = 12.dp, vertical = 10.dp)
+                        ) {
+                            if (newKeyText.isEmpty()) {
+                                Text(
+                                    "Paste API key(s) here",
+                                    style = MikaType.Body, color = c.ink3,
+                                )
+                            }
+                            BasicTextField(
+                                newKeyText,
+                                { raw ->
+                                    val accepted = ApiKeyText.accept(raw)
+                                    newKeyText = accepted.text
+                                    notice = accepted.notice
+                                },
+                                Modifier.fillMaxWidth().testTag("add-key-input"),
+                                singleLine = false,
+                                maxLines = 5,
+                                textStyle = MikaType.Body.copy(
+                                    color = c.ink,
+                                    fontFamily = if (showAddKey) FontFamily.Monospace else null,
+                                ),
+                                cursorBrush = SolidColor(c.accent),
+                                visualTransformation = if (showAddKey) androidx.compose.ui.text.input.VisualTransformation.None else PasswordVisualTransformation(),
+                            )
+                        }
+                        // Live feedback
+                        when {
+                            parsedAdding.size > 1 -> Text(
+                                "${parsedAdding.size} keys detected — all will be added to the rotation pool",
+                                style = MikaType.Caption, color = c.ok,
+                                modifier = Modifier.padding(top = 6.dp),
+                            )
+                            newKeyText.isNotBlank() && !blocked -> Text(
+                                "1 key ready to add",
+                                style = MikaType.Caption, color = c.ok,
+                                modifier = Modifier.padding(top = 6.dp),
+                            )
+                            else -> ApiKeyNoticeNote(notice, tag = "add-key-notice")
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        val parsed = com.wangzan101.mika.core.model.KeyPoolManager.shared.parseKeys(newKeyText.trim())
+                        if (blocked || parsed.isEmpty() || !parsed.all { ApiKeyText.isHeaderLegal(it) }) return@TextButton
+                        addingKey = false
+                        actions.addKey(newKeyText.trim())
+                    },
+                    enabled = newKeyText.isNotBlank() && !blocked,
+                ) { Text(if (parsedAdding.size > 1) "Add ${parsedAdding.size} Keys" else ModelsCopy.SAVE) }
+            },
+            dismissButton = { TextButton({ addingKey = false }) { Text(ModelSetupCopy.CANCEL) } },
         )
     }
     if (confirmDelete) {
@@ -603,7 +832,7 @@ private fun ModelRow(o: ModelOption, roles: List<ModelRole>, first: Boolean, onC
 @Composable
 private fun UseAsSheet(ui: ModelSetupUi, p: Provider, model: String, onUse: (ModelRole) -> Unit, onVision: (Boolean) -> Unit, onDismiss: () -> Unit) {
     val c = MikaTheme.colors
-    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true), containerColor = c.surface, shape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp)) {
+    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true), containerColor = c.surface, shape = MikaShapes.SheetTop) {
         Column(Modifier.fillMaxWidth().navigationBarsPadding().padding(bottom = 8.dp).testTag("use-as")) {
             Text(model, Modifier.padding(horizontal = 16.dp), style = ModelIdStyle, color = c.ink, maxLines = 2, overflow = TextOverflow.Ellipsis)
             Text(ModelsCopy.useAsSubtitle(ModelsCopy.providerName(p)), Modifier.padding(start = 16.dp, end = 16.dp, top = 2.dp, bottom = 6.dp), style = MikaType.Caption, color = c.ink3)
@@ -827,7 +1056,7 @@ object ModelsCopy {
         ModelRole.Light -> tr(R.string.role_light_what)
     }
 
-    fun roleLabel(role: ModelRole) = "${roleName(role)} · ${roleWhat(role)}"
+    fun roleLabel(role: ModelRole) = roleName(role)
 
     /** 选择页顶上的说明。 */
     fun roleHint(role: ModelRole) = when (role) {
@@ -845,6 +1074,28 @@ object ModelsCopy {
         val unset = s.title == UNSET
         return RoleLine(s.title, s.sub.orEmpty(), isModel = !unset && (ui.speech is SpeechChoice.Provider || ui.speech is SpeechChoice.Doubao || ui.speech is SpeechChoice.FunAsr || ui.speech is SpeechChoice.Bailian), unset = unset, subtitleOk = s.subOk)
     }
+
+    /** 主模型备援(项目 3)的卡片图标、名字和右边两行:和用途卡同一套说法。 */
+    val FALLBACK_ICON: ImageVector get() = MikaIcons.Refresh
+    val FALLBACK_CLEAR: String get() = tr(R.string.main_fallback_clear)
+
+    fun fallbackLabel(role: ModelRole, slot: Int) = "${roleName(role)} ${tr(R.string.main_fallback_name, slot + 1)} · ${tr(R.string.main_fallback_what)}"
+
+    fun fallbackLabel(slot: Int) = fallbackLabel(ModelRole.Main, slot)
+
+    fun fallbackLine(ui: ModelSetupUi, role: ModelRole, slot: Int): RoleLine {
+        val cfg = ui.roles.fallbacks(role).getOrNull(slot)?.let { id -> ui.configs.firstOrNull { it.id == id } }
+        return if (cfg != null) RoleLine(cfg.model, ui.providerOf(cfg)?.let(::providerName) ?: cfg.name, isModel = true)
+        else RoleLine(UNSET, tr(R.string.main_fallback_pick), unset = true)
+    }
+
+    fun fallbackLine(ui: ModelSetupUi, slot: Int): RoleLine = fallbackLine(ui, ModelRole.Main, slot)
+
+    /** 第五个用途「声音模型」:朗读/主动说话,和语音转写一样不在 [ModelRole] 里。 */
+    val VOICE_LABEL: String get() = "${tr(R.string.role_voice)} · ${tr(R.string.role_voice_what)}"
+    val VOICE_ICON: ImageVector get() = MikaIcons.Sound
+
+    fun voiceLine(): RoleLine = RoleLine(tr(R.string.role_voice), tr(R.string.role_voice_what), unset = true)
 
     fun roleIcon(role: ModelRole): ImageVector = when (role) {
         ModelRole.Main -> MikaIcons.Spark

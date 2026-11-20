@@ -251,6 +251,11 @@ class ModelCatalogTest {
         }
     }
 
+    @Test fun quotaBodyOn403IsQuotaNotAuth() = runTest {
+        server.enqueue(MockResponse().setResponseCode(403).setBody("""{"error":{"code":"insufficient_quota","message":"Insufficient quota"}}"""))
+        assertEquals(ListFailure.Quota, failure(catalog.openAiCompat(base, "sk")))
+    }
+
     @Test fun geminiInvalidKeyIsAuth() = runTest {
         server.enqueue(MockResponse().setResponseCode(400).setBody("""{"error":{"code":400,"message":"API key not valid. Please pass a valid API key.","status":"INVALID_ARGUMENT"}}"""))
         assertEquals(ListFailure.Auth, failure(catalog.gemini(base, "bad")))
@@ -261,6 +266,15 @@ class ModelCatalogTest {
         assertEquals(ListFailure.BadResponse, failure(catalog.openAiCompat(base, "sk")))
         server.enqueue(ok("""{"object":"list"}"""))
         assertEquals(ListFailure.BadResponse, failure(catalog.openAiCompat(base, "sk")))
+    }
+
+    /** 换行、中文、零宽放进头会让 OkHttp 在发请求前抛。这里收成失败,一个请求都不发。 */
+    @Test fun illegalApiKeyFailsBeforeAnyRequest() = runTest {
+        assertEquals(ListFailure.IllegalKey, failure(catalog.openAiCompat(base, "sk-\nabc")))
+        assertEquals(ListFailure.IllegalKey, failure(catalog.openAiCompat(base, "sk-\r\nabc")))
+        assertEquals(ListFailure.IllegalKey, failure(catalog.anthropic(base, "密钥：sk-abc")))
+        assertEquals(ListFailure.IllegalKey, failure(catalog.gemini(base, "sk-\u200Babc")))
+        assertEquals(0, server.requestCount)
     }
 
     @Test fun networkAndUrlFailures() = runTest {
