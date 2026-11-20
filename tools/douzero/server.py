@@ -866,11 +866,14 @@ class Agent:
             picked = max(allowed, key=score.get)
             # 炸弹 / 王炸的 ×2 是拿「猜牌猜出来的赢面」翻倍:不信猜牌、只按摆法数算时它也得
             # 不比非炸弹里金额最高的一手差,不然就是不炸,改出那一手。×2 只会放大估值误差。
+            # 炸弹赢的摆法数也不能比非炸弹里最多的少:×2 只当添头,不拿赢面去换
+            # (2026-11-20 队友剩 2 张出 JJJ9,不出 36/36 必赢,5555 炸 28/36,按金额炸了,输)。
             if is_bomb(picked):
                 plain = {m: (2 if is_bomb(m) else 1) * (2 * plain_wins.get(m, 0) - plain_total)
                          for m in score}
                 alt = max((m for m in score if not is_bomb(m)), key=lambda m: amount[m], default=None)
-                if alt is not None and plain[picked] < plain[alt]:
+                safest = max((plain_wins.get(m, 0) for m in score if not is_bomb(m)), default=0)
+                if alt is not None and (plain[picked] < plain[alt] or plain_wins.get(picked, 0) < safest):
                     if report is not None:
                         report["bomb_veto"] = move_label(picked)
                     picked = alt
