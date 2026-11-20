@@ -877,7 +877,8 @@ class Agent:
                     if report is not None:
                         report["bomb_veto"] = move_label(picked)
                     picked = alt
-                    allowed = {m for m in score if amount[m] == amount[alt]}
+                    # 金额和炸弹并列时也不能把炸弹放回来,不然 DouZero 首选炸弹时照样炸
+                    allowed = {m for m in score if amount[m] == amount[alt] and not is_bomb(m)}
             if tuple(sorted(move)) not in allowed:
                 return self.swap_high_kickers(infoset, list(picked), ok=lambda m: tuple(sorted(m)) in allowed)
         mate = {"landlord_down": "landlord_up", "landlord_up": "landlord_down"}.get(infoset.player_position)

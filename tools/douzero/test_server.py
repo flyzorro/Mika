@@ -672,6 +672,19 @@ class BombVetoRuleTest(unittest.TestCase):
         self.assertEqual([], move)
         self.assertEqual("3 3 3 3", report.get("bomb_veto"))
 
+    def test_a_bomb_that_wins_more_splits_but_less_plain_amount_is_dropped(self):
+        # 只按摆法数炸弹 45% 对不出 44%:炸弹赢得多,摆法数这条不拦;
+        # 但炸弹金额 2×(0.9−1) = −0.2 < 不出 −0.12,金额那条照样不炸
+        move, report = self.play(0.9, 0.5, 0.45, 0.44)
+        self.assertEqual([], move)
+        self.assertEqual("3 3 3 3", report.get("bomb_veto"))
+
+    def test_a_vetoed_bomb_tied_on_amount_is_not_played(self):
+        # 炸弹 75%、不出 100%:金额都是 1.0 并列,DouZero 首选炸弹;否决后不能因为并列又把炸弹放回来
+        move, report = self.play(0.75, 1.0, 0.75, 1.0)
+        self.assertEqual([], move)
+        self.assertEqual("3 3 3 3", report.get("bomb_veto"))
+
 
 class LikelihoodFloorTest(unittest.TestCase):
     """似然下限:软证据把一种分法压到最可能分法的 LIKELIHOOD_FLOOR 以下时按下限算,不再往 0 压。
