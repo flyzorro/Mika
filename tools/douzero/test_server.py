@@ -2247,6 +2247,51 @@ class KeepComboRolloutTest(unittest.TestCase):
         self.assertEqual(seen["9"], seen["pass"])
 
 
+    def act_with_rates(self, rate8, rate9):
+        import server as server_module
+        seen = {}
+
+        def play_out(hands, bottom, history, me, move):
+            key = " ".join(NAMES[c] for c in move) or "pass"
+            n = seen.get(key, 0)
+            seen[key] = n + 1
+            return 1 if (n * 37) % 100 < {"8": rate8, "9": rate9, "pass": 50}.get(key, 0) else -1
+
+        def values(infoset):
+            scores = {"pass": 0.30, "9": 0.29, "8": 0.28}
+            return server_module.torch.tensor([scores.get(
+                " ".join(NAMES[c] for c in action) or "pass", 0.1) for action in infoset.legal_actions])
+
+        original = server_module.successive_halving
+        def halving(*args, **kwargs):
+            return original(*args, **kwargs, clock=lambda: min(seen.get("9", 0) // 13, 2))
+
+        agent = ROLLOUT_ADVISOR.agents[self.LIVE["seat"]]
+        report = {}
+        with mock.patch.object(agent, "values", values), \
+                mock.patch.object(agent, "play_out", play_out), \
+                mock.patch.object(ROLLOUT_ADVISOR, "sample_hands", return_value={}), \
+                mock.patch.object(server_module, "successive_halving", halving), \
+                mock.patch.object(server_module, "ACT_ROLLOUT_GAMES", 100):
+            move = ROLLOUT_ADVISOR.act(self.LIVE["seat"], self.LIVE["hand"], self.LIVE["bottom"],
+                                       self.LIVE["history"], report,
+                                       auction=server_module.parse_auction(self.LIVE["auction"]))
+        return names(move), report["rollout"]
+
+    def test_similar_better_split_move_keeps_combo(self):
+        move, rollout = self.act_with_rates(80, 80)
+        self.assertEqual(["8"], move)
+        self.assertEqual("8", rollout["keep_combo"])
+        self.assertEqual(rollout["avg_score"]["8"], rollout["avg_score"]["9"])
+        self.assertGreater(rollout["avg_score"]["9"] - rollout["avg_score"]["pass"], 0.1)
+
+    def test_clearly_better_split_move_still_wins(self):
+        move, rollout = self.act_with_rates(70, 90)
+        self.assertEqual(["9"], move)
+        self.assertNotIn("keep_combo", rollout)
+        self.assertGreater(rollout["avg_score"]["9"] - rollout["avg_score"]["8"], 0.1)
+
+
 class LostBombAmountTest(unittest.TestCase):
     """现场模拟按输赢金额比,不按胜率比:赢 +2^k、输 −2^k,k 是这一手起打出的炸弹 / 王炸个数。
 

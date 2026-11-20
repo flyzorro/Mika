@@ -1083,6 +1083,7 @@ class Agent:
         chosen = move
         tie = None
         beat = None
+        keep_combo = None
         min_games = ACT_ROLLOUT_MIN_GAMES
         if games >= min_games:
             # 只在决赛候选(淘汰掉的不再参选)里挑平均得分最高的;同分仍按 DouZero 分数顺序。
@@ -1092,7 +1093,12 @@ class Agent:
             # 不炸的局得分 ±1,平均得分 = 2×胜率−1:同样的胜率差,平均得分差是它的 2 倍。
             # 原来的 0.05 / 0.1 是按胜率定的门槛,按平均得分比要 ×2,不然等于把换手门槛减半。
             if means[best] - means[own] >= 2 * margin:
-                chosen = by_key[best]
+                if is_simple_combo(best) and breaks_combo(best, hand) and protected in finalists \
+                        and means[best] - means[protected] < 2 * margin:
+                    keep_combo = protected
+                    chosen = by_key[protected]
+                else:
+                    chosen = by_key[best]
             else:
                 # 差不到门槛时挑出完剩下手数更少的:2026-11-16 11:58:20 土豪场,我是地主上家领出,
                 # 手里 BJ 2 J 9 8 7 6 5 5 5 5 4。DouZero 出 5 6 7 8 9,模拟 152 局 5..9 赢 0.59、4..9 赢 0.64,
@@ -1120,6 +1126,8 @@ class Agent:
                 "chosen": move_label(chosen)}
         if late:
             info["late"] = True
+        if keep_combo is not None:
+            info["keep_combo"] = labels[keep_combo]
         if tie is not None:
             info["tiebreak"] = "fewer_plays"
             info["plays"] = {labels[k]: n for k, n in tie[1].items()}
