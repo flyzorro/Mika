@@ -94,7 +94,7 @@ class GeminiModel(
         }
         return Request.Builder().url(if (stream) streamEndpoint else endpoint)
             .withHeaders(headers)
-            .header("x-goog-api-key", apiKey)
+            .headerOrReject("x-goog-api-key", apiKey)
             .postInference(InferenceProtocol.Gemini, payload)
             .build()
     }
@@ -238,7 +238,8 @@ class GeminiModel(
         val inT = n("promptTokenCount") ?: return null
         // promptTokenCount 已含缓存命中部分,与统一口径一致
         val thoughts = n("thoughtsTokenCount") ?: 0
-        return Usage(inT, (n("candidatesTokenCount") ?: 0) + thoughts, n("cachedContentTokenCount") ?: 0, thoughts)
+        val cached = n("cachedContentTokenCount")
+        return Usage(inT, (n("candidatesTokenCount") ?: 0) + thoughts, cached ?: 0, thoughts, cacheReported = cached != null)
     }
 }
 

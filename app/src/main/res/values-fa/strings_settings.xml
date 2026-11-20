@@ -14,7 +14,6 @@
 
 
 
-    <string name="settings_basic">عمومی</string>
     <string name="settings_language_appearance">زبان و ظاهر</string>
     <string name="settings_personal_start">باز کردن دستیار شخصی هنگام راه‌اندازی</string>
     <string name="settings_personal_start_sub">استفاده از دستیار شخصی به عنوان نخستین صفحه میکا</string>
@@ -25,7 +24,6 @@
     <string name="settings_during_work">هنگام اجرای کار</string>
     <string name="settings_during_work_sub">حالت خودکار، سرعت، محدودیت مراحل و صدا</string>
     <string name="settings_notif_sub">زمان نمایش اعلان‌ها را در تنظیمات سیستم تغییر دهید</string>
-    <string name="settings_privacy">داده‌های من</string>
     <string name="settings_memory_data">حافظه و داده‌ها</string>
     <string name="settings_memory_sub">خاطره‌ها، مهارت‌ها، مسیرهای ذخیره‌شده و ورود به وب‌سایت‌ها</string>
     <string name="settings_saved_data">داده‌های ذخیره‌شده</string>
@@ -34,10 +32,8 @@
         <item quantity="one">%1$d سایت</item>
         <item quantity="other">%1$d سایت</item>
     </plurals>
-    <string name="settings_other">سایر</string>
-    <string name="settings_advanced">پیشرفته و سایر موارد</string>
-    <string name="settings_advanced_sub">پروکسی، پردازش، اتصال‌ها و تعمیر</string>
-    <string name="settings_connections">شبکه و اتصال‌ها</string>
+    <string name="settings_advanced">پیشرفته</string>
+    <string name="settings_advanced_sub">افزونه‌ها، شبکه، محیط اجرا و نگهداری</string>
     <string name="settings_maintenance">نگهداری</string>
     <string name="settings_sandbox">محیط فایل‌ها و پردازش</string>
     <string name="settings_routes">مسیرهای ذخیره‌شده</string>
@@ -67,6 +63,8 @@
     <string name="settings_notif_master">همهٔ اعلان‌ها</string>
     <string name="settings_allowed">مجاز</string>
     <string name="settings_task_notifs">اعلان‌های کار</string>
+    <string name="settings_live_task_updates">اعلان زندهٔ کارها</string>
+    <string name="settings_live_task_updates_detail">انتخاب کنید که کارهای در حال اجرا در نوار وضعیت نمایش داده شوند یا نه</string>
     <string name="settings_keep_on">روشن نگه داشتن صفحه</string>
     <string name="settings_keep_on_sub">هنگام اجرای کار صفحه روشن می‌ماند (در صورت عدم استفاده ممکن است کم‌نور شود) و سپس به حالت عادی برمی‌گردد</string>
     <string name="settings_mute">بی‌صدا کردن برنامهٔ در حال استفاده</string>
@@ -79,6 +77,15 @@
     <string name="settings_pace_human">شبیه انسان</string>
     <string name="settings_pace_human_detail">در همهٔ برنامه‌ها آهسته عمل می‌کند و پیش از ادامه هر صفحه را می‌خواند</string>
     <string name="settings_pace_foot">بعضی برنامه‌ها هنگام استفادهٔ بیش از حد سریع شما را از حساب خارج می‌کنند یا تأیید می‌خواهند. سرعت کمتر باعث طولانی‌تر شدن کار می‌شود.</string>
+    <string name="settings_pace_per_app">سرعت به‌ازای هر برنامه</string>
+    <string name="settings_pace_per_app_sub">برنامه‌های سخت‌گیر را کندتر و برنامه‌هایی که سخت‌گیری نمی‌کنند را تندتر کن؛ بقیه از سرعت کلی پیروی می‌کنند</string>
+    <string name="settings_pace_per_app_intro">برنامه‌های این فهرست سرعت خودشان را دارند؛ بقیه از سرعت کلی پیروی می‌کنند (الان %1$s).</string>
+    <string name="settings_pace_per_app_empty">هنوز برنامه‌ای با سرعت جدا تنظیم نشده است.</string>
+    <string name="settings_pace_per_app_add">افزودن برنامه</string>
+    <string name="settings_pace_per_app_search">جست‌وجوی برنامه‌ها</string>
+    <string name="settings_pace_per_app_none">برنامه‌ای پیدا نشد</string>
+    <string name="settings_pace_per_app_pick">انتخاب</string>
+    <string name="settings_pace_per_app_remove">حذف (پیروی از سرعت کلی)</string>
     <string name="settings_parallel">کارهای هم‌زمان</string>
     <string name="settings_parallel_sub">کارهای گفتگوهای مختلف هر کدام صفحهٔ مجازی خود را دارند</string>
     <plurals name="settings_count_tasks">
@@ -117,6 +124,8 @@
     <string name="net_proxy">پروکسی شبکه</string>
     <string name="net_proxy_row_sub">برای درخواست‌های مدل، به‌روزرسانی‌ها، مرورگر داخلی و دستورها</string>
     <string name="net_proxy_hint">برای درخواست‌های مدل میکا (گفتگو، فهرست مدل‌ها و ورود به حساب)، دانلود به‌روزرسانی، مرورگر داخلی و دستورهای محیط فایل‌ها و پردازش، هنگامی که دسترسی شبکهٔ آن روشن است، استفاده می‌شود. نشانی‌های همین گوشی یا شبکهٔ محلی شما (localhost، ‎192.168.x.x، ‎10.x.x.x و نام‌های پایان‌یافته به ‎.local) همیشه مستقیم متصل می‌شوند تا مدل‌های محلی کار کنند. می‌تواند شامل user:password@ باشد که به‌صورت رمزگذاری‌شده در این گوشی ذخیره می‌شود. برای اتصال مستقیم خالی بگذارید.</string>
+    <string name="net_proxy_summary">درخواست‌های مدل، به‌روزرسانی‌ها، مرورگر داخلی و دستورهای محیط فایل از این پروکسی می‌گذرند.</string>
+    <string name="details">جزئیات</string>
     <string name="net_proxy_invalid">به شکل http://host:port وارد کنید (socks5، socks5h و https نیز پشتیبانی می‌شوند). در صورت نیاز می‌توانید user:password@ را پیش از نام میزبان قرار دهید.</string>
     <string name="net_proxy_container_only">پروکسی‌های https:// فقط برای دستورهای محیط فایل‌ها و پردازش استفاده می‌شوند و اتصال‌های خود میکا مستقیم می‌مانند. برای پوشش همهٔ اتصال‌ها از http:// یا socks5:// استفاده کنید.</string>
     <string name="net_proxy_browser_unsupported">WebView این گوشی نمی‌تواند از پروکسی جداگانه استفاده کند، بنابراین مرورگر داخلی مستقیم متصل می‌شود.</string>
@@ -219,7 +228,7 @@
     <string name="settings_token_budget_unlimited">بدون محدودیت</string>
     <string name="settings_auto_archive">بایگانی خودکار گفتگوها</string>
     <string name="settings_auto_archive_sub">گفتگوهایی که مدتی پیام جدید ندارند به بایگانی منتقل می‌شوند</string>
-    <string name="settings_auto_archive_hint">گفتگوهایی که در مدت انتخاب‌شده پیام جدیدی ندارند به بایگانی منتقل می‌شوند. گفتگوهای سنجاق‌شده و گفتگوهایی که وظیفه‌ای در آن‌ها در حال اجراست دست‌نخورده می‌مانند. هر زمان می‌توانید آن‌ها را از بایگانی در فهرست گفتگوها بازیابی کنید.</string>
+    <string name="settings_auto_archive_hint">گفتگوهایی که در مدت انتخاب‌شده پیام جدیدی ندارند به بایگانی منتقل می‌شوند.</string>
     <plurals name="settings_auto_archive_days">
         <item quantity="one">%1$d روز</item>
         <item quantity="other">%1$d روز</item>
@@ -229,4 +238,18 @@
     <string name="settings_scheduled_quiet_start">زمان شروع</string>
     <string name="settings_scheduled_quiet_end">زمان پایان</string>
     <string name="settings_scheduled_quiet_equal">برای بی‌صدا کردن اعلان‌ها، زمان شروع و پایان متفاوتی انتخاب کنید.</string>
+    <string name="settings_show_task_cost">نمایش هزینه کار</string>
+    <string name="settings_show_task_cost_sub">تخمین هزینه API DeepSeek به یوان چین برای کارهای جدید.</string>
+    <string name="settings_capabilities">قابلیت‌ها</string>
+    <string name="settings_preferences">ترجیحات</string>
+    <string name="settings_data">داده‌ها</string>
+    <string name="settings_extensions">افزونه‌ها و اتصالات</string>
+    <string name="settings_network">شبکه</string>
+    <string name="settings_runtime">محیط اجرا</string>
+    <string name="settings_trigger_run_limit">حداکثر زمان اجرای کارهای زمان‌بندی‌شده</string>
+    <string name="settings_trigger_run_limit_sub">کارهای زمان‌بندی‌شده بدون حضور شما اجرا می‌شوند. خاموش یعنی بدون محدودیت؛ با تمام شدن زمان، کار متوقف می‌شود و می‌گوید زمانش تمام شده است.</string>
+    <plurals name="settings_trigger_run_minutes_n">
+        <item quantity="one">%1$d دقیقه</item>
+        <item quantity="other">%1$d دقیقه</item>
+    </plurals>
 </resources>

@@ -56,6 +56,8 @@ import com.wangzan101.mika.ui.components.cardSurface
 import com.wangzan101.mika.ui.theme.MikaIcons
 import com.wangzan101.mika.ui.theme.MikaTheme
 import com.wangzan101.mika.ui.theme.MikaType
+import com.wangzan101.mika.ui.theme.MikaRadius
+import com.wangzan101.mika.ui.theme.MikaShapes
 
 /**
  * 对话页里长按的一条消息:[key] 认是哪一条(「选择文字」记的就是它),[from] 是谁说的,[text] 是复制、引用用的纯文字
@@ -133,6 +135,8 @@ internal fun MessageMenu(
     onWithdraw: (() -> Unit)? = null,
     onBranch: (() -> Unit)? = null,
     onBranchRetry: (() -> Unit)? = null,
+    onSaveTask: (() -> Unit)? = null,
+    onSaveChecklist: (() -> Unit)? = null,
 ) {
     LongPressMenu(
         target.bounds, progress, pane = stringResource(R.string.chat_message_actions), tag = "message-menu",
@@ -140,6 +144,8 @@ internal fun MessageMenu(
             add(MenuEntry(stringResource(R.string.chat_copy), MikaIcons.Copy, "message-menu-copy", onClick = onCopy))
             add(MenuEntry(stringResource(R.string.chat_quote), MikaIcons.Quote, "message-menu-quote", onClick = onQuote))
             add(MenuEntry(stringResource(R.string.chat_select_text), MikaIcons.SelectText, "message-menu-select", onClick = onSelect))
+            onSaveChecklist?.let { add(MenuEntry(stringResource(R.string.checklist_save_reply), MikaIcons.ListChecks, "message-menu-checklist", onClick = it)) }
+            onSaveTask?.let { add(MenuEntry(stringResource(R.string.saved_task_save), MikaIcons.Star, "message-menu-save-task", onClick = it)) }
             onBranch?.let { add(MenuEntry(stringResource(R.string.chat_branch), MikaIcons.Route, "message-menu-branch", onClick = it)) }
             onBranchRetry?.let { add(MenuEntry(stringResource(R.string.chat_branch_retry), MikaIcons.Route, "message-menu-branch-retry", onClick = it)) }
             onEdit?.let { add(MenuEntry(stringResource(R.string.chat_edit_message), MikaIcons.Edit, "message-menu-edit", onClick = it)) }
@@ -217,4 +223,4 @@ internal fun SentQuote(quote: QuoteMessage.Quote, maxWidth: Dp) {
     }
 }
 
-private val QuoteShape = RoundedCornerShape(12.dp)
+private val QuoteShape = MikaShapes.Chip

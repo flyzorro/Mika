@@ -5,7 +5,6 @@
     <string name="language_title">Idioma</string>
     <string name="language_system">Seguir o sistema</string>
     <string name="language_system_detail">Usa o idioma do sistema se o Mika o tiver; caso contrário, inglês</string>
-    <string name="settings_basic">Frequentes</string>
     <string name="settings_language_appearance">Idioma e aparência</string>
     <string name="settings_model">Modelo</string>
     <string name="settings_model_sub">Modelos, provedores e uso de tokens</string>
@@ -14,7 +13,6 @@
     <string name="settings_during_work">Execução de tarefas</string>
     <string name="settings_during_work_sub">Modo autônomo, ritmo, limite de etapas e som</string>
     <string name="settings_notif_sub">Quando elas aparecem, mude nas configurações do sistema</string>
-    <string name="settings_privacy">Meus dados</string>
     <string name="settings_memory_data">Memória e dados</string>
     <string name="settings_memory_sub">Memórias, habilidades, roteiros salvos e logins em sites</string>
     <string name="settings_saved_data">Dados salvos</string>
@@ -24,10 +22,8 @@
         <item quantity="many">%1$d sites</item>
         <item quantity="other">%1$d sites</item>
     </plurals>
-    <string name="settings_other">Outros</string>
-    <string name="settings_advanced">Avançado e outros</string>
-    <string name="settings_advanced_sub">Proxy, computação, conexões e reparo</string>
-    <string name="settings_connections">Rede e conexões</string>
+    <string name="settings_advanced">Avançado</string>
+    <string name="settings_advanced_sub">Extensões, rede, runtime e manutenção</string>
     <string name="settings_maintenance">Manutenção</string>
     <string name="settings_sandbox">Arquivos e ambiente de computação</string>
     <string name="settings_routes">Roteiros salvos</string>
@@ -58,6 +54,8 @@
     <string name="settings_notif_master">Todas as notificações</string>
     <string name="settings_allowed">Permitidas</string>
     <string name="settings_task_notifs">Notificações de tarefas</string>
+    <string name="settings_live_task_updates">Atualizações de tarefas em tempo real</string>
+    <string name="settings_live_task_updates_detail">Escolha se as tarefas em andamento aparecem na barra de status</string>
     <string name="settings_keep_on">Manter a tela ligada</string>
     <string name="settings_keep_on_sub">A tela fica ligada enquanto uma tarefa roda (escurece como sempre quando você não está usando) e depois volta ao normal</string>
     <string name="settings_mute">Silenciar o app em uso</string>
@@ -70,6 +68,15 @@
     <string name="settings_pace_human">Como uma pessoa</string>
     <string name="settings_pace_human_detail">Lento em todos os apps, lendo cada tela antes de seguir</string>
     <string name="settings_pace_foot">Alguns apps desconectam você ou pedem verificação quando são usados rápido demais. Quanto mais lento o ritmo, mais tempo uma tarefa leva.</string>
+    <string name="settings_pace_per_app">Ritmo por aplicativo</string>
+    <string name="settings_pace_per_app_sub">Desacelere apps com verificação antirrobô ou acelere os tranquilos; o resto segue o ritmo global</string>
+    <string name="settings_pace_per_app_intro">Os apps desta lista usam o próprio ritmo; todo o resto segue o ritmo global (agora %1$s).</string>
+    <string name="settings_pace_per_app_empty">Ainda não há apps com ritmo próprio.</string>
+    <string name="settings_pace_per_app_add">Adicionar um app</string>
+    <string name="settings_pace_per_app_search">Pesquisar apps</string>
+    <string name="settings_pace_per_app_none">Nenhum app correspondente</string>
+    <string name="settings_pace_per_app_pick">Escolher</string>
+    <string name="settings_pace_per_app_remove">Remover (seguir o ritmo global)</string>
     <string name="settings_parallel">Tarefas ao mesmo tempo</string>
     <string name="settings_parallel_sub">As tarefas de conversas diferentes ganham cada uma a sua tela virtual</string>
     <plurals name="settings_count_tasks">
@@ -110,6 +117,8 @@
     <string name="net_proxy">Proxy de rede</string>
     <string name="net_proxy_row_sub">Para chamadas de modelo, atualizações, navegador integrado e comandos</string>
     <string name="net_proxy_hint">Usado nas chamadas de modelo do Mika (chat, listas de modelos, login com conta), nos downloads de atualização dentro do app, no navegador integrado e nos comandos de Arquivos e ambiente de computação enquanto o acesso à rede estiver ativado lá. Endereços deste celular ou da sua rede local (localhost, 192.168.x.x, 10.x.x.x, nomes terminados em .local) sempre se conectam direto, então modelos locais continuam funcionando. Pode incluir usuário:senha@, que fica criptografado neste celular. Deixe vazio para conexão direta.</string>
+    <string name="net_proxy_summary">As solicitações do modelo, as atualizações, o navegador integrado e os comandos do ambiente de arquivos passam por este proxy.</string>
+    <string name="details">Detalhes</string>
     <string name="net_proxy_invalid">Escreva no formato http://host:porta (socks5, socks5h e https também funcionam), opcionalmente com usuário:senha@ antes do host.</string>
     <string name="net_proxy_container_only">Proxies https:// só são usados pelos comandos de Arquivos e ambiente de computação; as conexões do próprio Mika continuam diretas. Use http:// ou socks5:// para cobrir tudo.</string>
     <string name="net_proxy_browser_unsupported">O WebView deste celular não aceita um proxy próprio do app, então o navegador integrado se conecta direto.</string>
@@ -200,6 +209,8 @@
     <string name="mcp_servers_status_fail">Falha na conexão: %1$s</string>
     <string name="mcp_servers_refresh_all">Testar tudo</string>
     <string name="mcp_servers_allowlist">Ferramentas permitidas (separadas por vírgulas, vazio = todas)</string>
+    <string name="settings_show_task_cost">Mostrar custo da tarefa</string>
+    <string name="settings_show_task_cost_sub">Estima em yuans o custo da API da DeepSeek para novas tarefas.</string>
     <string name="quit_title">Sair do Mika completamente</string>
     <string name="quit_row_sub">Interrompe as tarefas em segundo plano e oculta a cápsula flutuante</string>
     <string name="quit_confirm_body">As tarefas em andamento serão interrompidas, e a cápsula flutuante e as notificações desaparecerão. Ao abrir o Mika de novo, tudo volta.</string>
@@ -212,7 +223,7 @@
     <string name="settings_token_budget_invalid">Digite um número inteiro de %1$s a %2$s.</string>
     <string name="settings_auto_archive">Arquivar conversas automaticamente</string>
     <string name="settings_auto_archive_sub">Conversas sem mensagens novas por um tempo vão para o arquivo</string>
-    <string name="settings_auto_archive_hint">As conversas sem mensagens novas pelo tempo escolhido vão para o arquivo. Conversas fixadas e conversas com uma tarefa em andamento ficam como estão. Você pode restaurá-las no arquivo da lista de conversas quando quiser.</string>
+    <string name="settings_auto_archive_hint">As conversas sem mensagens novas pelo tempo escolhido vão para o arquivo.</string>
     <plurals name="settings_auto_archive_days">
         <item quantity="one">%1$d dia</item>
         <item quantity="many">%1$d dias</item>
@@ -223,4 +234,17 @@
     <string name="settings_scheduled_quiet_start">Hora de início</string>
     <string name="settings_scheduled_quiet_end">Hora de término</string>
     <string name="settings_scheduled_quiet_equal">Escolha horários de início e término diferentes para silenciar as notificações.</string>
+    <string name="settings_capabilities">Recursos</string>
+    <string name="settings_preferences">Preferências</string>
+    <string name="settings_data">Dados</string>
+    <string name="settings_extensions">Extensões e conexões</string>
+    <string name="settings_network">Rede</string>
+    <string name="settings_runtime">Ambiente de execução</string>
+    <string name="settings_trigger_run_limit">Tempo máximo das tarefas agendadas</string>
+    <string name="settings_trigger_run_limit_sub">As tarefas agendadas rodam sem você acompanhar. Desativado significa sem limite; quando o tempo acaba, a tarefa para e avisa que o tempo esgotou.</string>
+    <plurals name="settings_trigger_run_minutes_n">
+        <item quantity="one">%1$d minuto</item>
+        <item quantity="many">%1$d minutos</item>
+        <item quantity="other">%1$d minutos</item>
+    </plurals>
 </resources>

@@ -53,14 +53,20 @@ import com.wangzan101.mika.ui.MainActivity
 import com.wangzan101.mika.ui.ScreenCopy
 import com.wangzan101.mika.ui.StatusCopy
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.plus
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.flow.collectLatest
+import com.wangzan101.mika.pocket.LockTriggerPolicy
 import java.util.concurrent.atomic.AtomicInteger
 import java.time.LocalTime
 import com.wangzan101.mika.core.cap.web.KeptPageClose
@@ -118,6 +124,7 @@ class TaskService : Service() {
     /** 前台常驻通知属于哪个任务;收尾后留着,直到换成别的任务。 */
     @Volatile private var foreground: TaskRun? = null
     private val notifyLock = Any()
+    private val workflowStarts = AtomicInteger()
     @Volatile private var lastStartId = 0
 
     internal val clipLock get() = center.clipLock
@@ -212,8 +219,11 @@ class TaskService : Service() {
     internal fun hasActiveRuns() = center.running().isNotEmpty()
     internal fun hasQueuedRuns() = center.queued().isNotEmpty()
 
+    private val pocketGuard by lazy { com.wangzan101.mika.pocket.PocketGuardManager(this) }
+
     private fun publishRuns() {
         val r = center.runs()
+        pocketGuard.setTasksActive(center.running().isNotEmpty())
         taskState._runs.value = r
         taskState._activeConversations.value = r.map { it.conversationId }
     }
@@ -270,6 +280,36 @@ class TaskService : Service() {
                 triggerActionGoal = intent.getStringExtra(EXTRA_TRIGGER_ACTION),
                 triggerThreadId = intent.getStringExtra(EXTRA_TRIGGER_THREAD),
                 triggerCondition = intent.getStringExtra(EXTRA_TRIGGER_CONDITION))
+            ACTION_START_WORKFLOW -> {
+                workflowStarts.incrementAndGet()
+                keepForeground()
+                scope.launch(start = CoroutineStart.UNDISPATCHED) {
+                    val workflows = (application as com.wangzan101.mika.MikaApp).workflows
+                    val attemptId = intent.getStringExtra(EXTRA_WORKFLOW_ATTEMPT).orEmpty()
+                    try {
+                        val dispatch = withContext(Dispatchers.IO) {
+                            workflows.store.claim(attemptId)?.also {
+                                ConversationStore.shared(this@TaskService).setTitle(it.conversationId, it.step.title)
+                            }
+                        }
+                        if (dispatch != null) {
+                            if (teachingBlocks()) withContext(Dispatchers.IO) { workflows.complete(attemptId, false, "", "start_failed") }
+                            else withContext(Dispatchers.Main) {
+                                begin(getString(R.string.workflow_step_prompt, dispatch.step.instruction, dispatch.input, dispatch.previous),
+                                    dispatch.conversationId, workflowAttemptId = dispatch.attemptId)
+                            }
+                        }
+                    } catch (e: CancellationException) {
+                        (application as com.wangzan101.mika.MikaApp).workflowInterrupted(attemptId)
+                        throw e
+                    } catch (e: Exception) {
+                        withContext(Dispatchers.IO) { workflows.complete(attemptId, false, "", "start_failed") }
+                    } finally {
+                        if (workflowStarts.decrementAndGet() == 0 && !taskState._busy.value && keeper.page.value == null) stopSelf(lastStartId)
+                    }
+                }
+                return START_NOT_STICKY
+            }
             ACTION_START_MCP -> intent.getStringExtra(EXTRA_MCP_ID)?.let { id ->
                 if ((application as com.wangzan101.mika.MikaApp).remoteTasks.claimStart(id)) {
                     begin(intent.getStringExtra(EXTRA_GOAL).orEmpty(), intent.getStringExtra(EXTRA_CONVERSATION),
@@ -305,7 +345,7 @@ class TaskService : Service() {
                 run?.confirm(if (intent.action == ACTION_APPROVE) ConfirmChoice.Once else ConfirmChoice.Deny, key)
             }
         }
-        if (!taskState._busy.value && keeper.page.value == null) stopSelf(startId)
+        if (workflowStarts.get() == 0 && !taskState._busy.value && keeper.page.value == null) stopSelf(startId)
         return START_NOT_STICKY
     }
 
@@ -318,7 +358,7 @@ class TaskService : Service() {
     private fun begin(newGoal: String, requestedConversation: String?,
         provenance: RunProvenance = RunProvenance(), triggerKey: String? = null,
         triggerActionGoal: String? = null, triggerThreadId: String? = null, mcpExternalId: String? = null, messageId: String? = null,
-        channelPeer: ChannelPeer? = null, channelMessageId: String? = null, triggerCondition: String? = null) {
+        channelPeer: ChannelPeer? = null, channelMessageId: String? = null, triggerCondition: String? = null, workflowAttemptId: String? = null) {
         if (teachingBlocks()) {
             if (provenance.origin == RunOrigin.Ui) {
                 android.widget.Toast.makeText(this, tr(R.string.teach_blocked_task), android.widget.Toast.LENGTH_LONG).show()
@@ -349,7 +389,7 @@ class TaskService : Service() {
             return
         }
         startNew(newGoal, requestedConversation, provenance, triggerKey, triggerActionGoal, triggerThreadId, mcpExternalId,
-            triggerCondition = triggerCondition, channelPeer = channelPeer, channelMessageId = channelMessageId)
+            triggerCondition = triggerCondition, channelPeer = channelPeer, channelMessageId = channelMessageId, workflowAttemptId = workflowAttemptId)
     }
 
     /**
@@ -360,7 +400,7 @@ class TaskService : Service() {
         provenance: RunProvenance = RunProvenance(), triggerKey: String? = null,
         triggerActionGoal: String? = null, triggerThreadId: String? = null, mcpExternalId: String? = null,
         followUp: QueuedFollowUp? = null, triggerCondition: String? = null,
-        channelPeer: ChannelPeer? = null, channelMessageId: String? = null) {
+        channelPeer: ChannelPeer? = null, channelMessageId: String? = null, workflowAttemptId: String? = null) {
         if (teachingBlocks()) {
             if (followUp != null) center.followUps.add(followUp)
             else if (provenance.origin == RunOrigin.Ui) {
@@ -391,6 +431,7 @@ class TaskService : Service() {
                     center.store.save(it.copy(triggerWindowKey = triggerKey, userText = triggerCondition))
                 }
                 r.run.mcpExternalId = mcpExternalId
+                r.run.workflowAttemptId = workflowAttemptId
                 r.run.channelPeer = channelPeer
                 r.run.channelMessageId = channelMessageId
                 acceptChannel(r.run)
@@ -419,6 +460,7 @@ class TaskService : Service() {
                     center.store.save(it.copy(triggerWindowKey = triggerKey, userText = triggerCondition))
                 }
                 run.mcpExternalId = mcpExternalId
+                run.workflowAttemptId = workflowAttemptId
                 run.channelPeer = channelPeer
                 run.channelMessageId = channelMessageId
                 acceptChannel(run)
@@ -440,7 +482,7 @@ class TaskService : Service() {
     /** 用户(或电脑)在新对话里交来的第一句话:后台请模型起一个标题记下(只起一次,起不出来就不记)。 */
     private fun nameConversation(store: ConversationStore, id: String, first: String, provenance: RunProvenance) {
         if (provenance.origin != RunOrigin.Ui && provenance.origin != RunOrigin.Mcp && provenance.origin != RunOrigin.Channel) return
-        scope.launch(Dispatchers.IO) {
+        scope.launch(Dispatchers.IO + store.meter(id)) {
             runCatching {
                 val env = TaskEnvironment.of(this@TaskService)
                 // 起标题也属于这段对话,和对话里的任务用同一个会话号
@@ -460,10 +502,29 @@ class TaskService : Service() {
     }
 
     private fun launch(run: TaskRun, store: ConversationStore) {
-        run.job = scope.launch {
+        val waitingLockWatcher = scope.launch {
+            run.state.collectLatest { state ->
+                if (LockTriggerPolicy.isWaiting(state)) {
+                    pocketGuard.lockWhileWaitingIfCovered {
+                        LockTriggerPolicy.isWaiting(run.state.value) && run in center.running() &&
+                            center.running().none { it !== run } && center.queued().isEmpty()
+                    }
+                } else if (state is TaskState.Running) {
+                    pocketGuard.onTaskResumed()
+                }
+            }
+        }
+        val meter = store.meter(run.conversationId)
+        run.job = scope.launch(meter) {
             center.markRunning(run)
+            // 定时任务没人在场,卡住了没人停:跑过设置里的最长运行时间就停下(默认不限制)
+            val limitMinutes = if (run.triggerWindowKey != null) FeatureFlags.get(this@TaskService).triggerRunMinutes() else null
             val result = try {
-                run.execute(runCatching { store.turns(run.conversationId) }.getOrDefault(emptyList()).map(::withKeptState))
+                val prior = runCatching { store.turns(run.conversationId) }.getOrDefault(emptyList()).map(::withKeptState)
+                if (limitMinutes == null) run.execute(prior) else withTimeout(limitMinutes * 60_000L) { run.execute(prior) }
+            } catch (e: TimeoutCancellationException) {
+                if (limitMinutes != null) TaskState.Failed(tr(R.string.task_trigger_time_limit, limitMinutes), FailKind.TimeLimit)
+                else TaskState.Cancelled
             } catch (e: CancellationException) {
                 TaskState.Cancelled
             } catch (e: RemoteException) {
@@ -490,7 +551,18 @@ class TaskService : Service() {
             stopRunId?.let { id -> taskState._summarizing.update { it + id } }
             run.mcpExternalId?.let { (application as com.wangzan101.mika.MikaApp).remoteTasks.ended(it, end, run.steers.value, run.runId.value, run.sharedFiles.value) }
             run.end(end)
-            if (!run.conditionCheck) recordTurn(store, run, end, run.runId.value, run.sharedFiles.value, run.joinedSteers(), run.usedGroups, run.joinedInterrupted(), run.joinedFinished())
+            if (!run.conditionCheck) recordTurn(store, run, end, run.runId.value, run.sharedFiles.value, run.audios.value, run.joinedSteers(), run.usedGroups, run.joinedInterrupted(), run.joinedFinished())
+            // Sequential workflows must know whether the step actually completed before dispatching the next one.
+            // Reuse the existing outcome judge once; unknown/partial results remain for the user to resolve.
+            val workflowJudged = if (run.workflowAttemptId != null) runCatching { run.settleOutcome(end, store) }.getOrNull() else null
+            run.workflowAttemptId?.let { attempt ->
+                withContext(Dispatchers.IO) {
+                    (application as com.wangzan101.mika.MikaApp).workflows.complete(attempt,
+                        end is TaskState.Succeeded && workflowJudged?.outcome == RunOutcome.Done,
+                        (end as? TaskState.Succeeded)?.answer.orEmpty(),
+                        (end as? TaskState.Failed)?.reason ?: workflowJudged?.reason.orEmpty())
+                }
+            }
             stopRunId?.let { summarizeStop(run, it, draft, store) }
             if (end is TaskState.Failed && !run.conditionCheck) run.runId.value?.let { summarizeFailure(run, it, end.reason, store) }
             if (run.conditionCheck) {
@@ -500,11 +572,16 @@ class TaskService : Service() {
                     run.triggerThreadId.orEmpty(), outcome)
                 if (outcome is ConditionOutcome.Error) {
                     val failure = TaskState.Failed(tr(R.string.task_check_unfinished, outcome.reason), FailKind.Environment)
-                    recordTurn(store, run, failure, run.runId.value)
-                    runCatching { notifyResult(run, failure, "condition:${run.key}") }
+                    recordTurn(store, run, failure, run.runId.value, audios = run.audios.value)
+                    runCatching { notifyResult(run, prepareResult(run, failure, "condition:${run.key}")) }
                         .onFailure { Log.w(TAG, "condition failure notification failed", it) }
                 }
                 center.markDelivered(run)
+                if (outcome is ConditionOutcome.Error) withContext(NonCancellable) {
+                    pocketGuard.lockAfterStopIfCovered {
+                        center.running().none { it !== run } && center.queued().isEmpty()
+                    }
+                }
                 onRunEnded(run, store)
                 return@launch
             }
@@ -517,10 +594,10 @@ class TaskService : Service() {
             runCatching {
                 // Persist the whole delivery before marking the result ready; recovery must know about its images too.
                 // A storage failure skips sending but must still release this task's slot below.
-                prepareResult(run, end, deliveryId)
+                val delivery = prepareResult(run, end, deliveryId)
                 center.markResult(run, describe(end).second, deliveryId, successful = end is TaskState.Succeeded)
-                RunLearning.launchAfter(MemoryRuntime.of(this@TaskService).scope, {
-                    delivered = notifyResult(run, end, deliveryId) == DeliveryState.Delivered
+                RunLearning.launchAfter(MemoryRuntime.of(this@TaskService).scope + meter, {
+                    delivered = notifyResult(run, delivery) == DeliveryState.Delivered
                     // 定时任务的结果当场按结局记(和以前一样),判下来没办成再改记;不靠服务一直在
                     if (delivered) run.triggerWindowKey?.let { key ->
                         runCatching {
@@ -530,22 +607,29 @@ class TaskService : Service() {
                     }
                 }) {
                     // 交出之后:回答按用户的要求判结局(记进运行记录和这一轮对话),只从办成的学
-                    val judged = runCatching { run.settleOutcome(end, store) }.onFailure { Log.w(TAG, "outcome judging failed", it) }.getOrNull()
+                    val judged = if (run.workflowAttemptId != null) workflowJudged else runCatching { run.settleOutcome(end, store) }.onFailure { Log.w(TAG, "outcome judging failed", it) }.getOrNull()
                     // 回答如实说没办成、只办了一部分的,和放弃一样记成没办成;没判成的照交出算
                     val notDone = judged?.outcome == RunOutcome.Partial || judged?.outcome == RunOutcome.NotPossible
                     if (delivered && notDone && end is TaskState.Succeeded) run.triggerWindowKey?.let { key ->
                         runCatching { TriggerRuntime.actionFailed(app, key, judged?.reason?.ifBlank { null } ?: describe(end).second) }
                             .onFailure { Log.w(TAG, "could not downgrade trigger result", it) }
                     }
-                    if (run.provenance.origin == RunOrigin.Ui) runCatching { run.learnAfter(end, judged?.outcome, store) }
+                    if (run.provenance.origin == RunOrigin.Ui && run.workflowAttemptId == null) runCatching { run.learnAfter(end, judged?.outcome, store) }
                         .onFailure { Log.w(TAG, "learning after run failed", it) }
                 }
             }.onFailure { Log.w(TAG, "result notification failed", it) }
             if (delivered) center.markDelivered(run)
+            if (LockTriggerPolicy.shouldCheck(end)) {
+                withContext(NonCancellable) {
+                    pocketGuard.lockAfterStopIfCovered {
+                        center.running().none { it !== run } && center.queued().isEmpty()
+                    }
+                }
+            }
             onRunEnded(run, store)
         }
         // 收尾前被取消(服务退出)、放出来还没跑就被停掉时,替它拿着的屏幕锁没交出去也没放开:这里放开
-        run.job?.invokeOnCompletion { run.wakeHandoff?.release(); run.wakeHandoff = null }
+        run.job?.invokeOnCompletion { waitingLockWatcher.cancel(); run.wakeHandoff?.release(); run.wakeHandoff = null }
     }
 
     /**
@@ -553,7 +637,7 @@ class TaskService : Service() {
      * 写好或写不成都从「正在整理」里拿掉。
      */
     private fun summarizeStop(run: TaskRun, runId: String, draft: String?, store: ConversationStore) {
-        MemoryRuntime.of(this).scope.launch {
+        MemoryRuntime.of(this).scope.launch(store.meter(run.conversationId)) {
             try {
                 val text = runCatching { run.stopSummary(draft) }.onFailure { Log.w(TAG, "stop summary failed", it) }.getOrNull()
                 if (text != null) withContext(Dispatchers.IO) {
@@ -607,6 +691,12 @@ class TaskService : Service() {
                 taskState._busy.value = false
                 return
             }
+            if (workflowStarts.get() > 0) {
+                foreground = null
+                taskState._busy.value = false
+                keepForeground()
+                return
+            }
             stopForeground(STOP_FOREGROUND_REMOVE)
             // 先取编号再放开:放开之后才到的新任务会带来更新的编号,这里的 stopSelf 就不会把它停掉
             val id = lastStartId
@@ -634,8 +724,11 @@ class TaskService : Service() {
     private fun cancelQueued(run: TaskRun) {
         run.handoffUnconsumed(cancelled = true)
         run.mcpExternalId?.let { (application as com.wangzan101.mika.MikaApp).remoteTasks.ended(it, TaskState.Cancelled, run.steers.value, run.runId.value, run.sharedFiles.value) }
+        run.workflowAttemptId?.let { attempt ->
+            (application as com.wangzan101.mika.MikaApp).workflowInterrupted(attempt)
+        }
         run.end(TaskState.Cancelled)
-        recordTurn(ConversationStore.shared(this), run, TaskState.Cancelled, null)
+        recordTurn(ConversationStore.shared(this), run, TaskState.Cancelled, null, audios = run.audios.value)
         publishRuns()
         center.queued().forEachIndexed { i, q -> q.queue(i + 1) }
         drainReady(run.conversationId)
@@ -654,7 +747,7 @@ class TaskService : Service() {
                 return
             }
             nm.cancel(ID_KEPT)
-            if (!idle || taskState._busy.value) return
+            if (!idle || taskState._busy.value || workflowStarts.get() > 0) return
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf(lastStartId)
         }
@@ -688,6 +781,7 @@ class TaskService : Service() {
 
     /** 任务结束时记一轮,后续消息可带上它作参考。写盘失败不影响任务结果。 */
     private fun recordTurn(store: ConversationStore, run: TaskRun, end: TaskState, runId: String?, files: List<SharedFile> = emptyList(),
+        audios: List<com.wangzan101.mika.core.chat.GeneratedAudio> = emptyList(),
         steers: List<String> = emptyList(), groups: List<String> = emptyList(), interrupted: List<String> = emptyList(),
         finished: List<String> = emptyList()) {
         val goal = run.triggerCondition ?: run.goal
@@ -698,7 +792,8 @@ class TaskService : Service() {
             is TaskState.Failed -> Turn(goal, end.reason, "failed")
             TaskState.Cancelled -> Turn(goal, Conversation.CANCELLED_OUTCOME, "cancelled", outcomeSystemType = "task_cancelled")
             else -> return
-        }.copy(runId = runId, remoteTaskId = run.mcpExternalId, steers = steers, groups = groups, interruptedReplies = interrupted, finishedReplies = finished)
+        }.copy(runId = runId, remoteTaskId = run.mcpExternalId, steers = steers, groups = groups, interruptedReplies = interrupted, finishedReplies = finished,
+            audios = audios)
             // 这一轮留下了一页:记下站点(已经关了的连同原因),对话页那一轮下面据此显示
             .let { t -> keeper.recordFor(runId)?.let { (host, closed) -> t.copy(keptPage = host, keptPageClosed = closed) } ?: t }
         runCatching { store.append(run.conversationId, turn, files) }.onFailure { Log.w(TAG, "could not save conversation turn", it) }
@@ -737,7 +832,10 @@ class TaskService : Service() {
     }
 
     private fun progressNotification(run: TaskRun, state: TaskState): Notification {
-        val (_, text) = describe(state) { ConfirmationNotifier.appLabel(this, it) }
+        val stage = run.chipStages.current
+        val chip = if (Build.VERSION.SDK_INT >= 36) taskChip(run.provenance.origin, state, stage) else null
+        val text = if (chip != null && state is TaskState.Running) chipDetail(state, stage)
+            else describe(state) { ConfirmationNotifier.appLabel(this, it) }.second
         val warning = run.muteFailedFor?.let { "\n" + tr(R.string.task_may_make_sound) }.orEmpty() +
             (if (state is TaskState.WaitingTakeover && !takeoverFirst(run)) "\n$TAKEOVER_QUEUED" else "")
         val b = Notification.Builder(this, CHANNEL_PROGRESS)
@@ -747,7 +845,13 @@ class TaskService : Service() {
             .setStyle(Notification.BigTextStyle().bigText(text + warning))
             .setOngoing(true)
             .setOnlyAlertOnce(true)
-            .setContentIntent(openApp())
+            .setContentIntent(openApp(run.conversationId))
+        if (Build.VERSION.SDK_INT >= 36 && chip != null) {
+            b.setForegroundServiceBehavior(Notification.FOREGROUND_SERVICE_IMMEDIATE)
+            b.setShortCriticalText(chip)
+            // The public EXTRA_REQUEST_PROMOTED_ONGOING constant is exposed by SDK 36.1.
+            b.extras.putBoolean("android.requestPromotedOngoing", true)
+        }
         val active = center.running().size
         if (active >= 2) b.setSubText(trPlural(R.plurals.task_active, active))
         when (state) {
@@ -789,7 +893,7 @@ class TaskService : Service() {
         val quiet = (application as com.wangzan101.mika.MikaApp).capsule.showing.value
         if (state is TaskState.WaitingConfirmation) {
             return ConfirmationNotifier.build(
-                this, CHANNEL_ATTENTION, state, TaskService::class.java, ACTION_APPROVE, ACTION_DECLINE, openApp(),
+                this, CHANNEL_ATTENTION, state, TaskService::class.java, ACTION_APPROVE, ACTION_DECLINE, openApp(run.conversationId),
                 codeOffset = SLOT_STRIDE * run.slot, runExtra = EXTRA_RUN to run.key, quiet = quiet,
             )
         }
@@ -818,7 +922,7 @@ class TaskService : Service() {
             .setStyle(Notification.BigTextStyle().bigText(text))
             .setCategory(Notification.CATEGORY_REMINDER)
             .setOnlyAlertOnce(true) // 同一次等待里换按钮不再响铃;离开等待时撤掉,下一次会重新提醒
-            .setContentIntent(openApp())
+            .setContentIntent(openApp(run.conversationId))
         if (quiet) b.alertQuietly()
         when (state) {
             is TaskState.WaitingTakeover -> takeoverActions(run).forEach(b::addAction)
@@ -890,24 +994,32 @@ class TaskService : Service() {
         return Notification.Action.Builder(null, option, pi).build()
     }
 
-    private suspend fun prepareResult(run: TaskRun, end: TaskState, deliveryId: String) {
-        val (title, text) = describe(end)
+    private suspend fun prepareResult(run: TaskRun, end: TaskState, deliveryId: String): Delivery.Result {
+        val result = resultDelivery(deliveryId, run.conversationId, end, failureStreak(run, end))
         val peer = run.channelPeer ?: ChannelPeer(LocalChannel.ID, "phone-owner", run.conversationId)
-        ResultDelivery.prepare(outbox, channelFor(peer, run.triggerWindowKey != null), peer,
-            Delivery.Result(deliveryId, run.conversationId, text, title = title), run.sharedFiles.value)
+        ResultDelivery.prepare(outbox, channelFor(peer, run.triggerWindowKey != null), peer, result, run.sharedFiles.value)
+        return result
     }
 
-    private suspend fun notifyResult(run: TaskRun, end: TaskState, deliveryId: String): DeliveryState {
-        prepareResult(run, end, deliveryId)
-        val (title, text) = describe(end)
+    private suspend fun notifyResult(run: TaskRun, result: Delivery.Result): DeliveryState {
         val peer = run.channelPeer ?: ChannelPeer(LocalChannel.ID, "phone-owner", run.conversationId)
         val started = SystemClock.elapsedRealtime()
-        val delivered = ResultDelivery.send(outbox, channelFor(peer, run.triggerWindowKey != null), peer,
-            Delivery.Result(deliveryId, run.conversationId, text, title = title))
+        val delivered = ResultDelivery.send(outbox, channelFor(peer, run.triggerWindowKey != null), peer, result)
         val finished = SystemClock.elapsedRealtime()
         val sinceReady = if (run.resultReadyAtMs > 0) finished - run.resultReadyAtMs else -1
         Log.i(TAG, "result $delivered: delivery ${finished - started} ms, since ready $sinceReady ms")
         return delivered
+    }
+
+    /**
+     * 定时任务这次又没成,连上之前接连失败的到了 [FAILURE_STREAK_NOTICE] 次及以上时是总次数(含这次):
+     * 通知标题写明连着失败了几次、提醒去暂停或修改,免得每次只看到一条普通的失败。查不到记录时按没有连续失败算。
+     */
+    private fun failureStreak(run: TaskRun, end: TaskState): Int? {
+        val key = run.triggerWindowKey ?: return null
+        if (end is TaskState.Succeeded || end == TaskState.Cancelled) return null
+        val streak = runCatching { TriggerRuntime.failureStreakBefore(this, key) }.getOrDefault(0) + 1
+        return streak.takeIf { it >= FAILURE_STREAK_NOTICE }
     }
 
     private fun action(run: TaskRun, title: String, action: String, code: Int): Notification.Action {
@@ -921,6 +1033,7 @@ class TaskService : Service() {
     private fun openApp(threadId: String? = null) = openApp(this, threadId)
 
     override fun onDestroy() {
+        pocketGuard.close()
         scope.cancel()
         // 服务没了就撑不住进程:留着的那一页如实关掉,对话里记下
         keeper.close(KeptPageClose.AppExit)
@@ -929,6 +1042,7 @@ class TaskService : Service() {
             // 标中断后当场善后(定时窗口、补送、告知、写进对话):进程还在,不等下次启动;用 App 级作用域,服务没了也做完
             center.store.interruptUnfinished()
             val app = application as com.wangzan101.mika.MikaApp
+            center.runs().forEach { r -> r.workflowAttemptId?.let(app::workflowInterrupted) }
             center.runs().forEach { r -> r.mcpExternalId?.let { app.remoteTasks.ended(it, TaskState.Failed(tr(R.string.task_interrupted), FailKind.Interrupted), r.steers.value, r.runId.value, r.sharedFiles.value) } }
             (application as com.wangzan101.mika.MikaApp).runRecovery.settleInterrupted()
             taskState._state.value = TaskState.Failed(tr(R.string.task_interrupted), FailKind.Interrupted)
@@ -958,7 +1072,7 @@ class TaskService : Service() {
         /** 打开 Mika;给了 [threadId] 时直接到那个对话。通知和悬浮胶囊共用。 */
         internal fun openAppIntent(context: Context, threadId: String? = null): Intent = Intent(context, MainActivity::class.java)
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
-            .apply { if (threadId != null) putExtra(MainActivity.EXTRA_OPEN_CONVERSATION, threadId) }
+            .apply { if (threadId != null) setIdentifier(threadId).putExtra(MainActivity.EXTRA_OPEN_CONVERSATION, threadId) }
 
         /** 并行时结果通知的下一个编号(循环使用)。 */
         internal fun nextResultId() = ID_RESULT_FIRST + resultCount.getAndIncrement() % RESULT_IDS
@@ -967,7 +1081,8 @@ class TaskService : Service() {
         internal fun notifyDelivery(context: Context, delivery: Delivery, resultId: Int, scheduled: Boolean = false): SendOutcome {
             val nm = context.getSystemService(NotificationManager::class.java)
             when (delivery) {
-                is Delivery.Result -> nm.notify(resultId, Notification.Builder(context, CHANNEL_RESULT)
+                // Mika 在前台(用户正看着聊天页)时不弹任务完成通知,结果只在应用内展示;切到别的 App 才保留通知(#731)
+                is Delivery.Result -> if (!MainActivity.foreground) nm.notify(resultId, Notification.Builder(context, CHANNEL_RESULT)
                     .setSmallIcon(R.drawable.ic_notification)
                     .setContentTitle(delivery.title)
                     .setContentText(delivery.text)
@@ -993,6 +1108,8 @@ class TaskService : Service() {
         const val ACTION_ENQUEUE_FOLLOWUP = "com.wangzan101.mika.task.ENQUEUE_FOLLOWUP"
         const val ACTION_DRAIN_FOLLOWUPS = "com.wangzan101.mika.task.DRAIN_FOLLOWUPS"
         const val ACTION_START_TRIGGER = "com.wangzan101.mika.task.START_TRIGGER"
+        private const val ACTION_START_WORKFLOW = "com.wangzan101.mika.task.START_WORKFLOW"
+        private const val EXTRA_WORKFLOW_ATTEMPT = "workflow_attempt"
         const val ACTION_START_MCP = "com.wangzan101.mika.task.START_MCP"
         const val ACTION_START_CHANNEL = "com.wangzan101.mika.task.START_CHANNEL"
         const val ACTION_CANCEL_MCP = "com.wangzan101.mika.task.CANCEL_MCP"
@@ -1011,6 +1128,8 @@ class TaskService : Service() {
         /** 关掉任务结束后留在后台的那一页(通知上的按钮)。 */
         const val ACTION_CLOSE_KEPT_PAGE = "com.wangzan101.mika.task.CLOSE_KEPT_PAGE"
         const val ACTION_DECLINE = "com.wangzan101.mika.task.DECLINE"
+        /** 定时任务连着失败到这么多次(含这次)起,结果通知里写明连续失败。 */
+        internal const val FAILURE_STREAK_NOTICE = 3
         private const val EXTRA_GOAL = "goal"
         private const val EXTRA_MESSAGE_ID = "message_id"
         private const val EXTRA_SOURCE = "source"
@@ -1061,8 +1180,14 @@ class TaskService : Service() {
         /** 循环的状态里哪些可以由发布写出去。 */
         internal fun loopMayPublish(state: TaskState) = state.isActive()
 
-        /** 开始一个任务;别的对话的任务在跑而不能同时跑时排在它后面。[conversationId] 为空表示新开一个对话(编号见 [conversationId])。 */
-        /** [messageId] 给了时这是任务进行中插的话,界面按它跟这句话的去向。 */
+        /** Starts only the persisted, claimable workflow attempt named by this ID. */
+        fun startWorkflow(context: Context, attemptId: String) {
+            check(!FeatureFlags.get(context).quitRequested())
+            context.startForegroundService(Intent(context, TaskService::class.java).setAction(ACTION_START_WORKFLOW)
+                .putExtra(EXTRA_WORKFLOW_ATTEMPT, attemptId))
+        }
+
+        /** 开始任务;其他对话忙时排队。messageId 非空时按插话处理。 */
         fun start(context: Context, goal: String, conversationId: String? = null, messageId: String? = null) {
             if (FeatureFlags.get(context).quitRequested()) return
             context.startForegroundService(
@@ -1205,6 +1330,13 @@ class TaskService : Service() {
         internal fun TaskState.isActive() = when (this) {
             TaskState.Idle, is TaskState.Succeeded, is TaskState.Failed, TaskState.Cancelled -> false
             else -> true
+        }
+
+        internal fun resultDelivery(deliveryId: String, threadId: String, end: TaskState, failureStreak: Int?): Delivery.Result {
+            val (title, text) = describe(end)
+            return if (failureStreak == null) Delivery.Result(deliveryId, threadId, text, title = title)
+            else Delivery.Result(deliveryId, threadId, "$text\n${tr(R.string.trigger_failed_streak_hint)}",
+                title = tr(R.string.trigger_failed_streak, failureStreak))
         }
 
         /** 通知的标题和正文;[appLabel] 把包名换成 App 名。 */

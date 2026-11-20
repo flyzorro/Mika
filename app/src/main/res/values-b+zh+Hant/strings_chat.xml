@@ -1,5 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="chat_confirmed_goals">已確認目標 %1$d/%2$d</string>
+    <string name="chat_last_confirmed_goals">上次確認 %1$d/%2$d</string>
     <string name="chat_greeting_morning">早上好</string>
     <string name="chat_greeting_noon">中午好</string>
     <string name="chat_greeting_afternoon">下午好</string>
@@ -11,29 +13,29 @@
     <string name="chat_example_group_summary">幫我總結微信群聊，Mika內測體驗群今天都聊了些啥</string>
     <string name="chat_example_alarms">幫我訂明天早上9:40、9:50、10:00 的鬧鐘</string>
     <string name="chat_example_replace_title">取代目前草稿？</string>
-    <string name="chat_example_replace_body">推薦任務會取代你已輸入的內容。</string>
+    <string name="chat_example_replace_body">常用任務會取代你已輸入的內容。</string>
     <string name="chat_example_replace_action">取代草稿</string>
-    <string name="recommendations_title">推薦任務</string>
+    <string name="recommendations_title">常用任務</string>
     <string name="recommendations_drag">拖曳調整順序</string>
     <string name="recommendations_drag_hint">拖曳右側把手調整顯示順序。</string>
     <string name="recommendations_move_up">上移</string>
     <string name="recommendations_move_down">下移</string>
     <string name="recommendations_sub">管理首頁顯示的任務和提示詞</string>
-    <string name="recommendations_add">新增推薦任務</string>
-    <string name="recommendations_edit">編輯推薦任務</string>
-    <string name="recommendations_empty">還沒有推薦任務</string>
+    <string name="recommendations_add">新增常用任務</string>
+    <string name="recommendations_edit">編輯常用任務</string>
+    <string name="recommendations_empty">還沒有常用任務</string>
     <string name="recommendations_empty_sub">新增後會出現在新對話首頁</string>
     <string name="recommendations_title_label">標題</string>
-    <string name="recommendations_prompt_label">提示詞</string>
+    <string name="recommendations_prompt_label">任務內容</string>
     <string name="recommendations_delete">刪除</string>
-    <string name="recommendations_delete_title">刪除這條推薦任務？</string>
-    <string name="recommendations_delete_body">刪除後，首頁不再顯示它。</string>
+    <string name="recommendations_delete_title">刪除這條常用任務？</string>
+    <string name="recommendations_delete_body">刪除後，首頁和常用任務清單不再顯示它。</string>
     <string name="recommendations_save_failed">沒能儲存，請再試一次。</string>
     <string name="recommendations_title_required">請填寫標題</string>
-    <string name="recommendations_prompt_required">請填寫提示詞</string>
-    <string name="recommendations_too_long">標題或提示詞太長了</string>
-    <string name="recommendations_too_many">最多儲存 %1$d 條推薦任務</string>
-    <string name="recommendations_unreadable">沒能讀取已儲存的推薦任務，暫時不能修改。</string>
+    <string name="recommendations_prompt_required">請填寫任務內容</string>
+    <string name="recommendations_too_long">標題或任務內容太長了</string>
+    <string name="recommendations_too_many">最多儲存 %1$d 條常用任務</string>
+    <string name="recommendations_unreadable">沒能讀取已儲存的常用任務，暫時不能修改。</string>
     <string name="recommendations_reset">清空並重新開始</string>
     <string name="recommendations_reset_body">讀不出來的檔案會被一份空清單取代。</string>
     <string name="recommendations_footer">在新對話首頁點一條任務，會把提示詞填進輸入框，不會自動送出。</string>
@@ -78,6 +80,7 @@
     <string name="chat_attach_rejected">沒能新增:%1$s(單個檔案不超過 200 MB)</string>
     <string name="chat_stop">停止</string>
     <string name="chat_send">傳送</string>
+    <string name="chat_scroll_to_bottom">回到底部</string>
     <string name="drawer_running_task">進行中的任務</string>
     <string name="drawer_running">進行中</string>
     <string name="drawer_yesterday">昨天</string>
@@ -213,6 +216,9 @@
     <string name="zoom_in">放大看</string>
     <string name="chat_message_actions">訊息操作</string>
     <string name="chat_copy">複製</string>
+    <string name="share_card_question">問</string>
+    <string name="share_card_answer">答</string>
+    <string name="share_card_made_by">由 Mika 完成</string>
     <string name="chat_quote">引用</string>
     <string name="chat_select_text">選取文字</string>
     <string name="chat_copied">已複製</string>
@@ -247,6 +253,9 @@
     <string name="pip_closed_hint">這個任務不再浮出小畫面。點右下角「顯示畫面」，或在側欄「背景螢幕」裡看。</string>
     <string name="chat_conversation_tokens">本對話共 %1$s</string>
     <string name="chat_conversation_tokens_partial">本對話至少 %1$s</string>
+    <string name="chat_task_cost_estimate">約 %1$s</string>
+    <string name="chat_task_cost_partial">%1$s（部分）</string>
+    <string name="chat_task_cost_unavailable">暫無法估算費用</string>
     <string name="follow_up_steer">引導</string>
     <string name="follow_up_queue">排隊</string>
     <string name="follow_up_steer_hint">下一步就按這句話調整</string>
@@ -268,4 +277,25 @@
     <plurals name="drawer_archive_many_skipped">
         <item quantity="other">%1$d 個未歸檔</item>
     </plurals>
+    <string name="chat_example_github_star_title">給 GitHub 專案點 star</string>
+    <string name="chat_example_follow_title">追蹤小紅書博主</string>
+    <string name="chat_example_group_summary_title">總結群組聊天</string>
+    <string name="chat_example_alarms_title">設幾個鬧鐘</string>
+    <string name="chat_example_pdf_title">整理 PDF 摘要</string>
+    <string name="chat_example_schedule_title">設定每日提醒</string>
+    <string name="chat_example_pdf">把傳來的 PDF 整理成一段摘要</string>
+    <string name="chat_example_schedule">每天早上 8 點提醒我查今天的天氣</string>
+    <string name="chat_empty_value">一句話，讓我幫你操作 App、上網、把事情辦成</string>
+    <string name="saved_task_save">存為常用任務</string>
+    <string name="task_field_add">新增填寫項目</string>
+    <string name="task_field_name">填寫項目名稱</string>
+    <string name="task_field_name_invalid">名稱限 1–40 字，不能包含大括號或換行。</string>
+    <string name="task_field_insert">插入</string>
+    <string name="task_fields_too_many">最多新增 %1$d 個不同的填寫項目。</string>
+    <string name="task_fill_apply">填入輸入框</string>
+    <string name="chat_read_aloud">Read aloud</string>
+    <string name="chat_stop_speaking">Stop speaking</string>
+    <string name="chat_audio">Audio</string>
+    <string name="chat_audio_play">Play</string>
+    <string name="chat_audio_stop">Stop</string>
 </resources>

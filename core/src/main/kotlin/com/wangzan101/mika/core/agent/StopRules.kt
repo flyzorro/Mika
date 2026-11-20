@@ -52,7 +52,7 @@ internal object StopRules {
         val treeBlind = v.evidence["treeBlind"] == JsonPrimitive(true)
         val why = when (v.code) {
             "repeating_action" -> "同一个操作反复执行仍没有效果"
-            "no_progress" -> if (treeBlind) "控件树读不到操作位置,连续操作后画面仍无可见变化,无法确认操作是否生效,已停止重试"
+            "no_progress" -> if (treeBlind) "读不到这个界面的控件,点击和滑动画面也没有反应,该应用可能不响应 Mika 的自动化操作"
                 else "操作多次后画面一直没有变化"
             "read_loop" -> "页面没有变化,反复读也读不出要找的内容"
             "too_many_failures" -> "操作连续失败"
@@ -65,6 +65,7 @@ internal object StopRules {
 
 internal fun userReason(e: ModelError): String = when (e) {
     is ModelError.Auth -> "模型服务拒绝了请求:API Key 无效或没有权限。请在设置里检查 API Key 是否填写正确、是否有权使用该模型。"
+    is ModelError.IllegalHeader -> "API Key 含有无法使用的字符。请在设置 › 模型里只粘贴密钥本身，不要带说明文字、换行或表情。"
     is ModelError.QuotaExceeded -> "模型账户额度已用完,请检查服务商账户的余额或套餐。"
     is ModelError.TaskBudgetExceeded -> "已达到本任务 ${e.limit} Token 的预算上限,任务没有完成。"
     is ModelError.DailyBudgetExceeded ->
@@ -109,6 +110,21 @@ internal fun userReason(e: ModelError): String = when (e) {
     is ModelError.SignInExpired -> "${e.account} 登录已失效,请在设置 › 模型里重新用 ${e.account} 登录。"
     is ModelError.AccountPlanNotAllowed ->
         "你的 ${e.account} 订阅档位不能用这个接口(HTTP 403)。${if (e.detail.isEmpty()) "" else "服务端说明:${quoted(e.detail)}。"}可以改用 ${e.account} 的 API Key,或在设置 › 模型里换一个模型。"
+    is ModelError.ChainFailed -> {
+        // 主消息是主模型最初的错误(上面按它的类型生成),后面附整条链每个模型的状态码与一行摘要(MK-1 第 2 批)
+        val trail = e.entries.joinToString("；") { (name, err) ->
+            "「$name」${chainErrorTag(err)}：${err.message.orEmpty().lineSequence().firstOrNull().orEmpty().take(80)}"
+        }
+        userReason(e.primary) + "本任务把整条备援链都试过了，全部失败：$trail。"
+    }
+}
+
+/** 链失败记录里每个错误的短标签:认得出的写 HTTP 状态码,其余写故障名。 */
+private fun chainErrorTag(e: ModelError): String = when (e) {
+    is ModelError.Server -> " HTTP ${e.status}"
+    is ModelError.RateLimited -> " HTTP 429"
+    is ModelError.Auth -> " " + RetryPolicy.label(e)
+    else -> " ${RetryPolicy.label(e)}"
 }
 
 /** 引在句中的服务端原话:去掉末尾一个句号(原话自带的),由引它的句子补上自己的「。」;省略号(截短的「…」、「...」)不动。 */

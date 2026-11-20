@@ -75,6 +75,23 @@ data class TriggerWindow(
     val key get() = "$triggerId:$dueAtMs"
 }
 
+/**
+ * 这个计划在 [currentKey] 这一次之前已经接连失败了几次:从紧挨着的上一次往前数失败的,遇到送达了的或结果不明的就停;
+ * 条件没满足而跳过的、还没出结果的不算数,也不打断。认不出 [currentKey] 时为 0。
+ */
+fun failureStreakBefore(windows: List<TriggerWindow>, currentKey: String): Int {
+    val current = windows.firstOrNull { it.key == currentKey } ?: return 0
+    var streak = 0
+    for (w in windows.filter { it.triggerId == current.triggerId && it.dueAtMs < current.dueAtMs }.sortedByDescending { it.dueAtMs }) {
+        when (w.state) {
+            TriggerWindowState.Failed -> streak++
+            TriggerWindowState.Delivered, TriggerWindowState.Unknown -> return streak
+            else -> Unit
+        }
+    }
+    return streak
+}
+
 /** claimDue 必须把下次时间与待处理账本一起写入，返回后才可派发。 */
 interface TriggerStore {
     fun upsert(trigger: TriggerDefinition)
@@ -192,6 +209,12 @@ class MemoryTriggerStore(initial: TriggerSnapshot = TriggerSnapshot(emptyList(),
  */
 fun TriggerDefinition.slotTaken(windows: List<TriggerWindow>): Boolean =
     windows.any { it.triggerId == id && it.dueAtMs == nextAtMs }
+
+/**
+ * 计划页的开关能不能拨:已启用的总能暂停;已停用的看这次时段跑过没有,和 [TriggerEngine.setEnabled] 一致。
+ * 一次性计划这次时段跑过就不能再开(要再跑得改时间或立即执行);手动运行只记在别的时段,不算占用。
+ */
+fun TriggerDefinition.canToggle(windows: List<TriggerWindow>): Boolean = enabled || !slotTaken(windows)
 
 /** 以当地日历递进，跨夏令时仍保持同一钟点；不存在的钟点使用系统的向前调整规则。 */
 fun nextCalendarAt(time: String, zone: String, days: List<Int>, afterMs: Long): Long =

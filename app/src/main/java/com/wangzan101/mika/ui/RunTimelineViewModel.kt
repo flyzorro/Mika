@@ -13,6 +13,7 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 import java.io.File
 import com.wangzan101.mika.core.assembly.knownTools
+import com.wangzan101.mika.ui.components.TileTone
 
 enum class TagTone { Ok, Warn, Bad }
 
@@ -58,6 +59,8 @@ data class TimelineHeader(
     val goal: String,
     val criteria: List<String>,
     val outcome: String,
+    /** 结局的基调:已办成(绿)、没办成(红)、只办成一部分(黄)、其余(灰)。 */
+    val outcomeTone: TileTone = TileTone.Neutral,
     /** 这次运行还没结束:结局、核查、统计都还没写齐,页面按秒接着读(见 [RunTimelineScreen])。 */
     val running: Boolean = false,
     val verdict: String,
@@ -65,6 +68,8 @@ data class TimelineHeader(
     val modelCalls: Int,
     /** 这次运行的步数上限;不限制或旧记录为 null。 */
     val stepLimit: Int? = null,
+    /** 这次运行用的人格(名字 · 修订号);没有为 null。 */
+    val persona: String? = null,
     /** 用了几步(和 [stepLimit] 一起显示);步数用完后的最后一轮收尾记作第上限加一步,不算一步,所以不超过上限。 */
     val stepsUsed: Int = 0,
     /** 整个运行共享的已报告 Token 预算；旧记录或不限制为 null。 */
@@ -74,6 +79,7 @@ data class TimelineHeader(
     val usedMemory: List<String> = emptyList(),
     /** 这次运行的小结;记录里没有开始事件时为 null(只显示用时)。 */
     val metrics: RunMetrics? = null,
+    val confirmedIds: Set<Int>? = null,
 )
 
 sealed interface TimelineUi {
@@ -107,18 +113,24 @@ class RunTimelineViewModel(
         val startMs = summary?.startedAtMs ?: events.first().atMs
         val endMs = summary?.endedAtMs ?: ended?.atMs
         val metrics = RunMetrics.of(events, runId)
+        val criteriaEvents = events.filterIsInstance<RunEvent.Criteria>()
+        val goals = criteriaEvents.lastOrNull { it.confirmedIds != null }
         val header = TimelineHeader(
             goal = summary?.goal ?: started?.goal.orEmpty(),
-            criteria = summary?.criteria?.takeIf { it.isNotEmpty() }
-                ?: events.filterIsInstance<RunEvent.Criteria>().lastOrNull()?.criteria.orEmpty(),
+            criteria = goals?.criteria ?: summary?.criteria?.takeIf { it.isNotEmpty() } ?: criteriaEvents.lastOrNull()?.criteria.orEmpty(),
+            confirmedIds = goals?.confirmedIds,
             outcome = outcomeLabel(summary?.outcome ?: ended?.outcome,
                 summary?.judged ?: events.filterIsInstance<RunEvent.OutcomeJudged>().lastOrNull()?.outcome),
+            outcomeTone = outcomeTone(summary?.outcome ?: ended?.outcome,
+                summary?.judged ?: events.filterIsInstance<RunEvent.OutcomeJudged>().lastOrNull()?.outcome,
+                running = ended == null && summary?.endedAtMs == null && alive(runId)),
             // 结束事件或结束时间只要有一个就算跑完了;都没有时还要任务真在跑,界面据此决定要不要按秒重读
             running = ended == null && summary?.endedAtMs == null && alive(runId),
             verdict = verdictLabel(summary?.verdict ?: events.filterIsInstance<RunEvent.Verifier>().lastOrNull()?.verdict),
             duration = endMs?.let { duration(it - startMs) },
             modelCalls = events.count { it is RunEvent.ModelReply },
             stepLimit = started?.stepLimit,
+            persona = events.filterIsInstance<RunEvent.State>().lastOrNull { it.name == "persona" }?.detail,
             stepsUsed = metrics?.steps?.let { n -> started?.stepLimit?.let { minOf(n, it) } ?: n } ?: 0,
             tokenBudget = started?.tokenBudget,
             tokensUsed = metrics?.let { m ->
@@ -199,7 +211,7 @@ class RunTimelineViewModel(
                 val outer = results.filter { it.source == "model" && it.durationMs > 0 }
                 val measured = (outer.ifEmpty { results.filter { it.durationMs > 0 } }).sumOf { it.durationMs }
                 row.copy(
-                    said = clipSaid(row.said),
+                    said = row.said,
                     timing = StepTiming(modelTimes[row.step], measured.takeIf { it > 0 }, retryTimes[row.step] ?: 0),
                 )
             }
@@ -234,6 +246,19 @@ class RunTimelineViewModel(
         private val NOT_OK = Regex(""""ok"\s*:\s*false""")
         private val NOT_COUNTED = Regex(""""counts_as_failure"\s*:\s*false""")
         private val ERROR = Regex(""""error"\s*:\s*"([a-z_]+)"""")
+
+        /** 回放按实际调用匹配结果后复用同一份错误译名，不从轮次或模型计划猜失败原因。 */
+        internal fun failureLabel(json: String): String? {
+            val parsed = parse(json)
+            if (parsed != null && parsed["ok"] != JsonPrimitive(false)) return null
+            if (parsed == null && !NOT_OK.containsMatchIn(json)) return null
+            val code = (parsed?.get("error") as? JsonPrimitive)?.contentOrNull
+                ?: ERROR.find(json)?.groupValues?.get(1)
+            val message = (parsed?.get("message") as? JsonPrimitive)?.contentOrNull?.trim()?.takeIf { it.isNotEmpty() }
+            val reason = ERROR_LABELS[code] ?: message?.let { com.wangzan101.mika.core.record.Redactor.text(it).take(240) }
+                ?: code?.takeIf { it.isNotBlank() }?.take(100)
+            return reason?.let { tr(R.string.result_error_detail, it) }
+        }
 
         private fun resultLabel(json: String, changed: Boolean?): String = when {
             // 按规矩没收、结果里写明不计入失败的(写记忆时)不是出错:只说没收和原因,不带「出错」,这一步也就不标成失败。
@@ -326,6 +351,15 @@ class RunTimelineViewModel(
         }
 
         private fun verdictLabel(verdict: String?) = if (verdict == null) tr(R.string.verify_none) else verifierTag(verdict).text
+
+        /** 结局的基调:已办成绿、没办成红、只办成一部分/做不了黄、进行中或没核实的灰。 */
+        private fun outcomeTone(outcome: String?, judged: String?, running: Boolean): TileTone = when {
+            running -> TileTone.Neutral
+            outcome == "failed" || outcome == "error" -> TileTone.Bad
+            judged == "partial" || judged == "not_possible" -> TileTone.Warn
+            outcome == "succeeded" -> TileTone.Ok
+            else -> TileTone.Neutral
+        }
 
         /** [judged]:交出回答后判的结局;回答如实说没办成、只办了一部分的按它写。 */
         private fun outcomeLabel(outcome: String?, judged: String?) = when {

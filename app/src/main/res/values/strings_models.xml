@@ -13,6 +13,10 @@
     <string name="models_lead">Pick which model does each job under “Roles”; models come from the providers connected below.</string>
     <string name="models_roles">Roles</string>
     <string name="models_providers">Providers</string>
+    <plurals name="models_providers_count">
+        <item quantity="one">%1$d provider</item>
+        <item quantity="other">%1$d providers</item>
+    </plurals>
     <string name="models_add_provider">Add provider</string>
     <string name="models_key_note">API keys are stored only on this phone, encrypted.</string>
     <string name="models_main_add_first">Add a provider first</string>
@@ -60,9 +64,15 @@
     <string name="role_main_what">Thinking and doing</string>
     <string name="role_vision_what">Looks at screenshots</string>
     <string name="role_light_what">Small jobs like checks and notes</string>
-    <string name="role_main_hint">Does all the thinking and acting. Pick a model with tool calling so tasks go reliably.</string>
-    <string name="role_vision_hint">Gets screenshots when reading the screen; more accurate on complex screens. Optional: without it Mika reads the screen as text.</string>
-    <string name="role_light_hint">Handles small jobs like checking whether a task is done and tidying memory. Cheap and fast is best.</string>
+    <string name="role_main_hint">Pick a model with tool calling so tasks go reliably.</string>
+    <string name="main_fallback_name">Fallback model %1$d</string>
+    <string name="main_fallback_what">Takes over when the main model is unavailable</string>
+    <string name="main_fallback_pick">Pick a fallback model</string>
+    <string name="main_fallback_clear">No fallback</string>
+    <string name="main_fallback_failed">Could not set the fallback model</string>
+    <string name="main_fallback_is_main">This is the current main model, so it cannot also be its fallback</string>
+    <string name="role_vision_hint">Optional: without it Mika reads the screen as text.</string>
+    <string name="role_light_hint">Cheap and fast is best.</string>
     <string name="models_delete_title">Delete “%1$s”?</string>
     <string name="models_delete_body">"Its API key will be deleted too. "</string>
     <string name="models_delete_unused">It isn’t used for any role.</string>
@@ -175,7 +185,7 @@
     <!-- Settings > Models: speech-to-text usage and its picker page -->
     <string name="role_speech">Speech to text</string>
     <string name="role_speech_what">Used while you hold to talk</string>
-    <string name="speech_hint">Choose the phone’s built-in recognition, a live speech service, or a provider model that transcribes after you finish. Online services use your provider quota.</string>
+    <string name="speech_hint">Online services use your provider quota.</string>
     <string name="speech_system">Built into the phone</string>
     <string name="speech_system_offline">Works offline</string>
     <string name="speech_system_online">Needs internet</string>
@@ -196,4 +206,35 @@
     <string name="models_daily_token_budget">Daily token budget</string>
     <string name="models_daily_token_budget_sub">Counts all models and purposes for this provider in the local calendar day. Only reported input and output tokens count. At the limit, the next request is blocked; in-flight requests may exceed it. Resets when the local date changes.</string>
     <string name="models_daily_token_budget_save_failed">The budget could not be saved. The previous setting is still active.</string>
+    <string name="role_voice">Voice model</string>
+    <string name="role_voice_what">Lets Mika speak and read answers aloud</string>
+    <string name="voice_enable">Allow Mika to speak</string>
+    <string name="voice_enable_note">Speech is only made when you tap Read aloud, unless auto-read is on</string>
+    <string name="voice_provider">Service</string>
+    <string name="voice_no_providers">Add a model service first (speech uses the same service and key).</string>
+    <string name="voice_model_name">Model</string>
+    <string name="voice_protocol">API</string>
+    <string name="voice_protocol_openai">OpenAI Speech</string>
+    <string name="voice_protocol_gemini">Gemini TTS</string>
+    <string name="voice_name">Voice</string>
+    <string name="voice_speed">Speed</string>
+    <string name="voice_auto_read">Read every answer aloud</string>
+    <string name="voice_speak_tool">Let Mika speak on its own</string>
+    <string name="voice_max_chars">Longest read (characters)</string>
+    <string name="voice_test">Say a test line</string>
+    <string name="voice_testing">Making a test line…</string>
+    <string name="voice_test_ok">Playing the test line.</string>
+    <string name="voice_test_failed">The test failed: %1$s</string>
+    <string name="voice_footer">Answers are sent to the speech service when you read them. Auto-read and speaking on its own are off by default.</string>
+    <string name="tool_speak">Speak</string>
+    <string name="voice_playing">Speaking…</string>
+    <string name="voice_loading">Preparing the voice…</string>
+    <string name="voice_play_failed">Could not play the voice: %1$s</string>
+    <string name="voice_save_enabled">Allow saving audio to the music library</string>
+    <string name="voice_save_note">Off by default. Saving writes to Music/Mika</string>
+    <string name="voice_ask_before_save">Ask before each audio save</string>
+    <string name="tool_audio_generate">Generate speech</string>
+    <string name="tool_audio_save">Save audio</string>
+    <string name="tool_share_audio">Share audio to app</string>
+    <string name="tool_audio_transcribe">Transcribe audio</string>
 </resources>

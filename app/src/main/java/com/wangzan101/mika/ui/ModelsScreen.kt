@@ -57,6 +57,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.wangzan101.mika.core.chatgpt.SignInFailure
+import com.wangzan101.mika.core.model.ApiKeyText
 import com.wangzan101.mika.core.model.ModelRole
 import com.wangzan101.mika.settings.ModelOption
 import com.wangzan101.mika.settings.ModelOptions
@@ -70,6 +71,7 @@ import com.wangzan101.mika.ui.components.ButtonKind
 import com.wangzan101.mika.ui.components.ButtonSize
 import com.wangzan101.mika.ui.components.MikaButton
 import com.wangzan101.mika.ui.components.MikaSwitch
+import com.wangzan101.mika.ui.components.FieldClearButton
 import com.wangzan101.mika.ui.components.FooterNote
 import com.wangzan101.mika.ui.components.GroupCard
 import com.wangzan101.mika.ui.components.GroupLabel
@@ -97,8 +99,13 @@ import com.wangzan101.mika.voice.SpeechOptions
 
 /** 设置 › 模型:和上手时的配置模型是同一页([ModelSetupScreen]),不在引导流程里。 */
 @Composable
-fun ModelsScreen(store: ProviderStore, onBack: () -> Unit, onOpenSpeech: (() -> Unit)? = null, onOpenUsage: (() -> Unit)? = null) {
-    ModelSetupScreen(store, onboarding = false, onBack = onBack, onDone = onBack, onOpenSpeech = onOpenSpeech, onOpenUsage = onOpenUsage)
+fun ModelsScreen(
+    store: ProviderStore, onBack: () -> Unit,
+    onOpenSpeech: (() -> Unit)? = null,
+    onOpenVoice: (() -> Unit)? = null,
+    onOpenUsage: (() -> Unit)? = null,
+) {
+    ModelSetupScreen(store, onboarding = false, onBack = onBack, onDone = onBack, onOpenSpeech = onOpenSpeech, onOpenVoice = onOpenVoice, onOpenUsage = onOpenUsage)
 }
 
 /** 子页面共用的骨架:顶栏 + 可滚动内容。 */
@@ -128,9 +135,9 @@ internal fun RoleCard(icon: ImageVector, label: String, line: ModelsCopy.RoleLin
                 Icon(icon, null, Modifier.size(21.dp), tint = c.ink)
             }
             Column(Modifier.weight(1f)) {
-                Text(label, fontSize = 12.5.sp, lineHeight = 17.sp, color = c.ink3)
+                Text(label, style = MikaType.Hint, color = c.ink3)
                 Text(
-                    line.title, Modifier.padding(top = 1.dp), fontSize = 16.sp, lineHeight = 22.sp, fontWeight = FontWeight.SemiBold,
+                    line.title, Modifier.padding(top = 1.dp), style = MikaType.BodyStrong,
                     fontFamily = if (line.isModel) FontFamily.Monospace else null, color = if (line.unset) c.ink3 else c.ink,
                     maxLines = 1, overflow = TextOverflow.Ellipsis,
                 )
@@ -146,7 +153,7 @@ internal fun RoleCard(icon: ImageVector, label: String, line: ModelsCopy.RoleLin
     }
 }
 
-private val RoleTileShape = RoundedCornerShape(12.dp)
+private val RoleTileShape = MikaShapes.Chip
 
 /** 服务商一行:左边是名字首字的图标块;[warning] 是要提醒的一句(用提醒色另起一行)。 */
 @Composable
@@ -159,7 +166,7 @@ internal fun ProviderRow(p: Provider, line: String, first: Boolean, warning: Str
             verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp),
         ) {
             Box(Modifier.size(MikaSize.Tile).background(c.neutralSoft, MikaShapes.Tile), contentAlignment = Alignment.Center) {
-                Text(p.name.take(1).uppercase(), fontSize = 13.sp, fontWeight = FontWeight.Bold, color = c.ink)
+                Text(p.name.take(1).uppercase(), style = MikaType.Caption.copy(fontWeight = FontWeight.Bold), color = c.ink)
             }
             Column(Modifier.weight(1f)) {
                 Text(ModelsCopy.providerName(p), style = MikaType.Body, color = c.ink, maxLines = 1)
@@ -195,14 +202,22 @@ internal fun fixedChoices(role: ModelRole): List<RoleChoice> = when (role) {
  * 标签只作参考,不按能力过滤或置灰;每家下面都能手动填模型名(列表里没有、或这家不提供列表),手填的标「手填」。点一下就生效并返回。
  */
 @Composable
-fun RolePickerContent(ui: ModelSetupUi, role: ModelRole, actions: RolePickerActions, onBack: () -> Unit) {
+fun RolePickerContent(ui: ModelSetupUi, role: ModelRole, actions: RolePickerActions, onBack: () -> Unit,
+    titleOverride: String? = null, hintOverride: String? = null,
+    pickedOverride: ((String, String) -> Boolean)? = null,
+    exclude: ((String, String) -> Boolean)? = null,
+    clearAction: (() -> Unit)? = null, clearSelected: Boolean = false,
+) {
     val c = MikaTheme.colors
     var filter by rememberSaveable { mutableStateOf("") }
     val groups = ui.providers.map { it to ui.options(it) }
     val total = groups.sumOf { it.second.size }
     val q = filter.trim()
-    Page(ModelsCopy.roleName(role), onBack) {
-        Text(ModelsCopy.roleHint(role), Modifier.padding(top = 4.dp, bottom = 12.dp), fontSize = 14.5.sp, lineHeight = 22.sp, color = c.ink2)
+    Page(titleOverride ?: ModelsCopy.roleName(role), onBack) {
+        val hint = hintOverride ?: ModelsCopy.roleHint(role)
+        if (hint.isNotEmpty()) {
+            Text(hint, Modifier.padding(top = 4.dp, bottom = 12.dp), style = MikaType.Body, color = c.ink2)
+        }
         val fixed = fixedChoices(role)
         if (fixed.isNotEmpty()) {
             GroupCard {
@@ -214,6 +229,11 @@ fun RolePickerContent(ui: ModelSetupUi, role: ModelRole, actions: RolePickerActi
                 }
             }
         }
+        if (clearAction != null) {
+            GroupCard {
+                RadioRow(ModelsCopy.FALLBACK_CLEAR, selected = clearSelected, onClick = clearAction, first = true)
+            }
+        }
         if (total > FILTER_FROM) {
             GroupLabel(ModelsCopy.PICK_FROM, Modifier.padding(top = 8.dp))
             Box(Modifier.padding(bottom = 4.dp)) {
@@ -222,7 +242,7 @@ fun RolePickerContent(ui: ModelSetupUi, role: ModelRole, actions: RolePickerActi
         }
         var anyShown = false
         groups.forEach { (p, options) ->
-            val shown = options.filter { q.isEmpty() || it.id.contains(q, ignoreCase = true) }
+            val shown = options.filter { (q.isEmpty() || it.id.contains(q, ignoreCase = true)) && exclude?.invoke(p.id, it.id) != true }
             // 这家列不出模型:手填是唯一的选法
             val noList = p.models?.isEmpty() == true
             if (q.isNotEmpty() && shown.isEmpty()) return@forEach
@@ -232,7 +252,7 @@ fun RolePickerContent(ui: ModelSetupUi, role: ModelRole, actions: RolePickerActi
             GroupCard {
                 shown.take(PICK_AT_MOST).forEachIndexed { i, o ->
                     RadioRow(
-                        o.id, selected = ui.picked(role, p.id, o.id), onClick = { actions.pick(p.id, o.id) }, first = i == 0,
+                        o.id, selected = pickedOverride?.invoke(p.id, o.id) ?: ui.picked(role, p.id, o.id), onClick = { actions.pick(p.id, o.id) }, first = i == 0,
                         titleStyle = ModelIdStyle, below = { Tags(o, forVision = role == ModelRole.Vision) },
                     )
                 }
@@ -267,7 +287,7 @@ internal fun ManualModel(p: Provider, state: ListState?, first: Boolean, onUse: 
     InputRow(ModelsCopy.MODEL_NAME, name, { name = it }, example, first = first, modifier = Modifier.testTag("manual-model")) {
         Text(
             if (running) ModelSetupCopy.TESTING else ModelsCopy.USE, Modifier.clickable(enabled = enabled) { onUse(name.trim()) }.testTag("manual-model-use"),
-            fontSize = 13.sp, fontWeight = FontWeight.Medium, color = if (enabled) MikaTheme.colors.accent else MikaTheme.colors.ink3,
+            style = MikaType.Label, color = if (enabled) MikaTheme.colors.accent else MikaTheme.colors.ink3,
         )
     }
 }
@@ -411,26 +431,58 @@ fun ProviderDetailContent(ui: ModelSetupUi, p: Provider, actions: ProviderDetail
     using?.let { o -> UseAsSheet(ui, p, o.id, onUse = { role -> actions.use(role, o.id) }, onVision = { actions.setVision(o.id, it) }, onDismiss = { using = null }) }
     if (changingKey) {
         var key by remember { mutableStateOf("") }
+        var notice by remember { mutableStateOf(ApiKeyText.Notice.None) }
+        val blocked = notice == ApiKeyText.Notice.IllegalCharacters
         MikaDialog(
             onDismissRequest = { changingKey = false },
             title = { Text(ModelsCopy.CHANGE_KEY) },
             text = {
                 KeyboardDismissArea {
-                    Box(Modifier.fillMaxWidth().keepsKeyboard().background(c.fill, MikaShapes.Button).padding(12.dp)) {
-                        if (key.isEmpty()) Text(ModelsCopy.NEW_KEY_HINT, style = MikaType.Body, color = c.ink3)
-                        BasicTextField(
-                            key, { key = it }, Modifier.fillMaxWidth().testTag("new-key"), singleLine = true,
-                            textStyle = MikaType.Body.copy(color = c.ink), cursorBrush = SolidColor(c.accent),
-                            visualTransformation = PasswordVisualTransformation(),
-                        )
+                    Column(Modifier.fillMaxWidth()) {
+                        Row(
+                            Modifier.fillMaxWidth().keepsKeyboard().background(c.fill, MikaShapes.Button)
+                                .padding(start = 12.dp, end = 4.dp, top = 12.dp, bottom = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Box(Modifier.weight(1f)) {
+                                if (key.isEmpty()) Text(ModelsCopy.NEW_KEY_HINT, style = MikaType.Body, color = c.ink3)
+                                BasicTextField(
+                                    key,
+                                    { raw ->
+                                        val accepted = ApiKeyText.accept(raw)
+                                        key = accepted.text
+                                        notice = accepted.notice
+                                    },
+                                    Modifier.fillMaxWidth().testTag("new-key"), singleLine = true,
+                                    textStyle = MikaType.Body.copy(color = c.ink), cursorBrush = SolidColor(c.accent),
+                                    visualTransformation = PasswordVisualTransformation(),
+                                )
+                            }
+                            if (key.isNotEmpty()) {
+                                FieldClearButton(
+                                    stringResource(R.string.model_key_clear),
+                                    {
+                                        val cleared = ApiKeyText.accept("")
+                                        key = cleared.text
+                                        notice = cleared.notice
+                                    },
+                                    Modifier.testTag("new-key-clear"),
+                                )
+                            }
+                        }
+                        ApiKeyNoticeNote(notice, tag = "new-key-notice")
                     }
                 }
             },
             confirmButton = {
-                TextButton({
-                    changingKey = false
-                    if (key.isNotBlank()) actions.changeKey(key)
-                }) { Text(ModelsCopy.SAVE) }
+                TextButton(
+                    onClick = {
+                        if (blocked || key.isBlank() || !ApiKeyText.isHeaderLegal(key.trim())) return@TextButton
+                        changingKey = false
+                        actions.changeKey(key)
+                    },
+                    enabled = key.isNotBlank() && !blocked,
+                ) { Text(ModelsCopy.SAVE) }
             },
             dismissButton = { TextButton({ changingKey = false }) { Text(ModelSetupCopy.CANCEL) } },
         )
@@ -603,7 +655,7 @@ private fun ModelRow(o: ModelOption, roles: List<ModelRole>, first: Boolean, onC
 @Composable
 private fun UseAsSheet(ui: ModelSetupUi, p: Provider, model: String, onUse: (ModelRole) -> Unit, onVision: (Boolean) -> Unit, onDismiss: () -> Unit) {
     val c = MikaTheme.colors
-    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true), containerColor = c.surface, shape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp)) {
+    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true), containerColor = c.surface, shape = MikaShapes.SheetTop) {
         Column(Modifier.fillMaxWidth().navigationBarsPadding().padding(bottom = 8.dp).testTag("use-as")) {
             Text(model, Modifier.padding(horizontal = 16.dp), style = ModelIdStyle, color = c.ink, maxLines = 2, overflow = TextOverflow.Ellipsis)
             Text(ModelsCopy.useAsSubtitle(ModelsCopy.providerName(p)), Modifier.padding(start = 16.dp, end = 16.dp, top = 2.dp, bottom = 6.dp), style = MikaType.Caption, color = c.ink3)
@@ -827,7 +879,7 @@ object ModelsCopy {
         ModelRole.Light -> tr(R.string.role_light_what)
     }
 
-    fun roleLabel(role: ModelRole) = "${roleName(role)} · ${roleWhat(role)}"
+    fun roleLabel(role: ModelRole) = roleName(role)
 
     /** 选择页顶上的说明。 */
     fun roleHint(role: ModelRole) = when (role) {
@@ -845,6 +897,24 @@ object ModelsCopy {
         val unset = s.title == UNSET
         return RoleLine(s.title, s.sub.orEmpty(), isModel = !unset && (ui.speech is SpeechChoice.Provider || ui.speech is SpeechChoice.Doubao || ui.speech is SpeechChoice.FunAsr || ui.speech is SpeechChoice.Bailian), unset = unset, subtitleOk = s.subOk)
     }
+
+    /** 主模型备援(项目 3)的卡片图标、名字和右边两行:和用途卡同一套说法。 */
+    val FALLBACK_ICON: ImageVector get() = MikaIcons.Refresh
+    val FALLBACK_CLEAR: String get() = tr(R.string.main_fallback_clear)
+
+    fun fallbackLabel(slot: Int) = tr(R.string.main_fallback_name, slot + 1)
+
+    fun fallbackLine(ui: ModelSetupUi, slot: Int): RoleLine {
+        val cfg = ui.roles.mainFallbacks.getOrNull(slot)?.let { id -> ui.configs.firstOrNull { it.id == id } }
+        return if (cfg != null) RoleLine(cfg.model, ui.providerOf(cfg)?.let(::providerName) ?: cfg.name, isModel = true)
+        else RoleLine(UNSET, tr(R.string.main_fallback_pick), unset = true)
+    }
+
+    /** 第五个用途「声音模型」:朗读/主动说话,和语音转写一样不在 [ModelRole] 里。 */
+    val VOICE_LABEL: String get() = "${tr(R.string.role_voice)} · ${tr(R.string.role_voice_what)}"
+    val VOICE_ICON: ImageVector get() = MikaIcons.Sound
+
+    fun voiceLine(): RoleLine = RoleLine(tr(R.string.role_voice), tr(R.string.role_voice_what), unset = true)
 
     fun roleIcon(role: ModelRole): ImageVector = when (role) {
         ModelRole.Main -> MikaIcons.Spark

@@ -46,10 +46,14 @@ import com.wangzan101.mika.chat.FileLibrary
 import com.wangzan101.mika.chat.FileLibrarySnapshot
 import com.wangzan101.mika.chat.FileSource
 import com.wangzan101.mika.chat.LibraryFile
+import com.wangzan101.mika.task.DeviceImportStore
+import kotlinx.coroutines.flow.catch
 import com.wangzan101.mika.ui.components.*
 import com.wangzan101.mika.ui.theme.MikaIcons
 import com.wangzan101.mika.ui.theme.MikaTheme
 import com.wangzan101.mika.ui.theme.MikaType
+import com.wangzan101.mika.ui.theme.MikaRadius
+import com.wangzan101.mika.ui.theme.MikaShapes
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -68,7 +72,8 @@ private data class LibraryRow(
     val input: Boolean,
     val handle: LibraryFileHandle,
     /** 最近一次出现的位置,「在对话中查看」跳到这里。 */
-    val source: FileSource,
+    val source: FileSource?,
+    val deviceImport: Boolean = false,
 ) {
     val type = LibraryFileType.of(name)
 }
@@ -147,9 +152,11 @@ internal fun FileLibraryScreen(
 ) {
     val context = LocalContext.current
     val store = remember(conversationStore) { conversationStore ?: ConversationStore.shared(context) }
+    val imports = remember(context) { DeviceImportStore.get(context) }
     val scope = rememberCoroutineScope()
     var revision by remember { mutableIntStateOf(0) }
     LaunchedEffect(store) { store.changes.collect { revision++ } }
+    LaunchedEffect(imports) { imports.recordsFlow().catch { revision++ }.collect { revision++ } }
     val drafts by vm.draftConversations.collectAsState()
     val loaded by produceState<LibraryLoaded?>(null, revision, drafts) {
         value = try { withContext(Dispatchers.IO) {
@@ -159,6 +166,11 @@ internal fun FileLibraryScreen(
                 draftTitles = drafts.associate { it.id to ChatCopy.plainTitle(it.title) },
                 fallbackTitle = { id -> store.title(id)?.let(ChatCopy::plainTitle) },
             )
+            var importReadFailed = false
+            val importRecords = try { imports.allRecords() } catch (_: Exception) {
+                importReadFailed = true
+                emptyList()
+            }
             val rows = result.snapshot?.files.orEmpty().mapNotNull { file ->
                 when (file) {
                     is LibraryFile.Input -> file.sources.maxByOrNull { it.source.atMs ?: Long.MIN_VALUE }?.let { latest ->
@@ -179,8 +191,17 @@ internal fun FileLibraryScreen(
                         )
                     }
                 }
-            }.sortedByDescending { it.at ?: Long.MIN_VALUE }
-            LibraryLoaded(rows, result.titles, result.archived, result.partial, failed = result.snapshot == null)
+            } + importRecords.map { record ->
+                LibraryRow(
+                    "device-import:${record.id}", record.workspacePath.substringAfterLast('/'),
+                    ChatViewModel.sizeLabel(record.size), record.importedAt, listOf(record.conversationId), true,
+                    LibraryFileHandle.Workspace(record.conversationId, record.workspacePath), null, deviceImport = true,
+                )
+            }
+            val titles = result.titles.toMutableMap()
+            importRecords.forEach { record -> titles.putIfAbsent(record.conversationId, record.conversationId) }
+            LibraryLoaded(rows.sortedByDescending { it.at ?: Long.MIN_VALUE }, titles, result.archived,
+                result.partial || importReadFailed, failed = result.snapshot == null && importReadFailed)
         } } catch (e: CancellationException) {
             throw e
         } catch (_: Exception) {
@@ -259,7 +280,8 @@ internal fun FileLibraryScreen(
     /** 跳到文件最近一次出现的消息:输入文件回到那条用户消息,产物回到这一轮的文件卡片。 */
     fun openInChat(item: LibraryRow) {
         if (working) return
-        if (!onOpenSource(item.source.conversationId, fileLibraryTarget(item.source, item.input))) {
+        val source = item.source ?: return
+        if (!onOpenSource(source.conversationId, fileLibraryTarget(source, item.input))) {
             error = R.string.file_library_open_failed
         }
     }
@@ -472,7 +494,7 @@ internal fun FileLibraryScreen(
                                     working = working,
                                     conversationLabel = item.conversations.joinToString(" · ") { titles[it] ?: it },
                                     fromArchived = item.conversations.any { it in archivedIds },
-                                    sourceLabel = stringResource(if (item.input) R.string.file_library_input else R.string.file_library_output),
+                                    sourceLabel = stringResource(if (item.deviceImport) R.string.dev_device_files else if (item.input) R.string.file_library_input else R.string.file_library_output),
                                     divider = index > 0,
                                     onOpen = { preview(item) },
                                     onLongPress = { enterSelection(item) },
@@ -509,7 +531,7 @@ internal fun FileLibraryScreen(
     }
     actionsFor?.let { item ->
         // 来源会话打不开(任务进行中且没开并行、又不是当前会话)时不给这一项
-        val canOpenInChat = item.source.conversationId == vm.ui.value.conversationId || vm.canSwitch()
+        val canOpenInChat = item.source?.let { it.conversationId == vm.ui.value.conversationId || vm.canSwitch() } == true
         val openInChatAction = SheetAction(
             stringResource(R.string.file_library_open_in_chat), icon = MikaIcons.Message,
         ) { openInChat(item) }
@@ -628,9 +650,7 @@ internal fun FileLibraryScreen(
     if (savedElsewhere) AlertDialog(onDismissRequest = { savedElsewhere = false }, text = { Text(stringResource(R.string.file_library_draft_saved)) }, confirmButton = { TextButton(onClick = { savedElsewhere = false }) { Text(stringResource(R.string.done)) } })
 }
 
-private val LibraryTitleStyle = TextStyle(
-    fontSize = 26.sp, lineHeight = 32.sp, fontWeight = FontWeight.SemiBold, letterSpacing = (-0.4).sp,
-)
+internal val LibraryTitleStyle = MikaType.LargeTitle.copy(fontWeight = FontWeight.SemiBold, letterSpacing = (-0.4).sp)
 
 /** 文件库顶栏:返回、左对齐大标题、右边「多选」胶囊。 */
 @Composable
@@ -647,7 +667,7 @@ private fun LibraryTopBar(canSelect: Boolean, working: Boolean, onBack: () -> Un
             style = LibraryTitleStyle, color = c.ink, maxLines = 1,
         )
         Row(
-            Modifier.clip(RoundedCornerShape(13.dp)).background(c.fill)
+            Modifier.clip(MikaShapes.Chip).background(c.fill)
                 .clickable(enabled = canSelect && !working, role = Role.Button, onClick = onSelect)
                 .testTag("file-library-select")
                 .alpha(if (canSelect && !working) 1f else 0.4f)
@@ -716,7 +736,7 @@ private fun LibraryFilterPill(
     content: @Composable ColumnScope.() -> Unit,
 ) {
     val c = MikaTheme.colors
-    val shape = RoundedCornerShape(20.dp)
+    val shape = RoundedCornerShape(MikaRadius.Bubble)
     Box(modifier) {
         Row(
             Modifier.heightIn(min = 40.dp).clip(shape)
@@ -737,7 +757,7 @@ private fun LibraryFilterPill(
             expanded = expanded,
             onDismissRequest = onDismiss,
             offset = DpOffset(0.dp, 6.dp),
-            shape = RoundedCornerShape(18.dp),
+            shape = MikaShapes.Card,
             containerColor = c.surface,
             tonalElevation = 0.dp,
             shadowElevation = 10.dp,
@@ -753,7 +773,7 @@ private fun LibraryFilterPill(
 private fun FilterMenuItem(label: String, selected: Boolean, onClick: () -> Unit) {
     val c = MikaTheme.colors
     Row(
-        Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp))
+        Modifier.fillMaxWidth().clip(MikaShapes.Chip)
             .background(if (selected) c.accentSoft else Color.Transparent)
             .selectable(selected = selected, role = Role.RadioButton, onClick = onClick)
             .padding(horizontal = 12.dp, vertical = 10.dp),
@@ -811,7 +831,7 @@ private fun LibraryFileRow(
     onMore: () -> Unit,
 ) {
     val c = MikaTheme.colors
-    val shape = RoundedCornerShape(13.dp)
+    val shape = MikaShapes.Chip
     Column(Modifier.fillMaxWidth()) {
         if (divider && !selected) {
             Box(Modifier.fillMaxWidth().padding(start = 70.dp, end = 4.dp).height(0.5.dp).background(c.hair))
@@ -875,14 +895,14 @@ private fun LibraryFileRow(
             }
             if (selecting) {
                 Box(
-                    Modifier.width(56.dp).height(48.dp).clip(RoundedCornerShape(10.dp)).clickable(enabled = !working, onClick = onOpen),
+                    Modifier.width(56.dp).height(48.dp).clip(MikaShapes.Tile).clickable(enabled = !working, onClick = onOpen),
                     contentAlignment = Alignment.Center,
                 ) {
                     Text(stringResource(R.string.file_library_preview), style = MikaType.Label, color = c.accent)
                 }
             } else {
                 Box(
-                    Modifier.width(56.dp).height(48.dp).clip(RoundedCornerShape(10.dp)).clickable(enabled = !working, onClick = onMore),
+                    Modifier.width(56.dp).height(48.dp).clip(MikaShapes.Tile).clickable(enabled = !working, onClick = onMore),
                     contentAlignment = Alignment.Center,
                 ) {
                     Icon(MikaIcons.More, stringResource(R.string.more), Modifier.size(20.dp), tint = c.ink3)
@@ -898,7 +918,7 @@ private fun LibraryFileRow(
 private fun ArchivedTag() {
     val c = MikaTheme.colors
     Row(
-        Modifier.clip(RoundedCornerShape(6.dp)).background(c.accentSoft).padding(horizontal = 5.dp, vertical = 1.dp)
+        Modifier.clip(RoundedCornerShape(MikaRadius.BubbleTail)).background(c.accentSoft).padding(horizontal = 5.dp, vertical = 1.dp)
             .testTag("file-library-archived"),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(3.dp),
@@ -910,25 +930,25 @@ private fun ArchivedTag() {
 
 /** 文件类型块:上面一个图形,下面扩展名。 */
 @Composable
-private fun FileTypeTile(name: String) {
+internal fun FileTypeTile(name: String) {
     val c = MikaTheme.colors
     val (icon, label) = fileBadge(name)
     Column(
-        Modifier.size(width = 48.dp, height = 54.dp).clip(RoundedCornerShape(11.dp)).background(c.fill),
+        Modifier.size(width = 48.dp, height = 54.dp).clip(MikaShapes.Chip).background(c.fill),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
         Icon(icon, null, Modifier.size(22.dp), tint = c.ink2)
         Text(
             label, Modifier.padding(top = 2.dp),
-            style = TextStyle(fontSize = 9.sp, lineHeight = 11.sp, fontWeight = FontWeight.Medium, letterSpacing = 0.6.sp),
+            style = MikaType.Micro.copy(fontWeight = FontWeight.Medium, letterSpacing = 0.6.sp),
             color = c.ink2, maxLines = 1,
         )
     }
 }
 
 /** 文件块的图形和扩展名;图片、代码、文档各一种图形。 */
-private fun fileBadge(name: String): Pair<ImageVector, String> {
+internal fun fileBadge(name: String): Pair<ImageVector, String> {
     val ext = name.substringAfterLast('.', "").uppercase(Locale.ROOT)
     val icon = if (LibraryFileType.of(name) == LibraryFileType.Image) MikaIcons.Photo else when (ext) {
         "HTML", "HTM", "CSS", "JS", "JSX", "TS", "TSX", "JSON", "KT", "KTS", "JAVA", "PY", "SH",
@@ -960,7 +980,7 @@ private fun LibraryBatchBar(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Row(
-                Modifier.height(48.dp).clip(RoundedCornerShape(14.dp)).background(c.fill)
+                Modifier.height(48.dp).clip(MikaShapes.Button).background(c.fill)
                     .clickable(enabled = enabled, role = Role.Button, onClick = onShare)
                     .testTag("file-library-share-selected")
                     .padding(horizontal = 16.dp),
@@ -974,7 +994,7 @@ private fun LibraryBatchBar(
                 )
             }
             Row(
-                Modifier.weight(1f).height(48.dp).clip(RoundedCornerShape(14.dp))
+                Modifier.weight(1f).height(48.dp).clip(MikaShapes.Button)
                     .background(if (enabled) c.accent else c.accent.copy(alpha = 0.35f))
                     .clickable(enabled = enabled, role = Role.Button, onClick = onAdd)
                     .testTag("file-library-add-selected")

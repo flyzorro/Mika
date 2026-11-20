@@ -139,7 +139,7 @@ class AnthropicModel(
         }
         return Request.Builder().url(endpoint)
             .withHeaders(headers)
-            .header("x-api-key", apiKey)
+            .headerOrReject("x-api-key", apiKey)
             .header("anthropic-version", "2023-06-01")
             .postInference(InferenceProtocol.Anthropic, payload)
             .build()
@@ -153,7 +153,7 @@ class AnthropicModel(
         status == 404 -> ModelError.ModelNotFound(model, ModelAccessErrors.jsonDetail(body))
         status == 529 || body.contains("overloaded_error") -> ModelError.Server(529)
         status in 500..599 -> ModelError.Server(status)
-        else -> ModelError.BadResponse("HTTP $status ${body.take(200)}")
+        else -> if (status >= 400) ModelError.Server(status, ModelAccessErrors.detail(body)) else ModelError.BadResponse("HTTP $status ${body.take(200)}")
     }
 
     private fun toolJson(t: ToolSpec, last: Boolean): JsonObject = buildJsonObject {
@@ -267,9 +267,9 @@ class AnthropicModel(
         val u = el as? JsonObject ?: return null
         fun n(k: String) = (u[k] as? JsonPrimitive)?.intOrNull
         val inT = n("input_tokens") ?: return null
-        val cached = n("cache_read_input_tokens") ?: 0
+        val cached = n("cache_read_input_tokens")
         // Anthropic 的 input_tokens 不含缓存部分;统一成总输入口径。output_tokens 含思考但不单独报,reasoningTokens 记 0
-        return Usage(inT + cached + (n("cache_creation_input_tokens") ?: 0), n("output_tokens") ?: 0, cached)
+        return Usage(inT + (cached ?: 0) + (n("cache_creation_input_tokens") ?: 0), n("output_tokens") ?: 0, cached ?: 0, cacheReported = cached != null)
     }
 }
 

@@ -13,6 +13,9 @@
     <string name="models_lead">「役割」で、仕事ごとに使うモデルを選びます。モデルは、下で接続したプロバイダーから選べます。</string>
     <string name="models_roles">役割</string>
     <string name="models_providers">プロバイダー</string>
+    <plurals name="models_providers_count">
+        <item quantity="other">%1$d 社</item>
+    </plurals>
     <string name="models_add_provider">プロバイダーを追加</string>
     <string name="models_key_note">API キーは、このスマホの中だけに暗号化して保存されます。</string>
     <string name="models_main_add_first">先にプロバイダーを追加してください</string>
@@ -60,9 +63,9 @@
     <string name="role_main_what">考えて、実行する</string>
     <string name="role_vision_what">スクリーンショットを見る</string>
     <string name="role_light_what">確認やメモなどの小さな仕事</string>
-    <string name="role_main_hint">考えることも操作も、すべて担当します。タスクを確実にこなせるよう、ツール呼び出しに対応したモデルを選んでください。</string>
-    <string name="role_vision_hint">画面を読み取るときにスクリーンショットを受け取ります。複雑な画面でもより正確です。省略もできます。ない場合、Mika は画面をテキストで読み取ります。</string>
-    <string name="role_light_hint">タスクが終わったかの確認や、メモリの整理などの小さな仕事を担当します。安くて速いモデルが最適です。</string>
+    <string name="role_main_hint">タスクを確実にこなせるよう、ツール呼び出しに対応したモデルを選んでください。</string>
+    <string name="role_vision_hint">省略もできます。ない場合、Mika は画面をテキストで読み取ります。</string>
+    <string name="role_light_hint">安くて速いモデルが最適です。</string>
     <string name="models_delete_title">「%1$s」を削除しますか？</string>
     <string name="models_delete_body">"API キーも削除されます。"</string>
     <string name="models_delete_unused">どの役割にも使われていません。</string>
@@ -171,7 +174,7 @@
     <!-- Settings > Models: speech-to-text usage and its picker page -->
     <string name="role_speech">音声文字変換</string>
     <string name="role_speech_what">長押しして話すときに使う</string>
-    <string name="speech_hint">スマホ内蔵の音声認識、話しながら文字にする音声サービス、話し終えてから変換するプロバイダーのモデルから選べます。オンラインのサービスはプロバイダーの利用枠を使います。</string>
+    <string name="speech_hint">オンラインのサービスはプロバイダーの利用枠を使います。</string>
     <string name="speech_system">スマホ内蔵</string>
     <string name="speech_system_offline">オフラインで使えます</string>
     <string name="speech_system_online">インターネット接続が必要</string>
@@ -192,4 +195,41 @@
     <string name="models_daily_token_budget">プロバイダーの1日の Token 予算</string>
     <string name="models_daily_token_budget_sub">ローカル暦日で、このプロバイダーの全モデル・全用途について報告された入力・出力 Token を集計します。予算に達すると次のリクエストを止めます。実行中のリクエストで超過する場合があり、未報告の使用量は 0 です。ローカル日付が変わると再開します。</string>
     <string name="models_daily_token_budget_save_failed">予算を保存できませんでした。以前の設定が引き続き使われます。</string>
+    <string name="main_fallback_name">Fallback model %1$d</string>
+    <string name="main_fallback_what">Takes over when the main model is unavailable</string>
+    <string name="main_fallback_pick">Pick a fallback model</string>
+    <string name="main_fallback_clear">No fallback</string>
+    <string name="main_fallback_failed">Could not set the fallback model</string>
+    <string name="main_fallback_is_main">This is the current main model, so it cannot also be its fallback</string>
+    <string name="role_voice">Voice model</string>
+    <string name="role_voice_what">Lets Mika speak and read answers aloud</string>
+    <string name="voice_enable">Allow Mika to speak</string>
+    <string name="voice_enable_note">Speech is only made when you tap Read aloud, unless auto-read is on</string>
+    <string name="voice_provider">Service</string>
+    <string name="voice_no_providers">Add a model service first (speech uses the same service and key).</string>
+    <string name="voice_model_name">Model</string>
+    <string name="voice_protocol">API</string>
+    <string name="voice_protocol_openai">OpenAI Speech</string>
+    <string name="voice_protocol_gemini">Gemini TTS</string>
+    <string name="voice_name">Voice</string>
+    <string name="voice_speed">Speed</string>
+    <string name="voice_auto_read">Read every answer aloud</string>
+    <string name="voice_speak_tool">Let Mika speak on its own</string>
+    <string name="voice_max_chars">Longest read (characters)</string>
+    <string name="voice_test">Say a test line</string>
+    <string name="voice_testing">Making a test line…</string>
+    <string name="voice_test_ok">Playing the test line.</string>
+    <string name="voice_test_failed">The test failed: %1$s</string>
+    <string name="voice_footer">Answers are sent to the speech service when you read them. Auto-read and speaking on its own are off by default.</string>
+    <string name="tool_speak">Speak</string>
+    <string name="voice_playing">Speaking…</string>
+    <string name="voice_loading">Preparing the voice…</string>
+    <string name="voice_play_failed">Could not play the voice: %1$s</string>
+    <string name="voice_save_enabled">Allow saving audio to the music library</string>
+    <string name="voice_save_note">Off by default. Saving writes to Music/Mika</string>
+    <string name="voice_ask_before_save">Ask before each audio save</string>
+    <string name="tool_audio_generate">Generate speech</string>
+    <string name="tool_audio_save">Save audio</string>
+    <string name="tool_share_audio">Share audio to app</string>
+    <string name="tool_audio_transcribe">Transcribe audio</string>
 </resources>

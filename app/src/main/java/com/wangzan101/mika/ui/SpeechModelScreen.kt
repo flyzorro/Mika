@@ -71,7 +71,7 @@ class SpeechPickActions(
     val useDoubao: (String) -> Unit = {},
     val clearDoubao: () -> Unit = {},
     /** 进自建 Fun-ASR、百炼的设置页。 */
-    /** 进「Fun-ASR实时语音识别」的设置页(自建、百炼北京、百炼新加坡三个分页)。 */
+    /** 进「千问实时语音识别」的设置页(自建、百炼北京、百炼新加坡三个分页)。 */
     val openFunAsr: () -> Unit = {},
     /** 沿用上次那种(自建的地址,或百炼某个地域的模型),当场选用。 */
     val useFunAsr: () -> Unit = {},
@@ -89,7 +89,7 @@ fun SpeechModelScreen(store: ProviderStore, onBack: () -> Unit) {
     var doubaoConfigured by remember { mutableStateOf(settings?.hasDoubaoCredentials == true) }
     // 豆包的设置页叠在这一页上面;返回键先关它
     var doubaoOpen by remember { mutableStateOf(false) }
-    // 「Fun-ASR实时语音识别」三个分页的已存内容;存、删之后重读
+    // 「千问实时语音识别」三个分页的已存内容;存、删之后重读
     fun funAsrSaved() = settings?.let { s ->
         FunAsrSaved(
             s.funAsrUrl, BailianRegion.entries.filter(s::hasBailianKey).toSet(),
@@ -205,7 +205,7 @@ fun SpeechModelContent(
     val systemSelected = system.usable && (choice == SpeechChoice.System || choice == SpeechChoice.Auto)
     Page(tr(R.string.role_speech), onBack) {
         Text(
-            tr(R.string.speech_hint), Modifier.padding(top = 4.dp, bottom = 12.dp), fontSize = 14.5.sp, lineHeight = 22.sp, color = c.ink2,
+            tr(R.string.speech_hint), Modifier.padding(top = 4.dp, bottom = 12.dp), style = MikaType.Body, color = c.ink2,
         )
         GroupCard {
             RadioRow(
@@ -269,7 +269,7 @@ fun SpeechModelContent(
 }
 
 /**
- * 「边说边转的语音服务」一组:豆包和「Fun-ASR实时语音识别」(自建服务、百炼北京、百炼新加坡三选一,在它的设置页里分页)各一行。
+ * 「边说边转的语音服务」一组:豆包和「千问实时语音识别」(自建服务、百炼北京、百炼新加坡三选一,在它的设置页里分页)各一行。
  * 没设置过时点行进设置页;设置过以后点圆圈就用它(Fun-ASR 沿用上次那种),右边「设置」进去改或删掉。
  * 凭据和聊天服务商分开存,不列模型、不试转。
  */
@@ -317,7 +317,7 @@ fun DoubaoSetupPage(choice: SpeechChoice, configured: Boolean, actions: SpeechPi
     val credentials = DoubaoCredentials(if (legacy) "" else key.trim(), if (legacy) appId.trim() else "", if (legacy) token.trim() else "")
     val unchanged = key.isBlank() && appId.isBlank() && token.isBlank()
     Page(tr(R.string.speech_doubao_model), onBack) {
-        Text(tr(R.string.speech_doubao_setup_hint), Modifier.padding(top = 4.dp, bottom = 4.dp), fontSize = 14.5.sp, lineHeight = 22.sp, color = c.ink2)
+        Text(tr(R.string.speech_doubao_setup_hint), Modifier.padding(top = 4.dp, bottom = 4.dp), style = MikaType.Body, color = c.ink2)
         GroupLabel(tr(R.string.speech_doubao_credentials))
         SegmentedControl(
             listOf(tr(R.string.speech_doubao_new), tr(R.string.speech_doubao_legacy)), if (legacy) 1 else 0,

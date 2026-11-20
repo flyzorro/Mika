@@ -73,6 +73,9 @@ class ShellService(
     // Bundle 将嵌套的 PFD 复制到 reply，但不会关掉服务端原件。写完 reply 后关闭，
     // 否则客户端关掉管道时，音频线程永远收不到 EOF。
     private val returnedCallPipes = ThreadLocal<List<ParcelFileDescriptor>>()
+    private data class FilePolicyState(val session: String, val revision: Long, val roots: List<String>, val recursive: List<Boolean>, val policy: DeviceFilePolicy)
+    private val filePolicyLock = Any()
+    @Volatile private var filePolicy: FilePolicyState? = null
     /** Mika 所在的用户:本来那份 App 装在这里;别的用户里的是另一份(分身、工作资料)。 */
     private val myUser = allowedUid / PER_USER_RANGE
 
@@ -528,6 +531,40 @@ class ShellService(
         } catch (t: Throwable) {
             Log.w(TAG, "startActivityAsUser unavailable, falling back to am start", t)
             exec(*ShareIntent.amArgs(displayId, packageName, text, intent.component?.flattenToShortString()).toTypedArray()) == 0
+        }
+        if (ok) START_OK else START_ERROR
+    }
+
+    /**
+     * 把一个工作区文件分享给 [packageName]:ACTION_SEND + EXTRA_STREAM,content URI 允许对方读,只交给这个包。
+     * 它没有收这类分享的页面返回 [START_UNRESOLVED];用户在主屏用着它时不启动。只打开分享页,发不发由模型在那一页上点。
+     */
+    override fun startShareFile(displayId: Int, packageName: String, uri: String, mime: String, text: String): Int = synchronized(launchLock) {
+        if (!ownDisplay(displayId)) return START_ERROR
+        val target = Uri.parse(uri)
+        val intent = ShareIntent.ofFile(packageName, target, mime, text)
+        val candidates = activitiesFor(intent, mime) ?: return START_ERROR
+        if (candidates.isEmpty()) return START_UNRESOLVED
+        try {
+            if (inUseOnMainScreen(packageName)) return START_IN_USE_ON_MAIN
+            if (onOtherOwnDisplay(listOf(packageName), displayId)) return START_IN_USE_BY_OTHER
+        } catch (t: Throwable) {
+            Log.e(TAG, "cannot inspect main-screen tasks", t)
+            return START_ERROR
+        }
+        candidates.singleOrNull()?.let { (pkg, cls) -> intent.component = ComponentName(pkg, cls) }
+        val options = ActivityOptions.makeBasic().setLaunchDisplayId(displayId).toBundle()
+        val ok = try {
+            val start = taskManager.javaClass.methods.first { it.name == "startActivityAsUser" && it.parameterTypes.size == 12 }
+            val result = start.invoke(
+                taskManager, null, ShellContext.SHELL_PACKAGE, null, intent, mime, null, null,
+                0, 0, null, options, USER_CURRENT,
+            ) as Int
+            if (result < 0) Log.w(TAG, "startActivityAsUser(share file) -> $result")
+            result >= 0
+        } catch (t: Throwable) {
+            Log.w(TAG, "startActivityAsUser unavailable, falling back to am start", t)
+            exec(*ShareIntent.amArgsFile(displayId, packageName, target, mime, text, intent.component?.flattenToShortString()).toTypedArray()) == 0
         }
         if (ok) START_OK else START_ERROR
     }
@@ -1098,7 +1135,45 @@ class ShellService(
         val now = SystemClock.uptimeMillis()
         val down = KeyEvent(now, now, KeyEvent.ACTION_DOWN, keyCode, 0, 0, VIRTUAL_KEYBOARD, 0, 0, InputDevice.SOURCE_KEYBOARD)
         val up = KeyEvent.changeAction(down, KeyEvent.ACTION_UP)
-        return injectPair(down, up, displayId) { exec("input", "-d", "$displayId", "keyevent", "$keyCode") == 0 }
+        // 按键由系统按输入焦点路由,不认 event 上的 displayId:不定向的话会投到主屏焦点,虚拟屏上的 App 收不到返回键。
+        // 解析到虚拟屏顶部任务的 uid 时定向投给它;定向没投出去再退回非定向注入(和旧路径一致),最后才走 shell 命令。
+        // 逐级实际走的通道记进日志,方便在真机上定位 back 注入失效(#622)。
+        val uid = topTaskUid(displayId)
+        var channel = if (uid != null) "targeted" else "nontargeted"
+        val ok = if (uid != null) {
+            injectPairTo(down, up, displayId, uid) {
+                channel = "nontargeted"
+                injectPair(down, up, displayId) {
+                    channel = "shell"
+                    exec("input", "-d", "$displayId", "keyevent", "$keyCode") == 0
+                }
+            }
+        } else {
+            injectPair(down, up, displayId) {
+                channel = "shell"
+                exec("input", "-d", "$displayId", "keyevent", "$keyCode") == 0
+            }
+        }
+        if (keyCode == KeyEvent.KEYCODE_BACK) {
+            Log.i(TAG, "injectKey BACK display=$displayId uid=$uid channel=$channel ok=$ok")
+        }
+        return ok
+    }
+
+    /** 虚拟屏顶部任务的 uid(定向注入的目标);解析不到返回 null(退回非定向注入)。 */
+    private fun topTaskUid(displayId: Int): Int? = try {
+        val task = tasksOn(displayId).firstOrNull() ?: return null
+        val top = TASK_INFO.getField("topActivity").get(task) as? ComponentName
+        val packageName = top?.packageName ?: return null
+        val userId = TASK_INFO.getField("userId").getInt(task)
+        resolveTargetUid(Build.VERSION.SDK_INT, packageName, userId) { pkg, user ->
+            val pm = context.packageManager
+            pm.javaClass.getMethod("getPackageUidAsUser", String::class.java, Int::class.java, Int::class.java)
+                .invoke(pm, pkg, 0, user) as Int
+        }
+    } catch (t: Throwable) {
+        Log.w(TAG, "resolve top task uid on display $displayId failed", t)
+        null
     }
 
     /** 自有虚拟屏上的 Ctrl+A / Ctrl+V,同时发送修饰键按下和抬起;松开修饰键失败不会把已经发出的正文判成未发送。 */
@@ -1223,9 +1298,14 @@ class ShellService(
     private inline fun injectPair(down: InputEvent, up: InputEvent, displayId: Int, fallback: () -> Boolean): Boolean =
         sendPair({ inject(down, displayId) }, { inject(up, displayId) }, fallback)
 
+    /** 同 [injectPair],但定向投给 [targetUid] 拥有的焦点窗口,不经过全局输入焦点。 */
+    private inline fun injectPairTo(down: InputEvent, up: InputEvent, displayId: Int, targetUid: Int, fallback: () -> Boolean): Boolean =
+        sendPair({ injectTo(down, displayId, targetUid) }, { injectTo(up, displayId, targetUid) }, fallback)
+
     /**
-     * `appops set <pkg> PLAY_AUDIO ignore`;首次静音时记下原模式(同时落文件),取消静音时恢复。
-     * 原来没设置过的恢复成 allow,不写 default(见 [AudioMuteLedger.restoreMode])。
+     * `appops set <pkg> PLAY_AUDIO deny`;首次静音时记下原模式(同时落文件),取消静音时恢复。
+     * 用 deny 而不是 ignore:`ignore` 只是把声音压掉,App 仍处于「在播」、仍持有音频焦点,会抢走前台正在播的 App 的声音(#483/#228);
+     * `deny` 让它的音频起不来,也就不占焦点。原来没设置过的恢复成 allow,不写 default(见 [AudioMuteLedger.restoreMode])。
      * 命令失败返回 false,且不记录原模式(读不到原值就不改)。作用在 Mika 所在的用户上(本来那份)。
      */
     override fun setAudioMuted(packageName: String, muted: Boolean): Boolean = audioMuted(packageName, null, muted)
@@ -1244,7 +1324,7 @@ class ShellService(
                 if (code != 0) return false
                 this.muted.put(key, parsePlayAudioMode(out))
             }
-            appops("set", packageName, user, "ignore").first == 0
+            appops("set", packageName, user, "deny").first == 0
         } else {
             val ok = appops("set", packageName, user, AudioMuteLedger.restoreMode(this.muted[key])).first == 0
             if (ok) this.muted.remove(key)
@@ -1435,7 +1515,7 @@ class ShellService(
         return clip
     }
 
-    override fun onTransact(code: Int, data: Parcel, reply: Parcel?, flags: Int): Boolean {
+    public override fun onTransact(code: Int, data: Parcel, reply: Parcel?, flags: Int): Boolean {
         // 内置助手的进程不跟着 Mika 结束,Binder 也可能被别人拿到:只有 Mika 能调用接口方法
         if (code in FIRST_CALL_TRANSACTION..LAST_CALL_TRANSACTION &&
             Binder.getCallingUid() != allowedUid
@@ -1451,6 +1531,45 @@ class ShellService(
             }
         }
     }
+
+    override fun setDeviceFilePolicy(protocol: Int, session: String?, revision: Long, roots: Array<out String>?, recursive: BooleanArray?): Bundle = asCallAudioShell {
+        synchronized(filePolicyLock) {
+            fun reply(status: String) = Bundle().apply { putString("status", status); putInt("protocol", 1); putString("session", session); putLong("revision", revision) }
+            if (protocol != 1 || session.isNullOrBlank() || session.length > 64 || revision < 0 || roots == null || recursive == null) return@synchronized reply("invalid")
+            val previous = filePolicy?.takeIf { it.session == session }
+            val paths = roots.toList()
+            val flags = recursive.toList()
+            if (previous != null && (revision < previous.revision || (revision == previous.revision && (paths != previous.roots || flags != previous.recursive)))) {
+                return@synchronized reply("stale_policy")
+            }
+            if (previous != null && revision == previous.revision) return@synchronized reply("ok")
+            val policy = try { DeviceFilePolicy.create(roots, recursive, myUser) } catch (_: Exception) { return@synchronized reply("invalid") }
+            filePolicy = FilePolicyState(session, revision, paths, flags, policy)
+            reply("ok")
+        }
+    }
+
+    private inline fun deviceFileCall(block: (DeviceFilePolicy) -> Bundle): Bundle = asCallAudioShell {
+        val snapshot = filePolicy ?: return@asCallAudioShell Bundle().apply { putString("status", "policy_unsynced") }
+        val response = block(snapshot.policy)
+        synchronized(filePolicyLock) {
+            if (filePolicy !== snapshot) {
+                response.getParcelable<ParcelFileDescriptor>("fd")?.close()
+                Bundle().apply { putString("status", "policy_changed") }
+            } else {
+                response.getParcelable<ParcelFileDescriptor>("fd")?.let { returnedCallPipes.set(listOf(it)) }
+                response
+            }
+        }
+    }
+
+    override fun listFiles(path: String?, afterName: String?, limit: Int): Bundle =
+        deviceFileCall { ShellFiles.list(path, afterName, limit, myUser, it) }
+
+    override fun searchFiles(path: String?, name: String?, extension: String?, modifiedAfter: Long, modifiedBefore: Long, maxDepth: Int, maxEntries: Int, timeoutMs: Int): Bundle =
+        deviceFileCall { ShellFiles.search(path, name, extension, modifiedAfter, modifiedBefore, maxDepth, maxEntries, timeoutMs, myUser, it) }
+
+    override fun openFile(path: String?): Bundle = deviceFileCall { ShellFiles.open(path, myUser, it) }
 
     override fun probeCallAudio(mode: Int): Bundle = asCallAudioShell { callAudio.probe(mode) }
 
@@ -1556,6 +1675,7 @@ class ShellService(
     }
 
     override fun releaseAll() {
+        synchronized(filePolicyLock) { filePolicy = null }
         asCallAudioShell { callAudio.stopAll() }
         restoreClip()
         synchronized(muted) { muted.packages() }.forEach { key ->
@@ -1766,6 +1886,13 @@ class ShellService(
             if (!down()) return fallback()
             return up() || up()
         }
+
+        /**
+         * 有没有可定向注入的目标 uid。安卓 13 起才有定向注入重载(`injectInputEvent(event, mode, targetUid)`),
+         * 更早只能走非定向注入;包名缺失或 uid 解析为负(未装)也视为不可定向。
+         */
+        internal fun resolveTargetUid(sdkInt: Int, packageName: String?, userId: Int, uidLookup: (String, Int) -> Int): Int? =
+            if (sdkInt < 33 || packageName == null) null else uidLookup(packageName, userId).takeIf { it >= 0 }
 
         /** 只有缺权限(SecurityException,如 shell 没有 ADD_TRUSTED_DISPLAY)才值得去掉可信标志再试;别的失败照旧报错。 */
         internal fun retryWithoutTrust(t: Throwable): Boolean = t is SecurityException

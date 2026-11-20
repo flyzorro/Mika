@@ -4,6 +4,7 @@ import org.junit.Rule
 import com.wangzan101.mika.i18n.ChineseTexts
 import com.wangzan101.mika.chat.BranchOrigin
 import com.wangzan101.mika.chat.ConversationSummary
+import com.wangzan101.mika.core.usage.DeepSeekCost
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -15,14 +16,22 @@ import java.time.ZoneId
 class ChatCopyTest {
     @get:Rule val texts = ChineseTexts()
 
-    @Test fun fourDistinctNonBlankExamplesStartWithGithubStar() {
+    @Test fun sixDistinctExamplesStartWithGithubStar() {
         val examples = ChatCopy.examples
-        assertEquals(4, examples.size)
-        assertEquals(4, examples.map { it.text }.filter { it.isNotBlank() }.toSet().size)
+        assertEquals(6, examples.size)
+        assertEquals(6, examples.map { it.title }.filter { it.isNotBlank() }.toSet().size)
+        assertEquals(6, examples.map { it.prompt }.filter { it.isNotBlank() }.toSet().size)
         assertEquals(ChatCopy.ExampleKind.Web, examples.first().kind)
-        assertTrue(examples.first().text.contains("https://github.com/wangzan101/mika"))
-        assertEquals(ChatCopy.examples.map { it.text }, ChatCopy.recommendationSeeds().map { it.first })
-        assertEquals(ChatCopy.examples.map { it.text }, ChatCopy.recommendationSeeds().map { it.second })
+        assertTrue(examples.first().prompt.contains("https://github.com/wangzan101/mika"))
+        // 短标题上卡片、完整提示词进输入框:两者分开存
+        assertEquals(ChatCopy.examples.map { it.title }, ChatCopy.recommendationSeeds().map { it.first })
+        assertEquals(ChatCopy.examples.map { it.prompt }, ChatCopy.recommendationSeeds().map { it.second })
+    }
+
+    @Test fun taskCostShowsTwoDecimalPlaces() {
+        assertEquals("约 ¥1.20", ChatTokensCopy.cost(DeepSeekCost("1.2", "1.2")))
+        assertEquals("约 ¥0.00", ChatTokensCopy.cost(DeepSeekCost("0.001", "0.004")))
+        assertEquals("约 ¥0.01–¥0.02", ChatTokensCopy.cost(DeepSeekCost("0.005", "0.015")))
     }
 
     /** 分支标题:源标题后面加后缀,总长不超过 24 字;截的是源标题,后缀留着,emoji 不截半个。 */
@@ -47,7 +56,7 @@ class ChatCopyTest {
         assertEquals("a.pdf", ChatCopy.plainTitle("附件:/workspace/inbox/a.pdf(1 KB)"))
         assertEquals(ScreenCopy.TAG, ChatCopy.plainTitle("[[screen:s1]]"))
         // 在浏览器页上对着一页问的:页面说明不当标题
-        val paged = com.wangzan101.mika.core.cap.web.AttachedPage.compose(com.wangzan101.mika.core.cap.web.AttachedPage.Page("https://a.example/", "页"), "挑一个\n第二行")
+        val paged = com.wangzan101.mika.core.agent.AttachedPage.compose(com.wangzan101.mika.core.agent.AttachedPage.Page("https://a.example/", "页"), "挑一个\n第二行")
         assertEquals("挑一个", ChatCopy.plainTitle(paged))
     }
 
@@ -213,17 +222,6 @@ class ChatCopyTest {
         assertEquals("更早", archivePeriodLabel(ArchivePeriod.Earlier))
     }
 
-    /** 只有存过的、没在跑、没归档的对话能左滑归档;草稿和在跑任务的不行。 */
-    @Test fun onlyIdleSavedConversationsCanBeSwipedToArchive() {
-        fun row(id: String?, saved: Boolean = true, running: Boolean = false, archived: Boolean = false) =
-            DrawerConversation(id, "一", "", running = running, current = false, enabled = true, archived = archived, saved = saved)
-        assertTrue(canSwipeArchive(row("a")))
-        assertFalse(canSwipeArchive(row("a", running = true)))
-        assertFalse(canSwipeArchive(row("a", archived = true)))
-        assertFalse(canSwipeArchive(row("a", saved = false)))
-        assertFalse(canSwipeArchive(row(null)))
-    }
-
     @Test fun greetingFollowsTheTimeOfDay() {
         assertEquals("早上好", ChatCopy.greeting(7))
         assertEquals("中午好", ChatCopy.greeting(12))
@@ -266,13 +264,5 @@ class ChatCopyTest {
         assertEquals("继续说点什么…", ChatCopy.placeholder(ComposerMode.Idle, hasHistory = true))
         assertEquals("回答 Mika 的问题", ChatCopy.placeholder(ComposerMode.Answer, hasHistory = true))
         assertEquals("补充或改要求…", ChatCopy.placeholder(ComposerMode.Busy, hasHistory = true))
-        assertEquals("写下下一件事…", ChatCopy.placeholder(ComposerMode.Busy, hasHistory = true, followUp = FollowUpMode.Queue))
-    }
-
-    @Test fun followUpHintExplainsWhenItTakesEffect() {
-        assertEquals("下一步就按这句话调整", followUpHint(FollowUpMode.Steer, ExchangeStatus.Working))
-        assertEquals("任务暂停中，继续后生效", followUpHint(FollowUpMode.Steer, ExchangeStatus.Paused("等解锁")))
-        assertEquals("任务暂停中，继续后生效", followUpHint(FollowUpMode.Steer, ExchangeStatus.NeedsTakeover("login", "登录")))
-        assertEquals("当前任务结束后自动开始", followUpHint(FollowUpMode.Queue, ExchangeStatus.Working))
     }
 }

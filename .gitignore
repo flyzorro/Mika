@@ -22,3 +22,6 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 .gstack/
+
+# plugin build output
+plugins/dist/

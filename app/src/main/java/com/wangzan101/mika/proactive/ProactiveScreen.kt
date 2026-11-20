@@ -46,6 +46,7 @@ import com.wangzan101.mika.ui.TokenBudgetDialog
 import com.wangzan101.mika.ui.tokenBudgetNumber
 import com.wangzan101.mika.ui.components.EmptyNote
 import com.wangzan101.mika.ui.components.FooterNote
+import com.wangzan101.mika.ui.components.DetailNote
 import com.wangzan101.mika.ui.components.GroupCard
 import com.wangzan101.mika.ui.components.GroupLabel
 import com.wangzan101.mika.ui.components.ListRow
@@ -65,7 +66,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /**
- * 设置 › 高级 › 开发者选项 › 主动能力(实验)。只放要用户做决定的:
+ * 设置 › 主动能力。只放要用户做决定的:
  * 状态卡(总开关、一句现在的状态、要处理时给一个按钮)→「Mika 知道了什么」的入口
  * → 设置(激进程度、敏感类推断、当日消息归纳、每日上限)→ 读哪些 App(每个 App 不读 / 低 / 中 / 高;列表可能很长,放在设置后面)
  * → 诊断(默认折起:监听状态、计数、失败重试、最近的通知)→ 页尾说明
@@ -259,7 +260,11 @@ fun ProactiveScreen(onBack: () -> Unit) {
             )
         }
         // 不是最保守的一档时,把「带进任务是什么意思、发给谁」那句常驻在这里(弹窗里也有)
-        if (level != LearnLevel.Conservative) FooterNote(stringResource(R.string.proactive_learn_level_note))
+        if (level != LearnLevel.Conservative) DetailNote(
+            stringResource(R.string.proactive_learn_level_summary),
+            stringResource(R.string.proactive_learn_level_note),
+            Modifier.padding(start = 16.dp, end = 16.dp, bottom = 12.dp),
+        )
 
         // ---- 读哪些 App:选了的列在这里,每个是低 / 中 / 高;「选择更多」展开全部 App ----
         GroupLabel(stringResource(R.string.proactive_apps, allowed.size))

@@ -3,6 +3,7 @@ package com.wangzan101.mika.about
 import com.wangzan101.mika.core.adb.ConnectCandidates
 import com.wangzan101.mika.core.shell.BuiltinShellFailure
 import com.wangzan101.mika.core.shell.BuiltinShellStatus
+import com.wangzan101.mika.core.shell.HelperRestart
 import com.wangzan101.mika.core.shell.PairingChannelHealth
 import com.wangzan101.mika.core.shell.PairingDiscovery
 import com.wangzan101.mika.core.shell.RecoveryCapability
@@ -99,6 +100,14 @@ class DiagnosticsTest {
         assertTrue(t, t.contains("speech to text: auto"))
         assertTrue(t, t.contains("built-in recognition: present, marked no response"))
         assertTrue(t, t.contains("recognition services: 1\n- com.example.voice/.Recognizer (not exported) needs android.permission.BIND_VOICE_INTERACTION"))
+        // 系统设的默认识别服务:没设时照实写(登记了服务不等于设了默认的)
+        assertTrue(t, t.contains("default recognition service: not set"))
+        val set = Diagnostics.render(snapshot().copy(speech = speech.copy(
+            defaultService = "com.example.voice/.Recognizer",
+            services = listOf("com.example.voice/.Recognizer, its own mic permission: NOT granted"),
+        )))
+        assertTrue(set, set.contains("default recognition service: com.example.voice/.Recognizer"))
+        assertTrue(set, set.contains("- com.example.voice/.Recognizer, its own mic permission: NOT granted"))
     }
 
     /** 引导页那几项来自同一个状态机:失败在连接一步,用户确认过无线调试。 */
@@ -129,6 +138,8 @@ class DiagnosticsTest {
             helperLaunchStage = "handoff_timeout", helperHandoffRejection = "StaleApk",
         )))
         assertTrue(rejected, rejected.contains("helper handoff rejection: StaleApk"))
+        val shizukuRestart = Diagnostics.render(snap.copy(setup = snap.setup.copy(restart = HelperRestart.Shizuku)))
+        assertTrue(shizukuRestart, shizukuRestart.contains("helper restart: Shizuku"))
     }
 
     /** 扫过本机、用户填过端口:只写个数和有没有填,不写端口号。 */

@@ -19,6 +19,7 @@ import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -71,6 +72,7 @@ import com.wangzan101.mika.ui.theme.MikaShapes
 import com.wangzan101.mika.ui.theme.MikaSpace
 import com.wangzan101.mika.ui.theme.MikaTheme
 import com.wangzan101.mika.ui.theme.MikaType
+import com.wangzan101.mika.ui.theme.MikaRadius
 import com.wangzan101.mika.voice.HoldToTalk
 import com.wangzan101.mika.voice.VoiceSource
 import kotlinx.coroutines.launch
@@ -204,11 +206,11 @@ fun PersonalAgentScreen(
                     Column(Modifier.fillMaxWidth(), horizontalAlignment = if (user) Alignment.End else Alignment.Start) {
                         if (date != priorDate) {
                             Text(dayFormat.format(date), Modifier.align(Alignment.CenterHorizontally).padding(vertical = 8.dp),
-                                color = c.ink3, fontSize = 11.sp)
+                                color = c.ink3, style = MikaType.Micro)
                             Spacer(Modifier.height(12.dp))
                         }
                         if (task != null) Text(task.title + " · " + personalStatus(task),
-                            Modifier.padding(start = 4.dp, bottom = 6.dp), fontSize = 10.sp, color = c.ink2)
+                            Modifier.padding(start = 4.dp, bottom = 6.dp), style = MikaType.Micro, color = c.ink2)
                         val bubble = Modifier.fillMaxWidth(if (user) 0.8f else 1f)
                             .wrapContentWidth(if (user) Alignment.End else Alignment.Start)
                             .background(if (user) c.accent else c.answer, if (user) MikaShapes.UserBubble else MikaShapes.AnswerBubble)
@@ -216,10 +218,10 @@ fun PersonalAgentScreen(
                         if (user) {
                             Text(message.text, bubble, style = MikaType.Body, color = c.onAccent)
                         } else {
-                            MarkdownText(message.displayText(context), MikaType.Body.copy(color = if (message.error) c.bad else c.ink), bubble)
+                            PersonalReply(message.displayText(context), message.error, bubble)
                         }
-                        if (!message.handled) Text(stringResource(R.string.personal_received), Modifier.padding(top = 4.dp, end = 5.dp), fontSize = 10.sp, color = c.ink3)
-                        if (task != null) TextButton(onClick = { selectedTask = task.id }) { Text(stringResource(R.string.personal_view_task), fontSize = 12.sp) }
+                        if (!message.handled) Text(stringResource(R.string.personal_received), Modifier.padding(top = 4.dp, end = 5.dp), style = MikaType.Micro, color = c.ink3)
+                        if (task != null) TextButton(onClick = { selectedTask = task.id }) { Text(stringResource(R.string.personal_view_task), style = MikaType.Hint) }
                     }
                 }
                 item("bottom") { Spacer(Modifier.height(4.dp)) }
@@ -276,6 +278,20 @@ fun PersonalAgentScreen(
     val actionErrorText = actionError?.let { personalStopErrorText(context, it) }
     (sendError ?: actionErrorText)?.let { error -> AlertDialog(onDismissRequest = { sendError = null; runtime.clearError() }, text = { Text(error) },
         confirmButton = { TextButton(onClick = { sendError = null; runtime.clearError() }) { Text(stringResource(R.string.personal_ok)) } }) }
+}
+
+@Composable
+internal fun PersonalReply(text: String, error: Boolean, bubble: Modifier = Modifier) {
+    val c = MikaTheme.colors
+    val context = LocalContext.current
+    Column {
+        SelectionContainer {
+            MarkdownText(text, MikaType.Body.copy(color = if (error) c.bad else c.ink), bubble)
+        }
+        IconButton(onClick = { copyMessage(context, MarkdownModel.toPlainText(text).ifBlank { text }) }) {
+            Icon(MikaIcons.Copy, stringResource(R.string.chat_copy), Modifier.size(18.dp), tint = c.ink2)
+        }
+    }
 }
 
 internal enum class PersonalProfileTab(val label: Int, val icon: ImageVector) {
@@ -421,7 +437,7 @@ internal fun PersonalProfileTabs(selected: PersonalProfileTab, showIcons: Boolea
         }
         if (stacked) {
             Column(
-                Modifier.fillMaxWidth().selectableGroup().clip(RoundedCornerShape(24.dp)).background(c.fill).padding(3.dp),
+                Modifier.fillMaxWidth().selectableGroup().clip(MikaShapes.Sheet).background(c.fill).padding(3.dp),
                 verticalArrangement = Arrangement.spacedBy(2.dp),
             ) {
                 PersonalProfileTab.entries.forEachIndexed { i, tab -> item(tab, labels[i], Modifier.fillMaxWidth()) }
@@ -531,7 +547,7 @@ private fun personalTaskTone(task: PersonalTask): PersonalTaskTone {
 
 @Composable
 private fun PersonalTaskIcon(tone: PersonalTaskTone, label: String?) {
-    Box(Modifier.size(40.dp).background(tone.fill, RoundedCornerShape(12.dp)), contentAlignment = Alignment.Center) {
+    Box(Modifier.size(40.dp).background(tone.fill, MikaShapes.Chip), contentAlignment = Alignment.Center) {
         Icon(tone.icon, label, Modifier.size(19.dp), tint = tone.ink)
     }
 }

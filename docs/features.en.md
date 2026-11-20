@@ -4,6 +4,31 @@
 
 Tell Mika what you want in one sentence, and it gets it done on your phone. This page has the details behind each item under "What it can do" in the [README](../README.md).
 
+## Saved tasks
+
+- Long-press one of your text messages and choose “Save as task”, then edit its title and instructions. You can also add, edit, or delete tasks using the star beside the composer or “Saved tasks” in Settings.
+- Choosing a task on a new chat or through the star fills the current composer for editing before sending. Existing text requires confirmation before replacement.
+- While editing, place the cursor where the text should vary and choose “Add a fill-in field”, then name it (for example, “Contact” or “Time range”). Selected text can also be replaced by a field. Choosing this task asks for those values before filling the composer. Repeated names share one value, with up to 12 distinct fields.
+- You can still edit before sending. Cancelling the form or draft replacement leaves the original input untouched. Entered values do not change the saved task and are requested afresh next time.
+- Tasks are stored locally, preserving the previous recommended-task list. Existing tasks remain literal until “Add a fill-in field” is used. Saving, filling and selecting tasks do not call a model or execute a task.
+
+## Checklist updates and reuse
+
+- Long-press a text reply from Mika and choose “Save to checklist”. Create a list or select an existing one, review the complete reply, and save it as a new version. Earlier versions remain available. “Saved checklists” is also accessible from the star beside the composer.
+- Choose “Add information” to put the current list and your additions into a draft update request. Send it through the existing chat flow, then long-press the complete updated reply and save it to the original checklist. There is no background overwrite or separate model call.
+- “Changes and history” keeps the latest 10 versions, showing added/rewritten and removed/replaced nonempty text lines plus the saved source reply. These are text differences, not judgments about which business facts are correct. Manual edits also create versions.
+- “Use next” combines your next instruction with the latest checklist in the composer. Existing drafts can be kept or replaced. The latest content can also be copied. Failed writes retain edits, and stale editors cannot overwrite newer versions.
+- Up to 30 lists are stored locally with encryption, independently of conversations; titles allow 100 characters and content allows 12000. Deleting a conversation does not delete its lists. Deleting a checklist removes its history as well.
+
+## Reusable multi-step tasks
+
+- Open the star beside the composer → “Multi-step tasks” to create a task with 2–8 named steps. Edit, reorder, duplicate, or delete templates and supply requirements for each run. A running task uses an immutable template snapshot.
+- Steps use the existing phone task service in sequence, each in its own conversation. Each receives the run requirements and the previous step’s text result, with instructions to inspect the current screen before acting. Previous clicks are never replayed. Results should retain information needed downstream; attachments and workspace files are not automatically passed between steps in this first version.
+- Progress includes each step’s result and conversation, where you can answer questions, take over, or stop. The star remains available during execution. “Pause after this step” finishes the current step before pausing; continuing retains completed work.
+- Only a successful existing outcome judgment advances automatically. Failure, cancellation, an unknown judgment, or process interruption requires review. Inspect the conversation, supply an existing result, or explicitly retry that step. Retries keep prior attempts and use new execution IDs. Potentially completed messages are never automatically resent; model-based judgments cannot guarantee exactly-once actions in external apps.
+- Final text results are saved in run history and can be copied or inserted into the composer, protecting existing drafts. Run again with different requirements. Templates and history are encrypted locally; deleting a template retains its run history.
+- Limits: 30 templates, 50 runs, 10 attempts per step; titles 100 characters, step instructions 2000, run requirements 4000, and results 12000. At capacity, only the oldest completed run is pruned. Oversized results require editing before continuing. One multi-step task runs at a time, using existing queueing, phone permissions, and model settings.
+
 ## Operates any app without taking over your screen
 
 Any app installed on your phone works, with no per-app integration: Mika looks at the screen, finds buttons, taps and types like a person would. If it can see it, it can operate it.
@@ -41,7 +66,7 @@ Any app installed on your phone works, with no per-app integration: Mika looks a
 
 - "Remind me at 9 tomorrow morning", "check the weather every morning and tell me only if it will rain", "do X every Friday".
 - Conditions can compare with last time: "tell me when it drops by more than 50" compares with the price from the last time the condition started the task; "tell me every time it rains" speaks up on each rainy day; you can also say "at most once a day".
-- Runs at the scheduled time in the original conversation and sends the result back. The scheduled tasks page lets you create, edit, pause, run now or delete, with a preview of the next three occurrences. A daily or weekly plan can use several local times (e.g. `08:00, 12:30, 20:00`) under one identity and pause switch. In its original conversation, you can also ask to edit its content, condition, reminder or recurrence.
+- Runs at the scheduled time in the original conversation and sends the result back. The scheduled tasks page lets you create, edit, pause, run now or delete, with a preview of the next three occurrences. A daily or weekly plan can use several local times (e.g. `08:00, 12:30, 20:00`) under one identity and pause switch; add, change or remove them with the pickers next to the times, or type them directly. For the first run, pick a date in the calendar and then a time on the wheels. In its original conversation, you can also ask to edit its content, condition, reminder or recurrence.
 - Open a scheduled task's menu and select **Run history** to see the times and statuses of its last 10 recorded runs.
 - Choose **Copy as new plan** from a plan's menu to reuse its content, condition, and recurrence. The copy starts paused by default and sends results to the same conversation.
 - Under **Settings › Notifications**, turn on scheduled task quiet hours and choose start and end times. The window repeats daily in the device's local time and can span midnight. Tasks still run, results go back to the conversation, and scheduled results and reminders appear silently in the notification shade.
@@ -133,3 +158,15 @@ An empty conversation shows a few examples you can tap, edit and send. Or try so
 ## FAQ
 
 The FAQ now has its own page: [FAQ](faq.en.md). For phone control, see [Troubleshooting](setup-guide.en.md#troubleshooting) in the setup guide.
+
+## Use OpenAI Realtime for phone calls
+
+In Settings › AI phone calls › Settings › Realtime voice service, add a configuration, select OpenAI Realtime, and enter an OpenAI API key with Realtime access. The default model is `gpt-realtime` and the voice is `marin`. Save the configuration, test the connection, and select **Use as default** for incoming and outgoing calls. Call audio goes to OpenAI and may incur API usage charges.
+
+Before enabling auto-answer, manually answer a test call with Mika and check that both parties can hear each other.
+
+## Follow up after an AI call
+
+Enable call summaries, tasks and message drafts in AI calling settings. After an AI call, the selected main model summarizes the available transcript and drafts a short WeChat follow-up in the same request. Calls without a transcript do not trigger generation; small talk, a refusal to be contacted or no useful follow-up may produce no draft.
+
+Open the call record to review, edit, save and copy the draft. It stays encrypted with the call history. This does not find contacts, open WeChat or send messages. Failed summaries can be retried from the call record; existing summaries without a draft offer “Write follow-up message” to compose one locally, without another model request. Review facts and commitments before using a draft.
