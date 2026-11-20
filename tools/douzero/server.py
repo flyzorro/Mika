@@ -998,7 +998,7 @@ class Agent:
         [required] 是必须放进候选的几手(桌上是队友的牌时,两手出完那手和「不出」):不管分差、牌型都塞进来,
         其余候选仍按原来的方式挑;不在合法出牌里的跳过。
 
-        若 [own] 是拆牌的简单牌型,把 keep_combos 挑出的不拆牌候选保留到决赛。
+        候选中有拆牌的简单牌型时,把分数最高的不拆牌简单牌型候选保留到决赛。
         后半局(三家手里合起来不超过 LATE_CARDS 张)不管分差多大都模拟:每种牌型先留 DouZero 分数最高的一手,
         名额还有剩再按分数补满 LATE_TOP 手(见 late_picks)。
         模拟不把所有候选平分到最后:分几轮边打边淘汰,见 successive_halving。2026-11-16 13:10:11 土豪场,
@@ -1026,15 +1026,17 @@ class Agent:
         late = sum(infoset.num_cards_left_dict.values()) <= LATE_CARDS
         picks = late_picks(order, infoset.legal_actions) if late \
             else [i for i in order if top - float(values[i]) < CLOSE_MARGIN][:CLOSE_TOP]
-        keep = self.keep_combos(infoset, values, move) if is_simple_combo(move) \
-            and breaks_combo(move, infoset.player_hand_cards) else move
-        protected = tuple(sorted(keep)) if keep != move else None
-        if protected is not None:
-            required = list(required or []) + [keep]
         if required:
             index = {tuple(sorted(a)): i for i, a in enumerate(infoset.legal_actions)}
             forced = [index[k] for k in (tuple(sorted(m)) for m in required) if k in index]
             picks += [i for i in forced if i not in picks]
+        hand = infoset.player_hand_cards
+        actions = infoset.legal_actions
+        protected = None
+        if any(is_simple_combo(actions[i]) and breaks_combo(actions[i], hand) for i in picks):
+            intact = [i for i in picks if is_simple_combo(actions[i]) and not breaks_combo(actions[i], hand)]
+            if intact:
+                protected = tuple(sorted(actions[max(intact, key=lambda i: float(values[i]))]))
         if len(picks) < 2:
             return None
         # 总预算快用完了:模拟来不及打满下限,不如直接听 DouZero 的,别让手机等到超时

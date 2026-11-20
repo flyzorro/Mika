@@ -2172,7 +2172,7 @@ class KeepComboRolloutTest(unittest.TestCase):
             seen[key] = n + 1
             if key == "8":
                 return -1 if n < 20 else 1
-            if key == "9":
+            if key in ("9", "pass"):
                 return -1 if 20 <= n < 40 else 1
             return 1 if n < 20 else -1
 
@@ -2181,13 +2181,8 @@ class KeepComboRolloutTest(unittest.TestCase):
             return original(*args, **kwargs, clock=lambda: min(seen.get("9", 0) // 13, 2))
 
         agent = ROLLOUT_ADVISOR.agents[self.LIVE["seat"]]
-        def values(infoset):
-            return server_module.torch.tensor([{"9": 0.30, "8": 0.29, "pass": 0.28, "J": 0.27}.get(
-                " ".join(NAMES[c] for c in action) or "pass", 0.1) for action in infoset.legal_actions])
-
         report = {}
-        with mock.patch.object(agent, "values", values), \
-                mock.patch.object(agent, "play_out", play_out), \
+        with mock.patch.object(agent, "play_out", play_out), \
                 mock.patch.object(ROLLOUT_ADVISOR, "sample_hands", return_value={}), \
                 mock.patch.object(server_module, "successive_halving", halving), \
                 mock.patch.object(server_module, "ACT_ROLLOUT_GAMES", 100):
@@ -2197,7 +2192,7 @@ class KeepComboRolloutTest(unittest.TestCase):
         self.assertEqual(["8"], names(move))
         self.assertIn("8", report["rollout"]["rounds"][-1][0])
         self.assertEqual(100, seen["8"])
-        self.assertEqual(seen["9"], seen["8"])
+        self.assertEqual(seen["pass"], seen["8"])
 
 
 class LostBombAmountTest(unittest.TestCase):
