@@ -626,13 +626,12 @@ class BombRestraintTest(unittest.TestCase):
 
 
 class BombVetoRuleTest(unittest.TestCase):
-    """只按摆法数的那一关:加权金额最高的炸弹,不加权时不如非炸弹就不炸,改出非炸弹里加权金额最高的;
-    不加权时也不差就照旧炸。用打桩的 endgame.best 单独测这条规则。"""
+    """加权金额最高的炸弹,若不加权金额不如备选,或赢的摆法数落后太多,就改出非炸弹。
+    用打桩的 endgame.best 单独测这条规则。"""
 
-    def play(self, bomb_wins, pass_wins, bomb_plain, pass_plain):
+    def play(self, bomb_wins, pass_wins, bomb_plain, pass_plain, total=100):
         import endgame
         import torch
-        total = 100
         info = SimpleNamespace(
             player_position="landlord_down",
             player_hand_cards=[3, 3, 3, 3, 4],
@@ -667,10 +666,15 @@ class BombVetoRuleTest(unittest.TestCase):
 
     def test_a_bomb_that_wins_fewer_splits_than_pass_is_dropped(self):
         # 2026-11-20 精英场:队友剩 2 张出 JJJ9、地主不出,不出 36/36 全赢,5555 只赢 28/36。
-        # 炸弹金额 2×(2×28−36)/36 ≈ 1.1 > 不出 1.0,原来照炸;炸弹赢的摆法数更少就不炸
-        move, report = self.play(0.94, 1.0, 28 / 36, 1.0)
+        # 炸弹金额 2×(2×28−36)/36 ≈ 1.1 > 不出 1.0,但赢面少了约 22 个百分点,不炸
+        move, report = self.play(0.94, 1.0, 28 / 36, 1.0, total=36)
         self.assertEqual([], move)
         self.assertEqual("3 3 3 3", report.get("bomb_veto"))
+
+    def test_a_bomb_with_a_small_win_deficit_and_higher_amount_is_kept(self):
+        move, report = self.play(17 / 21, 19 / 21, 17 / 21, 19 / 21, total=21)
+        self.assertEqual(["3", "3", "3", "3"], move)
+        self.assertNotIn("bomb_veto", report)
 
     def test_a_bomb_that_wins_more_splits_but_less_plain_amount_is_dropped(self):
         # 只按摆法数炸弹 45% 对不出 44%:炸弹赢得多,摆法数这条不拦;
@@ -690,7 +694,7 @@ class LikelihoodFloorTest(unittest.TestCase):
     """似然下限:软证据把一种分法压到最可能分法的 LIKELIHOOD_FLOOR 以下时按下限算,不再往 0 压。
 
     用 10:53:07 那一手:48 种分法(126 种摆法),温度 0.02 下「地主还拿着两张 2」被压到 0~1.7e-5;
-    加下限后每种分法的相对权重都在 [LIKELIHOOD_FLOOR, 1] 里。硬约束(能一手走完却不出)仍记 0。
+    软证据夹在当前默认的 [0.2, 1] 内。硬约束(能一手走完却不出)仍记 0。
     """
 
     def splits(self):
@@ -704,13 +708,11 @@ class LikelihoodFloorTest(unittest.TestCase):
         return [{"landlord_up": tuple(hand), "landlord": ha, "landlord_down": hb} for (ha, hb) in ways]
 
     def test_soft_evidence_does_not_push_a_split_to_near_zero(self):
-        import server
         history = [cards(m) for m in BombRestraintTest.BOMB["history"]]
         callback = ROLLOUT_ADVISOR.likelihood(history, "landlord_up", None)
         likes = callback(self.splits(), time.monotonic() + 5)
         self.assertEqual(1.0, max(likes))
-        self.assertGreaterEqual(min(likes), server.LIKELIHOOD_FLOOR)
-        self.assertEqual(server.LIKELIHOOD_FLOOR, min(likes))
+        self.assertEqual(0.2, min(likes))
 
 
 class KeepBombLikelihoodTest(unittest.TestCase):
@@ -741,7 +743,7 @@ class KeepBombLikelihoodTest(unittest.TestCase):
     def test_a_kept_bomb_lifts_the_observed_non_bomb_move(self):
         # 只看这一条的因果:下家在第 4 手领出单张 3,按整手牌 4 4 4 4 + 3 打分 log 约 -1694,
         # 把炸弹放一边只剩 3,log 是 0。所以「留着炸弹的 4 4 4 4」这种分法权重该是 1,
-        # 而不是被压到 LIKELIHOOD_FLOOR(改前就是 0.02 对 1)。
+        # 而不是被压到 LIKELIHOOD_FLOOR。
         import server as server_module
         history = [cards(["BJ"]), [], [], [], cards(["3"])]
         splits = [{"landlord": (), "landlord_down": cards(hand), "landlord_up": ()}
@@ -752,11 +754,10 @@ class KeepBombLikelihoodTest(unittest.TestCase):
 
     def test_the_short_hand_bomb_is_no_longer_nearly_impossible(self):
         # 15:08:02:下家只剩 4 张,实际就是 4 4 4 4。改前按两家似然加权只有 0.0003;
-        # 只看他的出牌、每种剩牌一个假设后这手是唯一最像的分法。207 种分法里后验质量约 6.9%,
-        # 到不了 0.2 的原因见 report.md。
+        # 207 种分法里它仍是唯一最像的;下限 0.2 时后验约 2.08%,高于均匀分法的约 0.48%。
         mass = short_bomb_mass(self.position(self.AFTER_J), advisor=ADVISOR, auction=None,
                                only_short=True, counted=False)
-        self.assertGreaterEqual(mass, 0.05, f"P(下家剩的 4 张是炸弹) 只有 {mass:.4f}")
+        self.assertGreaterEqual(mass, 0.02, f"P(下家剩的 4 张是炸弹) 只有 {mass:.4f}")
 
 
 class ShortHandSamplingTest(unittest.TestCase):
@@ -2099,7 +2100,7 @@ class AuctionEndgameTest(unittest.TestCase):
                                                "double": {"landlord": True}})
         strong, weak = self.weights(auction, "landlord_up")
         self.assertGreater(strong, weak, "地主叫 3 分 + 加倍时,地主牌强的分法权重应该更高")
-        self.assertGreater(strong, weak * 10)
+        self.assertEqual((1.0, server_module.LIKELIHOOD_FLOOR), (strong, weak))
 
     def test_my_own_evidence_is_not_used(self):
         import server as server_module

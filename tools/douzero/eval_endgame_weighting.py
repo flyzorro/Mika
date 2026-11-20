@@ -26,6 +26,7 @@ from douzero.env.game import GameEnv
 
 from server import Advisor, DECK, NAMES, SEATS, WEIGHTS, Replay
 import endgame
+import server
 
 # 对手噪声:DouZero 分数按这个温度 softmax 采样。取 0.2 与残局似然的温度同量级,
 # 分数差 0.2 时首选/次选约 73% / 27%,足够让对手偶尔不按最优出牌,又不会乱出。
@@ -213,6 +214,11 @@ def work(record):
     return evaluate(record)
 
 
+def set_likelihood_floor(floor):
+    if floor is not None:
+        server.LIKELIHOOD_FLOOR = floor
+
+
 def ci95(diffs):
     """配对差值的均值和 95% 置信区间(百分比点)。"""
     n = len(diffs)
@@ -302,7 +308,11 @@ def main():
     parser.add_argument("--workers", type=int, default=min(8, os.cpu_count() or 1))
     parser.add_argument("--seed", type=int, default=20261116)
     parser.add_argument("--out", default="eval_endgame_weighting.json")
+    parser.add_argument("--likelihood-floor", type=float, help="覆盖残局似然下限(0 到 1)")
     args = parser.parse_args()
+    if args.likelihood_floor is not None and not 0 <= args.likelihood_floor <= 1:
+        parser.error("--likelihood-floor 必须在 0 到 1 之间")
+    set_likelihood_floor(args.likelihood_floor)
 
     started = time.time()
     rng = random.Random(args.seed)
@@ -328,7 +338,7 @@ def main():
     rows = []
     if args.workers > 1:
         chunksize = max(1, len(records) // (args.workers * 4))
-        with mp.Pool(args.workers) as pool:
+        with mp.Pool(args.workers, initializer=set_likelihood_floor, initargs=(args.likelihood_floor,)) as pool:
             for i, row in enumerate(pool.imap_unordered(work, records, chunksize=chunksize), 1):
                 rows.append(row)
                 if i % 20 == 0:
