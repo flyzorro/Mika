@@ -11,7 +11,7 @@ from douzero.env.game import GameEnv
 from server import (
     ACT_BUDGET_SAFETY_S, ACT_ENDGAME_BUDGET_S, ACT_ROLLOUT_BUDGET_S, ACT_ROLLOUT_MIN_S, ACT_TOTAL_BUDGET_S, DECK,
     DOUBLE_WIN, FARMER_DOUBLE_WIN, NAMES, ROLLOUT_MIN_GAMES, SEATS, SUPER_DOUBLE_WIN, Advisor, Mismatch, WEIGHTS,
-    bid_level, cards, fewer_plays, handler, is_bomb, move_label, parse_auction, resolve, should_double,
+    Cards, bid_level, cards, fewer_plays, handler, is_bomb, move_label, parse_auction, resolve, should_double,
 )
 
 # 造局面时关掉「接近时现场模拟」:随机走一步有近一半的顶两手分差在 0.1 以内,开着会让原有测试慢到不可用。
@@ -2390,6 +2390,25 @@ class SwitchMarginScaleTest(unittest.TestCase):
         report = {}
         self.assertEqual(["BJ"], self.act(0.50, 0.56, report))
         self.assertEqual("BJ", report["rollout"]["chosen"])
+
+
+class CardsTest(unittest.TestCase):
+    """没配认牌权重时 /cards 回 503,其余接口不受影响(不用装 torchvision)。"""
+
+    def test_without_weights_cards_are_unavailable(self):
+        import http.client
+        import threading
+        from http.server import ThreadingHTTPServer
+        server = ThreadingHTTPServer(("127.0.0.1", 0), handler(ADVISOR, Cards(None)))
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            conn = http.client.HTTPConnection("127.0.0.1", server.server_address[1], timeout=10)
+            conn.request("POST", "/cards", body=b"not a jpeg", headers={"Content-Type": "image/jpeg"})
+            res = conn.getresponse()
+            self.assertEqual(503, res.status)
+            self.assertIn(b"cards_unavailable", res.read())
+        finally:
+            server.shutdown()
 
 
 if __name__ == "__main__":

@@ -34,11 +34,13 @@ POST /double {"seat": "landlord" | "landlord_down" | "landlord_up" | "farmer",
    # games 不到下限(其它座位 ROLLOUT_MIN_GAMES,farmer 2×)时 double / super 一律 false(赢面只是少数几局的比率)
 # farmer 是认不出地主坐哪边时用的:两个农民座位各算一遍(共用时间预算),取较低的赢面
 """
+import io
 import json
 import math
 import os
 import random
 import sys
+import threading
 import time
 from collections import Counter
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -1620,9 +1622,29 @@ class Advisor:
                                      likelihood=self.likelihood(history, seat, auction), auction=auction)
 
 
-def handler(advisor):
+class Cards:
+    """POST /cards 的认牌模型(tools/cardvision)。权重路径在 DDZ_CARDS_WEIGHTS;没配就不提供,其余接口照常。"""
+
+    def __init__(self, path):
+        self.path, self.model, self.lock = path, None, threading.Lock()
+
+    def detect(self, jpeg):
+        if not self.path or not os.path.exists(self.path):
+            return None
+        with self.lock:  # MPS 上一次只跑一张
+            if self.model is None:
+                sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "cardvision"))
+                import model as cardvision  # noqa: E402  只有认牌要 torchvision
+                self.model, self.predict = cardvision.load(self.path), cardvision.predict
+            from PIL import Image
+            return self.predict(self.model, Image.open(io.BytesIO(jpeg)).convert("RGB"))
+
+
+def handler(advisor, card_reader=None):
     class Handler(BaseHTTPRequestHandler):
         def do_POST(self):
+            if self.path == "/cards":
+                return self.post_cards()
             if self.path not in ("/act", "/bid", "/double"):
                 return self.reply(404, {"error": "not_found"})
             started = time.perf_counter()
@@ -1652,6 +1674,18 @@ def handler(advisor):
             except (KeyError, ValueError, TypeError) as e:
                 self.reply(400, {"error": f"bad_request:{e}"})
 
+        def post_cards(self):
+            started = time.perf_counter()
+            jpeg = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+            try:
+                found = card_reader.detect(jpeg) if card_reader else None
+            except OSError as e:  # 图片坏了
+                return self.reply(400, {"error": f"bad_image:{e}"})
+            if found is None:
+                return self.reply(503, {"error": "cards_unavailable"})
+            self.reply(200, {"cards": found, "ms": round((time.perf_counter() - started) * 1000)},
+                       {"jpeg_bytes": len(jpeg)})
+
         def reply(self, code, data, request=None):
             # 每次一行:问了什么、答了什么,对不上时拿来查是哪一手读错了
             print(json.dumps({"t": time.strftime("%H:%M:%S"), "request": request, "reply": data}, ensure_ascii=False), flush=True)
@@ -1670,4 +1704,4 @@ def handler(advisor):
 
 if __name__ == "__main__":
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 3426
-    ThreadingHTTPServer(("0.0.0.0", port), handler(Advisor(WEIGHTS))).serve_forever()
+    ThreadingHTTPServer(("0.0.0.0", port), handler(Advisor(WEIGHTS), Cards(os.environ.get("DDZ_CARDS_WEIGHTS")))).serve_forever()
