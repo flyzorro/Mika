@@ -38,7 +38,7 @@ internal object JjDdzTurn {
     /** 抬牌动画约 200ms:点完隔这么久再认。 */
     private const val LIFT_MS = 200L
     private const val SETTLE_READS = 4
-    private const val SELECT_ROUNDS = 3
+    private const val SELECT_ROUNDS = 4
     /** 等「出牌」变绿最多约 1 秒。 */
     private const val PLAYABLE_READS = 7
     private const val THOUGHT_MS = 1_500L
@@ -326,13 +326,17 @@ internal object JjDdzTurn {
     internal suspend fun select(ctx: ToolContext, s: Session, want: Set<Int>, table: JjTable): Boolean {
         var current = table
         repeat(SELECT_ROUNDS) {
-            val toggle = current.hand.indices.filter { (it in want) != (it in current.lifted) }
-            if (toggle.isEmpty()) return true
-            for (i in toggle) {
+            // 先把多抬的(游戏自己提示抬起的牌)放下、读稳了再抬要的:一边放一边抬,游戏会退回只剩提示牌(真机 20:04、20:07)
+            val drop = current.lifted - want
+            val batch = drop.ifEmpty { want - current.lifted }
+            if (batch.isEmpty()) return true
+            for (i in batch.sorted()) {
                 tap(ctx, JjCards.tapX(current, i), JjCards.HAND_TAP_Y)
                 delay(TAP_GAP_MS)
             }
+            val before = current.lifted
             current = settled(ctx, s) ?: return false
+            println("JJTRACE select ${if (drop.isEmpty()) "lift" else "drop"} $batch lifted $before -> ${current.lifted} want $want")
             if (current.hand.size != table.hand.size) return false
         }
         return current.lifted == want

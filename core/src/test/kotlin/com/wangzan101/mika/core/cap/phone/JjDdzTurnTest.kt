@@ -141,6 +141,16 @@ class JjDdzTurnTest {
         assertEquals(listOf(0, 1, 2, 3).map { 500 + it * 96 + 22 }, xs)
     }
 
+    @Test fun putsTheGamesHintDownBeforeLiftingTheWantedCard() = runTest {
+        // 真机 20:04:轮到我时游戏已经提示抬起一张 6;要出的是 2。先放下 6、读稳,再抬 2
+        val ranks = listOf("SJ", "2", "A", "6", "5")
+        replies(hand(ranks), hand(ranks), hand(ranks, setOf(1)), hand(ranks, setOf(1)))
+        val game = Game(JjDdzScreen.PACKAGE, frame("follow"))
+        val ok = JjDdzTurn.select(toolDispatcher(game).ctx, JjDdzTurn.Session("http://mac:3426", 1), setOf(1), JjCards.table(hand(ranks, setOf(3)), 2408))
+        assertTrue(ok)
+        assertEquals(listOf(3, 1).map { 500 + it * 96 + 22 }, game.taps.map { it.first })
+    }
+
     @Test fun waitsForTheWholeDealBeforeTracking() = runTest {
         // 发牌动画:先看到 10 张,等到 17 张才从头记;不能当成中途进来
         replies(hand(seventeen.take(10)), hand(seventeen), hand(seventeen))
