@@ -130,6 +130,7 @@ class LazyPhoneScreen(
     override suspend fun rawFrame(rows: List<Int>) = port?.rawFrame(rows)
     override suspend fun quickShot() = port?.quickShot()
     override suspend fun quickTap(x: Int, y: Int) = port?.quickTap(x, y) ?: false
+    override suspend fun pressAt(x: Int, y: Int, holdMs: Long) = port?.pressAt(x, y, holdMs) ?: false
 
     private fun empty() = ScreenSnapshot(snapshotId(), null, emptyList(), width, height, hasWindow = false)
 

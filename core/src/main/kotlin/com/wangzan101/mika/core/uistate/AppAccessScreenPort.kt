@@ -104,6 +104,7 @@ class AppAccessScreenPort(
     override suspend fun tapRef(ref: String, snapshotId: String) = checked { inner.tapRef(ref, snapshotId) }
     override suspend fun tapXY(x: Int, y: Int) = checked { inner.tapXY(x, y) }
     override suspend fun quickTap(x: Int, y: Int) = checked { inner.quickTap(x, y) }
+    override suspend fun pressAt(x: Int, y: Int, holdMs: Long) = checked { inner.pressAt(x, y, holdMs) }
     override suspend fun doubleTapRef(ref: String, snapshotId: String) = checked { inner.doubleTapRef(ref, snapshotId) }
     override suspend fun doubleTapXY(x: Int, y: Int) = checked { inner.doubleTapXY(x, y) }
     override suspend fun typeText(ref: String?, snapshotId: String?, text: String) = checked { inner.typeText(ref, snapshotId, text) }

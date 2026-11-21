@@ -48,6 +48,7 @@ class JjDdzTurnTest {
         override suspend fun rawFrame(rows: List<Int>) = frame
         override suspend fun quickShot() = ByteArray(1)
         override suspend fun quickTap(x: Int, y: Int): Boolean { taps += x to y; return true }
+        override suspend fun pressAt(x: Int, y: Int, holdMs: Long): Boolean = quickTap(x, y)
     }
 
     /** 手牌一排:点数框从 x=500 起每张 96,上沿平放 770、抬起 735。 */

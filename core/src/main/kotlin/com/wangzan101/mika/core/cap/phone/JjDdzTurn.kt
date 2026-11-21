@@ -42,6 +42,7 @@ internal object JjDdzTurn {
     /** 等「出牌」变绿最多约 1 秒。 */
     private const val PLAYABLE_READS = 7
     private const val THOUGHT_MS = 1_500L
+    private const val HOLD_MS = 150L
     /** 炸弹、火箭的特效会挡住人物一两帧。 */
     private const val LORD_FRAMES = 5
     private const val ME_LORD_FRAMES = 12
@@ -381,8 +382,9 @@ internal object JjDdzTurn {
             ?: null.also { tracker.fail("douzero_bad_reply") }
     }
 
+    /** JJ 的牌局是 Unity,在 Mika 的屏上帧率低:按住 [HOLD_MS] 再抬,50ms 的点按会漏(2026-11-21 19:13 点牌全没反应)。 */
     private suspend fun tap(ctx: ToolContext, x: Int, y: Int) {
-        ctx.screen.quickTap(x, y)
+        if (!ctx.screen.pressAt(x, y, HOLD_MS)) println("JJTRACE tap_failed x=$x y=$y")
     }
 
     private fun pause(s: Session, reason: String): ToolExecution {
