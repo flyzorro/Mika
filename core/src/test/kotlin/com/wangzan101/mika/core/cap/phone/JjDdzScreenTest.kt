@@ -56,6 +56,20 @@ class JjDdzScreenTest {
         assertTrue("${view.buttons}", view.buttons.single().x in 1400..1520)
     }
 
+    @Test fun playAgainOnTheTableAfterEachHand() {
+        // 自由桌每手打完,牌桌上弹「再来一局」(正中,深绿)
+        val view = JjDdzScreen.read(frame("table_again"))
+        assertEquals(DdzPhase.Result, view.phase)
+        assertTrue("${view.buttons}", view.buttons.single().x in 1100..1300)
+    }
+
+    @Test fun autoPlayShowsCancel() {
+        // 超时后游戏替我托管:手牌上盖着蓝色「取消托管」
+        val view = JjDdzScreen.read(frame("auto_play"))
+        assertEquals(DdzPhase.AutoPlay, view.phase)
+        assertTrue("${view.buttons}", view.buttons.single().x in 1100..1300)
+    }
+
     @Test fun clockTellsWhoseTurnItIs() {
         assertEquals(DdzSeat.Left, JjDdzScreen.read(frame("left_turn")).turn)
         assertEquals(DdzSeat.Right, JjDdzScreen.read(frame("right_turn")).turn)

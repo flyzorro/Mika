@@ -54,14 +54,22 @@ internal object JjDdzTurn {
         var lastHandAt = 0L
         var settleSince = 0L
         var detectFailures = 0
+        /** 这一手记牌断掉的原因已经打过日志了。 */
+        var brokenLogged = false
         /** 上次点「再来一局」的时刻:点完页面要一两秒才走,别连着点。 */
         var againAt = 0L
         var lastPhase = DdzPhase.Other
         var handCount = 0
     }
 
-    /** 叫分、出牌前想一会儿(1.5–4 秒,在 15 秒倒计时里):每次都秒点太像机器。测试里换掉。 */
-    internal var think: suspend () -> Unit = { delay(Random.nextLong(1_500, 4_000)) }
+    /**
+     * 出牌前想一会儿(0.8–2 秒):每次都秒点太像机器。叫分不另外想:问 /bid 本身就要 3 秒,
+     * 2026-11-21 真机上工具接手晚,再加 1.5–4 秒就超时了,游戏替我不叫还进了托管。测试里换掉。
+     */
+    internal var think: suspend () -> Unit = { delay(Random.nextLong(800, 2_000)) }
+
+    /** 诊断:每个决定和记牌断掉的原因打到 logcat(JJTRACE),真机上查为什么没压、没出。 */
+    private fun trace(s: Session, msg: String) = println("JJTRACE ${s.tracker?.broken ?: "ok"} $msg")
 
     /** 把一帧交给电脑认牌;测试里换掉。 */
     internal var detect: suspend (url: String, jpeg: ByteArray) -> List<JjCard>? = JjCards::detect
@@ -120,6 +128,17 @@ internal object JjDdzTurn {
             s.handCount = table.hand.size
             if (!view.phase.mine()) s.acted = false
             s.lastPhase = view.phase
+            // 托管(超时后游戏替我打):先把它取消,不然按钮都不出来。「取消托管」盖在手牌上,看不到手牌就不点:
+            // 斗地主大厅泳池的池水在同一处也是这种蓝
+            if (view.phase == DdzPhase.AutoPlay && table.hand.isNotEmpty()) {
+                if (PhoneDdzTurn.clock() - s.againAt > AGAIN_GAP_MS) {
+                    trace(s, "cancel_auto")
+                    tap(ctx, view.buttons[0].x, JjDdzScreen.AUTO_TAP_Y)
+                    s.againAt = PhoneDdzTurn.clock()
+                }
+                waitOrSteer { delay(POLL_MS) } ?: return result(s)
+                continue
+            }
             if (table.hand.isEmpty()) {
                 if (++s.noHand == NEW_HAND_GAP && s.tracker != null) {
                     // 一手打完
@@ -161,6 +180,10 @@ internal object JjDdzTurn {
                 leading = view.phase == DdzPhase.Lead,
                 hand = { table.handRanks.takeUnless { table.handUnsure } },
             )
+            if (tracker.broken != null && !s.brokenLogged) {
+                s.brokenLogged = true
+                trace(s, "broken trace=${tracker.trace.joinToString(" | ")}")
+            }
             if (view.phase.mine() && !s.acted) {
                 s.state = if (view.phase == DdzPhase.Call) DdzSessionState.Calling else DdzSessionState.Playing
                 if (decide(ctx, s, view, table)) s.acted = true
@@ -174,6 +197,7 @@ internal object JjDdzTurn {
     /** 看到新发的 17 张从头记;轮到我出牌时才第一次看到手牌(张数不对)是中途进来的,这一手只按规则打完。 */
     private fun newHand(s: Session, table: JjTable, view: JjView) {
         s.tracker = DdzTracker(DdzSettlingPolicy.HUMAN)
+        s.brokenLogged = false
         s.expectedHand = null
         s.bid = false
         s.settleSince = 0
@@ -188,12 +212,13 @@ internal object JjDdzTurn {
             val level = PhoneDdzTurn.adviseBid(s.advisor, table.handRanks)?.level ?: ConservativeDdzPolicy.callLevel(table.handRanks)
             // 想叫的分不能叫(灰的)就不叫
             val button = view.buttons.getOrNull(level)?.takeIf { level > 0 && it.color == JjColor.Yellow } ?: view.buttons[0]
-            think()
+            trace(s, "call level=$level x=${button.x}")
             tap(ctx, button.x, JjDdzScreen.TAP_Y)
             s.bid = true
             return true
         }
         if (view.onlyPass) {
+            trace(s, "only_pass")
             think()
             tap(ctx, view.buttons[0].x, JjDdzScreen.TAP_Y)
             tracker.mine(emptyList())
@@ -209,6 +234,7 @@ internal object JjDdzTurn {
         val hand = table.handRanks
         if (tracker.broken == null && s.expectedHand?.sorted()?.let { it != hand.sorted() } == true) tracker.fail(DdzSessionReason.HAND_DRIFT)
         val play = if (tracker.broken == null) askDouZero(s, tracker, hand) else null
+        trace(s, "${view.phase} hand=${hand.joinToString(" ")} history=${tracker.history.joinToString("/") { it.joinToString(" ") }} seat=${runCatching { tracker.seat() }.getOrNull()} play=$play")
         if (play == null) return byRules(ctx, view, table)
         think()
         if (play.isEmpty()) {
@@ -222,6 +248,7 @@ internal object JjDdzTurn {
         }
         val want = PhoneDdzTurn.pick(hand, play)
         if (want == null || !select(ctx, s, want, table)) {
+            trace(s, "select_failed want=$want")
             tracker.fail(DdzSessionReason.REJECTED_ACTION)
             return byRules(ctx, view, table)
         }

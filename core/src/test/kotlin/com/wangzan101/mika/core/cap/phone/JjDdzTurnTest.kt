@@ -112,6 +112,23 @@ class JjDdzTurnTest {
         assertEquals(listOf(again.x to JjDdzScreen.AGAIN_TAP_Y), game.taps)
     }
 
+    @Test fun cancelsAutoPlayRightAway() = runTest {
+        now = 60_000
+        replies(hand(listOf("2", "2", "A")))
+        val game = Game(JjDdzScreen.PACKAGE, frame("auto_play"))
+        run(game, start)
+        assertEquals(JjDdzScreen.read(game.frame).buttons.single().x to JjDdzScreen.AUTO_TAP_Y, game.taps.first())
+    }
+
+    @Test fun neverTapsTheLobbyPool() = runTest {
+        // 斗地主大厅泳池的池水在「取消托管」那里也是蓝的;没有手牌就不能当托管去点
+        now = 60_000
+        replies(emptyList(), emptyList(), emptyList())
+        val game = Game(JjDdzScreen.PACKAGE, frame("lobby_pool"))
+        run(game, start)
+        assertTrue(game.taps.isEmpty())
+    }
+
     @Test fun waitsForTheWholeDealBeforeTracking() = runTest {
         // 发牌动画:先看到 10 张,等到 17 张才从头记;不能当成中途进来
         replies(hand(seventeen.take(10)), hand(seventeen), hand(seventeen))

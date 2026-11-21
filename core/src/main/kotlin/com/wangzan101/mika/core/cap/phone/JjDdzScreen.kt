@@ -48,17 +48,20 @@ internal object JjDdzScreen {
     private const val PASS_X0 = 0.45
     private const val PASS_X1 = 0.60
 
-    /** 终局页底部「再来一局」(绿,中心 x≈0.60):看字上方、下方两行。 */
-    private val AGAIN_ROWS = listOf(895, 1000)
-    const val AGAIN_TAP_Y = 945
-    private const val AGAIN_X0 = 0.55
+    /**
+     * 「再来一局」(绿):每手打完牌桌上弹的在正中(x≈0.50,y 920–1015),整轮的终局页在偏右(x≈0.60,y 880–1010)。
+     * 看两种都在按钮上、又在白字上方 / 下方的两行。
+     */
+    private val AGAIN_ROWS = listOf(925, 1000)
+    const val AGAIN_TAP_Y = 960
+    private const val AGAIN_X0 = 0.45
     private const val AGAIN_X1 = 0.68
     private const val MIN_AGAIN = 200
     /** 按钮上沿的高光把绿色切出 15 像素左右的缺口。 */
     private const val AGAIN_GAP = 24
     private const val MAX_AGAIN = 460
 
-    val ROWS = listOf(TOP_ROW, BOTTOM_ROW) + CLOCK_ROWS + AGAIN_ROWS
+    val ROWS = listOf(TOP_ROW, BOTTOM_ROW) + CLOCK_ROWS + AGAIN_ROWS + listOf(903, 980)
 
     fun read(frame: RawFrame): JjView {
         if (frame.height != FRAME_HEIGHT) return JjView(DdzPhase.Other, emptyList(), null)
@@ -70,6 +73,7 @@ internal object JjDdzScreen {
         }
         val phase = phase(row, frame.width)
         if (phase != DdzPhase.Other) return JjView(phase, row, DdzSeat.Me)
+        auto(frame, scale)?.let { return JjView(DdzPhase.AutoPlay, listOf(it), null) }
         again(frame, scale)?.let { return JjView(DdzPhase.Result, listOf(it), null) }
         return JjView(DdzPhase.Other, emptyList(), clock(frame, scale))
     }
@@ -137,11 +141,38 @@ internal object JjDdzScreen {
         return JjButton(hit.first, hit.last, JjColor.Green)
     }
 
+    /** 两种「再来一局」的绿:牌桌上的约 (72,180,100),终局页的偏青约 (55,180,150)。 */
     private fun teal(argb: Int): Boolean {
         val r = argb shr 16 and 0xff
         val g = argb shr 8 and 0xff
         val b = argb and 0xff
-        return r < 100 && g > 160 && b in 121..179 && g - b > 15
+        return r < 100 && g > 160 && g - b > 15
+    }
+
+    /** 托管时手牌上盖着蓝色「取消托管」(约 (90,160,200),正中,y 900–990)。看白字上方、下方两行。 */
+    private val AUTO_ROWS = listOf(903, 980)
+    const val AUTO_TAP_Y = 945
+    private const val AUTO_X0 = 0.42
+    private const val AUTO_X1 = 0.58
+
+    private fun auto(frame: RawFrame, scale: Double): JjButton? {
+        val minW = (MIN_AGAIN * scale).roundToInt()
+        val maxW = (MAX_AGAIN * scale).roundToInt()
+        fun runs(y: Int): List<IntRange> = DdzScreen.runs(frame.width, gap = AGAIN_GAP, minWidth = minW) { blue(frame.pixel(it, y)) }
+            .filter { it.last - it.first <= maxW }
+        val bottom = runs(AUTO_ROWS[1])
+        val hit = runs(AUTO_ROWS[0]).firstOrNull { t ->
+            val cx = (t.first + t.last) / 2.0 / frame.width
+            cx in AUTO_X0..AUTO_X1 && bottom.any { b -> minOf(b.last, t.last) - maxOf(b.first, t.first) > 0.5 * (t.last - t.first) }
+        } ?: return null
+        return JjButton(hit.first, hit.last, JjColor.Gray)
+    }
+
+    private fun blue(argb: Int): Boolean {
+        val r = argb shr 16 and 0xff
+        val g = argb shr 8 and 0xff
+        val b = argb and 0xff
+        return r < 115 && g in 140..180 && b > 180
     }
 
     private fun gold(argb: Int): Boolean {
