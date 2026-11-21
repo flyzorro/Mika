@@ -1681,6 +1681,8 @@ def handler(advisor, card_reader=None):
                 found = card_reader.detect(jpeg) if card_reader else None
             except OSError as e:  # 图片坏了
                 return self.reply(400, {"error": f"bad_image:{e}"})
+            except Exception as e:  # 权重和代码的类别对不上之类:回个错,别让手机只看到断线
+                return self.reply(500, {"error": f"cards_failed:{type(e).__name__}:{e}"})
             if found is None:
                 return self.reply(503, {"error": "cards_unavailable"})
             self.reply(200, {"cards": found, "ms": round((time.perf_counter() - started) * 1000)},

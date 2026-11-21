@@ -34,10 +34,16 @@ internal data class JjTable(
 
 /**
  * JJ 斗地主的牌交给电脑认(tools/douzero 的 POST /cards,模型在 tools/cardvision),这里只按位置分。
- * 位置按 2408×1080 的录屏量(框中心):底牌 y<90;两家出的牌和「不出」y 160–450,左右以画面中线分;
+ * 位置按 2408×1080 的录屏量(框中心):底牌 y<90;两家出的牌和「不出」y 160–450,按挨着的牌分组再看在哪边;
  * 我出的牌、我的「不出」y 450–700;手牌 y≥700(点数中心平放约 805、抬起约 768,王的竖排字中心约 840)。
  */
 internal object JjCards {
+    private const val BASE_WIDTH = 2408.0
+    /** 录屏里左家出的牌最左在 x≈600–700,右家的最右到 x≈1700–1800,翻底牌的动画只在 1000–1400 之间。 */
+    private const val LEFT_EDGE = 1000.0
+    private const val RIGHT_EDGE = 1400.0
+    /** 同一手牌相邻两张的点数框间距约 55,两家之间隔着 400 以上。 */
+    private const val GROUP_GAP = 150.0
     /** 低于这个分数的牌算认不准。 */
     const val SURE = 0.8
     private const val BOTTOM_Y = 90.0
@@ -80,7 +86,6 @@ internal object JjCards {
     }.getOrNull()
 
     fun table(cards: List<JjCard>, width: Int): JjTable {
-        val mid = width / 2.0
         fun seen(found: List<JjCard>): DdzSeen {
             val ranks = found.filter { it.rank != PASS }
             val pass = found.filter { it.rank == PASS }
@@ -92,17 +97,32 @@ internal object JjCards {
                 else -> DdzSeen.Unsure
             }
         }
-        val play = cards.filter { it.cy >= PLAY_Y0 && it.cy < MINE_Y0 }
+        // 出牌区按挨着的牌分组:左家的牌从左边排起、伸过 [LEFT_EDGE],右家的排到 [RIGHT_EDGE] 外;
+        // 整组都在中间的是叫完分翻底牌的动画(三张牌从中间飞到顶栏),不是谁出的牌
+        val scale = width / BASE_WIDTH
+        val groups = groups(cards.filter { it.cy >= PLAY_Y0 && it.cy < MINE_Y0 }, GROUP_GAP * scale)
+        val left = groups.filter { g -> g.minOf { it.x0 } < LEFT_EDGE * scale }.flatten()
+        val right = groups.filter { g -> g.minOf { it.x0 } >= LEFT_EDGE * scale && g.maxOf { it.x1 } > RIGHT_EDGE * scale }.flatten()
         val hand = cards.filter { it.cy >= HAND_Y0 && it.rank != PASS }.sortedBy { it.cx }
         val bottom = cards.filter { it.cy < BOTTOM_Y && it.rank != PASS }.sortedBy { it.cx }
         return JjTable(
             hand = hand,
             lifted = hand.indices.filterTo(LinkedHashSet()) { hand[it].y0 < LIFTED_TOP },
-            left = seen(play.filter { it.cx < mid }),
-            right = seen(play.filter { it.cx >= mid }),
+            left = seen(left),
+            right = seen(right),
             mine = seen(cards.filter { it.cy >= MINE_Y0 && it.cy < HAND_Y0 }),
             bottom = bottom.takeIf { it.size == 3 && it.all { c -> c.score >= SURE } }?.map { it.rank },
         )
+    }
+
+    /** 按横向挨着(间隙不到 [gap])分组。 */
+    private fun groups(cards: List<JjCard>, gap: Double): List<List<JjCard>> {
+        val out = mutableListOf<MutableList<JjCard>>()
+        for (c in cards.sortedBy { it.x0 }) {
+            val last = out.lastOrNull()
+            if (last != null && c.x0 - last.maxOf { it.x1 } < gap) last += c else out += mutableListOf(c)
+        }
+        return out
     }
 
     /** 点第 [index] 张手牌的位置(像素)。 */

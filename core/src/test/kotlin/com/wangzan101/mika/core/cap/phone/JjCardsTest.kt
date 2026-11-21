@@ -40,6 +40,21 @@ class JjCardsTest {
         assertEquals(DdzSeen.Unsure, t.left)
     }
 
+    @Test fun theBottomCardsFlyingThroughTheMiddleAreNobodysPlay() {
+        // 2026-11-21 15:41 真机:叫完分 K 6 6 从中间飞到顶栏,按中线分成了「右家出 6」,整局历史错位
+        val t = JjCards.table(listOf(card("K", 1046.0, 272.0, 53.0), card("6", 1150.0, 242.0, 53.0), card("6", 1251.0, 268.0, 53.0)), width)
+        assertEquals(DdzSeen.Empty, t.left)
+        assertEquals(DdzSeen.Empty, t.right)
+    }
+
+    @Test fun aLongStraightFromTheLeftStaysLeft() {
+        // 左家 3 到 A 的顺子从 x=640 排到 1300 多,伸过了中线
+        val ranks = listOf("3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K", "A")
+        val t = JjCards.table(ranks.mapIndexed { i, r -> card(r, 640.0 + i * 56, 280.0, 50.0) }, width)
+        assertEquals(DdzSeen.Cards(ranks), t.left)
+        assertEquals(DdzSeen.Empty, t.right)
+    }
+
     @Test fun bottomNeedsExactlyThreeSureCards() {
         assertNull(JjCards.table(listOf(card("A", 857.0, 15.0, 31.0), card("K", 927.0, 15.0, 31.0)), width).bottom)
     }
