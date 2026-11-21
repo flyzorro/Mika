@@ -9,8 +9,11 @@ internal data class JjButton(val left: Int, val right: Int, val color: JjColor) 
     val x: Int get() = (left + right) / 2
 }
 
-/** JJ 斗地主此刻的局面:[phase] 只有 Call、Lead、Follow、Other;[turn] 是闹钟在谁桌前(轮到我看按钮)。 */
-internal data class JjView(val phase: DdzPhase, val buttons: List<JjButton>, val turn: DdzSeat?) {
+/**
+ * JJ 斗地主此刻的局面:[phase] 只有 Call、Lead、Follow、Other;[turn] 是闹钟在谁桌前(轮到我看按钮);
+ * [redLord] 左右两家谁穿着地主的红衣服(都不是为 null;出牌时我是地主或人物被特效挡住都是 null)。
+ */
+internal data class JjView(val phase: DdzPhase, val buttons: List<JjButton>, val turn: DdzSeat?, val redLord: DdzSeat? = null) {
     /** 要不起:跟牌时只剩一个按钮。 */
     val onlyPass: Boolean get() = phase == DdzPhase.Follow && buttons.size == 1
 }
@@ -61,7 +64,15 @@ internal object JjDdzScreen {
     private const val AGAIN_GAP = 24
     private const val MAX_AGAIN = 460
 
-    val ROWS = listOf(TOP_ROW, BOTTOM_ROW) + CLOCK_ROWS + AGAIN_ROWS + listOf(903, 980)
+    /**
+     * 出牌时地主是穿红衣戴红帽的卡通人,农民是白头巾。只看人物身上一条竖带(左家 x 440–590、右家 1830–1960):
+     * 再往里就是他们出的牌,红桃方块在有的牌桌上也够红。两段录屏出牌阶段 1176 帧:有红衣 50 以上、没有的 0(一帧 20)。
+     */
+    private val LORD_ROWS = (240..480 step 20).toList()
+    private val LORD_BANDS = mapOf(DdzSeat.Left to (440..590), DdzSeat.Right to (1830..1960))
+    private const val LORD_PIXELS = 40
+
+    val ROWS = listOf(TOP_ROW, BOTTOM_ROW) + CLOCK_ROWS + AGAIN_ROWS + listOf(903, 980) + LORD_ROWS
 
     fun read(frame: RawFrame): JjView {
         if (frame.height != FRAME_HEIGHT) return JjView(DdzPhase.Other, emptyList(), null)
@@ -72,10 +83,11 @@ internal object JjDdzScreen {
             bottom.any { b -> b.color == t.color && minOf(b.right, t.right) - maxOf(b.left, t.left) > 0.6 * minOf(b.right - b.left, t.right - t.left) }
         }
         val phase = phase(row, frame.width)
-        if (phase != DdzPhase.Other) return JjView(phase, row, DdzSeat.Me)
-        auto(frame, scale)?.let { return JjView(DdzPhase.AutoPlay, listOf(it), null) }
+        val lord = redLord(frame, scale)
+        if (phase != DdzPhase.Other) return JjView(phase, row, DdzSeat.Me, lord)
+        auto(frame, scale)?.let { return JjView(DdzPhase.AutoPlay, listOf(it), null, lord) }
         again(frame, scale)?.let { return JjView(DdzPhase.Result, listOf(it), null) }
-        return JjView(DdzPhase.Other, emptyList(), clock(frame, scale))
+        return JjView(DdzPhase.Other, emptyList(), clock(frame, scale), lord)
     }
 
     /** 叫分按钮中心(画面宽度的比例):不叫、1、2、3 分。 */
@@ -180,6 +192,22 @@ internal object JjDdzScreen {
         val g = argb shr 8 and 0xff
         val b = argb and 0xff
         return r < 115 && g in 140..180 && b > 180
+    }
+
+    private fun redLord(frame: RawFrame, scale: Double): DdzSeat? {
+        val red = LORD_BANDS.filter { (_, band) ->
+            val x0 = (band.first * scale).roundToInt()
+            val x1 = (band.last * scale).roundToInt().coerceAtMost(frame.width - 1)
+            LORD_ROWS.sumOf { y -> (x0..x1 step 2).count { costume(frame.pixel(it, y)) } } >= LORD_PIXELS
+        }.keys
+        return red.singleOrNull()
+    }
+
+    private fun costume(argb: Int): Boolean {
+        val r = argb shr 16 and 0xff
+        val g = argb shr 8 and 0xff
+        val b = argb and 0xff
+        return r > 170 && g < 70 && b < 70
     }
 
     private fun gold(argb: Int): Boolean {

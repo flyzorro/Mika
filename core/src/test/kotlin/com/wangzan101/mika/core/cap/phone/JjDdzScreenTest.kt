@@ -78,6 +78,13 @@ class JjDdzScreenTest {
         }
     }
 
+    @Test fun theLandlordWearsRed() {
+        // 出牌时地主是红衣红帽的卡通人:海景 f0060 右家、f0300 左家,沙滩托管那手左家
+        assertEquals(DdzSeat.Right, JjDdzScreen.read(frame("left_turn")).redLord)
+        assertEquals(DdzSeat.Left, JjDdzScreen.read(frame("right_turn")).redLord)
+        assertEquals(DdzSeat.Left, JjDdzScreen.read(frame("auto_play")).redLord)
+    }
+
     @Test fun clockTellsWhoseTurnItIs() {
         assertEquals(DdzSeat.Left, JjDdzScreen.read(frame("left_turn")).turn)
         assertEquals(DdzSeat.Right, JjDdzScreen.read(frame("right_turn")).turn)

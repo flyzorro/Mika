@@ -42,6 +42,9 @@ internal object JjDdzTurn {
     /** 等「出牌」变绿最多约 1 秒。 */
     private const val PLAYABLE_READS = 7
     private const val THOUGHT_MS = 1_500L
+    /** 炸弹、火箭的特效会挡住人物一两帧。 */
+    private const val LORD_FRAMES = 5
+    private const val ME_LORD_FRAMES = 12
     private const val AGAIN_GAP_MS = 5_000L
     private const val MAX_HANDS = 10
     private const val HAND_SIZE = 17
@@ -61,6 +64,9 @@ internal object JjDdzTurn {
         var lastHandAt = 0L
         var settleSince = 0L
         var detectFailures = 0
+        /** 出牌时从人物衣服看出的地主,和连着几帧都是它;读稳了才拿来核对记牌认的地主。 */
+        var lordSeen: DdzSeat? = null
+        var lordFrames = 0
         /** 这一手记牌断掉的原因已经打过日志了。 */
         var brokenLogged = false
         /** 上次点「再来一局」的时刻:点完页面要一两秒才走,别连着点。 */
@@ -187,6 +193,12 @@ internal object JjDdzTurn {
                 leading = view.phase == DdzPhase.Lead,
                 hand = { table.handRanks.takeUnless { table.handUnsure } },
             )
+            // 出牌时(轮到谁出看得出来):左右谁穿红衣谁是地主,都不是就是我
+            if (view.phase == DdzPhase.Lead || view.phase == DdzPhase.Follow || view.turn == DdzSeat.Left || view.turn == DdzSeat.Right) {
+                val lord = view.redLord ?: DdzSeat.Me
+                s.lordFrames = if (lord == s.lordSeen) s.lordFrames + 1 else 1
+                s.lordSeen = lord
+            }
             if (tracker.broken != null && !s.brokenLogged) {
                 s.brokenLogged = true
                 trace(s, "broken trace=${tracker.trace.joinToString(" | ")}")
@@ -205,6 +217,8 @@ internal object JjDdzTurn {
     private fun newHand(s: Session, table: JjTable, view: JjView) {
         s.tracker = DdzTracker(DdzSettlingPolicy.HUMAN)
         s.brokenLogged = false
+        s.lordSeen = null
+        s.lordFrames = 0
         s.expectedHand = null
         s.bid = false
         s.settleSince = 0
@@ -242,6 +256,13 @@ internal object JjDdzTurn {
         s.settleSince = 0
         val hand = table.handRanks
         if (tracker.broken == null && s.expectedHand?.sorted()?.let { it != hand.sorted() } == true) tracker.fail(DdzSessionReason.HAND_DRIFT)
+        // 记牌认的地主和衣服对不上(真机 19:02:两家几乎同时亮出长顺子,认成了先出的是左家,一直在压队友):不能再问 DouZero
+        // 「我是地主」是推出来的(左右都没红衣):特效挡住人物时也会这样,要看得更久
+        val lord = s.lordSeen?.takeIf { s.lordFrames >= if (it == DdzSeat.Me) ME_LORD_FRAMES else LORD_FRAMES }
+        if (tracker.broken == null && lord != null && tracker.landlord != null && tracker.landlord != lord) {
+            trace(s, "landlord_mismatch tracker=${tracker.landlord} costume=$lord")
+            tracker.fail("landlord_mismatch")
+        }
         val asked = PhoneDdzTurn.clock()
         val play = if (tracker.broken == null) askDouZero(s, tracker, hand) else null
         trace(s, "${view.phase} hand=${hand.joinToString(" ")} history=${tracker.history.joinToString("/") { it.joinToString(" ") }} seat=${runCatching { tracker.seat() }.getOrNull()} play=$play")
