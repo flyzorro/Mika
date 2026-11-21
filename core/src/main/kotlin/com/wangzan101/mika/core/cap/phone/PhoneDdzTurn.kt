@@ -544,6 +544,8 @@ internal object PhoneDdzTurn : PhoneTool {
     override fun available(ctx: ToolContext) = ctx.config.visionEnabled
 
     override suspend fun execute(a: Args, ctx: ToolContext): ToolExecution {
+        // JJ 斗地主另走一套(见 JjDdzTurn):它的会话还开着时(切走了也要由它报 app_switch、收 stop)全交给它
+        if (JjDdzTurn.active(ctx)) return JjDdzTurn.execute(a, ctx)
         val turn = ctx[STATE] ?: Turn().also { ctx[STATE] = it }
         // 「这一帧 OCR 过、没东西」只在这一次调用里算数:上一次调用、上一个会话留下的同样画面不能把这次第一回的 OCR 也省掉
         popupFrameKey = null
@@ -554,7 +556,9 @@ internal object PhoneDdzTurn : PhoneTool {
         // stop is deliberately usable even after the app was switched: it must prevent a delayed
         // polling continuation from tapping when the user takes control.
         if (action == "stop") return stop(ctx, turn)
-        if (ctx.screen.peek().packageName != PACKAGE) {
+        val app = ctx.screen.peek().packageName
+        if (app == JjDdzScreen.PACKAGE) return JjDdzTurn.execute(a, ctx)
+        if (app != PACKAGE) {
             turn.single = false
             if (turn.mode == DdzMode.Human) {
                 turn.state = DdzSessionState.Paused
