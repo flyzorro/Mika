@@ -35,6 +35,13 @@ internal object JjDdzTurn {
     /** 轮到自己时别家的牌还没读稳,最多再等这么久(倒计时 15 秒)。 */
     private const val SETTLE_MS = 4_000L
     private const val TAP_GAP_MS = 120L
+    /** 抬牌动画约 200ms:点完隔这么久再认。 */
+    private const val LIFT_MS = 200L
+    private const val SETTLE_READS = 4
+    private const val SELECT_ROUNDS = 3
+    /** 等「出牌」变绿最多约 1 秒。 */
+    private const val PLAYABLE_READS = 7
+    private const val THOUGHT_MS = 1_500L
     private const val AGAIN_GAP_MS = 5_000L
     private const val MAX_HANDS = 10
     private const val HAND_SIZE = 17
@@ -186,7 +193,7 @@ internal object JjDdzTurn {
             }
             if (view.phase.mine() && !s.acted) {
                 s.state = if (view.phase == DdzPhase.Call) DdzSessionState.Calling else DdzSessionState.Playing
-                if (decide(ctx, s, view, table)) s.acted = true
+                if (decide(ctx, s, view, table, frame.width)) s.acted = true
             }
             waitOrSteer { delay(POLL_MS) } ?: return result(s)
         }
@@ -205,38 +212,42 @@ internal object JjDdzTurn {
     }
 
     /** 这一个决定做完(点过了)为 true;还要再等几帧(别家的牌没读稳、手牌认不准)为 false。 */
-    private suspend fun decide(ctx: ToolContext, s: Session, view: JjView, table: JjTable): Boolean {
+    private suspend fun decide(ctx: ToolContext, s: Session, view: JjView, table: JjTable, width: Int): Boolean {
         val tracker = s.tracker ?: return false
         if (view.phase == DdzPhase.Call) {
             if (s.bid || table.handUnsure || table.hand.size != HAND_SIZE) return false
             val level = PhoneDdzTurn.adviseBid(s.advisor, table.handRanks)?.level ?: ConservativeDdzPolicy.callLevel(table.handRanks)
-            // 想叫的分不能叫(灰的)就不叫
-            val button = view.buttons.getOrNull(level)?.takeIf { level > 0 && it.color == JjColor.Yellow } ?: view.buttons[0]
-            trace(s, "call level=$level x=${button.x}")
+            // 按位置认几分(漏认一个按钮时按序号会错位:2026-11-21 想叫 3 分点成了不叫);想叫的分不能叫(灰的)就不叫
+            val button = view.buttons.firstOrNull { level > 0 && JjDdzScreen.callLevel(it, width) == level && it.color == JjColor.Yellow }
+                ?: view.buttons[0]
+            trace(s, "call level=$level x=${button.x} buttons=${view.buttons.map { "${JjDdzScreen.callLevel(it, width)}${it.color.name.first()}" }}")
             tap(ctx, button.x, JjDdzScreen.TAP_Y)
             s.bid = true
             return true
         }
         if (view.onlyPass) {
-            trace(s, "only_pass")
+            // 别家的牌还没读稳就记「我不出」,记牌会以为还没轮到我而断掉(真机第二手:not_my_turn);先等一会儿
+            if (tracker.broken == null && !tracker.ready() && !settling(s)) return false
+            s.settleSince = 0
+            trace(s, "only_pass ready=${tracker.ready()}")
             think()
             tap(ctx, view.buttons[0].x, JjDdzScreen.TAP_Y)
-            tracker.mine(emptyList())
+            if (tracker.ready()) tracker.mine(emptyList())
             return true
         }
         if (tracker.broken == null && (!tracker.ready() || table.handUnsure)) {
-            val now = PhoneDdzTurn.clock()
-            if (s.settleSince == 0L) s.settleSince = now
-            if (now - s.settleSince < SETTLE_MS) return false
+            if (!settling(s)) return false
             tracker.fail(if (table.handUnsure) DdzSessionReason.UNREADABLE_HAND else "history_not_ready")
         }
         s.settleSince = 0
         val hand = table.handRanks
         if (tracker.broken == null && s.expectedHand?.sorted()?.let { it != hand.sorted() } == true) tracker.fail(DdzSessionReason.HAND_DRIFT)
+        val asked = PhoneDdzTurn.clock()
         val play = if (tracker.broken == null) askDouZero(s, tracker, hand) else null
         trace(s, "${view.phase} hand=${hand.joinToString(" ")} history=${tracker.history.joinToString("/") { it.joinToString(" ") }} seat=${runCatching { tracker.seat() }.getOrNull()} play=$play")
         if (play == null) return byRules(ctx, view, table)
-        think()
+        // DouZero 自己想了够久(现场模拟最多 2.5 秒)就不再另外等,倒计时只有 15 秒
+        if (PhoneDdzTurn.clock() - asked < THOUGHT_MS) think()
         if (play.isEmpty()) {
             if (view.phase != DdzPhase.Follow) {
                 tracker.fail(DdzSessionReason.INVALID_ADVISOR_PLAY)
@@ -247,12 +258,13 @@ internal object JjDdzTurn {
             return true
         }
         val want = PhoneDdzTurn.pick(hand, play)
-        if (want == null || !select(ctx, s, want, table)) {
+        val playX = if (want != null && select(ctx, s, want, table)) playable(ctx) else null
+        if (playX == null) {
             trace(s, "select_failed want=$want")
             tracker.fail(DdzSessionReason.REJECTED_ACTION)
             return byRules(ctx, view, table)
         }
-        tap(ctx, view.buttons[2].x, JjDdzScreen.TAP_Y)
+        tap(ctx, playX, JjDdzScreen.TAP_Y)
         tracker.mine(play)
         s.expectedHand = hand.toMutableList().apply { play.forEach { remove(it) } }
         return true
@@ -262,6 +274,13 @@ internal object JjDdzTurn {
      * 记不下去的这一手按简单规则打完:跟牌不出;先出出最小的一张单牌(手牌从大到小排,最右边那张)。
      * 先出时提示是灰的,点了没用。抬着的牌先放下。
      */
+    /** 轮到我时别家的牌还没读稳:最多等 [SETTLE_MS];等够了为 true。 */
+    private fun settling(s: Session): Boolean {
+        val now = PhoneDdzTurn.clock()
+        if (s.settleSince == 0L) s.settleSince = now
+        return now - s.settleSince >= SETTLE_MS
+    }
+
     private suspend fun byRules(ctx: ToolContext, view: JjView, table: JjTable): Boolean {
         think()
         if (view.phase == DdzPhase.Follow) {
@@ -273,27 +292,54 @@ internal object JjDdzTurn {
             tap(ctx, JjCards.tapX(table, i), JjCards.HAND_TAP_Y)
             delay(TAP_GAP_MS)
         }
-        tap(ctx, view.buttons[2].x, JjDdzScreen.TAP_Y)
+        tap(ctx, playable(ctx) ?: view.buttons[2].x, JjDdzScreen.TAP_Y)
         return true
     }
 
-    /** 把要出的几张点起来、别的放下,再认一遍核对;对不上再改一次,还不对就算失败。 */
-    private suspend fun select(ctx: ToolContext, s: Session, want: Set<Int>, table: JjTable): Boolean {
+    /**
+     * 把要出的几张点起来、别的放下;等抬牌动画停了再认一遍核对,对不上再改,最多 [SELECT_ROUNDS] 轮。
+     * 2026-11-21 真机:点完 120ms 就认,牌还在半空,当成没抬又点一下,把抬起的按了回去(「来回一下」);
+     * 游戏还会把同点数的几张一起抬起来(点一张 7,四张 7 都起来),多起来的要放下。
+     */
+    internal suspend fun select(ctx: ToolContext, s: Session, want: Set<Int>, table: JjTable): Boolean {
         var current = table
-        repeat(2) {
+        repeat(SELECT_ROUNDS) {
             val toggle = current.hand.indices.filter { (it in want) != (it in current.lifted) }
             if (toggle.isEmpty()) return true
             for (i in toggle) {
                 tap(ctx, JjCards.tapX(current, i), JjCards.HAND_TAP_Y)
                 delay(TAP_GAP_MS)
             }
-            val jpeg = ctx.screen.quickShot() ?: return false
-            val cards = detect(s.advisor, jpeg) ?: return false
-            val frame = ctx.screen.rawFrame(JjDdzScreen.ROWS) ?: return false
-            current = JjCards.table(cards, frame.width)
+            current = settled(ctx, s) ?: return false
             if (current.hand.size != table.hand.size) return false
         }
         return current.lifted == want
+    }
+
+    /** 隔一会儿认一次,连着两次抬起的牌一样(动画停了)才算数;一直在变就用最后一次。 */
+    private suspend fun settled(ctx: ToolContext, s: Session): JjTable? {
+        var last: JjTable? = null
+        repeat(SETTLE_READS) {
+            delay(LIFT_MS)
+            val jpeg = ctx.screen.quickShot() ?: return null
+            val cards = detect(s.advisor, jpeg) ?: return null
+            val frame = ctx.screen.rawFrame(JjDdzScreen.ROWS) ?: return null
+            val now = JjCards.table(cards, frame.width)
+            if (last?.lifted == now.lifted && last?.hand?.size == now.hand.size) return now
+            last = now
+        }
+        return last
+    }
+
+    /** 选好牌后「出牌」要变绿才按得动(游戏判过牌型、压得住);等一会儿,一直不绿就是这几张出不了。 */
+    private suspend fun playable(ctx: ToolContext): Int? {
+        repeat(PLAYABLE_READS) {
+            val view = ctx.screen.rawFrame(JjDdzScreen.ROWS)?.let(JjDdzScreen::read)
+            val play = view?.buttons?.getOrNull(2)
+            if (view != null && view.buttons.size == 3 && play?.color == JjColor.Green) return play.x
+            delay(POLL_MS)
+        }
+        return null
     }
 
     private suspend fun askDouZero(s: Session, tracker: DdzTracker, hand: List<String>): List<String>? {

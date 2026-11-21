@@ -129,6 +129,17 @@ class JjDdzTurnTest {
         assertTrue(game.taps.isEmpty())
     }
 
+    @Test fun lowersTheExtraCardsTheGameLiftedByItself() = runTest {
+        // 点了两张 7,游戏把四张 7 都抬了起来(读稳两次),要把多起来的两张放下
+        val ranks = listOf("7", "7", "7", "7", "5", "4")
+        replies(hand(ranks, setOf(0, 1, 2, 3)), hand(ranks, setOf(0, 1, 2, 3)), hand(ranks, setOf(0, 1)), hand(ranks, setOf(0, 1)))
+        val game = Game(JjDdzScreen.PACKAGE, frame("follow"))
+        val ok = JjDdzTurn.select(toolDispatcher(game).ctx, JjDdzTurn.Session("http://mac:3426", 1), setOf(0, 1), JjCards.table(hand(ranks), 2408))
+        assertTrue(ok)
+        val xs = game.taps.map { it.first }
+        assertEquals(listOf(0, 1, 2, 3).map { 500 + it * 96 + 22 }, xs)
+    }
+
     @Test fun waitsForTheWholeDealBeforeTracking() = runTest {
         // 发牌动画:先看到 10 张,等到 17 张才从头记;不能当成中途进来
         replies(hand(seventeen.take(10)), hand(seventeen), hand(seventeen))

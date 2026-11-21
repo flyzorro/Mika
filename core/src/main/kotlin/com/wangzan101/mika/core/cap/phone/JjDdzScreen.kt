@@ -78,6 +78,13 @@ internal object JjDdzScreen {
         return JjView(DdzPhase.Other, emptyList(), clock(frame, scale))
     }
 
+    /** 叫分按钮中心(画面宽度的比例):不叫、1、2、3 分。 */
+    private val CALL_X = listOf(0.29, 0.51, 0.66, 0.81)
+
+    /** 叫分按钮是几分(0 是不叫),按中心离哪个最近。 */
+    fun callLevel(button: JjButton, width: Int): Int =
+        CALL_X.indices.minBy { kotlin.math.abs(button.x.toDouble() / width - CALL_X[it]) }
+
     private fun phase(row: List<JjButton>, width: Int): DdzPhase {
         val c = row.map { it.color }
         return when {

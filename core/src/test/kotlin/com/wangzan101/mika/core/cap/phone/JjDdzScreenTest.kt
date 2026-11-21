@@ -70,6 +70,14 @@ class JjDdzScreenTest {
         assertTrue("${view.buttons}", view.buttons.single().x in 1100..1300)
     }
 
+    @Test fun callButtonsAreNamedByPosition() {
+        // 按位置认几分:漏认一个按钮时按序号会错位(2026-11-21 想叫 3 分点成了不叫)
+        for (name in listOf("call_beach", "call_sea_2412")) {
+            val f = frame(name)
+            assertEquals(name, listOf(0, 1, 2, 3), JjDdzScreen.read(f).buttons.map { JjDdzScreen.callLevel(it, f.width) })
+        }
+    }
+
     @Test fun clockTellsWhoseTurnItIs() {
         assertEquals(DdzSeat.Left, JjDdzScreen.read(frame("left_turn")).turn)
         assertEquals(DdzSeat.Right, JjDdzScreen.read(frame("right_turn")).turn)
