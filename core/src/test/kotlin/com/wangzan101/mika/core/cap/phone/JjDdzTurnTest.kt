@@ -103,6 +103,15 @@ class JjDdzTurnTest {
         assertEquals(JjDdzScreen.read(game.frame).buttons.single().x to JjDdzScreen.TAP_Y, game.taps.single())
     }
 
+    @Test fun tapsPlayAgainOnTheFinalPage() = runTest {
+        now = 60_000
+        replies(emptyList(), emptyList())
+        val game = Game(JjDdzScreen.PACKAGE, frame("final_page"))
+        run(game, """{"action":"start","mode":"human","advisor":"http://mac:3426","auto":true,"hands":2}""")
+        val again = JjDdzScreen.read(game.frame).buttons.single()
+        assertEquals(listOf(again.x to JjDdzScreen.AGAIN_TAP_Y), game.taps)
+    }
+
     @Test fun waitsForTheWholeDealBeforeTracking() = runTest {
         // 发牌动画:先看到 10 张,等到 17 张才从头记;不能当成中途进来
         replies(hand(seventeen.take(10)), hand(seventeen), hand(seventeen))

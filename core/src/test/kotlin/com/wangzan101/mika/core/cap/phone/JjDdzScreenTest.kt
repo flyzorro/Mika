@@ -49,14 +49,21 @@ class JjDdzScreenTest {
         assertEquals(listOf(JjColor.Red, JjColor.Gray, JjColor.Gray, JjColor.Yellow), colors(view))
     }
 
+    @Test fun theFinalPageOffersPlayAgain() {
+        val view = JjDdzScreen.read(frame("final_page"))
+        assertEquals(DdzPhase.Result, view.phase)
+        // 「再来一局」在 x≈1278–1638
+        assertTrue("${view.buttons}", view.buttons.single().x in 1400..1520)
+    }
+
     @Test fun clockTellsWhoseTurnItIs() {
         assertEquals(DdzSeat.Left, JjDdzScreen.read(frame("left_turn")).turn)
         assertEquals(DdzSeat.Right, JjDdzScreen.read(frame("right_turn")).turn)
     }
 
     @Test fun nothingToTapOutsideMyTurn() {
-        // 沙滩上黄的沙子和人物在按钮那一行连成一段;刚出的牌飞在按钮上;终局页
-        for (name in listOf("beach_scenery", "my_cards_flying", "final_page", "left_turn", "right_turn")) {
+        // 沙滩上黄的沙子和人物在按钮那一行连成一段;刚出的牌飞在按钮上
+        for (name in listOf("beach_scenery", "my_cards_flying", "left_turn", "right_turn")) {
             val view = JjDdzScreen.read(frame(name))
             assertEquals(name, DdzPhase.Other, view.phase)
             assertTrue(name, view.buttons.isEmpty())

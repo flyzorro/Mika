@@ -35,6 +35,7 @@ internal object JjDdzTurn {
     /** 轮到自己时别家的牌还没读稳,最多再等这么久(倒计时 15 秒)。 */
     private const val SETTLE_MS = 4_000L
     private const val TAP_GAP_MS = 120L
+    private const val AGAIN_GAP_MS = 5_000L
     private const val MAX_HANDS = 10
     private const val HAND_SIZE = 17
 
@@ -53,6 +54,8 @@ internal object JjDdzTurn {
         var lastHandAt = 0L
         var settleSince = 0L
         var detectFailures = 0
+        /** 上次点「再来一局」的时刻:点完页面要一两秒才走,别连着点。 */
+        var againAt = 0L
         var lastPhase = DdzPhase.Other
         var handCount = 0
     }
@@ -127,6 +130,13 @@ internal object JjDdzTurn {
                         s.state = DdzSessionState.Result
                         return result(s)
                     }
+                }
+                // 终局页:还没打够就点「再来一局」(白名单里唯一会点的结算按钮)
+                if (view.phase == DdzPhase.Result && PhoneDdzTurn.clock() - s.againAt > AGAIN_GAP_MS) {
+                    think()
+                    tap(ctx, view.buttons[0].x, JjDdzScreen.AGAIN_TAP_Y)
+                    s.againAt = PhoneDdzTurn.clock()
+                    s.lastHandAt = s.againAt
                 }
                 if (PhoneDdzTurn.clock() - s.lastHandAt > IDLE_MS) return pause(s, DdzSessionReason.UNKNOWN_SCENE)
                 waitOrSteer { delay(POLL_MS) } ?: return result(s)

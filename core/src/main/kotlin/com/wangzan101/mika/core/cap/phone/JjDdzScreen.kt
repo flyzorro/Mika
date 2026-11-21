@@ -48,7 +48,17 @@ internal object JjDdzScreen {
     private const val PASS_X0 = 0.45
     private const val PASS_X1 = 0.60
 
-    val ROWS = listOf(TOP_ROW, BOTTOM_ROW) + CLOCK_ROWS
+    /** 终局页底部「再来一局」(绿,中心 x≈0.60):看字上方、下方两行。 */
+    private val AGAIN_ROWS = listOf(895, 1000)
+    const val AGAIN_TAP_Y = 945
+    private const val AGAIN_X0 = 0.55
+    private const val AGAIN_X1 = 0.68
+    private const val MIN_AGAIN = 200
+    /** 按钮上沿的高光把绿色切出 15 像素左右的缺口。 */
+    private const val AGAIN_GAP = 24
+    private const val MAX_AGAIN = 460
+
+    val ROWS = listOf(TOP_ROW, BOTTOM_ROW) + CLOCK_ROWS + AGAIN_ROWS
 
     fun read(frame: RawFrame): JjView {
         if (frame.height != FRAME_HEIGHT) return JjView(DdzPhase.Other, emptyList(), null)
@@ -60,6 +70,7 @@ internal object JjDdzScreen {
         }
         val phase = phase(row, frame.width)
         if (phase != DdzPhase.Other) return JjView(phase, row, DdzSeat.Me)
+        again(frame, scale)?.let { return JjView(DdzPhase.Result, listOf(it), null) }
         return JjView(DdzPhase.Other, emptyList(), clock(frame, scale))
     }
 
@@ -110,6 +121,27 @@ internal object JjDdzScreen {
             kotlin.math.abs(r - g) < 15 && kotlin.math.abs(g - b) < 15 && r in 131..214 -> JjColor.Gray
             else -> null
         }
+    }
+
+    /** 终局页的「再来一局」:两行在同一处都是那种绿,宽度、位置都对才算。 */
+    private fun again(frame: RawFrame, scale: Double): JjButton? {
+        val minW = (MIN_AGAIN * scale).roundToInt()
+        val maxW = (MAX_AGAIN * scale).roundToInt()
+        fun runs(y: Int): List<IntRange> = DdzScreen.runs(frame.width, gap = AGAIN_GAP, minWidth = minW) { teal(frame.pixel(it, y)) }
+            .filter { it.last - it.first <= maxW }
+        val bottom = runs(AGAIN_ROWS[1])
+        val hit = runs(AGAIN_ROWS[0]).firstOrNull { t ->
+            val cx = (t.first + t.last) / 2.0 / frame.width
+            cx in AGAIN_X0..AGAIN_X1 && bottom.any { b -> minOf(b.last, t.last) - maxOf(b.first, t.first) > 0.5 * (t.last - t.first) }
+        } ?: return null
+        return JjButton(hit.first, hit.last, JjColor.Green)
+    }
+
+    private fun teal(argb: Int): Boolean {
+        val r = argb shr 16 and 0xff
+        val g = argb shr 8 and 0xff
+        val b = argb and 0xff
+        return r < 100 && g > 160 && b in 121..179 && g - b > 15
     }
 
     private fun gold(argb: Int): Boolean {
