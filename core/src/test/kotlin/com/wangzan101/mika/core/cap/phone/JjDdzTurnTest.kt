@@ -103,6 +103,14 @@ class JjDdzTurnTest {
         assertEquals(JjDdzScreen.read(game.frame).buttons.single().x to JjDdzScreen.TAP_Y, game.taps.single())
     }
 
+    @Test fun waitsForTheWholeDealBeforeTracking() = runTest {
+        // 发牌动画:先看到 10 张,等到 17 张才从头记;不能当成中途进来
+        replies(hand(seventeen.take(10)), hand(seventeen), hand(seventeen))
+        val result = run(Game(JjDdzScreen.PACKAGE, frame("left_turn")), start)
+        assertEquals(null, result.text("douzeroOff"))
+        assertEquals("17", result.text("handCount"))
+    }
+
     @Test fun joinedMidHandFollowsByPassing() = runTest {
         // 中途进来(9 张、在跟牌):不问 DouZero,规则是不出
         replies(hand(List(9) { "5" }))

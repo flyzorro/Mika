@@ -133,7 +133,14 @@ internal object JjDdzTurn {
                 continue
             }
             s.lastHandAt = PhoneDdzTurn.clock()
-            if (s.noHand >= NEW_HAND_GAP || s.tracker == null) newHand(s, table, view)
+            if (s.noHand >= NEW_HAND_GAP || s.tracker == null) {
+                // 牌是一张张发下来的:没到 17 张、也还没轮到我出牌,就是还在发牌,等发完再从头记
+                if (table.hand.size != HAND_SIZE && view.phase != DdzPhase.Lead && view.phase != DdzPhase.Follow) {
+                    waitOrSteer { delay(POLL_MS) } ?: return result(s)
+                    continue
+                }
+                newHand(s, table, view)
+            }
             s.noHand = 0
             val tracker = s.tracker!!
             tracker.observe(
@@ -154,15 +161,13 @@ internal object JjDdzTurn {
 
     private fun DdzPhase.mine() = this == DdzPhase.Call || this == DdzPhase.Lead || this == DdzPhase.Follow
 
-    /** 看到新发的牌:17 张、在叫分,从头记;中途进来的这一手(张数不对)只按规则打完。 */
+    /** 看到新发的 17 张从头记;轮到我出牌时才第一次看到手牌(张数不对)是中途进来的,这一手只按规则打完。 */
     private fun newHand(s: Session, table: JjTable, view: JjView) {
         s.tracker = DdzTracker(DdzSettlingPolicy.HUMAN)
         s.expectedHand = null
         s.bid = false
         s.settleSince = 0
-        if (table.hand.size != HAND_SIZE || view.phase != DdzPhase.Call && view.phase != DdzPhase.Other) {
-            s.tracker!!.fail(DdzSessionReason.JOINED_MID_GAME)
-        }
+        if (table.hand.size != HAND_SIZE) s.tracker!!.fail(DdzSessionReason.JOINED_MID_GAME)
     }
 
     /** 这一个决定做完(点过了)为 true;还要再等几帧(别家的牌没读稳、手牌认不准)为 false。 */

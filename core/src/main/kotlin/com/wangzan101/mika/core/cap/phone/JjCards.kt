@@ -52,6 +52,8 @@ internal object JjCards {
     private const val HAND_Y0 = 700.0
     /** 牌角上沿:平放约 770,抬起约 735。 */
     private const val LIFTED_TOP = 752.0
+    private const val HAND_MIN_H = 70.0
+    private const val HAND_MIN_TOP = 720.0
     /** 点手牌点在牌身上(点数下方),抬没抬都点得到。 */
     const val HAND_TAP_Y = 950
     private const val CONNECT_TIMEOUT_MS = 2_000
@@ -103,7 +105,9 @@ internal object JjCards {
         val groups = groups(cards.filter { it.cy >= PLAY_Y0 && it.cy < MINE_Y0 }, GROUP_GAP * scale)
         val left = groups.filter { g -> g.minOf { it.x0 } < LEFT_EDGE * scale }.flatten()
         val right = groups.filter { g -> g.minOf { it.x0 } >= LEFT_EDGE * scale && g.maxOf { it.x1 } > RIGHT_EDGE * scale }.flatten()
-        val hand = cards.filter { it.cy >= HAND_Y0 && it.rank != PASS }.sortedBy { it.cx }
+        // 手牌的点数字高约 78(王的竖排字约 178),上沿平放 770、抬起 735;
+        // 每手结算浮层里摆的各家剩牌也在这一带,字矮(约 50–68)、上沿高(670 起)
+        val hand = cards.filter { it.cy >= HAND_Y0 && it.rank != PASS && it.y0 >= HAND_MIN_TOP && it.y1 - it.y0 >= HAND_MIN_H }.sortedBy { it.cx }
         val bottom = cards.filter { it.cy < BOTTOM_Y && it.rank != PASS }.sortedBy { it.cx }
         return JjTable(
             hand = hand,

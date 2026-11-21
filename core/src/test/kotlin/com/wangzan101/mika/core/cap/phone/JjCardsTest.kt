@@ -55,6 +55,13 @@ class JjCardsTest {
         assertEquals(DdzSeen.Empty, t.right)
     }
 
+    @Test fun theResultOverlayIsNotMyHand() {
+        // 每手结算浮层里摆的各家剩牌:字矮(约 50–68)、上沿高(670 起),不是手牌
+        val overlay = listOf(card("9", 770.0, 670.0, 68.0), card("8", 440.0, 730.0, 60.0)) +
+            (0 until 5).map { card("5", 765.0 + it * 53, 797.0, 58.0) }
+        assertTrue(JjCards.table(overlay, width).hand.isEmpty())
+    }
+
     @Test fun bottomNeedsExactlyThreeSureCards() {
         assertNull(JjCards.table(listOf(card("A", 857.0, 15.0, 31.0), card("K", 927.0, 15.0, 31.0)), width).bottom)
     }
