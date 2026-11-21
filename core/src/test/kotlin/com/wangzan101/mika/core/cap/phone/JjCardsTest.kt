@@ -1,0 +1,60 @@
+package com.wangzan101.mika.core.cap.phone
+
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+class JjCardsTest {
+    /** 点数框按录屏里量到的大小摆:手牌字高约 78,别家出的约 50,底牌约 31。 */
+    private fun card(rank: String, x: Double, y: Double, h: Double = 78.0, score: Double = 0.99) =
+        JjCard(rank, x, y, x + 40, y + h, score)
+
+    private val width = 2408
+
+    @Test fun splitsHandPlaysAndBottom() {
+        val cards = listOf(
+            card("A", 857.0, 15.0, 31.0), card("K", 927.0, 15.0, 31.0), card("2", 996.0, 15.0, 31.0),
+            card("2", 673.0, 272.0, 53.0), card("2", 729.0, 272.0, 53.0),          // 左家出的对 2
+            card("PASS", 1560.0, 200.0, 50.0),                                      // 右家不出
+            card("3", 1660.0, 735.0), card("4", 1469.0, 770.0), card("BJ", 478.0, 775.0, 178.0),
+        )
+        val t = JjCards.table(cards, width)
+        assertEquals(listOf("A", "K", "2"), t.bottom)
+        assertEquals(DdzSeen.Cards(listOf("2", "2")), t.left)
+        assertEquals(DdzSeen.Pass, t.right)
+        assertEquals(DdzSeen.Empty, t.mine)
+        assertEquals(listOf("BJ", "4", "3"), t.handRanks)
+        // 3 的上沿在 735:抬起来了
+        assertEquals(setOf(2), t.lifted)
+    }
+
+    @Test fun anUnsureCardMakesThePlayUnsure() {
+        val t = JjCards.table(listOf(card("9", 1600.0, 280.0, 50.0, score = 0.55), card("9", 1650.0, 280.0, 50.0)), width)
+        assertEquals(DdzSeen.Unsure, t.right)
+    }
+
+    @Test fun cardsAndPassTogetherAreUnsure() {
+        // 上一手的牌还在、不出的气泡又冒出来:动画中间,不算
+        val t = JjCards.table(listOf(card("9", 700.0, 280.0, 50.0), card("PASS", 640.0, 200.0, 50.0)), width)
+        assertEquals(DdzSeen.Unsure, t.left)
+    }
+
+    @Test fun bottomNeedsExactlyThreeSureCards() {
+        assertNull(JjCards.table(listOf(card("A", 857.0, 15.0, 31.0), card("K", 927.0, 15.0, 31.0)), width).bottom)
+    }
+
+    @Test fun myPassBubbleIsMine() {
+        val t = JjCards.table(listOf(card("PASS", 680.0, 640.0, 50.0)), width)
+        assertEquals(DdzSeen.Pass, t.mine)
+        assertTrue(t.hand.isEmpty())
+    }
+
+    @Test fun parsesTheServerReply() {
+        val body = """{"cards": [{"rank": "10", "box": [855.0, 769.5, 900.2, 848.0], "score": 0.998}], "ms": 59}"""
+        val cards = JjCards.parse(body)!!
+        assertEquals("10", cards.single().rank)
+        assertEquals(855.0, cards.single().x0, 0.0)
+        assertNull(JjCards.parse("""{"error": "cards_unavailable"}"""))
+    }
+}

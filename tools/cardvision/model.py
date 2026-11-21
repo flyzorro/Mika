@@ -3,7 +3,8 @@ import torch
 import torchvision
 from torchvision.transforms.functional import to_tensor
 
-CLASSES = ["3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K", "A", "2", "SJ", "BJ"]
+# PASS 是牌桌上「不出」的气泡(半透明底、白字),和牌一起认:谁不出看它在哪家头上
+CLASSES = ["3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K", "A", "2", "SJ", "BJ", "PASS"]
 
 
 def device():

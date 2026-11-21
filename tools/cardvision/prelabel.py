@@ -8,6 +8,7 @@
 """
 import json
 import os
+from collections import Counter
 import shutil
 import sys
 from multiprocessing import Pool
@@ -16,7 +17,10 @@ import numpy as np
 from PIL import Image, ImageDraw
 from scipy import ndimage as ndi
 
-CLASSES = ["3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K", "A", "2", "SJ", "BJ"]
+# PASS 是牌桌上「不出」的气泡(半透明底、白字),和牌一起认:谁不出看它在哪家头上
+CLASSES = ["3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K", "A", "2", "SJ", "BJ", "PASS"]
+PASS_TEMPLATE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates", "pass.png")
+PASS_SCORE = 0.8
 SAME = 0.85
 
 
@@ -81,8 +85,24 @@ def jokers(a):
     return found
 
 
-def frame_jokers(path):
-    return jokers(load(path))
+def passes(a):
+    """「不出」气泡:白字笔画和模板比(相关系数,实测有气泡 0.9 以上、没有的都不到 0.6)。框住两个字。"""
+    import cv2
+    t = (np.asarray(Image.open(PASS_TEMPLATE)) > 127).astype(np.float32)
+    m = (a.min(-1) > 215).astype(np.float32)
+    r = cv2.matchTemplate(m, t, cv2.TM_CCOEFF_NORMED)
+    found = []
+    while True:
+        _, v, _, (x, y) = cv2.minMaxLoc(r)
+        if v < PASS_SCORE:
+            return found
+        found.append(("PASS", [x, y, x + t.shape[1], y + t.shape[0], False]))
+        r[max(0, y - 40):y + 40, max(0, x - 80):x + 80] = -1
+
+
+def frame_extras(path):
+    a = load(path)
+    return jokers(a) + passes(a)
 
 
 def signature(a, b):
@@ -151,11 +171,11 @@ def label(frames, work, dataset):
             per_frame.setdefault(f, []).append((cls_of[i], b))
     names_ = frames_in(frames)
     with Pool() as pool:
-        joker_hits = pool.map(frame_jokers, [os.path.join(frames, f) for f in names_])
+        joker_hits = pool.map(frame_extras, [os.path.join(frames, f) for f in names_])
     for f, hits in zip(names_, joker_hits):
         for rank, b in hits:
             per_frame.setdefault(f, []).append((CLASSES.index(rank), b))
-    print(f"jokers: {sum(map(len, joker_hits))} in {sum(1 for h in joker_hits if h)} frames")
+    print("extras:", dict(Counter(r for hits in joker_hits for r, _ in hits)))
     os.makedirs(os.path.join(dataset, "images"), exist_ok=True)
     os.makedirs(os.path.join(dataset, "labels"), exist_ok=True)
     with open(os.path.join(dataset, "classes.txt"), "w") as fh:
