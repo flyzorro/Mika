@@ -182,7 +182,14 @@ class DdzDoubleBadgeTest {
             frames += full("human_left_10_10_10_3")
             first?.let { frames += it }
             frames += table
-            val game = Game(PhoneDdzTurn.PACKAGE, frames)
+            val game = object : Game(PhoneDdzTurn.PACKAGE, frames) {
+                override suspend fun quickTap(x: Int, y: Int): Boolean {
+                    val tapped = super.quickTap(x, y)
+                    this.frames.clear()
+                    this.frames.add(full("human_result_leave_change_continue"))
+                    return tapped
+                }
+            }
             val dispatcher = toolDispatcher(game)
             PhoneDdzTurn.execute(
                 Args(PhoneDdzTurn.def, Json.parseToJsonElement(
