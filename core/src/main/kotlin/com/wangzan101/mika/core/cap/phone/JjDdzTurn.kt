@@ -94,6 +94,7 @@ internal object JjDdzTurn {
         var tracker: DdzTracker? = null
         val bottomVotes = List(3) { mutableMapOf<String, Int>() }
         var opponentTrick: OpponentTrick? = null
+        var recoveredLeader: DdzSeat? = null
         var previousPlayBoxes = emptyMap<DdzSide, List<JjCard>>()
         var previousRawTurn: DdzSeat? = null
         var state = DdzSessionState.Idle
@@ -352,8 +353,8 @@ internal object JjDdzTurn {
     internal fun observe(s: Session, table: JjTable, view: JjView, settleExpired: Boolean = false) {
         val tracker = s.tracker!!
         val turn = view.turn
-        // 左家后该轮到我。自己的出牌区还空着时，等右家闹钟再亮一帧才认作跳过了我。
-        val skipsMe = turn == DdzSeat.Right && tracker.nextOpponent() == DdzSeat.Left && table.mine == DdzSeen.Empty
+        // 左家后该轮到我。自己的旧「不出」可能还留着，右家闹钟要再亮一帧才认作跳过了我。
+        val skipsMe = turn == DdzSeat.Right && tracker.nextOpponent() == DdzSeat.Left && table.mine !is DdzSeen.Cards
         val previousTurn = s.previousRawTurn
         val confirmedTurn = if (skipsMe && previousTurn != turn) null else turn
         s.previousRawTurn = turn
@@ -370,11 +371,19 @@ internal object JjDdzTurn {
                     ranks[i] == boxes[i].rank || ranks[i] == boxes[i].alternateRank
                 }
             }
-        val clockTurn = if (turn == DdzSeat.Me && previousTurn != turn) null else confirmedTurn
+        // 补齐旧一轮后，闹钟可能还停在上一家。等领出者的闹钟或新牌读稳，再接受后续的轮转。
+        s.recoveredLeader?.let { leader ->
+            val side = sideOf(leader)
+            val seen = table.seen(side)
+            if (turn == leader || seen is DdzSeen.Cards && seen.ranks != tracker.lastOpponentPlay(leader) && repeated(side, seen.ranks)) {
+                s.recoveredLeader = null
+            }
+        }
+        val clockTurn = confirmedTurn.takeUnless { s.recoveredLeader != null || turn == DdzSeat.Me && previousTurn != turn }
         recoverOpponentTrick(s, tracker, table, clockTurn)
         val bottom = votedBottom(s, tracker, table, view)
         tracker.observe(
-            rawTurn = confirmedTurn,
+            rawTurn = confirmedTurn.takeUnless { s.recoveredLeader != null },
             read = { side -> steady(s, table, side) },
             bottom = { bottom },
             leadingWith20 = view.phase == DdzPhase.Lead && table.hand.size == 20,
@@ -474,7 +483,10 @@ internal object JjDdzTurn {
         val bothPassed = trick.otherPassed && trick.mePassed && cannotBeat(table.handRanks, trick.cards)
         if (trick.cardFrames >= TRICK_PLAY_FRAMES && (clockReturned || bothPassed) &&
             tracker.recordOpponentPlayAndPasses(seat, trick.cards, table.handRanks, trick.historySize)
-        ) return
+        ) {
+            if (turn != seat) s.recoveredLeader = seat
+            return
+        }
         s.opponentTrick = trick
     }
 
@@ -497,6 +509,7 @@ internal object JjDdzTurn {
     private fun newHand(s: Session, table: JjTable, view: JjView) {
         s.tracker = DdzTracker(DdzSettlingPolicy.HUMAN, onBroken = s::dump)
         s.bottomVotes.forEach { it.clear() }
+        s.recoveredLeader = null
         s.resetTurnReads()
         s.brokenLogged = false
         s.lordSeen = null
