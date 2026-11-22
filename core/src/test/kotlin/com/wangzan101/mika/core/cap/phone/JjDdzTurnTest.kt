@@ -236,6 +236,66 @@ class JjDdzTurnTest {
         assertEquals(listOf(3, 1).map { 500 + it * 96 + 22 }, game.taps.map { it.first })
     }
 
+    @Test fun playsABombWhenOnlyOneCardLiftsPerRound() = runTest {
+        val game = Game(JjDdzScreen.PACKAGE, frame("left_turn"))
+        val result = followWithBomb(game, 1, 1, 1, 1)
+
+        assertEquals(null, result.text("douzeroOff"))
+        val play = JjDdzScreen.read(game.frame).buttons[2]
+        assertEquals(listOf(0, 1, 2, 16, 9, 10, 11, 12, 10, 11, 12, 11, 12, 12), handTappedIndices(game))
+        assertEquals(play.x to JjDdzScreen.TAP_Y, game.taps.last())
+    }
+
+    @Test fun progressResetsTheStalledRoundCount() = runTest {
+        val game = Game(JjDdzScreen.PACKAGE, frame("left_turn"))
+        val result = followWithBomb(game, 0, 1, 0, 1, 1, 1)
+
+        assertEquals(null, result.text("douzeroOff"))
+        val play = JjDdzScreen.read(game.frame).buttons[2]
+        assertEquals(play.x to JjDdzScreen.TAP_Y, game.taps.last())
+    }
+
+    @Test fun rejectsTheBombAfterTwoRoundsWithoutProgress() = runTest {
+        val game = Game(JjDdzScreen.PACKAGE, frame("left_turn"))
+        val log = captureLog {
+            assertEquals(DdzSessionReason.REJECTED_ACTION, followWithBomb(game, 0, 0).text("douzeroOff"))
+        }
+
+        assertTrue(log, "select_failed" in log)
+        val pass = JjDdzScreen.read(game.frame).buttons[0]
+        assertEquals(listOf(0, 1, 2, 16, 9, 10, 11, 12, 9, 10, 11, 12), handTappedIndices(game))
+        assertEquals(pass.x to JjDdzScreen.TAP_Y, game.taps.last())
+    }
+
+    private fun handTappedIndices(game: Game) = game.taps.filter { it.second == JjCards.HAND_TAP_Y }
+        .map { (x, _) -> (x - 522) / 96 }
+
+    private suspend fun followWithBomb(game: Game, vararg liftsPerRound: Int): ToolExecution {
+        val ranks = "SJ 2 A A Q Q J J J 10 10 10 10 8 5 5 3".split(' ')
+        val right = listOf("K", "K", "K", "Q").mapIndexed { i, rank -> card(rank, 1470.0 + i * 56, 272.0) }
+        val leftPass = card("PASS", 650.0, 200.0)
+        val follow = frame("follow")
+        val lifts = ArrayDeque(liftsPerRound.toList())
+        var lifted = setOf(0, 1, 2, 16)
+        var reads = 0
+        var processedTaps = 0
+        JjDdzTurn.detect = { _, _ ->
+            if (game.taps.lastOrNull()?.second == JjDdzScreen.TAP_Y || ++reads > 30) null
+            else {
+                if (reads == 2) game.frame = follow
+                val tapped = handTappedIndices(game).drop(processedTaps)
+                processedTaps += tapped.size
+                val dropped = tapped.filter { it in lifted }
+                if (tapped.isNotEmpty()) {
+                    lifted = if (dropped.isNotEmpty()) lifted - dropped.toSet() else lifted + tapped.take(lifts.removeFirstOrNull() ?: 0)
+                }
+                hand(ranks, lifted) + right + leftPass
+            }
+        }
+        PhoneDdzTurn.advise = { _, _ -> """{"play":["10","10","10","10"]}""" }
+        return run(game, start)
+    }
+
     @Test fun waitsForTheWholeDealBeforeTracking() = runTest {
         // 发牌动画:先看到 10 张,等到 17 张才从头记;不能当成中途进来
         replies(hand(seventeen.take(10)), hand(seventeen), hand(seventeen))

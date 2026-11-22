@@ -46,7 +46,8 @@ internal object JjDdzTurn {
     /** 抬牌动画约 200ms:点完隔这么久再认。 */
     private const val LIFT_MS = 200L
     private const val SETTLE_READS = 4
-    private const val SELECT_ROUNDS = 4
+    private const val SELECT_STALLED_ROUNDS = 2
+    private const val SELECT_EXTRA_ROUNDS = 3
     /** 等「出牌」变绿最多约 1 秒。 */
     private const val PLAYABLE_READS = 7
     private const val THOUGHT_MS = 1_500L
@@ -711,20 +712,21 @@ internal object JjDdzTurn {
     }
 
     /**
-     * 把要出的几张点起来、别的放下;等抬牌动画停了再认一遍核对,对不上再改,最多 [SELECT_ROUNDS] 轮。
+     * 把要出的几张点起来、别的放下。等抬牌动画停了再认一遍核对，连续两轮没进展就停。
      * 2026-11-21 真机:点完 120ms 就认,牌还在半空,当成没抬又点一下,把抬起的按了回去(「来回一下」);
      * 游戏还会把同点数的几张一起抬起来(点一张 7,四张 7 都起来),多起来的要放下。
      */
     internal suspend fun select(ctx: ToolContext, s: Session, wanted: Set<Int>, table: JjTable): Boolean {
         val ranks = wanted.map { table.hand[it].rank }
         var current = table
-        repeat(SELECT_ROUNDS) {
-            // 同点数的牌哪张都行:点一张 A,游戏抬起的可能是旁边那张(真机 11:13 三张 A 出对 A、10:00 三张 2 出对 2,
-            // 按序号核对一直对不上,判成出不了,这一手剩下的都不出了)。已经抬起的、点数要的先算上
-            val want = target(current, ranks) ?: return false
+        var want = target(current, ranks) ?: return false
+        var stalledRounds = 0
+        // 读不到自己的剩余秒数，用轮数兜底：按每轮抬一张计，另留一轮放提示牌和两轮重试。
+        repeat(wanted.size + SELECT_EXTRA_ROUNDS) {
             // 先把多抬的(游戏自己提示抬起的牌)放下、读稳了再抬要的:一边放一边抬,游戏会退回只剩提示牌(真机 20:04、20:07)
             val drop = current.lifted - want
-            val batch = drop.ifEmpty { want - current.lifted }
+            val missing = want - current.lifted
+            val batch = drop.ifEmpty { missing }
             if (batch.isEmpty()) return true
             for (i in batch.sorted()) {
                 tap(ctx, JjCards.tapX(current, i), JjCards.HAND_TAP_Y)
@@ -734,8 +736,14 @@ internal object JjDdzTurn {
             current = settled(ctx, s) ?: return false
             println("JJTRACE select ${if (drop.isEmpty()) "lift" else "drop"} $batch lifted $before -> ${current.lifted} want $want")
             if (current.hand.size != table.hand.size) return false
+            // 同点数的牌可以互换。每次读稳后重新匹配，优先保留点数对的抬牌。
+            want = target(current, ranks) ?: return false
+            val fewerWrong = current.lifted.count { it !in want } < drop.size
+            val moreRight = want.count { it !in current.lifted } < missing.size
+            if (fewerWrong || moreRight) stalledRounds = 0
+            else if (++stalledRounds >= SELECT_STALLED_ROUNDS) return false
         }
-        return current.lifted == target(current, ranks)
+        return current.lifted == want
     }
 
     /** 要抬起哪几张才是 [ranks]:抬着的点数对的先留着,不够的从左往右补;手里凑不齐为 null。 */
