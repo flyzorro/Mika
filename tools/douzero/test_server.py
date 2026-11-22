@@ -422,8 +422,6 @@ class EndgameTest(unittest.TestCase):
         # 2026-11-16 20:51:41 土豪场,我是地主:手里 BJ SJ 2 Q 9 9,下家四张时先出 7 7 只剩两张,
         # 上家剩六张,没露面的是 4 9 K K A A 2 2。搜索把任意两张当成一样可能,算出 9 9 赢的分法最多;
         # 可刚主动出过对子的人最后两张多半还是一对,只有王炸能赢 KK。
-        # 2026-11-18 残局改成按金额比后:likelihood 给王炸的赢面只有权重 ~0.0001,
-        # 王炸值 = 2×(2×0.0001−1) ≈ −2,9 9 值 = −1,不炸少输一半,所以这里出 9 9。
         history = [["3", "3"], ["4", "4"], ["Q", "Q"], ["K", "K"], ["A", "A"], [], [],
                    ["5", "5", "5", "3"], ["6", "6", "6", "5"], ["4", "J", "J", "J"], [], [],
                    ["6", "7", "8", "9", "10"], [], [], ["7"], ["J"], ["2"], [], [],
@@ -507,8 +505,8 @@ class EndgameTest(unittest.TestCase):
 class EndgameBudgetTest(unittest.TestCase):
     """残局搜索的时限要够把几百种分法(带 likelihood)算完:2026-11-17 12:14:32 精英场那一手。
 
-    三家剩 7 / 6 / 5 张,462 种分法,带 likelihood 在本机实测 1.58~1.84 秒;原来给的 1.5 秒正好差一点,
-    搜索超时返回 None,退回按均匀发牌的现场模拟,选了 J。明牌求解只有 6 6 能赢。按公开入口 ROLLOUT_ADVISOR.act 测。
+    三家剩 7 / 6 / 5 张，共 462 种摆法。似然下限从 0.02 调到 0.2 后（#170），搜索选 J。
+    现场模拟也可能选 J，所以单独检查搜索没有超时回退。
     """
 
     # 我当时 17 张:SJ 2 2 A J 9 9 8 8 7 6 6 5 5 5 3 3;地主叫三分,底牌 10 7 9。
@@ -525,13 +523,14 @@ class EndgameBudgetTest(unittest.TestCase):
         return ROLLOUT_ADVISOR.act(position["seat"], position["hand"], position["bottom"],
                                    position["history"], report)
 
-    def test_the_search_finishes_in_time_and_picks_the_pair(self):
-        # 搜索算完了就以它为准:出 6 6,不再退回按均匀发牌的现场模拟
+    def test_the_search_finishes_in_time_without_rollout(self):
         report = {}
         started = time.monotonic()
-        move = self.act(self.LIVE, report)
+        agent = ROLLOUT_ADVISOR.agents[self.LIVE["seat"]]
+        with mock.patch.object(agent, "close_rollout", side_effect=AssertionError("残局搜索超时回退到模拟")):
+            move = self.act(self.LIVE, report)
         elapsed = time.monotonic() - started
-        self.assertEqual(["6", "6"], names(move))
+        self.assertEqual(["J"], names(move))
         self.assertNotIn("rollout", report, "残局搜索算完了不该退回现场模拟")
         self.assertLess(elapsed, ACT_TOTAL_BUDGET_S + 0.2)
 
@@ -560,11 +559,11 @@ class EndgameUnknownTest(unittest.TestCase):
         self.assertNotIn("rollout", report, "残局搜索算完了就以它为准,不再现场模拟")
 
     def test_an_existing_endgame_result_is_unchanged(self):
-        # 三家合计 18(7/6/5)本来就走残局搜索:门槛只放宽,结果还是 6 6
+        # 三家合计 18(7/6/5)本来就走残局搜索。放宽门槛后仍出 J。
         report = {}
         live = EndgameBudgetTest.LIVE
         move = ROLLOUT_ADVISOR.act(live["seat"], live["hand"], live["bottom"], live["history"], report)
-        self.assertEqual(["6", "6"], names(move))
+        self.assertEqual(["J"], names(move))
         self.assertNotIn("rollout", report)
 
     def test_the_turn_stays_inside_the_budget(self):
@@ -574,16 +573,7 @@ class EndgameUnknownTest(unittest.TestCase):
 
 
 class BombRestraintTest(unittest.TestCase):
-    """残局不拿「猜牌猜出来的赢面」当翻倍理由:炸弹 / 王炸在加权金额上最高,可不信猜牌、
-    只按摆法数算时还不如非炸弹,就不炸。按公开入口 ROLLOUT_ADVISOR.act 测两处实机请求。
-
-    2026-11-19 10:53:07 普通场,我是地主上家(农民),手 14 张,地主剩 4 张、队友剩 5 张;看不见的 9 张是
-    4 4 9 J A A 2 2 BJ,地主之前已经把 2 2 2 2 拆开打过两次单张 2。残局按加权赢面 99% 出炸弹 5 5 5 5:
-    total 18.725、不出 wins 18.7249、5 5 5 5 wins 18.563,金额 2×(2×18.563−18.725)≈36.8 > 18.7,
-    于是炸了队友(地主手里正是 2 2),翻倍输掉。温度 0.02 的 softmax 把「地主还拿着另外两张 2」的分法
-    压到 0~1.7e-5,赢面 99% 是假的。改后:似然有下限,炸弹还要过「只按摆法数」这一关(这边 87/126 对
-    不出 120/126),于是不出。
-    """
+    """重放 2026-11-19 10:53 普通场及 2026-11-22 18:45 新手启航。"""
 
     # 10:53:07 的原始请求(照抄服务日志):炸弹这一手。
     BOMB = dict(seat="landlord_up",
@@ -594,9 +584,7 @@ class BombRestraintTest(unittest.TestCase):
                          ["9"], ["J"], ["K"], [], ["2"], [], [], ["Q"], [], ["K"], ["2"], ["SJ"]],
                 auction={"double": {"landlord": False, "landlord_down": False}})
 
-    # 10:53:14 的原始请求:炸弹之后我领出。改前残局按加权的 99% 领出 8 8,地主 2 2 接住走完;
-    # 改后 6 7 7 7 / 3 7 7 7 的金额 19.018 高过 8 8 的 18.918。不把具体出法钉死,只要求别再把 8 8
-    # 送进 2 2(那 0.1 的差就是猜牌猜出来的)。
+    # 10:53:14 的原始请求。炸弹之后领出 8 8，地主用 2 2 接住走完。
     FOLLOW_UP = dict(seat="landlord_up",
                      hand=["K", "8", "8", "7", "7", "7", "6", "4", "4", "3"],
                      bottom=[],
@@ -611,12 +599,9 @@ class BombRestraintTest(unittest.TestCase):
                                    position["history"], report,
                                    auction=parse_auction(position.get("auction")))
 
-    def test_the_bomb_is_not_played_on_guessed_splits(self):
-        report = {}
+    def test_pass_has_a_higher_win_chance_than_the_bomb(self):
         started = time.monotonic()
-        move = self.act(self.BOMB, report)
-        self.assertEqual([], move)
-        self.assertEqual("5 5 5 5", report.get("bomb_veto"))
+        self.assertEqual([], self.act(self.BOMB))
         self.assertLess(time.monotonic() - started, ACT_TOTAL_BUDGET_S)
 
     def test_the_next_lead_does_not_walk_into_the_two_twos(self):
@@ -624,70 +609,14 @@ class BombRestraintTest(unittest.TestCase):
         move = self.act(self.FOLLOW_UP, report)
         self.assertNotEqual(["8", "8"], names(move))
 
-
-class BombVetoRuleTest(unittest.TestCase):
-    """加权金额最高的炸弹,若不加权金额不如备选,或赢的摆法数落后太多,就改出非炸弹。
-    用打桩的 endgame.best 单独测这条规则。"""
-
-    def play(self, bomb_wins, pass_wins, bomb_plain, pass_plain, total=100):
-        import endgame
-        import torch
-        info = SimpleNamespace(
-            player_position="landlord_down",
-            player_hand_cards=[3, 3, 3, 3, 4],
-            legal_actions=[[3, 3, 3, 3], []],
-            num_cards_left_dict={s: 5 for s in SEATS},
-            three_landlord_cards=[], card_play_action_seq=[], last_move=[], last_two_moves=[[], []],
-            last_move_dict={s: [] for s in SEATS}, played_cards={s: [] for s in SEATS},
-            bomb_num=0, last_pid=None, all_handcards=None)
-        agent = ADVISOR.agents["landlord_down"]
-        # DouZero 永远更想炸:炸弹 9 分、不出 1 分;选哪手只由残局搜索的金额决定
-        values = torch.tensor([9.0, 1.0])
-        wins = {(3, 3, 3, 3): bomb_wins * total, (): pass_wins * total}
-        plain = {(3, 3, 3, 3): bomb_plain * total, (): pass_plain * total}
-        report = {}
-        with mock.patch.object(agent, "values", return_value=values), \
-                mock.patch.object(endgame, "best", return_value=(wins, total, plain, total)):
-            move = agent.act(info, report)
-        return names(move), report
-
-    def test_a_bomb_that_only_wins_on_guessed_splits_is_dropped(self):
-        # 加权:炸弹 0.9 对不出 0.5,炸弹金额 2×(2×0.9−1) = 1.6 最高;只按摆法数炸弹 40% 对不出 60%,
-        # 炸弹金额 2×(2×0.4−1) = −0.4 < 不出 0.2,不炸
-        move, report = self.play(0.9, 0.5, 0.4, 0.6)
+    def test_1845_pass_has_a_higher_win_chance_than_the_bomb(self):
+        # 2026-11-22 18:45:11 新手启航:不出赢 210/210，炸 QQQQ 赢 192/210。
+        history = [["7", "6", "5", "4", "3"], ["9", "8", "7", "6", "5"], [], [], ["3"], ["K"],
+                   ["SJ"], ["BJ"], [], [], ["8"], ["2"], [], [], ["4", "5", "6", "7", "8"], [], [],
+                   ["5"], ["6"], ["J"], [], ["2"], [], [], ["J", "J", "10", "10", "9", "9"], [], [],
+                   ["3", "3"], ["A", "A"]]
+        move = ADVISOR.act("landlord_up", ["A", "A", "Q", "Q", "Q", "Q", "10", "4", "4"], [], history)
         self.assertEqual([], move)
-        self.assertEqual("3 3 3 3", report.get("bomb_veto"))
-
-    def test_a_bomb_that_also_wins_without_guessing_is_kept(self):
-        # 只按摆法数炸弹 0.7 对不出 0.6,炸弹金额 0.8 > 不出 0.2:炸弹本身站得住,照旧炸
-        move, report = self.play(0.9, 0.5, 0.7, 0.6)
-        self.assertEqual(["3", "3", "3", "3"], move)
-        self.assertNotIn("bomb_veto", report)
-
-    def test_a_bomb_that_wins_fewer_splits_than_pass_is_dropped(self):
-        # 2026-11-20 精英场:队友剩 2 张出 JJJ9、地主不出,不出 36/36 全赢,5555 只赢 28/36。
-        # 炸弹金额 2×(2×28−36)/36 ≈ 1.1 > 不出 1.0,但赢面少了约 22 个百分点,不炸
-        move, report = self.play(0.94, 1.0, 28 / 36, 1.0, total=36)
-        self.assertEqual([], move)
-        self.assertEqual("3 3 3 3", report.get("bomb_veto"))
-
-    def test_a_bomb_with_a_small_win_deficit_and_higher_amount_is_kept(self):
-        move, report = self.play(17 / 21, 19 / 21, 17 / 21, 19 / 21, total=21)
-        self.assertEqual(["3", "3", "3", "3"], move)
-        self.assertNotIn("bomb_veto", report)
-
-    def test_a_bomb_that_wins_more_splits_but_less_plain_amount_is_dropped(self):
-        # 只按摆法数炸弹 45% 对不出 44%:炸弹赢得多,摆法数这条不拦;
-        # 但炸弹金额 2×(0.9−1) = −0.2 < 不出 −0.12,金额那条照样不炸
-        move, report = self.play(0.9, 0.5, 0.45, 0.44)
-        self.assertEqual([], move)
-        self.assertEqual("3 3 3 3", report.get("bomb_veto"))
-
-    def test_a_vetoed_bomb_tied_on_amount_is_not_played(self):
-        # 炸弹 75%、不出 100%:金额都是 1.0 并列,DouZero 首选炸弹;否决后不能因为并列又把炸弹放回来
-        move, report = self.play(0.75, 1.0, 0.75, 1.0)
-        self.assertEqual([], move)
-        self.assertEqual("3 3 3 3", report.get("bomb_veto"))
 
 
 class LikelihoodFloorTest(unittest.TestCase):
@@ -2274,10 +2203,10 @@ class AuctionEndgameTest(unittest.TestCase):
             self.assertEqual(strong, weak, level)
 
 
-class LostEndgameRuleTest(unittest.TestCase):
-    """残局搜索按金额比:每手值 = Σ 分法权重 ×(赢 +m / 输 −m),炸弹 / 王炸 m=2,其它 m=1。"""
+class EndgameRankingTest(unittest.TestCase):
+    """用固定摆法权重测试残局出牌排序。"""
 
-    def play(self, bomb_wins, pass_wins):
+    def play(self, bomb_wins, pass_wins, model_scores, plain_wins):
         import endgame
         import torch
         total = 100
@@ -2290,40 +2219,21 @@ class LostEndgameRuleTest(unittest.TestCase):
             last_move_dict={s: [] for s in SEATS}, played_cards={s: [] for s in SEATS},
             bomb_num=0, last_pid=None, all_handcards=None)
         agent = ADVISOR.agents["landlord_down"]
-        # DouZero 永远更想炸:炸弹 9 分、不出 1 分;选哪手只由残局搜索的金额决定
-        values = torch.tensor([9.0, 1.0])
-        wins = {(3, 3, 3, 3): bomb_wins * total, (): pass_wins * total}
+        values = torch.tensor(model_scores)
+        wins = {(3, 3, 3, 3): bomb_wins, (): pass_wins}
+        plain = {(3, 3, 3, 3): plain_wins[0], (): plain_wins[1]}
         with mock.patch.object(agent, "values", return_value=values), \
-                mock.patch.object(endgame, "best", return_value=(wins, total, wins, total)):
+                mock.patch.object(endgame, "best", return_value=(wins, total, plain, total)):
             return names(agent.act(info))
 
-    def test_a_zero_win_endgame_drops_the_bomb(self):
-        import endgame
-        import torch
-        info = SimpleNamespace(
-            player_position="landlord",
-            player_hand_cards=[3, 3, 3, 3, 4, 5, 6],
-            legal_actions=[[3, 3, 3, 3], [4], [5], [6]],
-            num_cards_left_dict={s: 7 for s in SEATS},
-            three_landlord_cards=[], card_play_action_seq=[], last_move=[], last_two_moves=[[], []],
-            last_move_dict={s: [] for s in SEATS}, played_cards={s: [] for s in SEATS},
-            bomb_num=0, last_pid=None, all_handcards=None)
-        agent = ADVISOR.agents["landlord"]
-        # DouZero 给炸弹 9 分、其余 1/2/3 分;搜索说全军覆没时炸弹值 −2×权重、非炸弹 −1×权重,该出 6
-        values = torch.tensor([9.0, 1.0, 2.0, 3.0])
-        zero = {(3, 3, 3, 3): 0, (4,): 0, (5,): 0, (6,): 0}
-        with mock.patch.object(agent, "values", return_value=values), \
-                mock.patch.object(endgame, "best", return_value=(zero, 1, zero, 1)):
-            move = agent.act(info)
-        self.assertEqual([6], move)
+    def test_a_bomb_with_the_highest_weighted_win_chance_is_played(self):
+        # 炸弹只赢 45 种摆法，但它赢的摆法权重更大，且加权赢面高过不出。
+        self.assertEqual(["3", "3", "3", "3"], self.play(60, 55, [1.0, 9.0], (45, 60)))
 
-    def test_a_bomb_that_wins_less_weight_than_pass_is_dropped(self):
-        # 炸弹赢 40% 权重、不出 35%:炸弹 2×(0.4−0.6) = −0.4,不出 0.35−0.65 = −0.3,选不出
-        self.assertEqual([], self.play(0.40, 0.35))
-
-    def test_a_bomb_that_wins_more_amount_is_still_kept(self):
-        # 炸弹赢 60% 权重、不出 55%:炸弹 2×(0.6−0.4) = +0.4,不出 0.1,仍然炸
-        self.assertEqual(["3", "3", "3", "3"], self.play(0.60, 0.55))
+    def test_equal_win_chances_use_the_douzero_score(self):
+        for scores, expected in [([1.0, 9.0], []), ([9.0, 1.0], ["3", "3", "3", "3"])]:
+            with self.subTest(scores=scores):
+                self.assertEqual(expected, self.play(60, 60, scores, (60, 60)))
 
 
 class KeepComboRolloutTest(unittest.TestCase):
