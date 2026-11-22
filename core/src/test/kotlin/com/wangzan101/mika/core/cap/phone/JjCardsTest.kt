@@ -29,6 +29,25 @@ class JjCardsTest {
         assertEquals(setOf(2), t.lifted)
     }
 
+    @Test fun aWideDuplicateTenIsOneCard() {
+        // 真机 11:11:52 /cards 原样:右家 5–J 的顺子,10 多认出一个盖到 9 上的宽框
+        val cards = listOf(
+            JjCard("J", 1296.3, 270.4, 1328.4, 325.3, 0.999),
+            JjCard("10", 1335.9, 272.4, 1412.7, 324.5, 0.940),
+            JjCard("10", 1352.6, 270.1, 1390.2, 325.1, 1.000),
+            JjCard("9", 1411.8, 270.2, 1442.7, 324.9, 1.000),
+            JjCard("8", 1467.7, 269.9, 1500.6, 325.5, 0.999),
+            JjCard("7", 1529.5, 270.3, 1560.3, 326.0, 1.000),
+            JjCard("6", 1583.3, 273.0, 1616.0, 324.9, 1.000),
+            JjCard("5", 1641.1, 270.4, 1675.5, 327.0, 1.000),
+        )
+        assertEquals(DdzSeen.Cards(listOf("J", "10", "9", "8", "7", "6", "5")), JjCards.table(cards, 2412).right)
+    }
+
+    @Test fun twoRealTensSideBySideStayTwo() {
+        assertEquals(DdzSeen.Cards(listOf("10", "10")), JjCards.table(listOf(card("10", 1651.0, 274.0, 46.0), card("10", 1693.0, 275.0, 46.0)), width).right)
+    }
+
     @Test fun anUnsureCardMakesThePlayUnsure() {
         val t = JjCards.table(listOf(card("9", 1600.0, 280.0, 50.0, score = 0.55), card("9", 1650.0, 280.0, 50.0)), width)
         assertEquals(DdzSeen.Unsure, t.right)

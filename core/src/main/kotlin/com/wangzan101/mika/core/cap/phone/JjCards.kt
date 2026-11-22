@@ -59,6 +59,8 @@ internal object JjCards {
     private const val CONNECT_TIMEOUT_MS = 2_000
     private const val READ_TIMEOUT_MS = 3_000
     private const val PASS = "PASS"
+    /** 两个同点数的框重叠超过小框的这么多,算同一张牌。 */
+    private const val SAME_CARD = 0.5
 
     /** 把一帧 JPEG 交给电脑认牌;连不上、没配认牌模型、回的不对都是 null。 */
     suspend fun detect(url: String, jpeg: ByteArray): List<JjCard>? = withContext(Dispatchers.IO) {
@@ -87,7 +89,8 @@ internal object JjCards {
         }
     }.getOrNull()
 
-    fun table(cards: List<JjCard>, width: Int): JjTable {
+    fun table(detected: List<JjCard>, width: Int): JjTable {
+        val cards = dedupe(detected)
         fun seen(found: List<JjCard>): DdzSeen {
             val ranks = found.filter { it.rank != PASS }
             val pass = found.filter { it.rank == PASS }
@@ -118,6 +121,24 @@ internal object JjCards {
             bottom = bottom.takeIf { it.size == 3 && it.all { c -> c.score >= SURE } }?.map { it.rank },
         )
     }
+
+    /**
+     * 同一张牌认出两个框的只留分高的:顺子里的 10 字宽,会多出一个盖过半张邻牌的宽框(真机 10:05、11:11:
+     * 右家 5–J 的顺子读成 8 张、两个 10,记牌断了,地主剩一张时没拿王炸压)。
+     * 同点数、重叠超过小框一半才算同一张;真的两张 10 并排时框不重叠。
+     */
+    private fun dedupe(cards: List<JjCard>): List<JjCard> {
+        val kept = mutableListOf<JjCard>()
+        for (c in cards.sortedByDescending { it.score }) {
+            if (kept.none { it.rank == c.rank && overlap(it, c) > SAME_CARD * minOf(area(it), area(c)) }) kept += c
+        }
+        return kept
+    }
+
+    private fun area(c: JjCard) = (c.x1 - c.x0) * (c.y1 - c.y0)
+
+    private fun overlap(a: JjCard, b: JjCard): Double =
+        maxOf(0.0, minOf(a.x1, b.x1) - maxOf(a.x0, b.x0)) * maxOf(0.0, minOf(a.y1, b.y1) - maxOf(a.y0, b.y0))
 
     /** 按横向挨着(间隙不到 [gap])分组。 */
     private fun groups(cards: List<JjCard>, gap: Double): List<List<JjCard>> {

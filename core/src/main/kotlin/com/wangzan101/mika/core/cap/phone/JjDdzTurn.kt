@@ -332,9 +332,13 @@ internal object JjDdzTurn {
      * 2026-11-21 真机:点完 120ms 就认,牌还在半空,当成没抬又点一下,把抬起的按了回去(「来回一下」);
      * 游戏还会把同点数的几张一起抬起来(点一张 7,四张 7 都起来),多起来的要放下。
      */
-    internal suspend fun select(ctx: ToolContext, s: Session, want: Set<Int>, table: JjTable): Boolean {
+    internal suspend fun select(ctx: ToolContext, s: Session, wanted: Set<Int>, table: JjTable): Boolean {
+        val ranks = wanted.map { table.hand[it].rank }
         var current = table
         repeat(SELECT_ROUNDS) {
+            // 同点数的牌哪张都行:点一张 A,游戏抬起的可能是旁边那张(真机 11:13 三张 A 出对 A、10:00 三张 2 出对 2,
+            // 按序号核对一直对不上,判成出不了,这一手剩下的都不出了)。已经抬起的、点数要的先算上
+            val want = target(current, ranks) ?: return false
             // 先把多抬的(游戏自己提示抬起的牌)放下、读稳了再抬要的:一边放一边抬,游戏会退回只剩提示牌(真机 20:04、20:07)
             val drop = current.lifted - want
             val batch = drop.ifEmpty { want - current.lifted }
@@ -348,7 +352,20 @@ internal object JjDdzTurn {
             println("JJTRACE select ${if (drop.isEmpty()) "lift" else "drop"} $batch lifted $before -> ${current.lifted} want $want")
             if (current.hand.size != table.hand.size) return false
         }
-        return current.lifted == want
+        return current.lifted == target(current, ranks)
+    }
+
+    /** 要抬起哪几张才是 [ranks]:抬着的点数对的先留着,不够的从左往右补;手里凑不齐为 null。 */
+    private fun target(table: JjTable, ranks: List<String>): Set<Int>? {
+        val need = ranks.groupingBy { it }.eachCount().toMutableMap()
+        val out = LinkedHashSet<Int>()
+        fun take(i: Int) {
+            val r = table.hand[i].rank
+            if ((need[r] ?: 0) > 0) { need[r] = need.getValue(r) - 1; out += i }
+        }
+        table.lifted.sorted().forEach(::take)
+        table.hand.indices.filter { it !in out }.forEach(::take)
+        return out.takeIf { need.values.all { it == 0 } }
     }
 
     /** 隔一会儿认一次,连着两次抬起的牌一样(动画停了)才算数;一直在变就用最后一次。 */

@@ -154,6 +154,16 @@ class JjDdzTurnTest {
         assertEquals(listOf(0, 1, 2, 3).map { 500 + it * 96 + 22 }, xs)
     }
 
+    @Test fun anyTwoOfThreeAcesArePairOfAces() = runTest {
+        // 真机 11:13:要出对 A(序号 0、1),游戏抬起的是 1、2:点数对就算选好了,不再来回点
+        val ranks = listOf("A", "A", "A", "J", "9")
+        replies(hand(ranks, setOf(1, 2)), hand(ranks, setOf(1, 2)))
+        val game = Game(JjDdzScreen.PACKAGE, frame("follow"))
+        val ok = JjDdzTurn.select(toolDispatcher(game).ctx, JjDdzTurn.Session("http://mac:3426", 1), setOf(0, 1), JjCards.table(hand(ranks), 2408))
+        assertTrue(ok)
+        assertEquals(listOf(0, 1).map { 500 + it * 96 + 22 }, game.taps.map { it.first })
+    }
+
     @Test fun putsTheGamesHintDownBeforeLiftingTheWantedCard() = runTest {
         // 真机 20:04:轮到我时游戏已经提示抬起一张 6;要出的是 2。先放下 6、读稳,再抬 2
         val ranks = listOf("SJ", "2", "A", "6", "5")
