@@ -8,6 +8,7 @@ import random
 import time
 from collections import Counter
 from itertools import combinations
+from math import comb
 
 from douzero.env import move_detector as md
 from douzero.env import move_selector as ms
@@ -26,6 +27,10 @@ NEXT = {"landlord": "landlord_down", "landlord_down": "landlord_up", "landlord_u
 MAX_CARDS = 20
 MAX_UNKNOWN = 12
 MAX_SPLITS = 400
+# 短手扩展里的另两家可能还有十几张，明牌树比普通残局更大。
+SHORT_HAND_SPLIT_SAMPLES = 64
+# 地主还有 5 张时明牌树更大，给同一时限留出余量。
+FIVE_CARD_SPLIT_SAMPLES = 32
 
 
 class Timeout(Exception):
@@ -148,6 +153,7 @@ class Solver:
     def __init__(self, deadline):
         self.deadline = deadline
         self.memo = {}
+        self.options = {}
         self.steps = 0
 
     def landlord_wins(self, hands, turn, rival, owner):
@@ -156,14 +162,18 @@ class Solver:
         if key in self.memo:
             return self.memo[key]
         self.steps += 1
-        if self.steps % 512 == 0 and time.monotonic() > self.deadline:
+        if self.steps % 64 == 0 and time.monotonic() >= self.deadline:
             raise Timeout()
         mine = hands[turn]
         want = turn == "landlord"
-        options = moves(mine, list(rival))
+        move_key = mine, rival
+        options = self.options.get(move_key)
         # 先试能一手出完的、再试出得多的:更早剪枝
+        if options is None:
+            options = sorted(moves(mine, list(rival)), key=lambda m: -len(m))
+            self.options[move_key] = options
         result = not want
-        for move in sorted(options, key=lambda m: (len(m) != len(mine), -len(m))):
+        for move in options:
             if self.after(hands, turn, rival, owner, move) == want:
                 result = want
                 break
@@ -182,18 +192,33 @@ class Solver:
         return self.landlord_wins({**hands, turn: left}, nxt, move, turn)
 
 
-def splits(unknown, a, na, b, nb, kept=()):
+def splits(unknown, a, na, b, nb, kept=(), *, sample_limit=None, deadline=None):
     """把 [unknown] 分给 [a] [na] 张、[b] [nb] 张的各种分法,带上这种分法有几种摆法(同点数的牌不分花色)。
 
     [kept] 是一定在 [a] 手里的牌:我是农民时,地主没打出去的底牌一定还在地主手里(同 server.sample_hands)。
+    指定 [sample_limit] 时，摆法太多就无放回抽样，每种分法的计数仅含抽中的摆法。
+    [deadline] 用尽时抛 Timeout。
     """
     fixed = tuple(sorted((Counter(unknown) & Counter(kept)).elements()))
     pool = list((Counter(unknown) - Counter(fixed)).elements())
     need = na - len(fixed)
     if need < 0 or need + nb != len(pool):
         return None
+    indices = range(len(pool))
+    picked_sets = combinations(indices, need)
+    if sample_limit is not None and comb(len(pool), need) > sample_limit:
+        # 均匀抽不同的实体牌组合。点数相同的抽样合并计数，再按 likelihood 加权。
+        rng = random.Random(0)
+        sampled = {}
+        while len(sampled) < sample_limit:
+            if deadline is not None and time.monotonic() >= deadline:
+                raise Timeout()
+            sampled[tuple(sorted(rng.sample(indices, need)))] = None
+        picked_sets = sampled
     seen = Counter()
-    for picked in combinations(range(len(pool)), need):
+    for picked in picked_sets:
+        if deadline is not None and time.monotonic() >= deadline:
+            raise Timeout()
         chosen = set(picked)
         ha = tuple(sorted(fixed + tuple(pool[i] for i in picked)))
         hb = tuple(sorted(pool[i] for i in range(len(pool)) if i not in chosen))
@@ -210,9 +235,10 @@ def best(infoset, budget=1.5, likelihood=None):
 
     [likelihood] 可选: `likelihood(splits, deadline)` 给每种分法一个权重(和摆法数相乘), splits 是
     [{座位: 这种分法下此刻剩的牌}], 返回同样长的浮点列表。默认 None 就是原来的摆法数权重。
-    回调要在 [deadline] 前算完, 来不及就抛 Timeout, 这一次退回不加权的摆法数。
-    两种口径在同一遍搜索里一起累加:不加权的摆法数是不信「猜牌」时炸弹敢不敢翻倍的依据(见 Agent.act)。
+    扩展到短手时, 分法多就从实体牌组合均匀抽样, 两种口径都按这批样本算。
+    两种口径在同一遍搜索里一起累加。枚举、加权和明牌搜索共用一个截止时间。
     """
+    deadline = time.monotonic() + budget
     me = infoset.player_position
     left = infoset.num_cards_left_dict
     others = [s for s in SEATS if s != me]
@@ -220,24 +246,45 @@ def best(infoset, budget=1.5, likelihood=None):
     # 有一家对手只剩一两张时分法也少(n 张看不见的牌最多 n·(n−1)/2 种,超过 MAX_SPLITS 照样退回):
     # 2026-11-22 15:04 JJ 我当地主剩 A K K Q Q J J 9 9 先出,上家剩 1 张、下家 12 张,看不见 13 张超过 MAX_UNKNOWN 没搜,
     # 13 种分法其实瞬间算完:出任意对子必赢,出单张 9 输
-    short = min(left[s] for s in others) <= 2
-    if sum(left.values()) > MAX_CARDS and sum(left[s] for s in others) > MAX_UNKNOWN and not short:
-        return None
+    short = min(others, key=left.__getitem__)
+    expanded = (sum(left.values()) > MAX_CARDS and sum(left[s] for s in others) > MAX_UNKNOWN
+                and left[short] > 2)
+    kept = ()
+    sample_limit = None
+    if expanded:
+        if me != "landlord":
+            short = "landlord"
+        # 地主 5 张也可能用顺子或三带二走完。仅在不出就还他牌权、手上只能炸的时候搜索。
+        last_chance = (me != "landlord" and left[short] == 5 and infoset.last_pid == short
+                       and NEXT[me] == short and [] in infoset.legal_actions
+                       and all(not move or is_bomb(move) for move in infoset.legal_actions))
+        if left[short] > 4 and not last_chance:
+            return None
+        if short == "landlord":
+            kept = infoset.three_landlord_cards
+        others = [short, next(s for s in others if s != short)]
+        sample_limit = FIVE_CARD_SPLIT_SAMPLES if last_chance else SHORT_HAND_SPLIT_SAMPLES
     unknown = sorted(infoset.other_hand_cards)
     if len(unknown) != left[others[0]] + left[others[1]]:
         return None
-    ways = splits(unknown, others[0], left[others[0]], others[1], left[others[1]])
-    if ways is None:
+    try:
+        ways = splits(unknown, others[0], left[others[0]], others[1], left[others[1]], kept,
+                      sample_limit=sample_limit, deadline=deadline)
+    except Timeout:
+        return None
+    if not ways:
         return None
     hand = tuple(sorted(infoset.player_hand_cards))
     rival = tuple(sorted(infoset.last_move)) if [] in infoset.legal_actions else ()
     owner = infoset.last_pid
-    deadline = time.monotonic() + budget
-    splits_hands = [{me: hand, others[0]: ha, others[1]: hb} for (ha, hb), _ in ways.items()]
+    actions = [tuple(sorted(action)) for action in infoset.legal_actions]
+    splits_hands = [{me: hand, others[0]: ha, others[1]: hb} for ha, hb in ways]
     if likelihood is not None:
         try:
             likes = likelihood(splits_hands, deadline)
         except Timeout:
+            if expanded:
+                return None
             likes = [1.0] * len(splits_hands)
     else:
         likes = [1.0] * len(splits_hands)
@@ -247,18 +294,20 @@ def best(infoset, budget=1.5, likelihood=None):
     total = 0.0
     plain_total = 0
     try:
-        for ((ha, hb), count), like in zip(ways.items(), likes):
-            hands = {me: hand, others[0]: ha, others[1]: hb}
+        for hands, count, like in zip(splits_hands, ways.values(), likes):
+            if time.monotonic() >= deadline:
+                raise Timeout()
             weight = count * like
             plain_total += count
             total += weight
-            for action in infoset.legal_actions:
-                move = tuple(sorted(action))
+            for move in actions:
                 landlord = solver.after(hands, me, rival, owner, move)
                 if landlord == (me == "landlord"):
                     wins[move] += weight
                     plain[move] += count
     except Timeout:
+        return None
+    if time.monotonic() >= deadline:
         return None
     return wins, total, plain, plain_total
 

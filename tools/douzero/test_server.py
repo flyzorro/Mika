@@ -535,6 +535,88 @@ class EndgameBudgetTest(unittest.TestCase):
         self.assertLess(elapsed, ACT_TOTAL_BUDGET_S + 0.2)
 
 
+class EndgameShortLandlordTest(unittest.TestCase):
+    def test_jj_1900_searches_before_the_landlord_goes_out(self):
+        import endgame
+
+        hand = ["SJ", "2", "2", "2", "2", "A", "K", "Q", "J", "10", "10", "8", "8", "7", "7", "4", "4"]
+        history = [["10", "9", "8", "7", "6", "5", "4"], [], [],
+                   ["A", "A", "A", "K", "K", "K", "Q", "10"], []]
+        for left, plays in [(5, history), (4, history + [[], ["BJ"], []])]:
+            with self.subTest(landlord_cards=left):
+                original = endgame.best
+                searches = []
+
+                def record(info, **kwargs):
+                    started = time.monotonic()
+                    result = original(info, **kwargs)
+                    searches.append((info.num_cards_left_dict["landlord"], result, time.monotonic() - started))
+                    return result
+
+                with mock.patch.object(endgame, "best", side_effect=record):
+                    move = ADVISOR.act("landlord_up", hand, [], plays)
+                remaining, result, elapsed = searches[0]
+                self.assertEqual(left, remaining)
+                self.assertIsNotNone(result)
+                wins, total, _, _ = result
+                self.assertGreater(total, 0)
+                bomb = tuple(cards(["2"] * 4))
+                if left == 4:
+                    self.assertGreater(wins[bomb], wins[()])
+                    self.assertEqual(bomb, tuple(move))
+                else:
+                    # 地主还剩 5 张时，两手都能赢的分法按 DouZero 打分决胜。
+                    self.assertEqual(max(wins[bomb], wins[()]), wins[tuple(move)])
+                self.assertLess(elapsed, ACT_ENDGAME_BUDGET_S)
+
+    def test_extending_the_search_keeps_the_landlords_unplayed_bottom_cards(self):
+        import endgame
+
+        unseen = [3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9]
+        info = SimpleNamespace(
+            player_position="landlord_up",
+            num_cards_left_dict={"landlord": 4, "landlord_down": 9, "landlord_up": 10},
+            other_hand_cards=unseen,
+            three_landlord_cards=[3, 3, 4],
+            player_hand_cards=list(range(5, 14)) + [30],
+            legal_actions=[[30], []],
+            last_move=[20],
+            last_pid="landlord",
+        )
+        observed = []
+
+        def likelihood(holdings, deadline):
+            observed.extend(holdings)
+            return [1.0] * len(holdings)
+
+        result = endgame.best(info, budget=ACT_ENDGAME_BUDGET_S, likelihood=likelihood)
+        self.assertIsNotNone(result)
+        self.assertEqual(10, result[3])
+        self.assertEqual({(3, 3, 4, rank) for rank in range(4, 10)},
+                         {hands["landlord"] for hands in observed})
+        for hands in observed:
+            self.assertEqual(unseen, sorted(hands["landlord"] + hands["landlord_down"]))
+
+    def test_landlord_searches_when_a_farmer_has_four_cards(self):
+        import endgame
+
+        info = SimpleNamespace(
+            player_position="landlord",
+            num_cards_left_dict={"landlord": 10, "landlord_down": 9, "landlord_up": 4},
+            other_hand_cards=[3, 3, 3, 4, 4, 4, 5, 5, 6, 6, 7, 8, 9],
+            three_landlord_cards=[],
+            player_hand_cards=list(range(5, 14)) + [30],
+            legal_actions=[[30], []],
+            last_move=[20],
+            last_pid="landlord_up",
+        )
+        result = endgame.best(info, budget=ACT_ENDGAME_BUDGET_S)
+        self.assertIsNotNone(result)
+        _, _, plain, total = result
+        self.assertEqual(total, plain[(30,)])
+        self.assertLess(plain[()], total)
+
+
 class EndgameUnknownTest(unittest.TestCase):
     """自己手里牌多、两家对手手里没几张时也跑残局搜索:看不见的牌少,分法就少,照样算得完。"""
 
