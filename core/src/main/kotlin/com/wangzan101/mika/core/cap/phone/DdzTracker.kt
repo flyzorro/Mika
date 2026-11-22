@@ -70,6 +70,7 @@ internal class DdzTracker(
     /** JJ 核对缓存的出牌时用这一帧的手牌。null 表示没启用整副牌核对。 */
     private var opponentCheckHand: List<String>? = null
     private var jjBoxes: ((DdzSide) -> List<JjCard>)? = null
+    private var jjRepeatedPlay: ((DdzSide, List<String>) -> Boolean)? = null
     private var jjRetriesExpired = false
     private val jjPendingBoxes = mutableMapOf<DdzSeat, List<JjCard>>()
     private val jjMaskedReads = mutableMapOf<DdzSeat, List<String>>()
@@ -95,11 +96,13 @@ internal class DdzTracker(
         rawTurn: DdzSeat?, read: (DdzSide) -> DdzSeen, bottom: () -> List<String>?, leadingWith20: Boolean = false, leading: Boolean = false,
         counts: () -> Map<DdzSide, Int?> = { emptyMap() }, hand: () -> List<String>? = { null }, checkOpponentDeck: Boolean = false,
         opponentBoxes: ((DdzSide) -> List<JjCard>)? = null, expireOpponentDeckRetries: Boolean = false,
+        repeatedOpponentPlay: ((DdzSide, List<String>) -> Boolean)? = null,
     ) {
         if (broken != null) return
         val checkHand = if (checkOpponentDeck) hand() else null
         opponentCheckHand = if (checkOpponentDeck) checkHand.orEmpty() else null
         jjBoxes = opponentBoxes.takeIf { checkHand != null }
+        jjRepeatedPlay = repeatedOpponentPlay
         jjRetriesExpired = expireOpponentDeckRetries
         if (jjBoxes == null) jjPendingBoxes.clear()
         frameNo++
@@ -119,8 +122,11 @@ internal class DdzTracker(
         // 底牌只是给 DouZero 的参考,认不出(比如里面有张王,竖着写的字太小)也照样记;叫分、加倍时出牌区只有字,不会当成牌。
         // 只在这一局地主定下来、底牌翻开以后才读:新牌桌刚出来时画面上还留着上一局的底牌,一记就是整局。
         // 已经记下的底牌等别家再出牌时再核对一遍。
-        recheckBottom(hand)
-        sampleBottom(bottom, hand)
+        // JJ 手牌被动画挡住或张数还没跟上历史时，先保留旧底牌，等下一次完整读数核对。
+        if (!checkOpponentDeck || checkHand != null && (landlord == null || checkHand.size == remainingBeforePlay(DdzSeat.Me))) {
+            recheckBottom(hand)
+            sampleBottom(bottom, hand)
+        }
         // 轮到自己先出、手里 20 张,一定是地主、还没人出过牌:之前认成别家出的牌(比如翻底牌的动画)作废
         if (leadingWith20 && landlord != DdzSeat.Me) {
             landlord = null
@@ -476,6 +482,7 @@ internal class DdzTracker(
      * 已经亮出王炸/炸弹:这一手先记下,把 [active] 让给我,别等它被下一手盖掉。
      * 只补王炸和炸弹:它们挡闹钟、又只亮一帧,等不到 steady;普通牌仍旧交给 [resolve] 读稳,
      * 免得把「牌落下那一帧带绶带的 3 认成 J」这种误读直接写进历史。读不准、张数对不上、顺序不对都不补。
+     * JJ 的缓存读数要求连续两帧确认。
      */
     private fun recordPlayShownAsMyTurnBegins(read: (DdzSide) -> DdzSeen) {
         val seat = active ?: return
@@ -486,6 +493,7 @@ internal class DdzTracker(
         if (seen !is DdzSeen.Cards) return
         val cards = seen.ranks
         if (cards.isEmpty()) return
+        if (jjRepeatedPlay?.invoke(sideOf(seat), cards) == false) return
         val move = DdzSnapshotRecovery.classify(cards) ?: return
         if (move.kind != DdzSnapshotRecovery.Kind.Rocket && move.kind != DdzSnapshotRecovery.Kind.Bomb) return
         if (!usablePlay(seat, cards)) return
@@ -541,6 +549,11 @@ internal class DdzTracker(
     internal fun maskedOpponentPlay(seat: DdzSeat, ranks: List<String>): List<String>? =
         lastPlay[seat]?.takeIf { jjMaskedReads[seat] == ranks }
 
+    /** 压牌只在前面各家都记完时核对，避免拿上一手去筛后面一家。 */
+    internal fun jjOpponentPlayIsLegal(seat: DdzSeat, cards: List<String>): Boolean =
+        if ((waiting.firstOrNull()?.first ?: active) == seat) !illegal(cards)
+        else DdzSnapshotRecovery.classify(cards) != null
+
     /** 只在读数将被放弃时补超张。原读数仍须符合牌型和出牌顺序。 */
     private fun recoverOvercount(seat: DdzSeat, boxes: List<JjCard>?): List<String>? {
         if (jjBoxes == null || boxes.isNullOrEmpty()) return null
@@ -562,7 +575,8 @@ internal class DdzTracker(
         }
         val boxes = read(sideOf(seat))
         val ranks = (seen as? DdzSeen.Cards)?.ranks
-        if (boxes.isEmpty() || ranks != null && ranks.size != boxes.size) {
+        if (boxes.isEmpty() || ranks != null && ranks.size != boxes.size ||
+            jjRepeatedPlay?.invoke(sideOf(seat), ranks ?: boxes.map { it.rank }) == false) {
             jjPendingBoxes -= seat
             return
         }
@@ -578,16 +592,29 @@ internal class DdzTracker(
 
     /**
      * JJ 的闹钟可能漏掉整轮。调用方已读稳一手牌和两家的不出，这里核对历史、牌规和整副牌，再一起记下。
-     * 两家不出后仍由同一家领出，active 不变。
+     * 正常跟踪可能已经记下前几步。只有历史和待确认的座位仍按这轮的顺序排列才补剩下的步骤。
      */
-    internal fun recordOpponentPlayAndPasses(seat: DdzSeat, cards: List<String>, hand: List<String>): Boolean {
-        if (seat != nextOpponent() || cards.isEmpty() || !usablePlay(seat, cards)) return false
-        if (hand.size != remainingBeforePlay(DdzSeat.Me) || cards.size >= remainingBeforePlay(seat)) return false
-        val used = (history.flatten() + hand + cards).groupingBy { it }.eachCount()
+    internal fun recordOpponentPlayAndPasses(seat: DdzSeat, cards: List<String>, hand: List<String>, start: Int): Boolean {
+        val seats = listOf(seat, seat.next, seat.next.next)
+        val moves = listOf(cards, emptyList(), emptyList())
+        val done = history.size - start
+        if (landlord == null || broken != null || done !in moves.indices || awaitMeAfterInfer) return false
+        if (seats.take(done) != confirmedSeats.drop(start) || moves.take(done) != history.drop(start)) return false
+        val pending = seats.drop(done)
+        if (waiting.map { it.first } != pending.take(waiting.size) || active != (pending.getOrNull(waiting.size) ?: seat)) return false
+        if (done == 0 && (cards.isEmpty() || !usablePlay(seat, cards) || cards.size >= remainingBeforePlay(seat))) return false
+        if (hand.size != remainingBeforePlay(DdzSeat.Me) || remainingBeforePlay(seat) <= 0) return false
+        val added = if (done == 0) cards else emptyList()
+        val used = (history.flatten() + hand + added).groupingBy { it }.eachCount()
         if (used.any { (rank, n) -> rank !in DdzCards.RANKS || n > DdzCards.copies(rank) }) return false
-        record(seat, cards)
-        record(seat.next, emptyList())
-        record(seat.next.next, emptyList())
+        for (i in done until moves.size) record(seats[i], moves[i])
+        active = seat
+        waiting.clear()
+        lastSeen.clear()
+        passFrame.clear()
+        passFrames.clear()
+        awaitLeader = null
+        awaitSawPlay = false
         return true
     }
 
@@ -643,6 +670,7 @@ internal class DdzTracker(
      * 不再另算一遍——同一张牌数两次会把好底牌当成错的丢掉。[hand] 认不出时为 null,只按别家的出牌核对。
      */
     private fun fitsDeck(cards: List<String>, hand: List<String>?): Boolean {
+        if (opponentCheckHand != null) return hand != null && fitsJjBottom(cards, hand)
         if (cards.isEmpty()) return false
         val mine = HashMap<String, Int>()
         hand?.forEach { mine.merge(it, 1, Int::plus) }
@@ -667,6 +695,24 @@ internal class DdzTracker(
         cards.forEach { used.merge(it, 1, Int::plus) }
         others.forEach { (rank, n) -> used.merge(rank, n, Int::plus) }
         return used.all { (rank, n) -> n <= DdzCards.copies(rank) }
+    }
+
+    /** JJ 发送前用最新的历史再核一次，可能同一帧刚记下了新牌。 */
+    internal fun jjAdvisoryBottom(hand: List<String>): List<String> =
+        bottom?.takeIf { fitsJjBottom(it, hand) }.orEmpty()
+
+    private fun fitsJjBottom(cards: List<String>, hand: List<String>): Boolean {
+        val owner = landlord ?: return false
+        if (cards.size != 3 || cards.any { it !in DdzCards.RANKS } || hand.size != remainingBeforePlay(DdzSeat.Me)) return false
+        val used = (hand + history.flatten()).groupingBy { it }.eachCount()
+        if (used.any { (rank, n) -> rank !in DdzCards.RANKS || n > DdzCards.copies(rank) }) return false
+        val lordPlayed = history.indices.filter { confirmedSeats[it] == owner }.flatMap { history[it] }
+        if (owner == DdzSeat.Me) return containsAll(hand + lordPlayed, cards)
+
+        val spent = lordPlayed.groupingBy { it }.eachCount()
+        val unseenBottom = cards.groupingBy { it }.eachCount().mapValues { (rank, n) -> (n - spent.getOrDefault(rank, 0)).coerceAtLeast(0) }
+        return unseenBottom.values.sum() <= remainingBeforePlay(owner) &&
+            unseenBottom.all { (rank, n) -> used.getOrDefault(rank, 0) + n <= DdzCards.copies(rank) }
     }
 
     /** Install a complete, already validated visible history without observing a new frame. */
@@ -840,6 +886,7 @@ internal class DdzTracker(
      * 只闪一帧的「不出」还没读稳,同一轮后来落稳的真牌也照旧覆盖它。
      */
     private fun rememberSeen(seat: DdzSeat, seen: DdzSeen) {
+        if (seen is DdzSeen.Cards && jjRepeatedPlay?.invoke(sideOf(seat), seen.ranks) == false) return
         if (lastSeen[seat] == DdzSeen.Pass && seen is DdzSeen.Cards && (passFrames[seat] ?: 0) >= 2 &&
             (passFrame[seat] ?: -1) < lastAdvanceFrame) return
         lastSeen[seat] = seen
