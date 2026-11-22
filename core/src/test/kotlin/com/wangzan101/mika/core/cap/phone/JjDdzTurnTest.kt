@@ -432,6 +432,64 @@ class JjDdzTurnTest {
         assertTrue(log, "played_without_me" !in log)
     }
 
+    @Test fun waitsAgainAfterTheGamePassesForMe() = runTest {
+        val dealt = hand("SJ 2 A A K K Q J J J 8 6 5 5 4 3 3".split(' '))
+        val right = listOf("2", "2", "2", "9").mapIndexed { i, rank -> card(rank, 1470.0 + i * 56, 272.0) }
+        val bomb = List(4) { card("10", 650.0 + it * 56, 272.0) }
+        val fullHouse = listOf("6", "6", "6", "3", "3").mapIndexed { i, rank -> card(rank, 650.0 + i * 56, 272.0) }
+        val myPass = card("PASS", 454.0, 656.0)
+        val rightPass = card("PASS", 1595.0, 217.0)
+
+        assertSettleDeadline(10_000L,
+            Triple(1_000L, "left_turn", dealt + right),
+            Triple(1_500L, "left_turn", dealt + right),
+            Triple(2_000L, "follow", dealt + right + bomb),
+            Triple(2_500L, "right_turn", dealt + bomb + myPass),
+            Triple(3_000L, "right_turn", dealt + bomb + myPass),
+            Triple(5_000L, "left_turn", dealt + rightPass),
+            Triple(5_200L, "left_turn", dealt + rightPass),
+            Triple(5_800L, "beach_scenery", dealt + fullHouse.dropLast(1)),
+            Triple(6_000L, "follow", dealt + fullHouse),
+            Triple(8_000L, "follow", dealt),
+            Triple(9_999L, "follow", dealt),
+            Triple(10_000L, "follow", dealt),
+        )
+    }
+
+    @Test fun keepsWaitingThroughAFrameWithoutButtonsOrOpponentClock() = runTest {
+        val dealt = hand(seventeen)
+        val flicker = JjDdzScreen.read(frame("beach_scenery"))
+        assertEquals(DdzPhase.Other, flicker.phase)
+        assertEquals(null, flicker.turn)
+
+        assertSettleDeadline(5_000L,
+            Triple(1_000L, "follow", dealt),
+            Triple(3_000L, "beach_scenery", dealt),
+            Triple(4_999L, "follow", dealt),
+            Triple(5_000L, "follow", dealt),
+        )
+    }
+
+    private suspend fun assertSettleDeadline(deadline: Long, vararg reads: Triple<Long, String, List<JjCard>>) {
+        val frames = reads.map { (_, name, _) -> name }.distinct().associateWith(::frame)
+        val game = Game(JjDdzScreen.PACKAGE, frames.getValue(reads.first().second))
+        val decisions = mutableListOf<Long>()
+        JjDdzTurn.think = { decisions += now }
+        var index = 0
+        JjDdzTurn.detect = { _, _ ->
+            reads.getOrNull(index++)?.let { (at, _, cards) ->
+                now = at
+                reads.getOrNull(index)?.let { (_, next, _) -> game.frame = frames.getValue(next) }
+                cards
+            }
+        }
+
+        val result = run(game, start)
+        assertEquals(listOf(deadline), decisions)
+        assertEquals("history_not_ready", result.text("douzeroOff"))
+        assertFallbackPass(game)
+    }
+
     private suspend fun captureLog(block: suspend () -> Unit): String {
         val log = ByteArrayOutputStream()
         val original = System.out

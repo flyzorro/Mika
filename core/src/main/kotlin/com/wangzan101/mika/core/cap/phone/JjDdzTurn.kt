@@ -245,6 +245,8 @@ internal object JjDdzTurn {
             val table = JjCards.table(cards, frame.width)
             s.handCount = table.hand.size
             if (!view.phase.mine()) s.acted = false
+            // 游戏替我过牌也会换闹钟；按钮闪帧时保留本轮的读稳计时。
+            if (view.turn == DdzSeat.Left || view.turn == DdzSeat.Right) s.settleSince = 0
             s.lastPhase = view.phase
             // 托管(超时后游戏替我打):先把它取消,不然按钮都不出来。「取消托管」盖在手牌上,看不到手牌就不点:
             // 斗地主大厅泳池的池水在同一处也是这种蓝
