@@ -30,8 +30,11 @@ internal object JjDdzTurn {
     private const val DETECT_FAILURES = 4
     /** 连着这么多轮没有手牌,上一手就打完了;再看到手牌是新的一手。 */
     private const val NEW_HAND_GAP = 6
-    /** 没有手牌这么久(结算、晋级、等别桌打完都在 1 分钟内):多半是终局页或弹窗,停下。 */
-    private const val IDLE_MS = 90_000L
+        /**
+     * 没有手牌这么久:多半是终局页或没见过的弹窗,停下交还模型。锦标赛轮与轮之间的「比赛进度」画面
+     * 要等别桌打完,真机 11:32 超过 90 秒,工具停了、模型又没认出来,这一轮差点没人打;放宽到 5 分钟。
+     */
+    private const val IDLE_MS = 300_000L
     /** 轮到自己时别家的牌还没读稳,最多再等这么久(倒计时 15 秒)。 */
     private const val SETTLE_MS = 4_000L
     private const val TAP_GAP_MS = 120L
@@ -418,6 +421,8 @@ internal object JjDdzTurn {
     }
 
     private fun pause(s: Session, reason: String): ToolExecution {
+        // 停下也打一行:电脑上看 logcat 的监视才知道工具交还了模型
+        trace(s, "pause reason=$reason hands=${s.handsPlayed}")
         s.state = DdzSessionState.Paused
         s.reason = reason
         return result(s)

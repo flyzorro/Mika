@@ -134,6 +134,14 @@ class JjDdzTurnTest {
         assertEquals(JjDdzScreen.read(game.frame).buttons.single().x to JjDdzScreen.AUTO_TAP_Y, game.taps.first())
     }
 
+    @Test fun waitsOutALongBreakBetweenTournamentRounds() = runTest {
+        // 真机 11:32:轮间「比赛进度」画面超过 90 秒没有手牌,工具停了。现在等满 5 分钟才停
+        JjDdzTurn.detect = { _, _ -> now += 10_000; emptyList() }
+        val result = run(Game(JjDdzScreen.PACKAGE, frame("beach_scenery")), start)
+        assertEquals(DdzSessionReason.UNKNOWN_SCENE, result.text("reason"))
+        assertTrue("paused after ${now}ms", now > 300_000)
+    }
+
     @Test fun neverTapsTheLobbyPool() = runTest {
         // 斗地主大厅泳池的池水在「取消托管」那里也是蓝的;没有手牌就不能当托管去点
         now = 60_000
