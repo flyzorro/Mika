@@ -119,13 +119,19 @@ class JjCardsTest {
     }
 
     @Test fun anOvercallDoesNotSplitFourOfAKind() {
-        assertNull(overcall(List(4) { "2" }, listOf("K", "K")))
+        assertEquals(listOf("A", "A"), overcall(List(4) { "2" } + listOf("A", "A"), listOf("K", "K")))
     }
 
-    @Test fun aRuleOvercallNeverPlaysABombOrRocket() {
-        assertNull(overcall(List(4) { "Q" }, List(4) { "J" }))
-        assertNull(overcall(listOf("SJ", "BJ"), listOf("2", "2")))
-        assertNull(overcall(listOf("SJ", "BJ"), List(4) { "2" }))
+    @Test fun aRuleOvercallUsesTheSmallestWinningBombBeforeTheRocket() {
+        val hand = List(4) { "J" } + List(4) { "Q" } + List(4) { "K" } + listOf("BJ", "SJ")
+        assertEquals(List(4) { "J" }, overcall(hand, listOf("2", "2")))
+        assertEquals(List(4) { "Q" }, overcall(hand, List(4) { "J" }))
+    }
+
+    @Test fun aRuleOvercallUsesTheRocketWhenNoBombCanWin() {
+        assertEquals(listOf("SJ", "BJ"), overcall(listOf("BJ", "SJ"), listOf("2", "2")))
+        assertEquals(listOf("SJ", "BJ"), overcall(List(4) { "A" } + listOf("BJ", "SJ"), List(4) { "2" }))
+        assertNull(overcall(List(4) { "4" }, listOf("BJ", "SJ")))
     }
 
     private fun overcall(hand: List<String>, play: List<String>): List<String>? {

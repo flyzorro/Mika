@@ -6,6 +6,20 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class JjTrackerReplayTest {
+    @Test fun theRightShiftedBottomIsReadInSlotOrder() {
+        val tracker = DdzTracker(DdzSettlingPolicy.HUMAN).apply { restore(DdzSeat.Right, emptyList(), emptyList()) }
+        val session = JjDdzTurn.Session("", 1).apply { this.tracker = tracker }
+        val ranks = "BJ 2 K Q Q 10 10 10 9 9 8 5 5 4 4 3 3".split(' ')
+        val hand = ranks.mapIndexed { i, rank -> JjCard(rank, 500.0 + i * 96, 770.0, 545.0 + i * 96, 848.0, 0.99) }
+        val frames = javaClass.getResourceAsStream("/ddz-jj/replay-bottom-2236.tsv")!!.bufferedReader()
+            .use { it.readLines().drop(1).take(2) }
+        for (line in frames) {
+            val top = JjCards.parse(line.substringAfterLast('\t'))!!
+            JjDdzTurn.observe(session, JjCards.table(hand + top, 2412), JjView(DdzPhase.Other, emptyList(), DdzSeat.Right))
+        }
+        assertEquals(listOf("8", "2", "10"), tracker.jjAdvisoryBottom(ranks))
+    }
+
     @Test fun theRevealedBottomIsReadAcrossFramesEvenWithOverlappingRanks() {
         val tracker = replayBottom()
         assertEquals(DdzSeat.Right, tracker.landlord)

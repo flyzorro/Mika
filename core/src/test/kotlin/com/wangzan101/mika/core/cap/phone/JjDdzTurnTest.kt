@@ -11,6 +11,7 @@ import com.wangzan101.mika.core.uistate.ScreenPort
 import com.wangzan101.mika.core.uistate.ScreenSnapshot
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.test.currentTime
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
@@ -237,6 +238,41 @@ class JjDdzTurnTest {
         assertEquals("""["2","10","6"]""", sentBottom)
     }
 
+    @Test fun sendsTheNewBottomEvenWhenThePreviousRowLingersAfterBidding() = runTest {
+        val top = javaClass.getResourceAsStream("/ddz-jj/replay-bottom-2236.tsv")!!.bufferedReader().use {
+            it.readLines().drop(1).associate { line ->
+                line.substringBefore('\t').toInt() to JjCards.parse(line.substringAfterLast('\t'))!!
+            }
+        }
+        val dealt = hand("BJ A A A K Q Q J J J 10 8 7 6 5 4 3".split(' '))
+        val full = hand("BJ A A A K Q Q J J J 10 8 8 7 6 5 5 4 4 3".split(' '))
+        val call = frame("call_beach")
+        val afterCall = frame("beach_scenery")
+        val lead = frame("lead")
+        // 两段真实顶栏框拼成残留重现。先让旧框占六帧，再读新底牌和 20 张手牌。
+        val frames = listOf(call to (dealt + top.getValue(6060)), call to (dealt + top.getValue(6061))) +
+            List(6) { afterCall to (full + top.getValue(6061)) } +
+            listOf(
+                afterCall to (dealt + top.getValue(50788)),
+                afterCall to (full + top.getValue(50789)),
+                lead to (full + top.getValue(50790)),
+            )
+        var reads = 0
+        val game = object : Game(JjDdzScreen.PACKAGE, call) {
+            override suspend fun rawFrame(rows: List<Int>) = frames.getOrElse(reads) { frames.last() }.first
+        }
+        JjDdzTurn.detect = { _, _ -> frames.getOrNull(reads++)?.second }
+        val sent = mutableListOf<String>()
+        PhoneDdzTurn.advise = { _, request ->
+            sent += Json.parseToJsonElement(request).jsonObject["bottom"].toString()
+            """{"play":["3","4","5","6","7"]}"""
+        }
+
+        run(game, start)
+
+        assertEquals(listOf("""["8","5","4"]"""), sent)
+    }
+
     @Test fun rejectsHandsAboveThirty() = runTest {
         val game = Game(JjDdzScreen.PACKAGE, frame("beach_scenery"))
         val error = runCatching {
@@ -282,6 +318,32 @@ class JjDdzTurnTest {
         assertEquals(JjDdzScreen.read(game.frame).buttons[2].x, x)
         val xs = game.taps.map { it.first }
         assertEquals(listOf(0, 1, 2, 3).map { 500 + it * 96 + 22 }, xs)
+    }
+
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    @Test fun anEightCardBatchLeavesTimeForEachLiftAfterRelease() = runTest {
+        val ranks = listOf("SJ", "Q", "8", "8", "7", "7", "4", "4", "4", "4", "3")
+        val wanted = (2..9).toSet()
+        replies(hand(ranks), hand(ranks), hand(ranks, wanted), hand(ranks, wanted))
+        val presses = mutableListOf<Pair<Long, Long>>()
+        val game = object : Game(JjDdzScreen.PACKAGE, frame("lead")) {
+            override suspend fun pressAt(x: Int, y: Int, holdMs: Long): Boolean {
+                val start = currentTime
+                delay(holdMs)
+                presses += start to currentTime
+                return super.pressAt(x, y, holdMs)
+            }
+        }
+
+        val x = JjDdzTurn.select(toolDispatcher(game).ctx, JjDdzTurn.Session("", 1), wanted, JjCards.table(hand(ranks), 2408))
+
+        assertEquals(JjDdzScreen.read(game.frame).buttons[2].x, x)
+        assertEquals(wanted.toList(), handTappedIndices(game))
+        assertEquals(List(8) { 150L }, presses.map { (down, up) -> up - down })
+        for ((previous, next) in presses.zipWithNext()) {
+            assertTrue("press started at ${next.first}, previous ended at ${previous.second}", next.first - previous.second >= 200)
+        }
+        assertTrue("eight-card selection took ${currentTime}ms", currentTime <= 4_000)
     }
 
     @Test fun anyTwoOfThreeAcesArePairOfAces() = runTest {
@@ -478,23 +540,43 @@ class JjDdzTurnTest {
     }
 
     @Test fun aFallbackPlaysTheLowestOvercallWithoutHint() = runTest {
-        val game = fallbackFollow(listOf("BJ", "2", "K", "Q"), listOf("J"), lifted = 3)
+        val game = fallbackFollow(listOf("BJ", "2", "K", "Q"), listOf("J"), lifted = setOf(3))
         val buttons = JjDdzScreen.read(game.frame).buttons
         assertEquals(listOf((500 + 3 * 96 + 22) to JjCards.HAND_TAP_Y, buttons[2].x to JjDdzScreen.TAP_Y), game.taps)
     }
 
     @Test fun aFallbackBeatsTheSmallJokerWithTheBigJoker() = runTest {
-        val game = fallbackFollow(listOf("BJ", "2", "9", "3"), listOf("SJ"), lifted = 0, landlord = DdzSeat.Me)
+        val game = fallbackFollow(listOf("BJ", "2", "9", "3"), listOf("SJ"), lifted = setOf(0), landlord = DdzSeat.Me)
         val play = JjDdzScreen.read(game.frame).buttons[2]
         assertEquals(listOf(522 to JjCards.HAND_TAP_Y, play.x to JjDdzScreen.TAP_Y), game.taps)
     }
 
-    @Test fun aFallbackPassesRatherThanSplitABomb() = runTest {
-        assertFallbackPass(fallbackFollow(listOf("Q", "Q", "Q", "Q", "3"), listOf("J", "J")))
+    @Test fun aFallbackBombsAnOpponentWhenNoMatchingPlayCanBeatIt() = runTest {
+        val hand = listOf("SJ", "Q", "8", "8", "7", "7", "4", "4", "4", "4")
+        val bomb = listOf(6, 7, 8, 9)
+        for (lead in listOf(
+            listOf("10", "10"), listOf("2", "2"), listOf("9", "8", "7", "6", "5"),
+            listOf("J", "J", "J", "6"), listOf("A", "A", "A", "5"), List(4) { "3" },
+        )) {
+            val game = fallbackFollow(hand, lead, lifted = bomb.toSet())
+            assertEquals(lead.toString(), bomb, handTappedIndices(game))
+            assertEquals(JjDdzScreen.read(game.frame).buttons[2].x to JjDdzScreen.TAP_Y, game.taps.last())
+        }
+    }
+
+    @Test fun aFallbackPrefersTheQueenToBombingASingleEight() = runTest {
+        val hand = listOf("SJ", "Q", "8", "8", "7", "7", "4", "4", "4", "4")
+        val game = fallbackFollow(hand, listOf("8"), lifted = setOf(1))
+        assertEquals(listOf(1), handTappedIndices(game))
+        assertEquals(JjDdzScreen.read(game.frame).buttons[2].x to JjDdzScreen.TAP_Y, game.taps.last())
+    }
+
+    @Test fun aFallbackPassesOnTheOpponentsRocket() = runTest {
+        assertFallbackPass(fallbackFollow(List(4) { "4" }, listOf("BJ", "SJ")))
     }
 
     @Test fun aFallbackStillPassesOnATeammatesPlay() = runTest {
-        assertFallbackPass(fallbackFollow(listOf("BJ", "3"), listOf("SJ"), owner = DdzSeat.Left))
+        assertFallbackPass(fallbackFollow(List(4) { "4" }, listOf("2", "2"), owner = DdzSeat.Left))
     }
 
     private fun assertFallbackPass(game: Game) {
@@ -502,7 +584,7 @@ class JjDdzTurnTest {
     }
 
     private suspend fun fallbackFollow(
-        ranks: List<String>, play: List<String>, lifted: Int? = null, owner: DdzSeat = DdzSeat.Right,
+        ranks: List<String>, play: List<String>, lifted: Set<Int> = emptySet(), owner: DdzSeat = DdzSeat.Right,
         landlord: DdzSeat = DdzSeat.Right,
     ): Game {
         val game = Game(JjDdzScreen.PACKAGE, frame("follow"))
@@ -510,7 +592,7 @@ class JjDdzTurnTest {
         val boxes = left + play.mapIndexed { i, rank ->
             card(rank, (if (owner == DdzSeat.Right) 1600.0 else 650.0) + 56 * i, 272.0)
         }
-        val selected = hand(ranks, setOfNotNull(lifted)) + boxes
+        val selected = hand(ranks, lifted) + boxes
         replies(hand(ranks) + boxes, hand(ranks) + boxes, selected, selected)
         val session = JjDdzTurn.Session("", 1).apply { lordSeen = landlord; lordFrames = 12 }
         JjDdzTurn.byRules(toolDispatcher(game).ctx, session, JjDdzScreen.read(game.frame), JjCards.table(hand(ranks) + boxes, game.frame.width))

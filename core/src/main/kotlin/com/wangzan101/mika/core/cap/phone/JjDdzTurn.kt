@@ -43,8 +43,7 @@ internal object JjDdzTurn {
     private const val IDLE_MS = 300_000L
     /** 轮到自己时别家的牌还没读稳,最多再等这么久(倒计时 15 秒)。 */
     private const val SETTLE_MS = 4_000L
-    private const val TAP_GAP_MS = 120L
-    /** 抬牌动画约 200ms:点完隔这么久再认。 */
+    /** 松手后留出约 200ms 给抬牌动画，再点下一张或截屏核对。 */
     private const val LIFT_MS = 200L
     private const val SETTLE_READS = 4
     private const val SELECT_STALLED_ROUNDS = 2
@@ -63,8 +62,8 @@ internal object JjDdzTurn {
     /** 18:00:43 的左槽「2」最低约 0.56，右槽 6/9 的分差约 0.16。 */
     private const val BOTTOM_MIN_SCORE = 0.55
     private const val BOTTOM_SCORE_GAP = 0.10
-    private const val BOTTOM_MIN_VOTES = 4
-    private const val BOTTOM_VOTE_GAP = 3
+    // 22:36:43 首次决策前只有两帧同时读到 20 张手牌和 8 5 4，要求每槽领先两票。
+    private const val BOTTOM_VOTE_GAP = 2
     /** 炸弹、火箭的特效会挡住人物一两帧。 */
     private const val LORD_FRAMES = 5
     private const val ME_LORD_FRAMES = 12
@@ -87,12 +86,17 @@ internal object JjDdzTurn {
         var clockSteps = 0
     }
 
+    internal data class BottomRow(val centers: List<Double>, val ranks: List<String>)
+
     internal class Session(val advisor: String, var handsLeft: Int, private val dumpDirectory: () -> File? = { null }) {
         private class Shot(val at: Long, val jpeg: ByteArray)
         private val recentShots = ArrayDeque<Shot>(DUMP_FRAMES)
         private val sampledShots = ArrayDeque<Shot>(DUMP_HISTORY_SECONDS + 1)
         var tracker: DdzTracker? = null
         val bottomVotes = List(3) { mutableMapOf<String, Int>() }
+        var bottomCenters = emptyList<Double>()
+        var staleBottom: BottomRow? = null
+        var emptyBottomInCall = 0
         var opponentTrick: OpponentTrick? = null
         var recoveredLeader: DdzSeat? = null
         var previousPlayBoxes = emptyMap<DdzSide, List<JjCard>>()
@@ -418,21 +422,33 @@ internal object JjDdzTurn {
         )
     }
 
-    /** 地主已确认或人物衣服、20 张手牌显示已定地主时才投票，避免累积上一手的底牌。 */
+    /** 叫分时记录尚未翻掉的旧底牌，看到地主信号和新的一组后才投票。 */
     private fun votedBottom(s: Session, tracker: DdzTracker, table: JjTable, view: JjView): List<String>? {
         if (view.phase == DdzPhase.Call) {
             s.bottomVotes.forEach { it.clear() }
+            s.bottomCenters = emptyList()
+            if (table.topCards.isEmpty()) {
+                // 连续空顶栏表示旧底牌已清。新牌允许恰好和上一手相同。
+                if (++s.emptyBottomInCall >= 2) s.staleBottom = null
+            } else {
+                s.emptyBottomInCall = 0
+                if (!s.bid) table.bottom?.let { s.staleBottom = BottomRow(table.bottomCenters, it) }
+            }
             return null
         }
+        s.emptyBottomInCall = 0
         if (tracker.landlord == null && view.redLord == null && table.hand.size != 20) return null
         if (tracker.bottom?.size == 3) return null
 
-        val reads = table.bottom ?: table.bottomSlots.map { boxes ->
-            val ranked = boxes.sortedByDescending { it.score }.distinctBy { it.rank }
-            val best = ranked.firstOrNull() ?: return@map null
-            val runnerUp = ranked.getOrNull(1)?.score ?: 0.0
-            best.rank.takeIf { best.score >= BOTTOM_MIN_SCORE && best.score - runnerUp >= BOTTOM_SCORE_GAP }
+        s.staleBottom?.let { stale ->
+            val slots = table.bottomSlots(stale.centers)
+            // 残留可能只读到其中几张。位置和可靠点数都兼容旧牌时整行不计票。
+            if (slots.sumOf { it.size } == table.topCards.size &&
+                bottomReads(slots).withIndex().all { (i, rank) -> rank == null || rank == stale.ranks[i] }
+            ) return null
         }
+        if (table.bottomCenters.isNotEmpty()) s.bottomCenters = table.bottomCenters
+        val reads = table.bottom ?: bottomReads(table.bottomSlots(s.bottomCenters))
         for ((slot, rank) in reads.withIndex()) {
             if (rank != null) s.bottomVotes[slot].merge(rank, 1, Int::plus)
         }
@@ -440,9 +456,16 @@ internal object JjDdzTurn {
             val ranked = votes.entries.sortedByDescending { it.value }
             val winner = ranked.firstOrNull() ?: return null
             val runnerUp = ranked.getOrNull(1)?.value ?: 0
-            if (winner.value < BOTTOM_MIN_VOTES || winner.value - runnerUp < BOTTOM_VOTE_GAP) return null
+            if (winner.value - runnerUp < BOTTOM_VOTE_GAP) return null
             winner.key
         }
+    }
+
+    private fun bottomReads(slots: List<List<JjCard>>): List<String?> = slots.map { boxes ->
+        val ranked = boxes.sortedByDescending { it.score }.distinctBy { it.rank }
+        val best = ranked.firstOrNull() ?: return@map null
+        val runnerUp = ranked.getOrNull(1)?.score ?: 0.0
+        best.rank.takeIf { best.score >= BOTTOM_MIN_SCORE && best.score - runnerUp >= BOTTOM_SCORE_GAP }
     }
 
     /** 快速清桌时保留已经连续读到的出牌，等新出现的两个「不出」或完整走过一圈的闹钟确认。 */
@@ -523,8 +546,14 @@ internal object JjDdzTurn {
 
     /** 看到新发的 17 张从头记;轮到我出牌时才第一次看到手牌(张数不对)是中途进来的,这一手只按规则打完。 */
     private fun newHand(s: Session, table: JjTable, view: JjView) {
+        val previousBottom = (s.tracker ?: s.closed)?.bottom
+        if (previousBottom?.size == 3 && s.bottomCenters.size == 3) {
+            s.staleBottom = BottomRow(s.bottomCenters, previousBottom)
+        }
         s.tracker = DdzTracker(DdzSettlingPolicy.HUMAN, onBroken = s::dump)
         s.bottomVotes.forEach { it.clear() }
+        s.bottomCenters = emptyList()
+        s.emptyBottomInCall = 0
         s.recoveredLeader = null
         s.resetTurnReads()
         s.brokenLogged = false
@@ -601,7 +630,7 @@ internal object JjDdzTurn {
         if (playX == null) {
             trace(s, "select_failed want=$want")
             tracker.fail(DdzSessionReason.REJECTED_ACTION)
-            return byRules(ctx, s, view, table)
+            return byRules(ctx, s, view, table, rejectedPlay = play)
         }
         tap(ctx, playX, JjDdzScreen.TAP_Y)
         tracker.mine(play)
@@ -615,10 +644,14 @@ internal object JjDdzTurn {
         return now - s.settleSince >= SETTLE_MS
     }
 
-    internal suspend fun byRules(ctx: ToolContext, s: Session, view: JjView, table: JjTable): Boolean {
+    internal suspend fun byRules(
+        ctx: ToolContext, s: Session, view: JjView, table: JjTable, rejectedPlay: List<String>? = null,
+    ): Boolean {
         think()
         if (view.phase == DdzPhase.Follow) {
             val play = opposingPlay(s, table)?.let { JjCards.smallestOvercall(table, it) }
+                // 同一回合刚选失败的牌，别再花一轮时间重试。
+                ?.takeUnless { it.sorted() == rejectedPlay?.sorted() }
             val want = play?.let { target(table, it) }
             val x = want?.let { select(ctx, s, it, table) }
             trace(s, "rules_follow play=$play playable=${x != null}")
@@ -763,9 +796,10 @@ internal object JjDdzTurn {
             val drop = current.lifted - want
             val missing = want - current.lifted
             val batch = drop.ifEmpty { missing }
-            for (i in batch.sorted()) {
+            for ((offset, i) in batch.sorted().withIndex()) {
+                // pressAt 等松手。最后一张由 settled 在首次截屏前等动画。
+                if (offset > 0) delay(LIFT_MS)
                 tap(ctx, JjCards.tapX(current, i), JjCards.HAND_TAP_Y)
-                delay(TAP_GAP_MS)
             }
             val before = current.lifted
             confirmed = settled(ctx, s, hand) ?: return null

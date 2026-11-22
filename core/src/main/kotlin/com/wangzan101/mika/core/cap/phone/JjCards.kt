@@ -1,5 +1,6 @@
 package com.wangzan101.mika.core.cap.phone
 
+import com.wangzan101.mika.core.cap.phone.DdzSnapshotRecovery.Kind
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
@@ -27,8 +28,9 @@ internal data class JjTable(
     val left: DdzSeen,
     val right: DdzSeen,
     val mine: DdzSeen,
-    /** 底牌槽从左到右，每槽保留当帧的候选框，供跨帧投票。 */
-    val bottomSlots: List<List<JjCard>>,
+    val topCards: List<JjCard>,
+    /** 从该帧观察到的底牌槽中心，按从左到右排序。 */
+    val bottomCenters: List<Double>,
     /** 左右两家出牌区认到的原始框(含 PASS),给「连着几帧一样就算认准」用。 */
     val leftCards: List<JjCard> = emptyList(),
     val rightCards: List<JjCard> = emptyList(),
@@ -36,7 +38,14 @@ internal data class JjTable(
     val handRanks: List<String> get() = hand.map { it.rank }
     /** 三个槽都只有一个高分框时，可以直接取本帧的票。 */
     val bottom: List<String>?
-        get() = bottomSlots.map { it.singleOrNull()?.takeIf { card -> card.score >= JjCards.SURE }?.rank ?: return null }
+        get() = bottomSlots(bottomCenters).takeIf { it.size == 3 }?.map {
+            it.singleOrNull()?.takeIf { card -> card.score >= JjCards.SURE }?.rank ?: return null
+        }
+    fun bottomSlots(centers: List<Double>): List<List<JjCard>> {
+        if (centers.isEmpty()) return emptyList()
+        val tolerance = (centers.last() - centers.first()) / 6
+        return centers.map { x -> topCards.filter { abs(it.cx - x) <= tolerance } }
+    }
     /** 有一张手牌认不准:这一帧的手牌不能拿去算。 */
     val handUnsure: Boolean get() = hand.any { it.score < JjCards.SURE }
     fun seen(side: DdzSide): DdzSeen = if (side == DdzSide.Left) left else right
@@ -62,14 +71,11 @@ internal object JjCards {
         return ranks
     }
 
-    /** 找同牌型最小的压牌。枚举点数和张数,同点数的框只取一次。 */
+    /** 优先用同牌型最小的压牌。压不住时用最小可赢炸弹，再考虑王炸。 */
     fun smallestOvercall(table: JjTable, play: List<String>): List<String>? {
         if (table.handUnsure) return null
         val lead = DdzSnapshotRecovery.classify(play) ?: return null
-        when (lead.kind) {
-            DdzSnapshotRecovery.Kind.Pass, DdzSnapshotRecovery.Kind.Bomb, DdzSnapshotRecovery.Kind.Rocket -> return null
-            else -> Unit
-        }
+        if (lead.kind == Kind.Pass || lead.kind == Kind.Rocket) return null
         val counts = table.handRanks.groupingBy { it }.eachCount()
         val ranks = DdzCards.RANKS.filter { it in counts }
         val remaining = IntArray(ranks.size + 1)
@@ -96,8 +102,14 @@ internal object JjCards {
                 repeat(take) { cards.removeAt(cards.lastIndex) }
             }
         }
-        search(0, lead.length)
-        return best
+        if (lead.kind != Kind.Bomb) search(0, lead.length)
+        best?.let { return it }
+        for (rank in ranks) {
+            if (counts.getValue(rank) != 4) continue
+            val bomb = DdzSnapshotRecovery.Move(Kind.Bomb, 4, DdzCards.ORDER.getValue(rank))
+            if (DdzSnapshotRecovery.beats(lead, bomb)) return List(4) { rank }
+        }
+        return if ("SJ" in counts && "BJ" in counts) listOf("SJ", "BJ") else null
     }
     private const val BASE_WIDTH = 2408.0
     /** 录屏里左家出的牌最左在 x≈600–700,右家的最右到 x≈1700–1800,翻底牌的动画只在 1000–1400 之间。 */
@@ -108,8 +120,8 @@ internal object JjCards {
     /** 低于这个分数的牌算认不准。 */
     const val SURE = 0.8
     private const val BOTTOM_Y = 60.0
-    private val BOTTOM_SLOT_X = listOf(870.0, 940.0, 1010.0)
-    private const val BOTTOM_SLOT_HALF_WIDTH = 25.0
+    private const val BOTTOM_STEP = 70.0
+    private const val BOTTOM_STEP_TOLERANCE = 12.0
     private const val PLAY_Y0 = 160.0
     private const val MINE_Y0 = 450.0
     private const val HAND_Y0 = 700.0
@@ -185,19 +197,32 @@ internal object JjCards {
         // 每手结算浮层里摆的各家剩牌也在这一带,字矮(约 50–68)、上沿高(670 起)
         val hand = cards.filter { it.cy >= HAND_Y0 && it.rank != PASS && it.y0 >= HAND_MIN_TOP && it.y1 - it.y0 >= HAND_MIN_H }.sortedBy { it.cx }
         val top = cards.filter { it.cy < BOTTOM_Y && it.rank in DdzCards.RANKS }
-        val bottomSlots = BOTTOM_SLOT_X.map { center ->
-            top.filter { abs(it.cx / scale - center) <= BOTTOM_SLOT_HALF_WIDTH }
-        }
         return JjTable(
             hand = hand,
             lifted = hand.indices.filterTo(LinkedHashSet()) { hand[it].y0 < LIFTED_TOP },
             left = seen(left),
             right = seen(right),
             mine = seen(cards.filter { it.cy >= MINE_Y0 && it.cy < HAND_Y0 }),
-            bottomSlots = bottomSlots,
+            topCards = top,
+            bottomCenters = bottomCenters(top, scale),
             leftCards = left,
             rightCards = right,
         )
+    }
+
+    /** 顶栏会整体平移。按实测槽距聚框，也允许中间一张暂时漏读。 */
+    private fun bottomCenters(top: List<JjCard>, scale: Double): List<Double> {
+        val step = BOTTOM_STEP * scale
+        val tolerance = BOTTOM_STEP_TOLERANCE * scale
+        val centers = mutableListOf<Double>()
+        for (card in top.sortedBy { it.cx }) {
+            if (centers.isEmpty() || card.cx - centers.last() > step / 3) centers += card.cx
+        }
+        if (centers.size == 3 && centers.zipWithNext().all { (a, b) -> abs(b - a - step) <= tolerance }) return centers
+        if (centers.size == 2 && abs(centers[1] - centers[0] - 2 * step) <= 2 * tolerance) {
+            return listOf(centers[0], centers.average(), centers[1])
+        }
+        return emptyList()
     }
 
     /**
