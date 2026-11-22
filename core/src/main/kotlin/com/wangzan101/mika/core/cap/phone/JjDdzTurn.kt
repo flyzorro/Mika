@@ -46,6 +46,8 @@ internal object JjDdzTurn {
     private const val PLAYABLE_READS = 7
     private const val THOUGHT_MS = 1_500L
     private const val HOLD_MS = 150L
+    /** 一轮截屏 + 认牌超过这么久就打日志。 */
+    private const val SLOW_FRAME_MS = 3_000L
     /** 炸弹、火箭的特效会挡住人物一两帧。 */
     private const val LORD_FRAMES = 5
     private const val ME_LORD_FRAMES = 12
@@ -67,6 +69,10 @@ internal object JjDdzTurn {
         /** 这一个决定已经点过了:按钮还会留几帧,等它消失前不再点。 */
         var acted = false
         var noHand = 0
+        /** 最近一次读稳的手牌;一手被当成打完时连同记牌一起留着,特效挡住手牌后原样回来就接着记(见 drive)。 */
+        var lastRanks: List<String>? = null
+        var closed: DdzTracker? = null
+        var closedHand: List<String>? = null
         var lastHandAt = 0L
         var settleSince = 0L
         var detectFailures = 0
@@ -133,9 +139,19 @@ internal object JjDdzTurn {
         while (true) {
             if (s.stopped) return result(s)
             if (ctx.screen.peek().packageName != JjDdzScreen.PACKAGE) return pause(s, DdzSessionReason.APP_SWITCH)
+            val t0 = PhoneDdzTurn.clock()
             val frame = ctx.screen.rawFrame(JjDdzScreen.ROWS)
+            val t1 = PhoneDdzTurn.clock()
             val jpeg = frame?.let { ctx.screen.quickShot() }
+            val t2 = PhoneDdzTurn.clock()
             val cards = jpeg?.let { detect(s.advisor, it) }
+            val t3 = PhoneDdzTurn.clock()
+            // 真机 15:13:23–37:14 秒没有一张截图到电脑,工具一步没动,超时进了托管;当时分不清卡在截屏、网络还是电脑。
+            // 慢的一轮和失败的一轮都打出来,各步用了多久
+            if (t3 - t0 > SLOW_FRAME_MS || frame == null || cards == null) {
+                trace(s, "frame raw=${t1 - t0}ms${if (frame == null) "(null)" else ""} shot=${t2 - t1}ms${if (frame != null && jpeg == null) "(null)" else ""} " +
+                    "cards=${t3 - t2}ms${if (jpeg != null && cards == null) "(null)" else ""} fails=${s.detectFailures + if (cards == null) 1 else 0}")
+            }
             if (frame == null || cards == null) {
                 if (++s.detectFailures >= DETECT_FAILURES) return pause(s, DdzSessionReason.SERVICE_UNAVAILABLE)
                 waitOrSteer { delay(POLL_MS) } ?: return result(s)
@@ -160,7 +176,9 @@ internal object JjDdzTurn {
             }
             if (table.hand.isEmpty()) {
                 if (++s.noHand == NEW_HAND_GAP && s.tracker != null) {
-                    // 一手打完
+                    // 一手打完。记牌先留着:王炸、炸弹的特效会挡住手牌好几帧,手牌原样回来就不是新的一手
+                    s.closed = s.tracker
+                    s.closedHand = s.expectedHand ?: s.lastRanks
                     s.tracker = null
                     s.expectedHand = null
                     s.handsPlayed++
@@ -182,14 +200,28 @@ internal object JjDdzTurn {
             }
             s.lastHandAt = PhoneDdzTurn.clock()
             if (s.noHand >= NEW_HAND_GAP || s.tracker == null) {
+                val back = s.closed?.takeIf {
+                    table.hand.size != HAND_SIZE && !table.handUnsure && table.handRanks.sorted() == s.closedHand?.sorted()
+                }
                 // 牌是一张张发下来的:没到 17 张、也还没轮到我出牌,就是还在发牌,等发完再从头记
-                if (table.hand.size != HAND_SIZE && view.phase != DdzPhase.Lead && view.phase != DdzPhase.Follow) {
+                if (back == null && table.hand.size != HAND_SIZE && view.phase != DdzPhase.Lead && view.phase != DdzPhase.Follow) {
                     waitOrSteer { delay(POLL_MS) } ?: return result(s)
                     continue
                 }
-                newHand(s, table, view)
+                if (back != null) {
+                    // 真机 15:04:王炸特效挡了手牌 3 秒,当成一手打完、又当成中途进来,按规则先出了单张 9 输掉
+                    trace(s, "resume_after_gap hand=${table.handRanks.joinToString(" ")}")
+                    s.tracker = back
+                    s.handsPlayed--
+                    s.handsLeft++
+                } else {
+                    newHand(s, table, view)
+                }
+                s.closed = null
+                s.closedHand = null
             }
             s.noHand = 0
+            if (!table.handUnsure) s.lastRanks = table.handRanks
             val tracker = s.tracker!!
             tracker.observe(
                 rawTurn = view.turn,
@@ -279,13 +311,13 @@ internal object JjDdzTurn {
         val asked = PhoneDdzTurn.clock()
         val play = if (tracker.broken == null) askDouZero(s, tracker, hand) else null
         trace(s, "${view.phase} hand=${hand.joinToString(" ")} history=${tracker.history.joinToString("/") { it.joinToString(" ") }} seat=${runCatching { tracker.seat() }.getOrNull()} play=$play")
-        if (play == null) return byRules(ctx, view, table)
+        if (play == null) return byRules(ctx, s, view, table)
         // DouZero 自己想了够久(现场模拟最多 2.5 秒)就不再另外等,倒计时只有 15 秒
         if (PhoneDdzTurn.clock() - asked < THOUGHT_MS) think()
         if (play.isEmpty()) {
             if (view.phase != DdzPhase.Follow) {
                 tracker.fail(DdzSessionReason.INVALID_ADVISOR_PLAY)
-                return byRules(ctx, view, table)
+                return byRules(ctx, s, view, table)
             }
             tap(ctx, view.buttons[0].x, JjDdzScreen.TAP_Y)
             tracker.mine(emptyList())
@@ -296,7 +328,7 @@ internal object JjDdzTurn {
         if (playX == null) {
             trace(s, "select_failed want=$want")
             tracker.fail(DdzSessionReason.REJECTED_ACTION)
-            return byRules(ctx, view, table)
+            return byRules(ctx, s, view, table)
         }
         tap(ctx, playX, JjDdzScreen.TAP_Y)
         tracker.mine(play)
@@ -315,19 +347,26 @@ internal object JjDdzTurn {
         return now - s.settleSince >= SETTLE_MS
     }
 
-    private suspend fun byRules(ctx: ToolContext, view: JjView, table: JjTable): Boolean {
+    private suspend fun byRules(ctx: ToolContext, s: Session, view: JjView, table: JjTable): Boolean {
         think()
         if (view.phase == DdzPhase.Follow) {
             tap(ctx, view.buttons[0].x, JjDdzScreen.TAP_Y)
             return true
         }
-        val smallest = table.hand.lastIndex
-        for (i in table.hand.indices) if ((i == smallest) != (i in table.lifted)) {
-            tap(ctx, JjCards.tapX(table, i), JjCards.HAND_TAP_Y)
-            delay(TAP_GAP_MS)
-        }
-        tap(ctx, playable(ctx) ?: view.buttons[2].x, JjDdzScreen.TAP_Y)
+        // 先出:有对子或三张先出最小的那组,没有才出最小的单张。记牌断了不知道别家剩几张,
+        // 单张最容易被只剩一张的人接走(真机 15:13 地主剩一张,先出了单张 3)。炸弹不拆
+        val want = smallestGroup(table) ?: setOf(table.hand.lastIndex)
+        val x = if (select(ctx, s, want, table)) playable(ctx) else null
+        trace(s, "rules_lead want=${want.map { table.hand[it].rank }} playable=${x != null}")
+        tap(ctx, x ?: view.buttons[2].x, JjDdzScreen.TAP_Y)
         return true
+    }
+
+    /** 手里最小的一组对子或三张(序号);没有为 null。手牌从大到小排,从右往左找。 */
+    internal fun smallestGroup(table: JjTable): Set<Int>? {
+        val count = table.handRanks.groupingBy { it }.eachCount()
+        val rank = table.handRanks.asReversed().firstOrNull { (count[it] ?: 0) in 2..3 } ?: return null
+        return table.hand.indices.filterTo(LinkedHashSet()) { table.hand[it].rank == rank }
     }
 
     /**

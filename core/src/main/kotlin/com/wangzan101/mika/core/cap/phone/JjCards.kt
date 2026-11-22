@@ -73,12 +73,15 @@ internal object JjCards {
                 conn.doOutput = true
                 conn.setRequestProperty("Content-Type", "image/jpeg")
                 conn.outputStream.use { it.write(jpeg) }
-                if (conn.responseCode != 200) return@runCatching null
+                if (conn.responseCode != 200) {
+                    println("JJTRACE cards_http ${conn.responseCode}")
+                    return@runCatching null
+                }
                 parse(conn.inputStream.bufferedReader().use { it.readText() })
             } finally {
                 conn.disconnect()
             }
-        }.getOrNull()
+        }.onFailure { println("JJTRACE cards_error ${it.javaClass.simpleName}: ${it.message}") }.getOrNull()
     }
 
     fun parse(body: String): List<JjCard>? = runCatching {

@@ -207,6 +207,32 @@ class JjDdzTurnTest {
         assertEquals(listOf((500 + 2 * 96 + 22) to JjCards.HAND_TAP_Y, play.x to JjDdzScreen.TAP_Y), game.taps)
     }
 
+    @Test fun joinedMidHandLeadsTheSmallestPairBeforeASingle() = runTest {
+        // 真机 15:13:记牌断了按规则先出,出了单张 3,地主只剩一张。有对子先出最小的对子
+        val ranks = listOf("A", "9", "9", "3")
+        replies(hand(ranks), hand(ranks, setOf(1, 2)), hand(ranks, setOf(1, 2)))
+        val game = Game(JjDdzScreen.PACKAGE, frame("lead"))
+        run(game, start)
+        assertEquals(listOf(1, 2).map { 500 + it * 96 + 22 }, game.taps.take(2).map { it.first })
+        assertEquals(JjDdzScreen.read(game.frame).buttons[2].x, game.taps.last().first)
+    }
+
+    @Test fun aBombIsNotTheFallbackLead() = runTest {
+        val ranks = listOf("A", "7", "7", "7", "7", "3")
+        assertEquals(null, JjDdzTurn.smallestGroup(JjCards.table(hand(ranks), 2408)))
+        assertEquals(setOf(1, 2, 3), JjDdzTurn.smallestGroup(JjCards.table(hand(listOf("K", "8", "8", "8", "4")), 2408)))
+    }
+
+    @Test fun aRocketAnimationHidingTheHandDoesNotEndTheHand() = runTest {
+        // 真机 15:04:王炸特效挡了手牌几帧,工具当成一手打完,手牌回来又当成中途进来,按规则先出了单张 9
+        val sixteen = seventeen.drop(1)
+        replies(hand(seventeen), hand(sixteen), *Array(6) { emptyList<JjCard>() }, hand(sixteen))
+        val game = Game(JjDdzScreen.PACKAGE, frame("beach_scenery"))
+        val result = run(game, """{"action":"start","mode":"human","advisor":"http://mac:3426","auto":true,"hands":3}""")
+        assertEquals("0", result.text("handsPlayed"))
+        assertEquals(null, result.text("douzeroOff"))
+    }
+
     @Test fun switchingAwayPausesWithoutTapping() = runTest {
         replies(hand(seventeen))
         val game = Game(JjDdzScreen.PACKAGE, frame("left_turn"))
