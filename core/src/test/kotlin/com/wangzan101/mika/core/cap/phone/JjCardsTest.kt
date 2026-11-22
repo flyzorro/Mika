@@ -110,6 +110,29 @@ class JjCardsTest {
         assertTrue(t.hand.isEmpty())
     }
 
+    @Test fun aTwoOvercallsAnAce() {
+        assertEquals(listOf("2"), overcall(listOf("2"), listOf("A")))
+    }
+
+    @Test fun aPairOfTwosOvercallsKings() {
+        assertEquals(listOf("2", "2"), overcall(listOf("2", "2"), listOf("K", "K")))
+    }
+
+    @Test fun anOvercallDoesNotSplitFourOfAKind() {
+        assertNull(overcall(List(4) { "2" }, listOf("K", "K")))
+    }
+
+    @Test fun aRuleOvercallNeverPlaysABombOrRocket() {
+        assertNull(overcall(List(4) { "Q" }, List(4) { "J" }))
+        assertNull(overcall(listOf("SJ", "BJ"), listOf("2", "2")))
+        assertNull(overcall(listOf("SJ", "BJ"), List(4) { "2" }))
+    }
+
+    private fun overcall(hand: List<String>, play: List<String>): List<String>? {
+        val boxes = hand.mapIndexed { i, rank -> card(rank, 500.0 + i * 96, 770.0) }
+        return JjCards.smallestOvercall(JjCards.table(boxes, width), play)
+    }
+
     @Test fun parsesTheServerReply() {
         val body = """{"cards": [{"rank": "10", "box": [855.0, 769.5, 900.2, 848.0], "score": 0.998}], "ms": 59}"""
         val cards = JjCards.parse(body)!!

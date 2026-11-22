@@ -275,6 +275,18 @@ class JjTrackerReplayTest {
         assertEquals(history, tracker.history)
     }
 
+    @Test fun passesAfterTheBombDoNotCountAgainstTheLandlordsNextLead() {
+        val history = moves("5 5//Q Q/A A//2 2///8 7 6 5 4 3///10/K//A/2///4 4/9 9//Q Q//K K")
+        val tracker = replay("2201", DdzSeat.Left, DdzSeat.Left, history, myPassAt = 170)
+        assertHistory(tracker, history + moves("J J J J///10"))
+    }
+
+    @Test fun myPassOnTheJokerDoesNotCountAgainstMyTeammatesNextLead() {
+        val history = moves("4 4//10 10/K K//2 2///Q/2")
+        val tracker = replay("2204", DdzSeat.Right, DdzSeat.Left, history, myPassAt = 88)
+        assertHistory(tracker, history + moves("SJ///6"))
+    }
+
     private fun replay(
         incident: String,
         landlord: DdzSeat,
@@ -288,17 +300,25 @@ class JjTrackerReplayTest {
         val session = JjDdzTurn.Session("", 1).apply { this.tracker = tracker }
         val lines = javaClass.getResourceAsStream("/ddz-jj/replay-$incident.tsv")!!.bufferedReader().use { it.readLines() }
         val hand = JjCards.parse(lines[1])!!
-        for (line in lines.drop(2)) {
-            val (logLine, frame, clock, boxes) = line.split('\t', limit = 4)
-            val frameNo = frame.toInt()
-            if (frameNo > throughFrame) break
-            val turn = if (clock == "-") null else DdzSeat.valueOf(clock)
-            val phase = if (turn == DdzSeat.Me) DdzPhase.Follow else DdzPhase.Other
-            val table = JjCards.table(changeBoxes(hand + JjCards.parse(boxes)!!), 2412)
-            JjDdzTurn.observe(session, table, JjView(phase, emptyList(), turn))
-            assertNull("/cards line $logLine, frame $frame, trace=${tracker.trace}", tracker.broken)
-            // The live fallback also tapped pass at this point. In the replay the tracker can record it.
-            if (frameNo == myPassAt && tracker.ready()) tracker.mine(emptyList())
+        val originalClock = PhoneDdzTurn.clock
+        var at: Long? = null
+        PhoneDdzTurn.clock = { at ?: originalClock() }
+        try {
+            for (line in lines.drop(2)) {
+                val (logLine, frame, clock, data) = line.split('\t', limit = 4)
+                val frameNo = frame.toInt()
+                if (frameNo > throughFrame) break
+                val turn = if (clock == "-") null else DdzSeat.valueOf(clock)
+                val phase = if (turn == DdzSeat.Me) DdzPhase.Follow else DdzPhase.Other
+                at = data.substringBefore('\t').toLongOrNull()
+                val table = JjCards.table(changeBoxes(hand + JjCards.parse(data.substringAfter('\t'))!!), 2412)
+                JjDdzTurn.observe(session, table, JjView(phase, emptyList(), turn))
+                assertNull("/cards line $logLine, frame $frame, trace=${tracker.trace}", tracker.broken)
+                // The live fallback also tapped pass at this point. In the replay the tracker can record it.
+                if (frameNo == myPassAt && tracker.ready()) tracker.mine(emptyList())
+            }
+        } finally {
+            PhoneDdzTurn.clock = originalClock
         }
         return tracker
     }

@@ -66,9 +66,12 @@ internal object JjCards {
     fun smallestOvercall(table: JjTable, play: List<String>): List<String>? {
         if (table.handUnsure) return null
         val lead = DdzSnapshotRecovery.classify(play) ?: return null
-        if (lead.kind == DdzSnapshotRecovery.Kind.Pass || lead.main >= DdzCards.ORDER.getValue("A")) return null
+        when (lead.kind) {
+            DdzSnapshotRecovery.Kind.Pass, DdzSnapshotRecovery.Kind.Bomb, DdzSnapshotRecovery.Kind.Rocket -> return null
+            else -> Unit
+        }
         val counts = table.handRanks.groupingBy { it }.eachCount()
-        val ranks = DdzCards.RANKS.takeWhile { it != "2" }.filter { it in counts }
+        val ranks = DdzCards.RANKS.filter { it in counts }
         val remaining = IntArray(ranks.size + 1)
         for (i in ranks.indices.reversed()) remaining[i] = remaining[i + 1] + counts.getValue(ranks[i])
         val cards = mutableListOf<String>()

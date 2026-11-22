@@ -5,6 +5,7 @@ import com.wangzan101.mika.core.run.waitOrSteer
 import com.wangzan101.mika.core.tool.Args
 import com.wangzan101.mika.core.tool.ToolContext
 import com.wangzan101.mika.core.tool.ToolExecution
+import com.wangzan101.mika.core.uistate.RawFrame
 import com.wangzan101.mika.core.uistate.screen
 import kotlinx.coroutines.delay
 import kotlinx.serialization.json.JsonArray
@@ -46,7 +47,8 @@ internal object JjDdzTurn {
     /** 抬牌动画约 200ms:点完隔这么久再认。 */
     private const val LIFT_MS = 200L
     private const val SETTLE_READS = 4
-    private const val SELECT_ROUNDS = 4
+    private const val SELECT_STALLED_ROUNDS = 2
+    private const val SELECT_EXTRA_ROUNDS = 3
     /** 等「出牌」变绿最多约 1 秒。 */
     private const val PLAYABLE_READS = 7
     private const val THOUGHT_MS = 1_500L
@@ -92,6 +94,7 @@ internal object JjDdzTurn {
         var tracker: DdzTracker? = null
         val bottomVotes = List(3) { mutableMapOf<String, Int>() }
         var opponentTrick: OpponentTrick? = null
+        var recoveredLeader: DdzSeat? = null
         var previousPlayBoxes = emptyMap<DdzSide, List<JjCard>>()
         var previousRawTurn: DdzSeat? = null
         var state = DdzSessionState.Idle
@@ -103,8 +106,9 @@ internal object JjDdzTurn {
         var bid = false
         /** 叫分时的手牌:都不叫游戏会重新发牌,再轮到叫分时手牌不一样就是新发的,要重新叫。 */
         var bidHand: List<String>? = null
-        /** 这一个决定已经点过了:按钮还会留几帧,等它消失前不再点。 */
+        /** 这一个决定已经点过了。按钮残留、桌面未变时不再点。 */
         var acted = false
+        var opponentPlaysAtAction = emptyMap<DdzSide, List<String>>()
         var noHand = 0
         /** 最近一次读稳的手牌;一手被当成打完时连同记牌一起留着,特效挡住手牌后原样回来就接着记(见 drive)。 */
         var lastRanks: List<String>? = null
@@ -245,6 +249,8 @@ internal object JjDdzTurn {
             val table = JjCards.table(cards, frame.width)
             s.handCount = table.hand.size
             if (!view.phase.mine()) s.acted = false
+            // 游戏替我过牌也会换闹钟；按钮闪帧时保留本轮的读稳计时。
+            if (view.turn == DdzSeat.Left || view.turn == DdzSeat.Right) s.settleSince = 0
             s.lastPhase = view.phase
             // 托管(超时后游戏替我打):先把它取消,不然按钮都不出来。「取消托管」盖在手牌上,看不到手牌就不点:
             // 斗地主大厅泳池的池水在同一处也是这种蓝
@@ -331,7 +337,12 @@ internal object JjDdzTurn {
             }
             if (view.phase.mine() && !s.acted) {
                 s.state = if (view.phase == DdzPhase.Call) DdzSessionState.Calling else DdzSessionState.Playing
-                if (decide(ctx, s, view, table, frame.width, decisionAt)) s.acted = true
+                if (decide(ctx, s, view, table, frame.width, decisionAt)) {
+                    s.acted = true
+                    s.opponentPlaysAtAction = DdzSide.entries.associateWith { side ->
+                        table.opponentBoxes(side).map { it.rank }.filter { it != "PASS" }.sorted()
+                    }
+                }
             }
             waitOrSteer { delay(POLL_MS) } ?: return result(s)
         }
@@ -348,8 +359,8 @@ internal object JjDdzTurn {
     internal fun observe(s: Session, table: JjTable, view: JjView, settleExpired: Boolean = false) {
         val tracker = s.tracker!!
         val turn = view.turn
-        // 左家后该轮到我。自己的出牌区还空着时，等右家闹钟再亮一帧才认作跳过了我。
-        val skipsMe = turn == DdzSeat.Right && tracker.nextOpponent() == DdzSeat.Left && table.mine == DdzSeen.Empty
+        // 左家后该轮到我。自己的旧「不出」可能还留着，右家闹钟要再亮一帧才认作跳过了我。
+        val skipsMe = turn == DdzSeat.Right && tracker.nextOpponent() == DdzSeat.Left && table.mine !is DdzSeen.Cards
         val previousTurn = s.previousRawTurn
         val confirmedTurn = if (skipsMe && previousTurn != turn) null else turn
         s.previousRawTurn = turn
@@ -366,11 +377,28 @@ internal object JjDdzTurn {
                     ranks[i] == boxes[i].rank || ranks[i] == boxes[i].alternateRank
                 }
             }
-        val clockTurn = if (turn == DdzSeat.Me && previousTurn != turn) null else confirmedTurn
+        // 两家出得太快，可能连续看到我的按钮。只用读稳的新对手牌确认已经回到我。
+        val opponentPlayedAfterMine = s.acted && view.phase == DdzPhase.Follow && DdzSide.entries.any { side ->
+            val cards = table.seen(side) as? DdzSeen.Cards ?: return@any false
+            val ranks = cards.ranks.sorted()
+            val seat = if (side == DdzSide.Left) DdzSeat.Left else DdzSeat.Right
+            ranks != s.opponentPlaysAtAction[side] && ranks != tracker.lastOpponentPlay(seat)?.sorted() &&
+                repeated(side, cards.ranks) && DdzSnapshotRecovery.classify(cards.ranks) != null
+        }
+        if (opponentPlayedAfterMine) s.acted = false
+        // 补齐旧一轮后，闹钟可能还停在上一家。等领出者的闹钟或新牌读稳，再接受后续的轮转。
+        s.recoveredLeader?.let { leader ->
+            val side = sideOf(leader)
+            val seen = table.seen(side)
+            if (turn == leader || seen is DdzSeen.Cards && seen.ranks != tracker.lastOpponentPlay(leader) && repeated(side, seen.ranks)) {
+                s.recoveredLeader = null
+            }
+        }
+        val clockTurn = confirmedTurn.takeUnless { s.recoveredLeader != null || turn == DdzSeat.Me && previousTurn != turn }
         recoverOpponentTrick(s, tracker, table, clockTurn)
         val bottom = votedBottom(s, tracker, table, view)
         tracker.observe(
-            rawTurn = confirmedTurn,
+            rawTurn = confirmedTurn.takeUnless { s.recoveredLeader != null },
             read = { side -> steady(s, table, side) },
             bottom = { bottom },
             leadingWith20 = view.phase == DdzPhase.Lead && table.hand.size == 20,
@@ -386,6 +414,7 @@ internal object JjDdzTurn {
                 boxes.takeIf { (table.seen(side) is DdzSeen.Cards || steady) && repeated(side, boxes.map { it.rank }) }.orEmpty()
             },
             expireOpponentDeckRetries = settleExpired,
+            opponentPlayedAfterMine = opponentPlayedAfterMine,
         )
     }
 
@@ -470,7 +499,10 @@ internal object JjDdzTurn {
         val bothPassed = trick.otherPassed && trick.mePassed && cannotBeat(table.handRanks, trick.cards)
         if (trick.cardFrames >= TRICK_PLAY_FRAMES && (clockReturned || bothPassed) &&
             tracker.recordOpponentPlayAndPasses(seat, trick.cards, table.handRanks, trick.historySize)
-        ) return
+        ) {
+            if (turn != seat) s.recoveredLeader = seat
+            return
+        }
         s.opponentTrick = trick
     }
 
@@ -493,6 +525,7 @@ internal object JjDdzTurn {
     private fun newHand(s: Session, table: JjTable, view: JjView) {
         s.tracker = DdzTracker(DdzSettlingPolicy.HUMAN, onBroken = s::dump)
         s.bottomVotes.forEach { it.clear() }
+        s.recoveredLeader = null
         s.resetTurnReads()
         s.brokenLogged = false
         s.lordSeen = null
@@ -564,7 +597,7 @@ internal object JjDdzTurn {
             return true
         }
         val want = PhoneDdzTurn.pick(hand, play)
-        val playX = if (want != null && select(ctx, s, want, table)) playable(ctx) else null
+        val playX = want?.let { select(ctx, s, it, table) }
         if (playX == null) {
             trace(s, "select_failed want=$want")
             tracker.fail(DdzSessionReason.REJECTED_ACTION)
@@ -587,9 +620,9 @@ internal object JjDdzTurn {
         if (view.phase == DdzPhase.Follow) {
             val play = opposingPlay(s, table)?.let { JjCards.smallestOvercall(table, it) }
             val want = play?.let { target(table, it) }
-            val x = if (want != null && select(ctx, s, want, table)) playable(ctx) else null
+            val x = want?.let { select(ctx, s, it, table) }
             trace(s, "rules_follow play=$play playable=${x != null}")
-            if (x != null && want != null) {
+            if (x != null) {
                 if (tap(ctx, x, JjDdzScreen.TAP_Y)) {
                     s.expectedHand = table.handRanks.filterIndexed { i, _ -> i !in want }
                 }
@@ -601,9 +634,10 @@ internal object JjDdzTurn {
         // 先出:有对子或三张先出最小的那组,没有才出最小的单张。记牌断了不知道别家剩几张,
         // 单张最容易被只剩一张的人接走(真机 15:13 地主剩一张,先出了单张 3)。炸弹不拆
         val want = smallestGroup(table) ?: setOf(table.hand.lastIndex)
-        val x = if (select(ctx, s, want, table)) playable(ctx) else null
+        val x = select(ctx, s, want, table)
         trace(s, "rules_lead want=${want.map { table.hand[it].rank }} playable=${x != null}")
-        if (tap(ctx, x ?: view.buttons[2].x, JjDdzScreen.TAP_Y)) {
+        if (x == null) return false
+        if (tap(ctx, x, JjDdzScreen.TAP_Y)) {
             s.expectedHand = table.handRanks.filterIndexed { i, _ -> i !in want }
         }
         return true
@@ -709,31 +743,42 @@ internal object JjDdzTurn {
     }
 
     /**
-     * 把要出的几张点起来、别的放下;等抬牌动画停了再认一遍核对,对不上再改,最多 [SELECT_ROUNDS] 轮。
+     * 把要出的几张点起来、别的放下。等抬牌动画停了再认一遍核对，连续两轮没进展就停。
+     * 只有两帧都读到正好选中目标牌，且「出牌」是绿的，才返回按钮位置。
      * 2026-11-21 真机:点完 120ms 就认,牌还在半空,当成没抬又点一下,把抬起的按了回去(「来回一下」);
      * 游戏还会把同点数的几张一起抬起来(点一张 7,四张 7 都起来),多起来的要放下。
      */
-    internal suspend fun select(ctx: ToolContext, s: Session, wanted: Set<Int>, table: JjTable): Boolean {
+    internal suspend fun select(ctx: ToolContext, s: Session, wanted: Set<Int>, table: JjTable): Int? {
         val ranks = wanted.map { table.hand[it].rank }
-        var current = table
-        repeat(SELECT_ROUNDS) {
-            // 同点数的牌哪张都行:点一张 A,游戏抬起的可能是旁边那张(真机 11:13 三张 A 出对 A、10:00 三张 2 出对 2,
-            // 按序号核对一直对不上,判成出不了,这一手剩下的都不出了)。已经抬起的、点数要的先算上
-            val want = target(current, ranks) ?: return false
+        val hand = table.handRanks
+        var confirmed = settled(ctx, s, hand) ?: return null
+        var current = confirmed.table
+        var want = target(current, ranks) ?: return null
+        var stalledRounds = 0
+        // 读不到自己的剩余秒数，用轮数兜底：按每轮抬一张计，另留一轮放提示牌和两轮重试。
+        var roundsLeft = wanted.size + SELECT_EXTRA_ROUNDS
+        while (current.lifted != want) {
+            if (roundsLeft-- == 0) return null
             // 先把多抬的(游戏自己提示抬起的牌)放下、读稳了再抬要的:一边放一边抬,游戏会退回只剩提示牌(真机 20:04、20:07)
             val drop = current.lifted - want
-            val batch = drop.ifEmpty { want - current.lifted }
-            if (batch.isEmpty()) return true
+            val missing = want - current.lifted
+            val batch = drop.ifEmpty { missing }
             for (i in batch.sorted()) {
                 tap(ctx, JjCards.tapX(current, i), JjCards.HAND_TAP_Y)
                 delay(TAP_GAP_MS)
             }
             val before = current.lifted
-            current = settled(ctx, s) ?: return false
+            confirmed = settled(ctx, s, hand) ?: return null
+            current = confirmed.table
             println("JJTRACE select ${if (drop.isEmpty()) "lift" else "drop"} $batch lifted $before -> ${current.lifted} want $want")
-            if (current.hand.size != table.hand.size) return false
+            // 同点数的牌可以互换。每次读稳后重新匹配，优先保留点数对的抬牌。
+            want = target(current, ranks) ?: return null
+            val fewerWrong = current.lifted.count { it !in want } < drop.size
+            val moreRight = want.count { it !in current.lifted } < missing.size
+            if (fewerWrong || moreRight) stalledRounds = 0
+            else if (++stalledRounds >= SELECT_STALLED_ROUNDS) return null
         }
-        return current.lifted == target(current, ranks)
+        return confirmed.playX ?: playable(ctx, s, hand, ranks)
     }
 
     /** 要抬起哪几张才是 [ranks]:抬着的点数对的先留着,不够的从左往右补;手里凑不齐为 null。 */
@@ -749,27 +794,35 @@ internal object JjDdzTurn {
         return out.takeIf { need.values.all { it == 0 } }
     }
 
-    /** 隔一会儿认一次,连着两次抬起的牌一样(动画停了)才算数;一直在变就用最后一次。 */
-    private suspend fun settled(ctx: ToolContext, s: Session): JjTable? {
-        var last: JjTable? = null
+    private data class ConfirmedSelection(val table: JjTable, val playX: Int?)
+
+    /** 手牌对得上、连续两次抬起的牌一样才算读稳。 */
+    private suspend fun settled(ctx: ToolContext, s: Session, hand: List<String>): ConfirmedSelection? {
+        var lastLifted: Set<Int>? = null
         repeat(SETTLE_READS) {
             delay(LIFT_MS)
             val jpeg = ctx.screen.quickShot() ?: return null
             val cards = readCards(s, jpeg) ?: return null
             val frame = ctx.screen.rawFrame(JjDdzScreen.ROWS) ?: return null
             val now = JjCards.table(cards, frame.width)
-            if (last?.lifted == now.lifted && last?.hand?.size == now.hand.size) return now
-            last = now
+            val lifted = now.lifted.takeIf { !now.handUnsure && now.handRanks == hand }
+            if (lifted != null && lifted == lastLifted) return ConfirmedSelection(now, greenPlayX(frame))
+            lastLifted = lifted
         }
-        return last
+        return null
     }
 
-    /** 选好牌后「出牌」要变绿才按得动(游戏判过牌型、压得住);等一会儿,一直不绿就是这几张出不了。 */
-    private suspend fun playable(ctx: ToolContext): Int? {
+    private fun greenPlayX(frame: RawFrame): Int? = JjDdzScreen.read(frame).buttons
+        .takeIf { it.size == 3 }?.get(2)?.takeIf { it.color == JjColor.Green }?.x
+
+    /** 等「出牌」变绿。等待期间选牌可能变了，变绿后重新读稳再核对。 */
+    private suspend fun playable(ctx: ToolContext, s: Session, hand: List<String>, ranks: List<String>): Int? {
         repeat(PLAYABLE_READS) {
-            val view = ctx.screen.rawFrame(JjDdzScreen.ROWS)?.let(JjDdzScreen::read)
-            val play = view?.buttons?.getOrNull(2)
-            if (view != null && view.buttons.size == 3 && play?.color == JjColor.Green) return play.x
+            if (ctx.screen.rawFrame(JjDdzScreen.ROWS)?.let(::greenPlayX) != null) {
+                val confirmed = settled(ctx, s, hand) ?: return null
+                val table = confirmed.table
+                return confirmed.playX.takeIf { table.lifted == target(table, ranks) }
+            }
             delay(POLL_MS)
         }
         return null
