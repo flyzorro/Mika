@@ -242,7 +242,10 @@ internal object JjDdzTurn {
                 s.closedHand = null
             }
             s.noHand = 0
-            if (!table.handUnsure) s.lastRanks = table.handRanks
+            if (!table.handUnsure) {
+                playedWithoutMe(s, table.handRanks)?.let { trace(s, "played_without_me cards=${it.joinToString(" ")} left=${table.hand.size}") }
+                s.lastRanks = table.handRanks
+            }
             val tracker = s.tracker!!
             observe(s, table, view)
             // 出牌时(轮到谁出看得出来):左右谁穿红衣谁是地主,都不是就是我
@@ -496,6 +499,18 @@ internal object JjDdzTurn {
             else -> return false
         }
         return lord == DdzSeat.Me || owner == lord
+    }
+
+    /**
+     * 手牌少了几张、却不是工具刚出的那手(和 [Session.expectedHand] 对不上):是游戏替我出的(托管、终局自动出完)。
+     * 只用来打日志(真机 16:32 我方剩下的牌每 2 秒出一手,工具没做决定,事后分不清是谁出的)。
+     */
+    internal fun playedWithoutMe(s: Session, hand: List<String>): List<String>? {
+        val before = s.lastRanks ?: return null
+        if (hand.size >= before.size || hand.sorted() == s.expectedHand?.sorted()) return null
+        val removed = before.toMutableList()
+        for (r in hand) if (!removed.remove(r)) return null
+        return removed
     }
 
     /** 手里最小的一组对子或三张(序号);没有为 null。手牌从大到小排,从右往左找。 */

@@ -275,6 +275,19 @@ class JjDdzTurnTest {
 
     private fun card(rank: String, x: Double, y: Double) = JjCard(rank, x, y, x + 40, y + 53, 0.99)
 
+    @Test fun cardsLeavingTheHandWithoutTheToolAreReported() {
+        val s = JjDdzTurn.Session("http://mac:3426", 1)
+        s.lastRanks = listOf("A", "A", "A", "Q", "J", "J", "J", "9", "3")
+        // 游戏替我出了 A A A Q
+        assertEquals(listOf("A", "A", "A", "Q"), JjDdzTurn.playedWithoutMe(s, listOf("J", "J", "J", "9", "3")))
+        // 工具自己出的那手不算
+        s.expectedHand = listOf("J", "J", "J", "9", "3")
+        assertEquals(null, JjDdzTurn.playedWithoutMe(s, listOf("J", "J", "J", "9", "3")))
+        // 认错成别的牌(不是少了几张)不算
+        s.expectedHand = null
+        assertEquals(null, JjDdzTurn.playedWithoutMe(s, listOf("K", "J", "J", "9")))
+    }
+
     @Test fun switchingAwayPausesWithoutTapping() = runTest {
         replies(hand(seventeen))
         val game = Game(JjDdzScreen.PACKAGE, frame("left_turn"))
