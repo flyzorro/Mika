@@ -188,6 +188,7 @@ class AndroidScreen(
     override suspend fun frameGrid(): FrameGrid? = capture.frameGrid()
     override suspend fun rawFrame(rows: List<Int>): RawFrame? = capture.rawFrame(rows)
     override suspend fun quickShot(): ByteArray? = capture.quickShot()
+    override fun jjDumpDirectory() = a11y.getExternalFilesDir(null)?.resolve("jjdump")
 
     override suspend fun quickTap(x: Int, y: Int): Boolean = withContext(Dispatchers.IO) {
         if (!hasDisplay) return@withContext false

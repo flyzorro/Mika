@@ -5,6 +5,7 @@ import kotlinx.coroutines.delay
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
+import java.io.File
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
@@ -352,6 +353,9 @@ interface ScreenPort {
 
     /** 这一刻的画面,编码比 [screenshotPng] 快得多;给分秒必争的快速路径。 */
     suspend fun quickShot(): ByteArray? = screenshotPng()
+
+    /** JJ 记牌断掉时保存最近认牌截图的目录。 */
+    fun jjDumpDirectory(): File? = null
 
     /** 只点一下,不等界面、不核实效果;只给调用方自己看画面判断结果的快速路径用。发不出去返回 false。 */
     suspend fun quickTap(x: Int, y: Int): Boolean = false

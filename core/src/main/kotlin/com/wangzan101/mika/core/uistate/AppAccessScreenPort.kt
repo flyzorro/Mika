@@ -97,6 +97,7 @@ class AppAccessScreenPort(
     override suspend fun frameGrid() = checked { inner.frameGrid() }
     override suspend fun rawFrame(rows: List<Int>) = checked { inner.rawFrame(rows) }
     override suspend fun quickShot() = checked { inner.quickShot() }
+    override fun jjDumpDirectory() = inner.jjDumpDirectory()
     override suspend fun isProtected() = checked { inner.isProtected() }
     override suspend fun checkScreen() = checked { inner.checkScreen() }
 

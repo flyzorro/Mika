@@ -31,13 +31,42 @@ class JjTrackerReplayTest {
     }
 
     @Test fun aFifthThreeWaitsForTheOverlappingEightBeforeEnteringHistory() {
+        fifthThreeThen(recovery = "8")
+    }
+
+    @Test fun aFifthThreeBecomesUnknownWhenNoEightAppears() {
+        fifthThreeThen(recovery = "?")
+    }
+
+    @Test fun aFifthThreeAlsoBecomesUnknownAtTheDecisionDeadline() {
+        fifthThreeThen(recovery = "?", decisionDeadline = true)
+    }
+
+    @Test fun anUncertainHandDoesNotMakeAnOpponentCardUnknown() {
+        fifthThreeThen(recovery = "3", handUnsure = true)
+    }
+
+    @Test fun aSteadyWeakerOvercountCanAlsoBecomeUnknown() {
+        val originalClock = PhoneDdzTurn.clock
+        var now = 0L
+        PhoneDdzTurn.clock = { now += 200; now }
+        try {
+            fifthThreeThen(recovery = "?", threeScore = 0.74)
+        } finally {
+            PhoneDdzTurn.clock = originalClock
+        }
+    }
+
+    private fun fifthThreeThen(
+        recovery: String, decisionDeadline: Boolean = false, handUnsure: Boolean = false, threeScore: Double = 0.852,
+    ) {
         val history = moves("3 3/4 4/8 8///10 9 8 7 6 5///Q Q Q 7")
         val tracker = DdzTracker(DdzSettlingPolicy.HUMAN).apply {
             restore(DdzSeat.Left, emptyList(), history, DdzSeat.Left)
         }
         val session = JjDdzTurn.Session("", 1).apply { this.tracker = tracker }
         val hand = moves("SJ 2 A K Q J J J 10 10 10 9 5 3 3").single().mapIndexed { i, rank ->
-            JjCard(rank, 507.5 + i * 96, 771.9, 546.8 + i * 96, 849.3, 0.999)
+            JjCard(rank, 507.5 + i * 96, 771.9, 546.8 + i * 96, 849.3, if (handUnsure && rank == "3") 0.7 else 0.999)
         }
         // 16:51:07–11: K K K with a stronger 3 and an intermittent, overlapping 8.
         val kings = listOf(
@@ -45,15 +74,46 @@ class JjTrackerReplayTest {
             JjCard("K", 728.5, 271.3, 765.3, 323.6, 0.998),
             JjCard("K", 783.2, 270.9, 819.8, 323.3, 0.999),
         )
-        val three = JjCard("3", 843.7, 271.6, 875.9, 324.3, 0.852)
+        val three = JjCard("3", 843.7, 271.6, 875.9, 324.3, threeScore)
         val eight = JjCard("8", 843.4, 270.9, 877.3, 324.1, 0.524)
         val view = JjView(DdzPhase.Follow, emptyList(), DdzSeat.Me)
+        val table = JjCards.table(hand + kings + three, 2412)
+        repeat(4) { JjDdzTurn.observe(session, table, view) }
+        if (!handUnsure) assertEquals(history, tracker.history)
+        when {
+            recovery == "8" -> repeat(3) { JjDdzTurn.observe(session, JjCards.table(hand + kings + three + eight, 2412), view) }
+            decisionDeadline -> JjDdzTurn.observe(session, table, view, settleExpired = true)
+            else -> repeat(DdzSettlingPolicy.HUMAN.maxUnconfirmedFrames) { JjDdzTurn.observe(session, table, view) }
+        }
+        assertNull("trace=${tracker.trace}", tracker.broken)
+        assertHistory(tracker, history + moves("K K K $recovery"))
+    }
 
-        repeat(4) { JjDdzTurn.observe(session, JjCards.table(hand + kings + three, 2412), view) }
+    @Test fun aPairWithOneExcessCardMasksTheLowerScoreOnly() {
+        val tracker = DdzTracker(DdzSettlingPolicy.HUMAN).apply { restore(DdzSeat.Left, emptyList(), emptyList()) }
+        val session = JjDdzTurn.Session("", 1).apply { this.tracker = tracker }
+        val hand = List(3) { i -> JjCard("J", 500.0 + i * 96, 772.0, 535.0 + i * 96, 850.0, 0.99) }
+        val pair = listOf(JjCard("J", 671.0, 271.0, 708.0, 324.0, 0.85), JjCard("J", 729.0, 271.0, 766.0, 324.0, 0.99))
+        val view = JjView(DdzPhase.Follow, emptyList(), DdzSeat.Me)
+        repeat(DdzSettlingPolicy.HUMAN.maxUnconfirmedFrames + 2) {
+            JjDdzTurn.observe(session, JjCards.table(hand + pair, 2412), view)
+        }
+        assertHistory(tracker, moves("? J"))
+    }
+
+    @Test fun anIllegalOvercallIsStillRejectedWhenItAlsoExceedsTheDeck() {
+        val history = moves("Q Q")
+        val tracker = DdzTracker(DdzSettlingPolicy.HUMAN).apply { restore(DdzSeat.Right, emptyList(), history, DdzSeat.Left) }
+        val session = JjDdzTurn.Session("", 1).apply { this.tracker = tracker }
+        val hand = List(4) { i -> JjCard("J", 500.0 + i * 96, 772.0, 535.0 + i * 96, 850.0, 0.99) }
+        val wrongShape = JjCard("J", 671.0, 271.0, 708.0, 324.0, 0.99)
+        val view = JjView(DdzPhase.Follow, emptyList(), DdzSeat.Me)
+        // 已记下右家对子，左家的单张仍不合牌规。
+        repeat(DdzSettlingPolicy.HUMAN.maxUnconfirmedFrames + 2) {
+            JjDdzTurn.observe(session, JjCards.table(hand + wrongShape, 2412), view)
+        }
+        assertTrue(tracker.broken != null)
         assertEquals(history, tracker.history)
-
-        repeat(3) { JjDdzTurn.observe(session, JjCards.table(hand + kings + three + eight, 2412), view) }
-        assertHistory(tracker, history + moves("K K K 8"))
     }
 
     @Test fun anAlreadyHeldJokerWithoutAnAlternativeStaysUnsure() {

@@ -14,7 +14,10 @@ internal fun sideOf(seat: DdzSeat): DdzSide = if (seat == DdzSeat.Left) DdzSide.
  * 地主的第一手一定是出牌:底牌翻开后头一回在谁的出牌区看到牌,谁就是地主,这手就是第一手;
  * 轮到自己先出、手里 20 张,地主就是自己。在那之前的闹钟是加倍时的,不算。读不出、对不上就记下原因,这一局不再给 DouZero 算。
  */
-internal class DdzTracker(private val settling: DdzSettlingPolicy = DdzSettlingPolicy.SINGLE) {
+internal class DdzTracker(
+    private val settling: DdzSettlingPolicy = DdzSettlingPolicy.SINGLE,
+    private val onBroken: ((String) -> Unit)? = null,
+) {
     var landlord: DdzSeat? = null
         private set
     var bottom: List<String>? = null
@@ -66,6 +69,10 @@ internal class DdzTracker(private val settling: DdzSettlingPolicy = DdzSettlingP
     private val lastPlay = mutableMapOf<DdzSeat, List<String>>()
     /** JJ 核对缓存的出牌时用这一帧的手牌。null 表示没启用整副牌核对。 */
     private var opponentCheckHand: List<String>? = null
+    private var jjBoxes: ((DdzSide) -> List<JjCard>)? = null
+    private var jjRetriesExpired = false
+    private val jjPendingBoxes = mutableMapOf<DdzSeat, List<JjCard>>()
+    private val jjMaskedReads = mutableMapOf<DdzSeat, List<String>>()
     /**
      * 闹钟刚走到这一轮最后出牌的那家:先别推中间各家不出。三家时最后一个等着的人后面总是领出的人,
      * 「闹钟到了他那里」并不说明最后那个人是过了还是出了牌(牌可能还在飞)。等这家的下一步动作——闹钟走开、
@@ -87,9 +94,14 @@ internal class DdzTracker(private val settling: DdzSettlingPolicy = DdzSettlingP
     fun observe(
         rawTurn: DdzSeat?, read: (DdzSide) -> DdzSeen, bottom: () -> List<String>?, leadingWith20: Boolean = false, leading: Boolean = false,
         counts: () -> Map<DdzSide, Int?> = { emptyMap() }, hand: () -> List<String>? = { null }, checkOpponentDeck: Boolean = false,
+        opponentBoxes: ((DdzSide) -> List<JjCard>)? = null, expireOpponentDeckRetries: Boolean = false,
     ) {
         if (broken != null) return
-        opponentCheckHand = if (checkOpponentDeck) hand().orEmpty() else null
+        val checkHand = if (checkOpponentDeck) hand() else null
+        opponentCheckHand = if (checkOpponentDeck) checkHand.orEmpty() else null
+        jjBoxes = opponentBoxes.takeIf { checkHand != null }
+        jjRetriesExpired = expireOpponentDeckRetries
+        if (jjBoxes == null) jjPendingBoxes.clear()
         frameNo++
         // 轮到我要连着两帧:炸弹的特效会让一帧像是我的按钮,当成轮到我又走开,就会给我记一手不出
         meFrames = if (rawTurn == DdzSeat.Me) meFrames + 1 else 0
@@ -116,6 +128,8 @@ internal class DdzTracker(private val settling: DdzSettlingPolicy = DdzSettlingP
             confirmedSeats.clear()
             waiting.clear()
             lastSeen.clear()
+            jjPendingBoxes.clear()
+            jjMaskedReads.clear()
             unsureThisTrick.clear()
             awaitLeader = null
             awaitSawPlay = false
@@ -132,15 +146,24 @@ internal class DdzTracker(private val settling: DdzSettlingPolicy = DdzSettlingP
             val order = if (turn == DdzSeat.Left) listOf(DdzSide.Left, DdzSide.Right) else listOf(DdzSide.Right, DdzSide.Left)
             for (side in order) {
                 val seen = read(side)
+                val seat = seatOf(side)
                 // 地主的第一手认不准:可能还在飞,等几帧;一直认不准就停,不能跳过去等下一家,否则会把下一家当成地主。
                 // 只数连着的:叫分、抢地主的特效零星几帧认不准,从发牌一路攒到上限就一手没出也停了
                 if (seen == DdzSeen.Unsure) {
                     firstIllegal = 0
-                    if (++firstUnsure >= settling.maxUnconfirmedFrames) fail("unsure_first_play")
+                    if (++firstUnsure >= settling.maxUnconfirmedFrames || jjRetriesExpired) {
+                        val cards = recoverOvercount(seat, jjBoxes?.invoke(side))
+                        if (cards != null) {
+                            landlord = seat
+                            record(seat, cards)
+                            active = seat.next
+                        } else if (firstUnsure >= settling.maxUnconfirmedFrames) {
+                            fail("unsure_first_play")
+                        }
+                    }
                     return
                 }
                 if (seen !is DdzSeen.Cards) continue
-                val seat = seatOf(side)
                 // 地主出第一手前是 20 张:剩的张数对不上出的张数(还叠成一摞,或者这家是 17 张的农民)就不算
                 val left = count[seat]
                 if (left != null && seen.ranks.size != FIRST - left) continue
@@ -433,7 +456,7 @@ internal class DdzTracker(private val settling: DdzSettlingPolicy = DdzSettlingP
                 lastSeen -= seat
                 continue
             }
-            val seen = lastSeen[seat] ?: return
+            val seen = lastSeen[seat]
             val played = unplayed(seat)
             val cards = (seen as? DdzSeen.Cards)?.ranks
             val usable = when {
@@ -441,8 +464,8 @@ internal class DdzTracker(private val settling: DdzSettlingPolicy = DdzSettlingP
                 seen == DdzSeen.Pass -> played == null || played == 0
                 else -> false
             }
-            if (!usable) return
-            record(seat, cards ?: emptyList())
+            val settledCards = if (usable) cards.orEmpty() else recoverOvercount(seat, jjPendingBoxes[seat]) ?: return
+            record(seat, settledCards)
             waiting.removeFirst()
             lastSeen -= seat
         }
@@ -514,6 +537,37 @@ internal class DdzTracker(private val settling: DdzSettlingPolicy = DdzSettlingP
         active?.takeIf { broken == null && landlord != null && it != DdzSeat.Me && waiting.isEmpty() && !awaitMeAfterInfer }
 
     internal fun lastOpponentPlay(seat: DdzSeat): List<String>? = lastPlay[seat]
+
+    internal fun maskedOpponentPlay(seat: DdzSeat, ranks: List<String>): List<String>? =
+        lastPlay[seat]?.takeIf { jjMaskedReads[seat] == ranks }
+
+    /** 只在读数将被放弃时补超张。原读数仍须符合牌型和出牌顺序。 */
+    private fun recoverOvercount(seat: DdzSeat, boxes: List<JjCard>?): List<String>? {
+        if (jjBoxes == null || boxes.isNullOrEmpty()) return null
+        val ranks = boxes.map { it.rank }
+        if (!usablePlay(seat, ranks) || fitsOpponentDeck(ranks) || maskedOpponentPlay(seat, ranks) != null) return null
+        val left = DdzCards.copiesLeft(history.flatten() + opponentCheckHand.orEmpty())
+        val cards = JjCards.maskExcess(boxes, left)
+        jjMaskedReads[seat] = ranks
+        return cards
+    }
+
+    private fun rememberOpponentBoxes(seat: DdzSeat, seen: DdzSeen) {
+        val read = jjBoxes ?: return
+        if (seen == DdzSeen.Empty) return
+        if (seen == DdzSeen.Pass || lastSeen[seat] == DdzSeen.Pass && (passFrames[seat] ?: 0) >= 2 &&
+            (passFrame[seat] ?: -1) < lastAdvanceFrame) {
+            jjPendingBoxes -= seat
+            return
+        }
+        val boxes = read(sideOf(seat))
+        val ranks = (seen as? DdzSeen.Cards)?.ranks
+        if (boxes.isEmpty() || ranks != null && ranks.size != boxes.size) {
+            jjPendingBoxes -= seat
+            return
+        }
+        jjPendingBoxes[seat] = if (ranks == null) boxes else boxes.mapIndexed { i, box -> box.copy(rank = ranks[i]) }
+    }
 
     /** 前一家可能在缓存读数之后才记下,补记前再按最新历史核对。 */
     private fun fitsOpponentDeck(cards: List<String>): Boolean {
@@ -624,6 +678,8 @@ internal class DdzTracker(private val settling: DdzSettlingPolicy = DdzSettlingP
         history += moves.map { it.toList() }
         active = landlord
         lastPlay.clear()
+        jjPendingBoxes.clear()
+        jjMaskedReads.clear()
         var actor = landlord
         var leader: DdzSeat? = null
         var passes = 0
@@ -681,13 +737,22 @@ internal class DdzTracker(private val settling: DdzSettlingPolicy = DdzSettlingP
         else -> "landlord_up"
     }
 
-    fun fail(reason: String) { if (broken == null) { broken = reason; note("fail $reason") } }
+    fun fail(reason: String) {
+        if (broken != null) return
+        broken = reason
+        note("fail $reason")
+        onBroken?.invoke(reason)
+    }
 
     private fun record(seat: DdzSeat, cards: List<String>) {
         unsureThisTrick -= seat
         history += cards.toList()
         confirmedSeats += seat
-        if (cards.isNotEmpty()) lastPlay[seat] = cards.toList()
+        jjPendingBoxes -= seat
+        if (cards.isNotEmpty()) {
+            lastPlay[seat] = cards.toList()
+            if (DdzCards.UNKNOWN !in cards) jjMaskedReads -= seat
+        }
         note("${seat.name}=${cards.joinToString("")}")
     }
 
@@ -797,6 +862,7 @@ internal class DdzTracker(private val settling: DdzSettlingPolicy = DdzSettlingP
             if (seat == DdzSeat.Me) continue
             // 不补 ?:前面几家还没记,[trickLead] 是旧的那一手,拿它筛补法会把几种都行的错当成只有一种
             val seen = rememberUnsure(seat, read(sideOf(seat)))
+            rememberOpponentBoxes(seat, seen)
             val guessed = seen is DdzSeen.Cards && seat != landlord && seen.ranks.any { it.startsWith(DdzCards.UNKNOWN) }
             // 出牌区还摆着他自己上一手:那是「不出」,不是又出了一手
             val oldPlay = seen is DdzSeen.Cards && seen.ranks == lastPlay[seat]
@@ -806,9 +872,11 @@ internal class DdzTracker(private val settling: DdzSettlingPolicy = DdzSettlingP
             val (seat, tries) = waiting.first()
             if (seat == DdzSeat.Me) { record(seat, emptyList()); waiting.removeFirst(); continue }
             val raw = rememberUnsure(seat, read(sideOf(seat)))
+            rememberOpponentBoxes(seat, raw)
             val seen = if (raw is DdzSeen.Cards) filledUnknown(raw.ranks) ?: raw else raw
             // 只有地主的牌压着绶带;农民的牌带着猜的那一张就是没认准
-            val guessed = seen is DdzSeen.Cards && seat != landlord && seen.ranks.any { it.startsWith(DdzCards.UNKNOWN) }
+            val guessed = seen is DdzSeen.Cards && seat != landlord && seen.ranks.any { it.startsWith(DdzCards.UNKNOWN) } &&
+                !(jjMaskedReads.containsKey(seat) && seen.ranks == lastPlay[seat])
             // 剩的张数说这家出了几张:读到的张数对不上(还叠着、还没落下)、或者明明出了牌却像「不出」,都再等等
             val played = unplayed(seat)
             if ((seen == DdzSeen.Pass && !sawUnrecordedPlay(seat)) || (seen is DdzSeen.Cards && !guessed)) rememberSeen(seat, seen)
@@ -822,7 +890,12 @@ internal class DdzTracker(private val settling: DdzSettlingPolicy = DdzSettlingP
             // 还摆着的旧牌已算在历史里,只在要记成新的一手时核对副牌张数。
             val breaksRules = candidate != null && ((candidate != lastPlay[seat] && illegal(candidate)) ||
                 (!fitsOpponentDeck(candidate) && !samePlayAgain(seat, candidate)))
+            val recovered = if ((tries <= 1 || jjRetriesExpired) && (breaksRules || seen == DdzSeen.Unsure ||
+                    seen == DdzSeen.Empty && candidate == null)) {
+                recoverOvercount(seat, jjPendingBoxes[seat])
+            } else null
             when {
+                recovered != null -> record(seat, recovered)
                 breaksRules -> {
                     if (tries <= 1) return fail("illegal_${seat.name.lowercase()}")
                     waiting[0] = seat to tries - 1
