@@ -412,14 +412,15 @@ class JjDdzTurnTest {
     }
 
     @Test fun aFallbackPlaysTheLowestOvercallWithoutHint() = runTest {
-        val ranks = "SJ 2 A K Q J J J 10 10 10 9 5 3 3".split(' ')
-        val game = fallbackFollow(ranks, listOf("J"), lifted = 4)
+        val game = fallbackFollow(listOf("BJ", "2", "K", "Q"), listOf("J"), lifted = 3)
         val buttons = JjDdzScreen.read(game.frame).buttons
-        assertEquals(listOf((500 + 4 * 96 + 22) to JjCards.HAND_TAP_Y, buttons[2].x to JjDdzScreen.TAP_Y), game.taps)
+        assertEquals(listOf((500 + 3 * 96 + 22) to JjCards.HAND_TAP_Y, buttons[2].x to JjDdzScreen.TAP_Y), game.taps)
     }
 
-    @Test fun aFallbackPassesRatherThanSpendTwosOrJokers() = runTest {
-        assertFallbackPass(fallbackFollow(listOf("SJ", "2", "9", "3"), listOf("A")))
+    @Test fun aFallbackBeatsTheSmallJokerWithTheBigJoker() = runTest {
+        val game = fallbackFollow(listOf("BJ", "2", "9", "3"), listOf("SJ"), lifted = 0, landlord = DdzSeat.Me)
+        val play = JjDdzScreen.read(game.frame).buttons[2]
+        assertEquals(listOf(522 to JjCards.HAND_TAP_Y, play.x to JjDdzScreen.TAP_Y), game.taps)
     }
 
     @Test fun aFallbackPassesRatherThanSplitABomb() = runTest {
@@ -427,7 +428,7 @@ class JjDdzTurnTest {
     }
 
     @Test fun aFallbackStillPassesOnATeammatesPlay() = runTest {
-        assertFallbackPass(fallbackFollow(listOf("Q", "3"), listOf("J"), owner = DdzSeat.Left))
+        assertFallbackPass(fallbackFollow(listOf("BJ", "3"), listOf("SJ"), owner = DdzSeat.Left))
     }
 
     private fun assertFallbackPass(game: Game) {
@@ -436,6 +437,7 @@ class JjDdzTurnTest {
 
     private suspend fun fallbackFollow(
         ranks: List<String>, play: List<String>, lifted: Int? = null, owner: DdzSeat = DdzSeat.Right,
+        landlord: DdzSeat = DdzSeat.Right,
     ): Game {
         val game = Game(JjDdzScreen.PACKAGE, frame("follow"))
         val left = if (owner == DdzSeat.Right) listOf(card("PASS", 650.0, 200.0)) else emptyList()
@@ -444,7 +446,7 @@ class JjDdzTurnTest {
         }
         val selected = hand(ranks, setOfNotNull(lifted)) + boxes
         replies(hand(ranks) + boxes, hand(ranks) + boxes, selected, selected)
-        val session = JjDdzTurn.Session("", 1).apply { lordSeen = DdzSeat.Right; lordFrames = 5 }
+        val session = JjDdzTurn.Session("", 1).apply { lordSeen = landlord; lordFrames = 12 }
         JjDdzTurn.byRules(toolDispatcher(game).ctx, session, JjDdzScreen.read(game.frame), JjCards.table(hand(ranks) + boxes, game.frame.width))
         return game
     }
