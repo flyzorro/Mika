@@ -67,6 +67,8 @@ internal object JjCards {
     private const val RANK_OVERLAP = 0.75
     private const val RANK_WINNER_SCORE = 0.95
     private const val RANK_SCORE_GAP = 0.08
+    /** 赢的框过了 SURE、弱框低一大截也算同一张(16:08:50 左家 K K K 8 8:8 是 0.90,同一处还有个 0.53 的 3)。 */
+    private const val RANK_WIDE_GAP = 0.2
 
     /** 把一帧 JPEG 交给电脑认牌;连不上、没配认牌模型、回的不对都是 null。 */
     suspend fun detect(url: String, jpeg: ByteArray): List<JjCard>? = withContext(Dispatchers.IO) {
@@ -154,8 +156,9 @@ internal object JjCards {
         val kept = mutableListOf<JjCard>()
         for (card in cards.sortedByDescending { it.score }) {
             val duplicate = card.rank != PASS && kept.any { other ->
-                other.rank != PASS && other.rank != card.rank && other.score >= RANK_WINNER_SCORE &&
-                    other.score - card.score >= RANK_SCORE_GAP &&
+                other.rank != PASS && other.rank != card.rank &&
+                    ((other.score >= RANK_WINNER_SCORE && other.score - card.score >= RANK_SCORE_GAP) ||
+                        (other.score >= SURE && other.score - card.score >= RANK_WIDE_GAP)) &&
                     overlap(other, card) > RANK_OVERLAP * maxOf(area(other), area(card))
             }
             if (!duplicate) kept += card

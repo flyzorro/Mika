@@ -44,6 +44,16 @@ class JjCardsTest {
         assertEquals(DdzSeen.Cards(listOf("J", "10", "9", "8", "7", "6", "5")), JjCards.table(cards, 2412).right)
     }
 
+    @Test fun aWeakPhantomOnTopOfAnEightIsDropped() {
+        // 真机 16:08:50 左家 K K K 8 8:第一张 8 只有 0.90,同一处还多认出一个 0.53 的 3,这手一直算认不准,记牌断了
+        val cards = listOf(
+            JjCard("K", 671.0, 270.0, 702.0, 324.0, 1.0), JjCard("K", 729.0, 271.0, 766.0, 323.0, 1.0),
+            JjCard("K", 784.0, 271.0, 820.0, 323.0, 1.0), JjCard("8", 842.0, 271.0, 878.0, 324.0, 0.9),
+            JjCard("3", 844.0, 269.0, 876.0, 321.0, 0.54), JjCard("8", 898.0, 270.0, 934.0, 326.0, 1.0),
+        )
+        assertEquals(DdzSeen.Cards(listOf("K", "K", "K", "8", "8")), JjCards.table(cards, 2412).left)
+    }
+
     @Test fun twoRealTensSideBySideStayTwo() {
         assertEquals(DdzSeen.Cards(listOf("10", "10")), JjCards.table(listOf(card("10", 1651.0, 274.0, 46.0), card("10", 1693.0, 275.0, 46.0)), width).right)
     }
