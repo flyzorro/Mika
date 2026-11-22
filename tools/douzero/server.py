@@ -1707,4 +1707,8 @@ def handler(advisor, card_reader=None):
 
 if __name__ == "__main__":
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 3426
-    ThreadingHTTPServer(("0.0.0.0", port), handler(Advisor(WEIGHTS), Cards(os.environ.get("DDZ_CARDS_WEIGHTS")))).serve_forever()
+    # DDZ_ROLLOUT=0 关掉出牌时的现场模拟,分数接近时直接用 DouZero 的首选(残局搜索、两手出完等规则照旧)。
+    # 2026-11-22 JJ 真机:每手只有十几到几十局,模拟在噪声里一再推翻 DouZero(拆 9 9 10 10 J J、先出 4 不出 A A A 3 3),
+    # 用户看下来 DouZero 自己的选择更好,先关掉,等自对弈比较的结果
+    rollout = os.environ.get("DDZ_ROLLOUT", "1") != "0"
+    ThreadingHTTPServer(("0.0.0.0", port), handler(Advisor(WEIGHTS, rollout=rollout), Cards(os.environ.get("DDZ_CARDS_WEIGHTS")))).serve_forever()
