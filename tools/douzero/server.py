@@ -198,8 +198,6 @@ LIKELIHOOD_TEMPERATURE = 0.02
 # 一整类分法判死。2026-11-20 在 200 个配对残局上比较 0.02 / 0.1 / 0.2,每个残局打两种对手:
 # 0.1 胜负不变,0.2 少赢 1 局(−0.25 个百分点,标准误 0.25)。取噪声内的最大值 0.2,软证据最多拉开 5 倍。
 LIKELIHOOD_FLOOR = 0.2
-# 2026-11-20 精英场两手:不出 36/36、炸 28/36(#170)仍否决;不出 19/21、炸 17/21 则交给金额判断。
-BOMB_WIN_SLACK = 0.1
 # 叫分 / 加倍先验:每家牌力 s = 用自己座位的 DouZero 模型给开局整手牌(手里剩的 + 出过的,地主含底牌)
 # 打分,取所有合法出牌里的最高分。每条已知证据乘一个 logistic 似然因子:P = sigmoid((s - T) / AUCTION_TAU)。
 # 2026-11-17 用 calibrate_auction.py 随机发 4000 副牌(seed 20261117,地主 4000 手、两个农民座位共 8000 手)
@@ -911,33 +909,13 @@ class Agent:
             if left_s > 0 else None
         allowed = None
         if solved is not None:
-            wins, total, plain_wins, plain_total = solved
+            wins, total, _, _ = solved
             score = {tuple(sorted(a)): float(values[i]) for i, a in enumerate(infoset.legal_actions)}
-            # 残局也按金额比:每手的值 = Σ 分法权重 ×(赢 +m / 输 −m),炸弹 / 王炸 m=2,其它 m=1。
-            # wins 是赢的分法权重,输的是 total − wins;一手都赢不了时炸弹值 −2×总权重 < 非炸弹 −1×总权重,
-            # 自然就不会炸,不用再单独判 top == 0。
-            amount = {}
-            for m in score:
-                weight = wins.get(m, 0)
-                amount[m] = (2 if is_bomb(m) else 1) * (2 * weight - total)
-            top = max(amount.values())
-            allowed = {m for m in score if amount[m] == top}
+            # 每手的值为赢的摆法权重减去输的摆法权重。
+            endgame_scores = {m: 2 * wins.get(m, 0) - total for m in score}
+            top = max(endgame_scores.values())
+            allowed = {m for m in score if endgame_scores[m] == top}
             picked = max(allowed, key=score.get)
-            # 炸弹 / 王炸的 ×2 是拿「猜牌猜出来的赢面」翻倍:不信猜牌、只按摆法数算时它也得
-            # 不比非炸弹里金额最高的一手差,不然就是不炸,改出那一手。×2 只会放大估值误差。
-            # 炸弹比最稳的非炸弹少赢超过总摆法数的 10% 时也不炸。
-            if is_bomb(picked):
-                plain = {m: (2 if is_bomb(m) else 1) * (2 * plain_wins.get(m, 0) - plain_total)
-                         for m in score}
-                alt = max((m for m in score if not is_bomb(m)), key=lambda m: amount[m], default=None)
-                safest = max((plain_wins.get(m, 0) for m in score if not is_bomb(m)), default=0)
-                if alt is not None and (plain[picked] < plain[alt]
-                                        or plain_wins.get(picked, 0) < safest - BOMB_WIN_SLACK * plain_total):
-                    if report is not None:
-                        report["bomb_veto"] = move_label(picked)
-                    picked = alt
-                    # 金额和炸弹并列时也不能把炸弹放回来,不然 DouZero 首选炸弹时照样炸
-                    allowed = {m for m in score if amount[m] == amount[alt] and not is_bomb(m)}
             if tuple(sorted(move)) not in allowed:
                 return self.swap_high_kickers(infoset, list(picked), ok=lambda m: tuple(sorted(m)) in allowed)
         mate = {"landlord_down": "landlord_up", "landlord_up": "landlord_down"}.get(infoset.player_position)
