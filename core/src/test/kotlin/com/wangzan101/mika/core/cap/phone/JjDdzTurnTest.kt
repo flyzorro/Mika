@@ -53,7 +53,7 @@ class JjDdzTurnTest {
         return RawFrame(image.width, image.height, JjDdzScreen.ROWS.associateWith { image.getRGB(0, it, image.width, 1, null, 0, image.width) })
     }
 
-    private class Game(var app: String, var frame: RawFrame, private val dump: File? = null) : ScreenPort by FakeScreen() {
+    private open class Game(var app: String, var frame: RawFrame, private val dump: File? = null) : ScreenPort by FakeScreen() {
         val taps = mutableListOf<Pair<Int, Int>>()
         private var shots = 0
         override suspend fun peek() = ScreenSnapshot("p1", app, emptyList(), frame.width, frame.height)
@@ -208,10 +208,12 @@ class JjDdzTurnTest {
     @Test fun lowersTheExtraCardsTheGameLiftedByItself() = runTest {
         // 点了两张 7,游戏把四张 7 都抬了起来(读稳两次),要把多起来的两张放下
         val ranks = listOf("7", "7", "7", "7", "5", "4")
-        replies(hand(ranks, setOf(0, 1, 2, 3)), hand(ranks, setOf(0, 1, 2, 3)), hand(ranks, setOf(0, 1)), hand(ranks, setOf(0, 1)))
+        val allSevens = hand(ranks, setOf(0, 1, 2, 3))
+        val pair = hand(ranks, setOf(0, 1))
+        replies(hand(ranks), hand(ranks), allSevens, allSevens, pair, pair)
         val game = Game(JjDdzScreen.PACKAGE, frame("follow"))
-        val ok = JjDdzTurn.select(toolDispatcher(game).ctx, JjDdzTurn.Session("http://mac:3426", 1), setOf(0, 1), JjCards.table(hand(ranks), 2408))
-        assertTrue(ok)
+        val x = JjDdzTurn.select(toolDispatcher(game).ctx, JjDdzTurn.Session("http://mac:3426", 1), setOf(0, 1), JjCards.table(hand(ranks), 2408))
+        assertEquals(JjDdzScreen.read(game.frame).buttons[2].x, x)
         val xs = game.taps.map { it.first }
         assertEquals(listOf(0, 1, 2, 3).map { 500 + it * 96 + 22 }, xs)
     }
@@ -219,20 +221,21 @@ class JjDdzTurnTest {
     @Test fun anyTwoOfThreeAcesArePairOfAces() = runTest {
         // 真机 11:13:要出对 A(序号 0、1),游戏抬起的是 1、2:点数对就算选好了,不再来回点
         val ranks = listOf("A", "A", "A", "J", "9")
-        replies(hand(ranks, setOf(1, 2)), hand(ranks, setOf(1, 2)))
+        replies(hand(ranks), hand(ranks), hand(ranks, setOf(1, 2)), hand(ranks, setOf(1, 2)))
         val game = Game(JjDdzScreen.PACKAGE, frame("follow"))
-        val ok = JjDdzTurn.select(toolDispatcher(game).ctx, JjDdzTurn.Session("http://mac:3426", 1), setOf(0, 1), JjCards.table(hand(ranks), 2408))
-        assertTrue(ok)
+        val x = JjDdzTurn.select(toolDispatcher(game).ctx, JjDdzTurn.Session("http://mac:3426", 1), setOf(0, 1), JjCards.table(hand(ranks), 2408))
+        assertEquals(JjDdzScreen.read(game.frame).buttons[2].x, x)
         assertEquals(listOf(0, 1).map { 500 + it * 96 + 22 }, game.taps.map { it.first })
     }
 
     @Test fun putsTheGamesHintDownBeforeLiftingTheWantedCard() = runTest {
         // 真机 20:04:轮到我时游戏已经提示抬起一张 6;要出的是 2。先放下 6、读稳,再抬 2
         val ranks = listOf("SJ", "2", "A", "6", "5")
-        replies(hand(ranks), hand(ranks), hand(ranks, setOf(1)), hand(ranks, setOf(1)))
+        val hint = hand(ranks, setOf(3))
+        replies(hint, hint, hand(ranks), hand(ranks), hand(ranks, setOf(1)), hand(ranks, setOf(1)))
         val game = Game(JjDdzScreen.PACKAGE, frame("follow"))
-        val ok = JjDdzTurn.select(toolDispatcher(game).ctx, JjDdzTurn.Session("http://mac:3426", 1), setOf(1), JjCards.table(hand(ranks, setOf(3)), 2408))
-        assertTrue(ok)
+        val x = JjDdzTurn.select(toolDispatcher(game).ctx, JjDdzTurn.Session("http://mac:3426", 1), setOf(1), JjCards.table(hint, 2408))
+        assertEquals(JjDdzScreen.read(game.frame).buttons[2].x, x)
         assertEquals(listOf(3, 1).map { 500 + it * 96 + 22 }, game.taps.map { it.first })
     }
 
@@ -314,7 +317,8 @@ class JjDdzTurnTest {
     }
 
     @Test fun joinedMidHandLeadsTheSmallestCard() = runTest {
-        replies(hand(listOf("A", "9", "3")))
+        val ranks = listOf("A", "9", "3")
+        replies(hand(ranks), hand(ranks), hand(ranks), hand(ranks, setOf(2)), hand(ranks, setOf(2)))
         val game = Game(JjDdzScreen.PACKAGE, frame("lead"))
         run(game, start)
         val play = JjDdzScreen.read(game.frame).buttons[2]
@@ -324,7 +328,7 @@ class JjDdzTurnTest {
     @Test fun joinedMidHandLeadsTheSmallestPairBeforeASingle() = runTest {
         // 真机 15:13:记牌断了按规则先出,出了单张 3,地主只剩一张。有对子先出最小的对子
         val ranks = listOf("A", "9", "9", "3")
-        replies(hand(ranks), hand(ranks, setOf(1, 2)), hand(ranks, setOf(1, 2)))
+        replies(hand(ranks), hand(ranks), hand(ranks), hand(ranks, setOf(1, 2)), hand(ranks, setOf(1, 2)))
         val game = Game(JjDdzScreen.PACKAGE, frame("lead"))
         run(game, start)
         assertEquals(listOf(1, 2).map { 500 + it * 96 + 22 }, game.taps.take(2).map { it.first })
@@ -333,11 +337,78 @@ class JjDdzTurnTest {
 
     @Test fun aFallbackLeadIsNotReportedAsAnAutomaticPlay() = runTest {
         val ranks = listOf("A", "9", "9", "3")
-        replies(hand(ranks), hand(ranks, setOf(1, 2)), hand(ranks, setOf(1, 2)), hand(listOf("A", "3")))
+        val pair = hand(ranks, setOf(1, 2))
+        replies(hand(ranks), hand(ranks), hand(ranks), pair, pair, hand(listOf("A", "3")))
         val game = Game(JjDdzScreen.PACKAGE, frame("lead"))
         val log = captureLog { assertEquals("2", run(game, start).text("handCount")) }
         assertEquals(JjDdzScreen.read(game.frame).buttons[2].x, game.taps.last().first)
         assertTrue(log, "played_without_me" !in log)
+    }
+
+    @Test fun doesNotPlayAnUnmatchedSelectionInThe2156Replay() = runTest {
+        val ranks = "BJ 2 2 2 2 A A K K Q J 10 9 8 7 6 5 4 3 3".split(' ')
+        // 21:56:24–34, 按 /cards 原始框还原抬牌。每组状态连续出现两帧。
+        val observed = listOf(emptySet(), setOf(1, 15, 18), setOf(1, 2), setOf(1, 2, 3, 15, 18), setOf(1, 2, 3, 4))
+        val reads = ArrayDeque(listOf(hand(ranks.take(17)), hand(ranks)) + observed.flatMap { listOf(hand(ranks, it), hand(ranks, it)) })
+        val game = Game(JjDdzScreen.PACKAGE, frame("beach_scenery"))
+        val lead = frame("lead")
+        JjDdzTurn.detect = { _, _ -> reads.removeFirstOrNull().also { game.frame = lead } }
+        PhoneDdzTurn.advise = { _, _ -> """{"play":["3","6","2","2","2","2"]}""" }
+
+        assertEquals(DdzSessionReason.REJECTED_ACTION, run(game, start).text("douzeroOff"))
+        assertTrue(game.taps.isNotEmpty())
+        assertTrue(game.taps.none { it.second == JjDdzScreen.TAP_Y })
+    }
+
+    @Test fun aRuleLeadDoesNotPlayAfterOnlyOneFrameWithTheRightCards() = runTest {
+        val ranks = listOf("A", "9", "3")
+        val extra = hand(ranks, setOf(0, 2))
+        val target = hand(ranks, setOf(2))
+        replies(hand(ranks), hand(ranks), hand(ranks), extra, target, extra, target)
+        val game = Game(JjDdzScreen.PACKAGE, frame("lead"))
+
+        run(game, start)
+        assertTrue(game.taps.isNotEmpty())
+        assertTrue(game.taps.none { it.second == JjDdzScreen.TAP_Y })
+    }
+
+    @Test fun aRuleLeadConfirmsCardsThatLookAlreadySelected() = runTest {
+        val ranks = listOf("A", "9", "3")
+        val extra = hand(ranks, setOf(0, 2))
+        replies(hand(ranks, setOf(2)), extra, extra)
+        val game = Game(JjDdzScreen.PACKAGE, frame("lead"))
+
+        run(game, start)
+        assertTrue(game.taps.none { it.second == JjDdzScreen.TAP_Y })
+    }
+
+    @Test fun rechecksTheSelectionWhenThePlayButtonAppearsLater() = runTest {
+        val ranks = listOf("A", "9", "3")
+        val lead = frame("lead")
+        val hiddenButton = frame("left_turn")
+        var reads = 0
+        var buttonWasHidden = false
+        val game = object : Game(JjDdzScreen.PACKAGE, lead) {
+            override suspend fun rawFrame(rows: List<Int>): RawFrame {
+                if (reads == 5 && !buttonWasHidden) {
+                    buttonWasHidden = true
+                    return hiddenButton
+                }
+                return lead
+            }
+        }
+        JjDdzTurn.detect = { _, _ ->
+            when (++reads) {
+                in 1..3 -> hand(ranks)
+                4, 5 -> hand(ranks, setOf(2))
+                6, 7 -> hand(ranks, setOf(0, 2))
+                else -> null
+            }
+        }
+
+        run(game, start)
+        assertTrue(buttonWasHidden)
+        assertTrue(game.taps.none { it.second == JjDdzScreen.TAP_Y })
     }
 
     @Test fun aFallbackPlaysTheLowestOvercallWithoutHint() = runTest {
@@ -372,7 +443,7 @@ class JjDdzTurnTest {
             card(rank, (if (owner == DdzSeat.Right) 1600.0 else 650.0) + 56 * i, 272.0)
         }
         val selected = hand(ranks, setOfNotNull(lifted)) + boxes
-        replies(selected, selected)
+        replies(hand(ranks) + boxes, hand(ranks) + boxes, selected, selected)
         val session = JjDdzTurn.Session("", 1).apply { lordSeen = DdzSeat.Right; lordFrames = 5 }
         JjDdzTurn.byRules(toolDispatcher(game).ctx, session, JjDdzScreen.read(game.frame), JjCards.table(hand(ranks) + boxes, game.frame.width))
         return game
@@ -482,8 +553,9 @@ class JjDdzTurnTest {
                 5 -> hand(seventeen).also { game.frame = follow }
                 6 -> hand(seventeen).also { now = 1_000 }
                 7 -> (hand(seventeen) + card("PASS", 650.0, 200.0) + card("Q", 1600.0, 272.0)).also { now = 6_000 }
-                8, 9 -> hand(seventeen, setOf(4))
-                10 -> hand(seventeen.filter { it != "K" })
+                8, 9 -> hand(seventeen)
+                10, 11 -> hand(seventeen, setOf(4))
+                12 -> hand(seventeen.filter { it != "K" })
                 else -> null
             }
         }
