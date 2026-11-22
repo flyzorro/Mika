@@ -106,8 +106,9 @@ internal object JjDdzTurn {
         var bid = false
         /** 叫分时的手牌:都不叫游戏会重新发牌,再轮到叫分时手牌不一样就是新发的,要重新叫。 */
         var bidHand: List<String>? = null
-        /** 这一个决定已经点过了:按钮还会留几帧,等它消失前不再点。 */
+        /** 这一个决定已经点过了。按钮残留、桌面未变时不再点。 */
         var acted = false
+        var opponentPlaysAtAction = emptyMap<DdzSide, List<String>>()
         var noHand = 0
         /** 最近一次读稳的手牌;一手被当成打完时连同记牌一起留着,特效挡住手牌后原样回来就接着记(见 drive)。 */
         var lastRanks: List<String>? = null
@@ -336,7 +337,12 @@ internal object JjDdzTurn {
             }
             if (view.phase.mine() && !s.acted) {
                 s.state = if (view.phase == DdzPhase.Call) DdzSessionState.Calling else DdzSessionState.Playing
-                if (decide(ctx, s, view, table, frame.width, decisionAt)) s.acted = true
+                if (decide(ctx, s, view, table, frame.width, decisionAt)) {
+                    s.acted = true
+                    s.opponentPlaysAtAction = DdzSide.entries.associateWith { side ->
+                        table.opponentBoxes(side).map { it.rank }.filter { it != "PASS" }.sorted()
+                    }
+                }
             }
             waitOrSteer { delay(POLL_MS) } ?: return result(s)
         }
@@ -371,6 +377,15 @@ internal object JjDdzTurn {
                     ranks[i] == boxes[i].rank || ranks[i] == boxes[i].alternateRank
                 }
             }
+        // 两家出得太快，可能连续看到我的按钮。只用读稳的新对手牌确认已经回到我。
+        val opponentPlayedAfterMine = s.acted && view.phase == DdzPhase.Follow && DdzSide.entries.any { side ->
+            val cards = table.seen(side) as? DdzSeen.Cards ?: return@any false
+            val ranks = cards.ranks.sorted()
+            val seat = if (side == DdzSide.Left) DdzSeat.Left else DdzSeat.Right
+            ranks != s.opponentPlaysAtAction[side] && ranks != tracker.lastOpponentPlay(seat)?.sorted() &&
+                repeated(side, cards.ranks) && DdzSnapshotRecovery.classify(cards.ranks) != null
+        }
+        if (opponentPlayedAfterMine) s.acted = false
         // 补齐旧一轮后，闹钟可能还停在上一家。等领出者的闹钟或新牌读稳，再接受后续的轮转。
         s.recoveredLeader?.let { leader ->
             val side = sideOf(leader)
@@ -399,6 +414,7 @@ internal object JjDdzTurn {
                 boxes.takeIf { (table.seen(side) is DdzSeen.Cards || steady) && repeated(side, boxes.map { it.rank }) }.orEmpty()
             },
             expireOpponentDeckRetries = settleExpired,
+            opponentPlayedAfterMine = opponentPlayedAfterMine,
         )
     }
 

@@ -130,6 +130,72 @@ class JjDdzTurnTest {
         assertEquals(JjDdzScreen.read(game.frame).buttons.single().x to JjDdzScreen.TAP_Y, game.taps.single())
     }
 
+    @Test fun decidesAgainWhenTheLandlordLeadsWithoutABreakInFollow() = runTest {
+        val fixture = javaClass.getResourceAsStream("/ddz-jj/replay-2210.tsv")!!.bufferedReader().use { it.readLines() }
+        val dealt = JjCards.parse(fixture[1])!!
+        val onlyPass = frame("only_pass")
+        val follow = frame("follow")
+        val game = Game(JjDdzScreen.PACKAGE, frame("left_turn"))
+        val reads = ArrayDeque(fixture.drop(2))
+        JjDdzTurn.detect = { _, _ ->
+            reads.removeFirstOrNull()?.let { row ->
+                val (line, seconds, boxes) = row.split('\t', limit = 3)
+                now = seconds.toLong() * 1_000
+                when (line) {
+                    "48465" -> game.frame = onlyPass
+                    "48470" -> game.frame = follow
+                }
+                dealt + JjCards.parse(boxes)!!
+            }
+        }
+        val histories = mutableListOf<String>()
+        PhoneDdzTurn.advise = { _, request ->
+            histories += Json.parseToJsonElement(request).jsonObject["history"].toString()
+            """{"play":[]}"""
+        }
+
+        val result = run(game, start)
+        val firstPass = JjDdzScreen.read(onlyPass).buttons.single().x to JjDdzScreen.TAP_Y
+        val nextPass = JjDdzScreen.read(follow).buttons.first().x to JjDdzScreen.TAP_Y
+        assertEquals(listOf(firstPass, nextPass), game.taps)
+        assertEquals(listOf("""[["5","5","4","4","3","3"],[],[],["9","8","7","6","5"],[]]"""), histories)
+        assertEquals(null, result.text("douzeroOff"))
+    }
+
+    @Test fun keepsTheSameFollowDecisionThroughMyPlayAndOneNoisyFrame() = runTest {
+        val follow = frame("follow")
+        val game = Game(JjDdzScreen.PACKAGE, frame("left_turn"))
+        val play = JjDdzScreen.read(follow).buttons[2].x to JjDdzScreen.TAP_Y
+        val select = 906 to JjCards.HAND_TAP_Y
+        val leftPass = card("PASS", 650.0, 200.0)
+        val right = card("J", 1600.0, 272.0)
+        val mine = card("K", 1140.0, 510.0)
+        var reads = 0
+        var afterPlay = 0
+        JjDdzTurn.detect = { _, _ ->
+            now += 500
+            if (++reads == 2) game.frame = follow
+            when {
+                reads > 22 -> null
+                play in game.taps -> hand(seventeen.filterNot { it == "K" }) + mine + leftPass +
+                    if (++afterPlay == 2) right.copy(rank = "Q") else right
+                select in game.taps -> hand(seventeen, setOf(4)) + leftPass + right
+                else -> hand(seventeen) + leftPass + right
+            }
+        }
+        var decisions = 0
+        PhoneDdzTurn.advise = { _, _ ->
+            decisions++
+            """{"play":["K"]}"""
+        }
+
+        val result = run(game, start)
+        assertTrue(afterPlay > 2)
+        assertEquals(listOf(select, play), game.taps)
+        assertEquals(1, decisions)
+        assertEquals(null, result.text("douzeroOff"))
+    }
+
     @Test fun tapsPlayAgainOnTheFinalPage() = runTest {
         now = 60_000
         replies(emptyList(), emptyList())
