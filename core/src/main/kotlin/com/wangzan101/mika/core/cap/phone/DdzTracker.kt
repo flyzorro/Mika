@@ -147,6 +147,8 @@ internal class DdzTracker(
             if (leadingWith20) {
                 landlord = DdzSeat.Me
                 active = DdzSeat.Me
+                // JJ 这一帧可能就要问 DouZero。地主确认后，先核对已经投出的底牌。
+                if (checkHand != null) sampleBottom(bottom) { checkHand }
                 return
             }
             // 两家都摆着牌:地主先出、下一家压上。出牌顺序右 → 左,没轮到左家就先看右家,

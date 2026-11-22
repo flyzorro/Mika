@@ -238,6 +238,41 @@ class JjDdzTurnTest {
         assertEquals("""["2","10","6"]""", sentBottom)
     }
 
+    @Test fun sendsTheNewBottomEvenWhenThePreviousRowLingersAfterBidding() = runTest {
+        val top = javaClass.getResourceAsStream("/ddz-jj/replay-bottom-2236.tsv")!!.bufferedReader().use {
+            it.readLines().drop(1).associate { line ->
+                line.substringBefore('\t').toInt() to JjCards.parse(line.substringAfterLast('\t'))!!
+            }
+        }
+        val dealt = hand("BJ A A A K Q Q J J J 10 8 7 6 5 4 3".split(' '))
+        val full = hand("BJ A A A K Q Q J J J 10 8 8 7 6 5 5 4 4 3".split(' '))
+        val call = frame("call_beach")
+        val afterCall = frame("beach_scenery")
+        val lead = frame("lead")
+        // 两段真实顶栏框拼成残留重现。先让旧框占六帧，再读新底牌和 20 张手牌。
+        val frames = listOf(call to (dealt + top.getValue(6060)), call to (dealt + top.getValue(6061))) +
+            List(6) { afterCall to (full + top.getValue(6061)) } +
+            listOf(
+                afterCall to (dealt + top.getValue(50788)),
+                afterCall to (full + top.getValue(50789)),
+                lead to (full + top.getValue(50790)),
+            )
+        var reads = 0
+        val game = object : Game(JjDdzScreen.PACKAGE, call) {
+            override suspend fun rawFrame(rows: List<Int>) = frames.getOrElse(reads) { frames.last() }.first
+        }
+        JjDdzTurn.detect = { _, _ -> frames.getOrNull(reads++)?.second }
+        val sent = mutableListOf<String>()
+        PhoneDdzTurn.advise = { _, request ->
+            sent += Json.parseToJsonElement(request).jsonObject["bottom"].toString()
+            """{"play":["3","4","5","6","7"]}"""
+        }
+
+        run(game, start)
+
+        assertEquals(listOf("""["8","5","4"]"""), sent)
+    }
+
     @Test fun rejectsHandsAboveThirty() = runTest {
         val game = Game(JjDdzScreen.PACKAGE, frame("beach_scenery"))
         val error = runCatching {
