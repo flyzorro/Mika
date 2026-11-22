@@ -879,6 +879,20 @@ class FinishInTwoTest(unittest.TestCase):
         self.assertIsNotNone(kept)
         self.assertGreater(kept[1], plain[1])
 
+    def test_a_teammate_who_could_beat_the_first_move_does_not_count(self):
+        # 2026-11-22 12:32 JJ:我是农民剩 A A A 4 3 3,看不见的牌里有炸弹。队友 17 张多半拿着能压的,
+        # 但队友不会压我:只看地主(9 张)压不压得住,A A A 3 3 是够安全的第一手
+        import endgame
+        hand = cards(["A", "A", "A", "4", "3", "3"])
+        legal = [cards(["A", "A", "A", "3", "3"]), cards(["4"]), cards(["A", "A", "A", "4"])]
+        unknown = cards(["K", "K", "K", "K", "Q", "Q", "Q", "Q", "2", "2", "2", "J", "J", "10", "10", "9",
+                         "9", "8", "8", "7", "7", "6", "6", "5", "5", "4"])
+        both = endgame.finish_in_two(hand, legal, (), unknown, 9, 17, samples=2000, limit=1.0)
+        lord = endgame.finish_in_two(hand, legal, (), unknown, 9, 17, samples=2000, limit=1.0, b_is_mate=True)
+        self.assertGreater(both[1], endgame.SAFE_FIRST)
+        self.assertEqual(tuple(sorted(cards(["A", "A", "A", "3", "3"]))), lord[0])
+        self.assertLess(lord[1], endgame.SAFE_FIRST)
+
     def test_the_bomb_is_kept_for_the_last_of_the_two_moves(self):
         # Q Q Q Q + 9 9 9 7 两种顺序都两手出完:先出 9 9 9 7,有人管就用 Q Q Q Q 炸回去,
         # 只有对手留着 A A A A 拦得住;先甩 Q Q Q Q 等于给它一个用炸弹的靶子。

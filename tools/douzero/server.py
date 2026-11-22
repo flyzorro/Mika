@@ -902,7 +902,8 @@ class Agent:
                 if infoset.player_position != "landlord" else ()
             quick = endgame.finish_in_two(tuple(sorted(infoset.player_hand_cards)), infoset.legal_actions, rival,
                                           sorted(infoset.other_hand_cards), left[others[0]], left[others[1]],
-                                          deadline=deadline - ACT_BUDGET_SAFETY_S, kept=kept)
+                                          deadline=deadline - ACT_BUDGET_SAFETY_S, kept=kept,
+                                          b_is_mate=infoset.player_position != "landlord")
             # 桌上那手是队友出的:捷径不能直接压他,把它和「不出」一起交给下面的现场模拟比;地主没有队友,照旧走捷径
             forced = None
             if quick is not None and tuple(sorted(move)) != quick[0]:
