@@ -36,6 +36,8 @@ internal data class JjTable(
     /** 有一张手牌认不准:这一帧的手牌不能拿去算。 */
     val handUnsure: Boolean get() = hand.any { it.score < JjCards.SURE }
     fun seen(side: DdzSide): DdzSeen = if (side == DdzSide.Left) left else right
+    fun opponentBoxes(side: DdzSide): List<JjCard> =
+        (if (side == DdzSide.Left) leftCards else rightCards).sortedBy { it.cx }
 }
 
 /**
@@ -44,6 +46,52 @@ internal data class JjTable(
  * 我出的牌、我的「不出」y 450–700;手牌 y≥700(点数中心平放约 805、抬起约 768,王的竖排字中心约 840)。
  */
 internal object JjCards {
+    /** 同点数优先保留分高的框,保持牌桌原顺序和张数。 */
+    fun maskExcess(boxes: List<JjCard>, copiesLeft: Map<String, Int>): List<String> {
+        val left = copiesLeft.toMutableMap()
+        val ranks = boxes.map { it.rank }.toMutableList()
+        for (i in boxes.indices.sortedByDescending { boxes[it].score }) {
+            val rank = boxes[i].rank
+            val copies = left.getOrDefault(rank, 0)
+            if (copies == 0) ranks[i] = DdzCards.UNKNOWN else left[rank] = copies - 1
+        }
+        return ranks
+    }
+
+    /** 找同牌型最小的压牌。枚举点数和张数,同点数的框只取一次。 */
+    fun smallestOvercall(table: JjTable, play: List<String>): List<String>? {
+        if (table.handUnsure) return null
+        val lead = DdzSnapshotRecovery.classify(play) ?: return null
+        if (lead.kind == DdzSnapshotRecovery.Kind.Pass || lead.main >= DdzCards.ORDER.getValue("A")) return null
+        val counts = table.handRanks.groupingBy { it }.eachCount()
+        val ranks = DdzCards.RANKS.takeWhile { it != "2" }.filter { it in counts }
+        val remaining = IntArray(ranks.size + 1)
+        for (i in ranks.indices.reversed()) remaining[i] = remaining[i + 1] + counts.getValue(ranks[i])
+        val cards = mutableListOf<String>()
+        var best: List<String>? = null
+        var bestMain = Int.MAX_VALUE
+        fun search(index: Int, need: Int) {
+            if (bestMain == lead.main + 1 || remaining[index] < need) return
+            if (need == 0) {
+                val move = DdzSnapshotRecovery.classify(cards) ?: return
+                if (move.kind == lead.kind && DdzSnapshotRecovery.beats(lead, move) && move.main < bestMain) {
+                    best = cards.toList()
+                    bestMain = move.main
+                }
+                return
+            }
+            val rank = ranks[index]
+            val count = counts.getValue(rank)
+            for (take in minOf(count, need) downTo 0) {
+                if (count == 4 && take in 1..3) continue
+                repeat(take) { cards.add(rank) }
+                search(index + 1, need - take)
+                repeat(take) { cards.removeAt(cards.lastIndex) }
+            }
+        }
+        search(0, lead.length)
+        return best
+    }
     private const val BASE_WIDTH = 2408.0
     /** 录屏里左家出的牌最左在 x≈600–700,右家的最右到 x≈1700–1800,翻底牌的动画只在 1000–1400 之间。 */
     private const val LEFT_EDGE = 1000.0

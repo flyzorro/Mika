@@ -129,6 +129,7 @@ class LazyPhoneScreen(
     override suspend fun frameGrid() = port?.frameGrid()
     override suspend fun rawFrame(rows: List<Int>) = port?.rawFrame(rows)
     override suspend fun quickShot() = port?.quickShot()
+    override fun jjDumpDirectory() = port?.jjDumpDirectory()
     override suspend fun quickTap(x: Int, y: Int) = port?.quickTap(x, y) ?: false
     override suspend fun pressAt(x: Int, y: Int, holdMs: Long) = port?.pressAt(x, y, holdMs) ?: false
 

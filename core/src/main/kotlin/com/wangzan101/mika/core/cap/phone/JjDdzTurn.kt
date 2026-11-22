@@ -13,6 +13,11 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.put
+import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import java.util.concurrent.Executors
 import kotlin.random.Random
 
 /**
@@ -60,6 +65,9 @@ internal object JjDdzTurn {
     private const val AGAIN_GAP_MS = 5_000L
     private const val MAX_HANDS = 10
     private const val HAND_SIZE = 17
+    private const val DUMP_FRAMES = 6
+    private const val DUMP_FILES = 300
+    private val dumpWriter = Executors.newSingleThreadExecutor { job -> Thread(job, "jjdump").apply { isDaemon = true } }
 
     internal class OpponentTrick(val seat: DdzSeat, val historySize: Int, val cards: List<String>) {
         var cardFrames = 0
@@ -68,7 +76,8 @@ internal object JjDdzTurn {
         var passFrames = 0
     }
 
-    internal class Session(val advisor: String, var handsLeft: Int) {
+    internal class Session(val advisor: String, var handsLeft: Int, private val dumpDirectory: () -> File? = { null }) {
+        private val recentShots = ArrayDeque<ByteArray>(DUMP_FRAMES)
         var tracker: DdzTracker? = null
         var opponentTrick: OpponentTrick? = null
         var previousRawTurn: DdzSeat? = null
@@ -102,6 +111,36 @@ internal object JjDdzTurn {
         var againAt = 0L
         var lastPhase = DdzPhase.Other
         var handCount = 0
+
+        fun rememberShot(jpeg: ByteArray) {
+            if (recentShots.size == DUMP_FRAMES) recentShots.removeFirst()
+            recentShots.addLast(jpeg)
+        }
+
+        fun dump(reason: String) {
+            val frames = recentShots.toList()
+            if (frames.isEmpty()) return
+            val at = System.currentTimeMillis()
+            dumpWriter.execute {
+                runCatching {
+                    val dir = checkNotNull(dumpDirectory()) { "external files unavailable" }
+                    check(dir.isDirectory || dir.mkdirs()) { "mkdir $dir" }
+                    val files = checkNotNull(dir.listFiles()) { "list $dir" }.filter { it.isFile }
+                    files.sortedWith(compareBy({ it.lastModified() }, { it.name }))
+                        .take((files.size + frames.size - DUMP_FILES).coerceAtLeast(0))
+                        .forEach { check(it.delete()) { "delete $it" } }
+                    val format = SimpleDateFormat("HHmmss.SSS", Locale.ROOT)
+                    val safeReason = reason.replace(Regex("[^a-zA-Z0-9_-]"), "_").take(120)
+                    var timestamp = at
+                    var basename: String
+                    do {
+                        basename = "${format.format(Date(timestamp++))}_$safeReason"
+                    } while ((0 until DUMP_FRAMES).any { File(dir, "${basename}_$it.jpg").exists() })
+                    frames.forEachIndexed { i, jpeg -> File(dir, "${basename}_$i.jpg").writeBytes(jpeg) }
+                    println("JJTRACE dump $basename frames=${frames.size}")
+                }.onFailure { println("JJTRACE dump_error $reason ${it.message}") }
+            }
+        }
     }
 
     /**
@@ -115,6 +154,11 @@ internal object JjDdzTurn {
 
     /** 把一帧交给电脑认牌;测试里换掉。 */
     internal var detect: suspend (url: String, jpeg: ByteArray) -> List<JjCard>? = JjCards::detect
+
+    private suspend fun readCards(s: Session, jpeg: ByteArray): List<JjCard>? {
+        s.rememberShot(jpeg)
+        return detect(s.advisor, jpeg)
+    }
 
     fun active(ctx: ToolContext): Boolean = ctx[STATE]?.let { !it.stopped } == true
 
@@ -132,7 +176,7 @@ internal object JjDdzTurn {
             val advisor = a.str("advisor") ?: return refused("advisor_required")
             if (!a.bool("auto", false)) return refused("jj_auto_only")
             if (!PhoneDdzTurn.probeAdvisor(advisor)) return refused(DdzSessionReason.SERVICE_UNAVAILABLE)
-            val s = Session(advisor, a.int("hands", 1, MAX_HANDS) ?: 1)
+            val s = Session(advisor, a.int("hands", 1, MAX_HANDS) ?: 1, ctx.screen::jjDumpDirectory)
             s.lastHandAt = PhoneDdzTurn.clock()
             ctx[STATE] = s
             return drive(ctx, s)
@@ -162,7 +206,7 @@ internal object JjDdzTurn {
             val t1 = PhoneDdzTurn.clock()
             val jpeg = frame?.let { ctx.screen.quickShot() }
             val t2 = PhoneDdzTurn.clock()
-            val cards = jpeg?.let { detect(s.advisor, it) }
+            val cards = jpeg?.let { readCards(s, it) }
             val t3 = PhoneDdzTurn.clock()
             // 真机 15:13:23–37:14 秒没有一张截图到电脑,工具一步没动,超时进了托管;当时分不清卡在截屏、网络还是电脑。
             // 慢的一轮和失败的一轮都打出来,各步用了多久
@@ -247,7 +291,14 @@ internal object JjDdzTurn {
                 s.lastRanks = table.handRanks
             }
             val tracker = s.tracker!!
-            observe(s, table, view)
+            val decisionAt = PhoneDdzTurn.clock()
+            val settleExpired = view.phase.mine() && !s.acted && s.settleSince != 0L && decisionAt - s.settleSince >= SETTLE_MS
+            val before = tracker.history.size
+            observe(s, table, view, settleExpired)
+            // 刚补记的牌后面可能还有一家要确认，留出读稳那一手的时间。
+            if (settleExpired && !tracker.ready() && tracker.history.asSequence().drop(before).any { DdzCards.UNKNOWN in it }) {
+                s.settleSince = decisionAt
+            }
             // 出牌时(轮到谁出看得出来):左右谁穿红衣谁是地主,都不是就是我
             if (view.phase == DdzPhase.Lead || view.phase == DdzPhase.Follow || view.turn == DdzSeat.Left || view.turn == DdzSeat.Right) {
                 val lord = view.redLord ?: DdzSeat.Me
@@ -260,7 +311,7 @@ internal object JjDdzTurn {
             }
             if (view.phase.mine() && !s.acted) {
                 s.state = if (view.phase == DdzPhase.Call) DdzSessionState.Calling else DdzSessionState.Playing
-                if (decide(ctx, s, view, table, frame.width)) s.acted = true
+                if (decide(ctx, s, view, table, frame.width, decisionAt)) s.acted = true
             }
             waitOrSteer { delay(POLL_MS) } ?: return result(s)
         }
@@ -273,7 +324,7 @@ internal object JjDdzTurn {
         previousRawTurn = null
     }
 
-    internal fun observe(s: Session, table: JjTable, view: JjView) {
+    internal fun observe(s: Session, table: JjTable, view: JjView, settleExpired: Boolean = false) {
         val tracker = s.tracker!!
         val turn = view.turn
         // 左家后该轮到我。自己的出牌区还空着时，等右家闹钟再亮一帧才认作跳过了我。
@@ -289,6 +340,14 @@ internal object JjDdzTurn {
             leading = view.phase == DdzPhase.Lead,
             hand = { table.handRanks.takeUnless { table.handUnsure } },
             checkOpponentDeck = true,
+            opponentBoxes = { side ->
+                val boxes = table.opponentBoxes(side)
+                val reading = s.unsure[side]
+                val steady = reading != null && reading.first == boxes.map { it.rank } &&
+                    PhoneDdzTurn.clock() - reading.second >= STEADY_MS
+                boxes.takeIf { table.seen(side) is DdzSeen.Cards || steady }.orEmpty()
+            },
+            expireOpponentDeckRetries = settleExpired,
         )
     }
 
@@ -348,7 +407,7 @@ internal object JjDdzTurn {
 
     /** 看到新发的 17 张从头记;轮到我出牌时才第一次看到手牌(张数不对)是中途进来的,这一手只按规则打完。 */
     private fun newHand(s: Session, table: JjTable, view: JjView) {
-        s.tracker = DdzTracker(DdzSettlingPolicy.HUMAN)
+        s.tracker = DdzTracker(DdzSettlingPolicy.HUMAN, onBroken = s::dump)
         s.resetTurnReads()
         s.brokenLogged = false
         s.lordSeen = null
@@ -361,7 +420,7 @@ internal object JjDdzTurn {
     }
 
     /** 这一个决定做完(点过了)为 true;还要再等几帧(别家的牌没读稳、手牌认不准)为 false。 */
-    private suspend fun decide(ctx: ToolContext, s: Session, view: JjView, table: JjTable, width: Int): Boolean {
+    private suspend fun decide(ctx: ToolContext, s: Session, view: JjView, table: JjTable, width: Int, decisionAt: Long): Boolean {
         val tracker = s.tracker ?: return false
         if (view.phase == DdzPhase.Call) {
             // 都不叫重新发牌(真机 10:02):手一直没空,还当已经叫过,叫分超时进了托管
@@ -382,7 +441,7 @@ internal object JjDdzTurn {
         }
         if (view.onlyPass) {
             // 别家的牌还没读稳就记「我不出」,记牌会以为还没轮到我而断掉(真机第二手:not_my_turn);先等一会儿
-            if (tracker.broken == null && !tracker.ready() && !settling(s)) return false
+            if (tracker.broken == null && !tracker.ready() && !settling(s, decisionAt)) return false
             s.settleSince = 0
             trace(s, "only_pass ready=${tracker.ready()}")
             think()
@@ -391,7 +450,7 @@ internal object JjDdzTurn {
             return true
         }
         if (tracker.broken == null && (!tracker.ready() || table.handUnsure)) {
-            if (!settling(s)) return false
+            if (!settling(s, decisionAt)) return false
             tracker.fail(if (table.handUnsure) DdzSessionReason.UNREADABLE_HAND else "history_not_ready")
         }
         s.settleSince = 0
@@ -432,32 +491,24 @@ internal object JjDdzTurn {
         return true
     }
 
-    /**
-     * 记不下去的这一手按简单规则打完:跟牌不出;先出出最小的一张单牌(手牌从大到小排,最右边那张)。
-     * 先出时提示是灰的,点了没用。抬着的牌先放下。
-     */
     /** 轮到我时别家的牌还没读稳:最多等 [SETTLE_MS];等够了为 true。 */
-    private fun settling(s: Session): Boolean {
-        val now = PhoneDdzTurn.clock()
+    private fun settling(s: Session, now: Long): Boolean {
         if (s.settleSince == 0L) s.settleSince = now
         return now - s.settleSince >= SETTLE_MS
     }
 
-    private suspend fun byRules(ctx: ToolContext, s: Session, view: JjView, table: JjTable): Boolean {
+    internal suspend fun byRules(ctx: ToolContext, s: Session, view: JjView, table: JjTable): Boolean {
         think()
         if (view.phase == DdzPhase.Follow) {
-            if (beatsByHint(s, table) && view.buttons.size >= 2) {
-                // 「提示」把能压的牌抬起来;抬不起来(没有能压的)或出牌没变绿就不出
-                tap(ctx, view.buttons[1].x, JjDdzScreen.TAP_Y)
-                val lifted = settled(ctx, s)
-                val x = if (lifted != null && lifted.lifted.isNotEmpty()) playable(ctx) else null
-                trace(s, "rules_hint lifted=${lifted?.lifted?.map { lifted.hand[it].rank }} playable=${x != null}")
-                if (x != null && lifted != null) {
-                    if (tap(ctx, x, JjDdzScreen.TAP_Y)) {
-                        s.expectedHand = lifted.handRanks.filterIndexed { i, _ -> i !in lifted.lifted }
-                    }
-                    return true
+            val play = opposingPlay(s, table)?.let { JjCards.smallestOvercall(table, it) }
+            val want = play?.let { target(table, it) }
+            val x = if (want != null && select(ctx, s, want, table)) playable(ctx) else null
+            trace(s, "rules_follow play=$play playable=${x != null}")
+            if (x != null && want != null) {
+                if (tap(ctx, x, JjDdzScreen.TAP_Y)) {
+                    s.expectedHand = table.handRanks.filterIndexed { i, _ -> i !in want }
                 }
+                return true
             }
             tap(ctx, view.buttons[0].x, JjDdzScreen.TAP_Y)
             return true
@@ -479,23 +530,25 @@ internal object JjDdzTurn {
      */
     internal fun steady(s: Session, table: JjTable, side: DdzSide): DdzSeen {
         val seen = table.seen(side)
-        val found = (if (side == DdzSide.Left) table.leftCards else table.rightCards).sortedBy { it.cx }
+        val found = table.opponentBoxes(side)
         if (found.isEmpty() || found.any { it.rank == "PASS" || it.score < STEADY_MIN_SCORE }) {
             s.unsure.remove(side)
             return seen
         }
         val ranks = opponentRanks(s, table, side, found)
-        if (ranks == null || seen != DdzSeen.Unsure) {
+        if (seen != DdzSeen.Unsure) {
             s.unsure.remove(side)
             return ranks?.let { DdzSeen.Cards(it) } ?: DdzSeen.Unsure
         }
+        // 超张读数还不能交给 tracker。即使找不到备选，也先记下它是否持续读稳。
+        val observedRanks = ranks ?: found.map { it.rank }
         val now = PhoneDdzTurn.clock()
         val first = s.unsure[side]
-        if (first == null || first.first != ranks) {
-            s.unsure[side] = ranks to now
+        if (first == null || first.first != observedRanks) {
+            s.unsure[side] = observedRanks to now
             return seen
         }
-        if (now - first.second < STEADY_MS) return seen
+        if (ranks == null || now - first.second < STEADY_MS) return seen
         trace(s, "steady $side ${ranks.joinToString(" ")} scores=${found.map { "%.2f".format(it.score) }}")
         return DdzSeen.Cards(ranks)
     }
@@ -504,6 +557,7 @@ internal object JjDdzTurn {
     private fun opponentRanks(s: Session, table: JjTable, side: DdzSide, found: List<JjCard>): List<String>? {
         val ranks = found.map { it.rank }.toMutableList()
         val seat = if (side == DdzSide.Left) DdzSeat.Left else DdzSeat.Right
+        s.tracker?.maskedOpponentPlay(seat, ranks)?.let { return it }
         val previous = s.tracker?.lastOpponentPlay(seat)
         // 出牌区可能还摆着已记过的同一手,它已经算在历史里。
         if (ranks == previous) return ranks
@@ -537,17 +591,18 @@ internal object JjDdzTurn {
     }
 
     /**
-     * 记牌断了、轮到我跟牌:桌上是地主的牌就按游戏的「提示」压,是队友的牌就不出。
+     * 记牌断了、轮到我跟牌:只考虑对手的牌。
      * 最后出牌的是左家(他之后就轮到我);左家不出才看右家。地主按人物的红衣服认(不靠记牌),认不出就不压。
      */
-    internal fun beatsByHint(s: Session, table: JjTable): Boolean {
-        val lord = s.lordSeen?.takeIf { s.lordFrames >= if (it == DdzSeat.Me) ME_LORD_FRAMES else LORD_FRAMES } ?: return false
+    internal fun opposingPlay(s: Session, table: JjTable): List<String>? {
+        val lord = s.lordSeen?.takeIf { s.lordFrames >= if (it == DdzSeat.Me) ME_LORD_FRAMES else LORD_FRAMES } ?: return null
         val owner = when {
             table.left is DdzSeen.Cards -> DdzSeat.Left
             table.left == DdzSeen.Pass && table.right is DdzSeen.Cards -> DdzSeat.Right
-            else -> return false
+            else -> return null
         }
-        return lord == DdzSeat.Me || owner == lord
+        if (lord != DdzSeat.Me && owner != lord) return null
+        return (table.seen(sideOf(owner)) as DdzSeen.Cards).ranks
     }
 
     /**
@@ -617,7 +672,7 @@ internal object JjDdzTurn {
         repeat(SETTLE_READS) {
             delay(LIFT_MS)
             val jpeg = ctx.screen.quickShot() ?: return null
-            val cards = detect(s.advisor, jpeg) ?: return null
+            val cards = readCards(s, jpeg) ?: return null
             val frame = ctx.screen.rawFrame(JjDdzScreen.ROWS) ?: return null
             val now = JjCards.table(cards, frame.width)
             if (last?.lifted == now.lifted && last?.hand?.size == now.hand.size) return now
