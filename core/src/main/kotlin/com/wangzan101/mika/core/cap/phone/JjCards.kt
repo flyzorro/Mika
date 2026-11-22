@@ -64,6 +64,9 @@ internal object JjCards {
     private const val PASS = "PASS"
     /** 两个同点数的框重叠超过小框的这么多,算同一张牌。 */
     private const val SAME_CARD = 0.5
+    private const val RANK_OVERLAP = 0.75
+    private const val RANK_WINNER_SCORE = 0.95
+    private const val RANK_SCORE_GAP = 0.08
 
     /** 把一帧 JPEG 交给电脑认牌;连不上、没配认牌模型、回的不对都是 null。 */
     suspend fun detect(url: String, jpeg: ByteArray): List<JjCard>? = withContext(Dispatchers.IO) {
@@ -112,8 +115,8 @@ internal object JjCards {
         // 整组都在中间的是叫完分翻底牌的动画(三张牌从中间飞到顶栏),不是谁出的牌
         val scale = width / BASE_WIDTH
         val groups = groups(cards.filter { it.cy >= PLAY_Y0 && it.cy < MINE_Y0 }, GROUP_GAP * scale)
-        val left = groups.filter { g -> g.minOf { it.x0 } < LEFT_EDGE * scale }.flatten()
-        val right = groups.filter { g -> g.minOf { it.x0 } >= LEFT_EDGE * scale && g.maxOf { it.x1 } > RIGHT_EDGE * scale }.flatten()
+        val left = groups.filter { g -> g.minOf { it.x0 } < LEFT_EDGE * scale }.flatMap(::dedupeRankLabels)
+        val right = groups.filter { g -> g.minOf { it.x0 } >= LEFT_EDGE * scale && g.maxOf { it.x1 } > RIGHT_EDGE * scale }.flatMap(::dedupeRankLabels)
         // 手牌的点数字高约 78(王的竖排字约 178),上沿平放 770、抬起 735;
         // 每手结算浮层里摆的各家剩牌也在这一带,字矮(约 50–68)、上沿高(670 起)
         val hand = cards.filter { it.cy >= HAND_Y0 && it.rank != PASS && it.y0 >= HAND_MIN_TOP && it.y1 - it.y0 >= HAND_MIN_H }.sortedBy { it.cx }
@@ -139,6 +142,23 @@ internal object JjCards {
         val kept = mutableListOf<JjCard>()
         for (c in cards.sortedByDescending { it.score }) {
             if (kept.none { it.rank == c.rank && overlap(it, c) > SAME_CARD * minOf(area(it), area(c)) }) kept += c
+        }
+        return kept
+    }
+
+    /**
+     * 15:28 左家连对:同一张 10 还报了一个 9。只有两个框几乎是同一个、分数明显一高一低时才去掉弱框。
+     * 用大框面积核对，避免宽框盖住旁边真正的一张。只处理对手出牌区，且不去掉 PASS。
+     */
+    private fun dedupeRankLabels(cards: List<JjCard>): List<JjCard> {
+        val kept = mutableListOf<JjCard>()
+        for (card in cards.sortedByDescending { it.score }) {
+            val duplicate = card.rank != PASS && kept.any { other ->
+                other.rank != PASS && other.rank != card.rank && other.score >= RANK_WINNER_SCORE &&
+                    other.score - card.score >= RANK_SCORE_GAP &&
+                    overlap(other, card) > RANK_OVERLAP * maxOf(area(other), area(card))
+            }
+            if (!duplicate) kept += card
         }
         return kept
     }

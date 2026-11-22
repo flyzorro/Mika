@@ -52,6 +52,8 @@ internal object JjDdzTurn {
     private const val STEADY_MS = 1_500L
     /** 低于这个分数的框不算,怎么稳也不认。 */
     private const val STEADY_MIN_SCORE = 0.6
+    private const val TRICK_PLAY_FRAMES = 3
+    private const val TRICK_PASS_FRAMES = 2
     /** 炸弹、火箭的特效会挡住人物一两帧。 */
     private const val LORD_FRAMES = 5
     private const val ME_LORD_FRAMES = 12
@@ -59,8 +61,17 @@ internal object JjDdzTurn {
     private const val MAX_HANDS = 10
     private const val HAND_SIZE = 17
 
+    internal class OpponentTrick(val seat: DdzSeat, val historySize: Int, val cards: List<String>) {
+        var cardFrames = 0
+        var cleared = false
+        var sawOtherBeforePass = false
+        var passFrames = 0
+    }
+
     internal class Session(val advisor: String, var handsLeft: Int) {
         var tracker: DdzTracker? = null
+        var opponentTrick: OpponentTrick? = null
+        var previousRawTurn: DdzSeat? = null
         var state = DdzSessionState.Idle
         var reason: String? = null
         var stopped = false
@@ -131,6 +142,7 @@ internal object JjDdzTurn {
         return when (action) {
             // 停下的原因还在:模型处理完(关了弹窗、点了继续)再 wait 接着打
             "wait" -> {
+                s.resetTurnReads()
                 s.state = DdzSessionState.Playing
                 s.reason = null
                 s.detectFailures = 0
@@ -155,6 +167,7 @@ internal object JjDdzTurn {
             // 真机 15:13:23–37:14 秒没有一张截图到电脑,工具一步没动,超时进了托管;当时分不清卡在截屏、网络还是电脑。
             // 慢的一轮和失败的一轮都打出来,各步用了多久
             if (t3 - t0 > SLOW_FRAME_MS || frame == null || cards == null) {
+                s.resetTurnReads()
                 trace(s, "frame raw=${t1 - t0}ms${if (frame == null) "(null)" else ""} shot=${t2 - t1}ms${if (frame != null && jpeg == null) "(null)" else ""} " +
                     "cards=${t3 - t2}ms${if (jpeg != null && cards == null) "(null)" else ""} fails=${s.detectFailures + if (cards == null) 1 else 0}")
             }
@@ -172,6 +185,7 @@ internal object JjDdzTurn {
             // 托管(超时后游戏替我打):先把它取消,不然按钮都不出来。「取消托管」盖在手牌上,看不到手牌就不点:
             // 斗地主大厅泳池的池水在同一处也是这种蓝
             if (view.phase == DdzPhase.AutoPlay && table.hand.isNotEmpty()) {
+                s.resetTurnReads()
                 if (PhoneDdzTurn.clock() - s.againAt > AGAIN_GAP_MS) {
                     trace(s, "cancel_auto")
                     tap(ctx, view.buttons[0].x, JjDdzScreen.AUTO_TAP_Y)
@@ -181,6 +195,7 @@ internal object JjDdzTurn {
                 continue
             }
             if (table.hand.isEmpty()) {
+                s.resetTurnReads()
                 if (++s.noHand == NEW_HAND_GAP && s.tracker != null) {
                     // 一手打完。记牌先留着:王炸、炸弹的特效会挡住手牌好几帧,手牌原样回来就不是新的一手
                     s.closed = s.tracker
@@ -229,14 +244,7 @@ internal object JjDdzTurn {
             s.noHand = 0
             if (!table.handUnsure) s.lastRanks = table.handRanks
             val tracker = s.tracker!!
-            tracker.observe(
-                rawTurn = view.turn,
-                read = { side -> steady(s, table, side) },
-                bottom = { table.bottom },
-                leadingWith20 = view.phase == DdzPhase.Lead && table.hand.size == 20,
-                leading = view.phase == DdzPhase.Lead,
-                hand = { table.handRanks.takeUnless { table.handUnsure } },
-            )
+            observe(s, table, view)
             // 出牌时(轮到谁出看得出来):左右谁穿红衣谁是地主,都不是就是我
             if (view.phase == DdzPhase.Lead || view.phase == DdzPhase.Follow || view.turn == DdzSeat.Left || view.turn == DdzSeat.Right) {
                 val lord = view.redLord ?: DdzSeat.Me
@@ -257,9 +265,83 @@ internal object JjDdzTurn {
 
     private fun DdzPhase.mine() = this == DdzPhase.Call || this == DdzPhase.Lead || this == DdzPhase.Follow
 
+    private fun Session.resetTurnReads() {
+        opponentTrick = null
+        previousRawTurn = null
+    }
+
+    internal fun observe(s: Session, table: JjTable, view: JjView) {
+        val tracker = s.tracker!!
+        val turn = view.turn
+        // 左家后该轮到我。自己的出牌区还空着时，等右家闹钟再亮一帧才认作跳过了我。
+        val skipsMe = turn == DdzSeat.Right && tracker.nextOpponent() == DdzSeat.Left && table.mine == DdzSeen.Empty
+        val confirmedTurn = if (skipsMe && s.previousRawTurn != turn) null else turn
+        s.previousRawTurn = turn
+        recoverOpponentTrick(s, tracker, table, turn)
+        tracker.observe(
+            rawTurn = confirmedTurn,
+            read = { side -> steady(s, table, side) },
+            bottom = { table.bottom },
+            leadingWith20 = view.phase == DdzPhase.Lead && table.hand.size == 20,
+            leading = view.phase == DdzPhase.Lead,
+            hand = { table.handRanks.takeUnless { table.handUnsure } },
+        )
+    }
+
+    /**
+     * 闹钟可能从出牌人直接回到他自己。只在新牌连着读稳、另一家随后连着亮「不出」、
+     * 我也亮了「不出」且手里确定压不住时补整轮。读数冲突或看见另一家的闹钟就交回正常跟踪。
+     */
+    private fun recoverOpponentTrick(s: Session, tracker: DdzTracker, table: JjTable, turn: DdzSeat?) {
+        val seat = tracker.nextOpponent()
+        val previous = s.opponentTrick
+        s.opponentTrick = null
+        if (seat == null || (turn != null && turn != seat) || table.handUnsure) return
+
+        val seen = table.seen(sideOf(seat))
+        val old = previous?.takeIf { it.seat == seat && it.historySize == tracker.history.size }
+        val trick = when {
+            seen is DdzSeen.Cards && tracker.isNewOpponentPlay(seat, seen.ranks) ->
+                old?.takeIf { !it.cleared && it.cards == seen.ranks }
+                    ?: OpponentTrick(seat, tracker.history.size, seen.ranks)
+            seen == DdzSeen.Empty && old != null && old.cardFrames >= TRICK_PLAY_FRAMES && !old.cleared -> old
+            else -> return
+        }
+        if (seen == DdzSeen.Empty) trick.cleared = true else trick.cardFrames++
+
+        val other = if (seat == DdzSeat.Left) DdzSeat.Right else DdzSeat.Left
+        when (val otherSeen = table.seen(sideOf(other))) {
+            DdzSeen.Unsure -> return
+            DdzSeen.Pass -> if (trick.sawOtherBeforePass) trick.passFrames++
+            else -> {
+                // 他可能真的压了一手。桌上还摆着已记过的牌，可以等随后出现的不出。
+                if (otherSeen is DdzSeen.Cards && tracker.isNewOpponentPlay(other, otherSeen.ranks)) return
+                trick.sawOtherBeforePass = true
+                trick.passFrames = 0
+            }
+        }
+        if (trick.cardFrames >= TRICK_PLAY_FRAMES && trick.passFrames >= TRICK_PASS_FRAMES &&
+            table.mine == DdzSeen.Pass && cannotBeat(table.handRanks, trick.cards) &&
+            tracker.recordOpponentPlayAndPasses(seat, trick.cards, table.handRanks)
+        ) return
+        if (!trick.cleared) s.opponentTrick = trick
+    }
+
+    /** 只检查能确定要不起的情况。其余牌型走正常跟踪。 */
+    private fun cannotBeat(hand: List<String>, cards: List<String>): Boolean {
+        val move = DdzSnapshotRecovery.classify(cards) ?: return false
+        if (move.kind == DdzSnapshotRecovery.Kind.Rocket) return true
+        if ("SJ" in hand && "BJ" in hand) return false
+        if (move.kind != DdzSnapshotRecovery.Kind.Bomb && hand.size >= cards.size) return false
+        return hand.groupingBy { it }.eachCount().none { (rank, n) ->
+            n == 4 && (move.kind != DdzSnapshotRecovery.Kind.Bomb || (DdzCards.ORDER[rank] ?: -1) > move.main)
+        }
+    }
+
     /** 看到新发的 17 张从头记;轮到我出牌时才第一次看到手牌(张数不对)是中途进来的,这一手只按规则打完。 */
     private fun newHand(s: Session, table: JjTable, view: JjView) {
         s.tracker = DdzTracker(DdzSettlingPolicy.HUMAN)
+        s.resetTurnReads()
         s.brokenLogged = false
         s.lordSeen = null
         s.lordFrames = 0

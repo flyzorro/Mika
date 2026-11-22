@@ -506,6 +506,32 @@ internal class DdzTracker(private val settling: DdzSettlingPolicy = DdzSettlingP
     /** 轮到自己时能不能交给 DouZero:别家的都读到了、历史没断。 */
     fun ready(): Boolean = broken == null && landlord != null && waiting.isEmpty() && active == DdzSeat.Me
 
+    /** 可按顺序记下一手的对手。还有待确认动作时为空。 */
+    internal fun nextOpponent(): DdzSeat? =
+        active?.takeIf { broken == null && landlord != null && it != DdzSeat.Me && waiting.isEmpty() && !awaitMeAfterInfer }
+
+    internal fun isNewOpponentPlay(seat: DdzSeat, cards: List<String>): Boolean = cards != lastPlay[seat]
+
+    /**
+     * JJ 的闹钟可能漏掉整轮。调用方已读稳一手牌和两家的不出，这里核对历史、牌规和整副牌，再一起记下。
+     * 两家不出后仍由同一家领出，active 不变。
+     */
+    internal fun recordOpponentPlayAndPasses(seat: DdzSeat, cards: List<String>, hand: List<String>): Boolean {
+        if (seat != nextOpponent() || cards.isEmpty() || !usablePlay(seat, cards)) return false
+        if (hand.size != remainingBeforePlay(DdzSeat.Me) || cards.size >= remainingBeforePlay(seat)) return false
+        val used = (history.flatten() + hand + cards).groupingBy { it }.eachCount()
+        if (used.any { (rank, n) -> rank !in DdzCards.RANKS || n > if (rank == "SJ" || rank == "BJ") 1 else 4 }) return false
+        record(seat, cards)
+        record(seat.next, emptyList())
+        record(seat.next.next, emptyList())
+        return true
+    }
+
+    private fun remainingBeforePlay(seat: DdzSeat): Int {
+        val dealt = if (seat == landlord) FIRST else FARMER
+        return dealt - history.indices.sumOf { i -> if (confirmedSeats[i] == seat) history[i].size else 0 }
+    }
+
     /** 这家最近两帧都一样的剩牌张数;读不到为 null。这一局记不下去了也可能还留着上一次的读数。 */
     internal fun seatCount(seat: DdzSeat): Int? = count[seat]
 
