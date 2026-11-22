@@ -1306,4 +1306,10 @@ internal object DdzCards {
 
     val RANKS = listOf("3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K", "A", "2", "SJ", "BJ")
     val ORDER = RANKS.withIndex().associate { (i, r) -> r to i }
+    fun copies(rank: String): Int = if (rank == "SJ" || rank == "BJ") 1 else 4
+
+    fun copiesLeft(used: List<String>): Map<String, Int> {
+        val counts = used.groupingBy { it }.eachCount()
+        return RANKS.associateWith { (copies(it) - counts.getOrDefault(it, 0)).coerceAtLeast(0) }
+    }
 }

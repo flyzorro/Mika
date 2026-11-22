@@ -17,6 +17,8 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
+import java.io.ByteArrayOutputStream
+import java.io.PrintStream
 import javax.imageio.ImageIO
 
 /** 牌由电脑认:测试里 [JjDdzTurn.detect] 按顺序回预先摆好的牌,用完了回 null(连着认不了就停下,测试也就结束)。 */
@@ -217,6 +219,49 @@ class JjDdzTurnTest {
         assertEquals(JjDdzScreen.read(game.frame).buttons[2].x, game.taps.last().first)
     }
 
+    @Test fun aFallbackLeadIsNotReportedAsAnAutomaticPlay() = runTest {
+        val ranks = listOf("A", "9", "9", "3")
+        replies(hand(ranks), hand(ranks, setOf(1, 2)), hand(ranks, setOf(1, 2)), hand(listOf("A", "3")))
+        val game = Game(JjDdzScreen.PACKAGE, frame("lead"))
+        val log = captureLog { assertEquals("2", run(game, start).text("handCount")) }
+        assertEquals(JjDdzScreen.read(game.frame).buttons[2].x, game.taps.last().first)
+        assertTrue(log, "played_without_me" !in log)
+    }
+
+    @Test fun aFallbackHintIsNotReportedAsAnAutomaticPlay() = runTest {
+        val game = Game(JjDdzScreen.PACKAGE, frame("left_turn"))
+        val follow = frame("follow")
+        var reads = 0
+        JjDdzTurn.detect = { _, _ ->
+            when (++reads) {
+                in 1..4 -> hand(seventeen)
+                5 -> hand(seventeen).also { game.frame = follow }
+                6 -> hand(seventeen).also { now = 1_000 }
+                7 -> (hand(seventeen) + card("PASS", 650.0, 200.0) + card("9", 1600.0, 272.0)).also { now = 6_000 }
+                8, 9 -> hand(seventeen, setOf(4))
+                10 -> hand(seventeen.filter { it != "K" })
+                else -> null
+            }
+        }
+        val log = captureLog { assertEquals("16", run(game, start).text("handCount")) }
+        assertEquals(JjDdzScreen.read(follow).buttons.drop(1).map { it.x to JjDdzScreen.TAP_Y }, game.taps)
+        assertTrue(log, "played_without_me" !in log)
+    }
+
+    private suspend fun captureLog(block: suspend () -> Unit): String {
+        val log = ByteArrayOutputStream()
+        val original = System.out
+        PrintStream(log).use { output ->
+            System.setOut(output)
+            try {
+                block()
+            } finally {
+                System.setOut(original)
+            }
+        }
+        return log.toString()
+    }
+
     @Test fun aBombIsNotTheFallbackLead() = runTest {
         val ranks = listOf("A", "7", "7", "7", "7", "3")
         assertEquals(null, JjDdzTurn.smallestGroup(JjCards.table(hand(ranks), 2408)))
@@ -286,6 +331,13 @@ class JjDdzTurnTest {
         // 认错成别的牌(不是少了几张)不算
         s.expectedHand = null
         assertEquals(null, JjDdzTurn.playedWithoutMe(s, listOf("K", "J", "J", "9")))
+    }
+
+    @Test fun theResultOverlayDoesNotLookLikeAnAutomaticPlay() {
+        val s = JjDdzTurn.Session("", 1)
+        // 16:50:12 结算浮层盖住手牌，只有小王还读得到。
+        s.lastRanks = listOf("SJ", "2", "A", "A", "Q", "10", "10", "9", "9", "8", "8", "7", "6", "5", "5", "4", "4")
+        assertEquals(null, JjDdzTurn.playedWithoutMe(s, listOf("SJ")))
     }
 
     @Test fun switchingAwayPausesWithoutTapping() = runTest {

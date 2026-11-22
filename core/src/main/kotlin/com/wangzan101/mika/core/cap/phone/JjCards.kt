@@ -11,7 +11,10 @@ import java.net.HttpURLConnection
 import java.net.URI
 
 /** 电脑 /cards 认出的一样东西:一张牌的点数,或 PASS(「不出」的气泡)。坐标是截图像素。 */
-internal data class JjCard(val rank: String, val x0: Double, val y0: Double, val x1: Double, val y1: Double, val score: Double) {
+internal data class JjCard(
+    val rank: String, val x0: Double, val y0: Double, val x1: Double, val y1: Double, val score: Double,
+    val alternateRank: String? = null,
+) {
     val cx: Double get() = (x0 + x1) / 2
     val cy: Double get() = (y0 + y1) / 2
 }
@@ -149,19 +152,23 @@ internal object JjCards {
     }
 
     /**
-     * 15:28 左家连对:同一张 10 还报了一个 9。只有两个框几乎是同一个、分数明显一高一低时才去掉弱框。
+     * 15:28 左家连对:同一张 10 还报了一个 9。两个框几乎是同一个、分数明显一高一低时，把弱框的点数留作备选。
      * 用大框面积核对，避免宽框盖住旁边真正的一张。只处理对手出牌区，且不去掉 PASS。
      */
     private fun dedupeRankLabels(cards: List<JjCard>): List<JjCard> {
         val kept = mutableListOf<JjCard>()
         for (card in cards.sortedByDescending { it.score }) {
-            val duplicate = card.rank != PASS && kept.any { other ->
-                other.rank != PASS && other.rank != card.rank &&
+            val duplicate = kept.indexOfFirst { other ->
+                card.rank != PASS && other.rank != PASS && other.rank != card.rank &&
                     ((other.score >= RANK_WINNER_SCORE && other.score - card.score >= RANK_SCORE_GAP) ||
                         (other.score >= SURE && other.score - card.score >= RANK_WIDE_GAP)) &&
                     overlap(other, card) > RANK_OVERLAP * maxOf(area(other), area(card))
             }
-            if (!duplicate) kept += card
+            if (duplicate == -1) {
+                kept += card
+            } else if (kept[duplicate].alternateRank == null) {
+                kept[duplicate] = kept[duplicate].copy(alternateRank = card.rank)
+            }
         }
         return kept
     }

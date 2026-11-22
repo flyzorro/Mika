@@ -76,7 +76,7 @@ internal object JjDdzTurn {
         var reason: String? = null
         var stopped = false
         var handsPlayed = 0
-        /** DouZero 出完这一手后手里该剩的牌;下一手认到的不一样就是有张牌认错、点错了。 */
+        /** 工具出完这一手后手里该剩的牌;下一手认到的不一样就是有张牌认错、点错了。 */
         var expectedHand: List<String>? = null
         var bid = false
         /** 叫分时的手牌:都不叫游戏会重新发牌,再轮到叫分时手牌不一样就是新发的,要重新叫。 */
@@ -288,6 +288,7 @@ internal object JjDdzTurn {
             leadingWith20 = view.phase == DdzPhase.Lead && table.hand.size == 20,
             leading = view.phase == DdzPhase.Lead,
             hand = { table.handRanks.takeUnless { table.handUnsure } },
+            checkOpponentDeck = true,
         )
     }
 
@@ -301,10 +302,14 @@ internal object JjDdzTurn {
         s.opponentTrick = null
         if (seat == null || (turn != null && turn != seat) || table.handUnsure) return
 
-        val seen = table.seen(sideOf(seat))
+        fun read(side: DdzSide): DdzSeen {
+            val seen = table.seen(side)
+            return if (seen is DdzSeen.Cards) steady(s, table, side) else seen
+        }
+        val seen = read(sideOf(seat))
         val old = previous?.takeIf { it.seat == seat && it.historySize == tracker.history.size }
         val trick = when {
-            seen is DdzSeen.Cards && tracker.isNewOpponentPlay(seat, seen.ranks) ->
+            seen is DdzSeen.Cards && seen.ranks != tracker.lastOpponentPlay(seat) ->
                 old?.takeIf { !it.cleared && it.cards == seen.ranks }
                     ?: OpponentTrick(seat, tracker.history.size, seen.ranks)
             seen == DdzSeen.Empty && old != null && old.cardFrames >= TRICK_PLAY_FRAMES && !old.cleared -> old
@@ -313,12 +318,12 @@ internal object JjDdzTurn {
         if (seen == DdzSeen.Empty) trick.cleared = true else trick.cardFrames++
 
         val other = if (seat == DdzSeat.Left) DdzSeat.Right else DdzSeat.Left
-        when (val otherSeen = table.seen(sideOf(other))) {
+        when (val otherSeen = read(sideOf(other))) {
             DdzSeen.Unsure -> return
             DdzSeen.Pass -> if (trick.sawOtherBeforePass) trick.passFrames++
             else -> {
                 // 他可能真的压了一手。桌上还摆着已记过的牌，可以等随后出现的不出。
-                if (otherSeen is DdzSeen.Cards && tracker.isNewOpponentPlay(other, otherSeen.ranks)) return
+                if (otherSeen is DdzSeen.Cards && otherSeen.ranks != tracker.lastOpponentPlay(other)) return
                 trick.sawOtherBeforePass = true
                 trick.passFrames = 0
             }
@@ -447,8 +452,10 @@ internal object JjDdzTurn {
                 val lifted = settled(ctx, s)
                 val x = if (lifted != null && lifted.lifted.isNotEmpty()) playable(ctx) else null
                 trace(s, "rules_hint lifted=${lifted?.lifted?.map { lifted.hand[it].rank }} playable=${x != null}")
-                if (x != null) {
-                    tap(ctx, x, JjDdzScreen.TAP_Y)
+                if (x != null && lifted != null) {
+                    if (tap(ctx, x, JjDdzScreen.TAP_Y)) {
+                        s.expectedHand = lifted.handRanks.filterIndexed { i, _ -> i !in lifted.lifted }
+                    }
                     return true
                 }
             }
@@ -460,7 +467,9 @@ internal object JjDdzTurn {
         val want = smallestGroup(table) ?: setOf(table.hand.lastIndex)
         val x = if (select(ctx, s, want, table)) playable(ctx) else null
         trace(s, "rules_lead want=${want.map { table.hand[it].rank }} playable=${x != null}")
-        tap(ctx, x ?: view.buttons[2].x, JjDdzScreen.TAP_Y)
+        if (tap(ctx, x ?: view.buttons[2].x, JjDdzScreen.TAP_Y)) {
+            s.expectedHand = table.handRanks.filterIndexed { i, _ -> i !in want }
+        }
         return true
     }
 
@@ -470,12 +479,16 @@ internal object JjDdzTurn {
      */
     internal fun steady(s: Session, table: JjTable, side: DdzSide): DdzSeen {
         val seen = table.seen(side)
-        val found = if (side == DdzSide.Left) table.leftCards else table.rightCards
-        if (seen != DdzSeen.Unsure || found.isEmpty() || found.any { it.rank == "PASS" || it.score < STEADY_MIN_SCORE }) {
+        val found = (if (side == DdzSide.Left) table.leftCards else table.rightCards).sortedBy { it.cx }
+        if (found.isEmpty() || found.any { it.rank == "PASS" || it.score < STEADY_MIN_SCORE }) {
             s.unsure.remove(side)
             return seen
         }
-        val ranks = found.sortedBy { it.cx }.map { it.rank }
+        val ranks = opponentRanks(s, table, side, found)
+        if (ranks == null || seen != DdzSeen.Unsure) {
+            s.unsure.remove(side)
+            return ranks?.let { DdzSeen.Cards(it) } ?: DdzSeen.Unsure
+        }
         val now = PhoneDdzTurn.clock()
         val first = s.unsure[side]
         if (first == null || first.first != ranks) {
@@ -483,8 +496,44 @@ internal object JjDdzTurn {
             return seen
         }
         if (now - first.second < STEADY_MS) return seen
-        trace(s, "steady $side ${ranks.joinToString(" ")} scores=${found.sortedBy { it.cx }.map { "%.2f".format(it.score) }}")
+        trace(s, "steady $side ${ranks.joinToString(" ")} scores=${found.map { "%.2f".format(it.score) }}")
         return DdzSeen.Cards(ranks)
+    }
+
+    /** 首选点数超出一副牌的张数时,只试同一位置实际读到的备选点数。 */
+    private fun opponentRanks(s: Session, table: JjTable, side: DdzSide, found: List<JjCard>): List<String>? {
+        val ranks = found.map { it.rank }.toMutableList()
+        val seat = if (side == DdzSide.Left) DdzSeat.Left else DdzSeat.Right
+        val previous = s.tracker?.lastOpponentPlay(seat)
+        // 出牌区可能还摆着已记过的同一手,它已经算在历史里。
+        if (ranks == previous) return ranks
+        val hand = if (table.handUnsure) emptyList() else table.handRanks
+        val left = DdzCards.copiesLeft(s.tracker?.history.orEmpty().flatten() + hand)
+        val used = ranks.groupingBy { it }.eachCount().toMutableMap()
+        fun excess() = used.keys.firstOrNull { used.getValue(it) > left.getOrDefault(it, 0) }
+        if (excess() == null) return ranks
+        if (previous?.size == found.size && found.indices.all { previous[it] == found[it].rank || previous[it] == found[it].alternateRank }) {
+            return previous
+        }
+
+        val alternatives = found.indices.filter { found[it].alternateRank != null }.sortedBy { found[it].score }
+        fun replaceExcess(): Boolean {
+            val rank = excess() ?: return true
+            for (i in alternatives) {
+                val box = found[i]
+                if (box.rank != rank || ranks[i] != rank) continue
+                val alternate = checkNotNull(box.alternateRank)
+                ranks[i] = alternate
+                used.merge(rank, -1, Int::plus)
+                used.merge(alternate, 1, Int::plus)
+                if (replaceExcess()) return true
+                ranks[i] = rank
+                used.merge(rank, 1, Int::plus)
+                used.merge(alternate, -1, Int::plus)
+            }
+            return false
+        }
+        return ranks.takeIf { replaceExcess() }
     }
 
     /**
@@ -503,14 +552,15 @@ internal object JjDdzTurn {
 
     /**
      * 手牌少了几张、却不是工具刚出的那手(和 [Session.expectedHand] 对不上):是游戏替我出的(托管、终局自动出完)。
-     * 只用来打日志(真机 16:32 我方剩下的牌每 2 秒出一手,工具没做决定,事后分不清是谁出的)。
+     * 只给能组成一手合法牌的差额打日志。16:50:12 结算浮层盖住了 16 张手牌,被误当成代打。
      */
     internal fun playedWithoutMe(s: Session, hand: List<String>): List<String>? {
         val before = s.lastRanks ?: return null
         if (hand.size >= before.size || hand.sorted() == s.expectedHand?.sorted()) return null
         val removed = before.toMutableList()
         for (r in hand) if (!removed.remove(r)) return null
-        return removed
+        if (removed.groupingBy { it }.eachCount().any { (rank, n) -> n > DdzCards.copies(rank) }) return null
+        return removed.takeIf { DdzSnapshotRecovery.classify(it) != null }
     }
 
     /** 手里最小的一组对子或三张(序号);没有为 null。手牌从大到小排,从右往左找。 */
@@ -606,9 +656,8 @@ internal object JjDdzTurn {
     }
 
     /** JJ 的牌局是 Unity,在 Mika 的屏上帧率低:按住 [HOLD_MS] 再抬,50ms 的点按会漏(2026-11-21 19:13 点牌全没反应)。 */
-    private suspend fun tap(ctx: ToolContext, x: Int, y: Int) {
-        if (!ctx.screen.pressAt(x, y, HOLD_MS)) println("JJTRACE tap_failed x=$x y=$y")
-    }
+    private suspend fun tap(ctx: ToolContext, x: Int, y: Int): Boolean =
+        ctx.screen.pressAt(x, y, HOLD_MS).also { if (!it) println("JJTRACE tap_failed x=$x y=$y") }
 
     private fun pause(s: Session, reason: String): ToolExecution {
         // 停下也打一行:电脑上看 logcat 的监视才知道工具交还了模型
