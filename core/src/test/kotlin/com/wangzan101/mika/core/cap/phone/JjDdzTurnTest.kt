@@ -233,6 +233,48 @@ class JjDdzTurnTest {
         assertEquals(null, result.text("douzeroOff"))
     }
 
+    @Test fun aSteadyLowScoreReadCountsAfterAWhile() {
+        // 真机 15:30:地主出小王,分数一直 0.73–0.80(门槛 0.8),原来等 4 秒就断了记牌。连着 1.5 秒一样就算认准
+        val s = JjDdzTurn.Session("http://mac:3426", 1)
+        val joker = JjCards.table(listOf(JjCard("SJ", 1600.0, 272.0, 1640.0, 325.0, 0.74)), 2408)
+        now = 0
+        assertEquals(DdzSeen.Unsure, JjDdzTurn.steady(s, joker, DdzSide.Right))
+        now = 1_000
+        assertEquals(DdzSeen.Unsure, JjDdzTurn.steady(s, joker, DdzSide.Right))
+        now = 1_600
+        assertEquals(DdzSeen.Cards(listOf("SJ")), JjDdzTurn.steady(s, joker, DdzSide.Right))
+    }
+
+    @Test fun aChangingOrVeryLowReadNeverCounts() {
+        val s = JjDdzTurn.Session("http://mac:3426", 1)
+        val sj = JjCards.table(listOf(JjCard("SJ", 1600.0, 272.0, 1640.0, 325.0, 0.74)), 2408)
+        val bj = JjCards.table(listOf(JjCard("BJ", 1600.0, 272.0, 1640.0, 325.0, 0.74)), 2408)
+        val faint = JjCards.table(listOf(JjCard("SJ", 1600.0, 272.0, 1640.0, 325.0, 0.4)), 2408)
+        now = 0; JjDdzTurn.steady(s, sj, DdzSide.Right)
+        now = 1_000; JjDdzTurn.steady(s, bj, DdzSide.Right)
+        now = 2_000
+        assertEquals(DdzSeen.Unsure, JjDdzTurn.steady(s, bj, DdzSide.Right))
+        now = 0; JjDdzTurn.steady(s, faint, DdzSide.Right)
+        now = 5_000
+        assertEquals(DdzSeen.Unsure, JjDdzTurn.steady(s, faint, DdzSide.Right))
+    }
+
+    @Test fun theFallbackBeatsOnlyTheLandlord() {
+        val s = JjDdzTurn.Session("http://mac:3426", 1)
+        val rightPlayed = JjCards.table(listOf(card("PASS", 650.0, 200.0), card("SJ", 1600.0, 272.0)), 2408)
+        val leftPlayed = JjCards.table(listOf(card("9", 650.0, 272.0)), 2408)
+        // 地主还没认出来:不压
+        assertTrue(!JjDdzTurn.beatsByHint(s, rightPlayed))
+        s.lordSeen = DdzSeat.Right; s.lordFrames = 10
+        assertTrue(JjDdzTurn.beatsByHint(s, rightPlayed))
+        // 左家是队友:他的牌不压
+        assertTrue(!JjDdzTurn.beatsByHint(s, leftPlayed))
+        s.lordSeen = DdzSeat.Me; s.lordFrames = 20
+        assertTrue(JjDdzTurn.beatsByHint(s, leftPlayed))
+    }
+
+    private fun card(rank: String, x: Double, y: Double) = JjCard(rank, x, y, x + 40, y + 53, 0.99)
+
     @Test fun switchingAwayPausesWithoutTapping() = runTest {
         replies(hand(seventeen))
         val game = Game(JjDdzScreen.PACKAGE, frame("left_turn"))

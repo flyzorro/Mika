@@ -48,6 +48,10 @@ internal object JjDdzTurn {
     private const val HOLD_MS = 150L
     /** 一轮截屏 + 认牌超过这么久就打日志。 */
     private const val SLOW_FRAME_MS = 3_000L
+    /** 别家出的牌分数不到 SURE、但连着这么久点数都一样,就算认准。 */
+    private const val STEADY_MS = 1_500L
+    /** 低于这个分数的框不算,怎么稳也不认。 */
+    private const val STEADY_MIN_SCORE = 0.6
     /** 炸弹、火箭的特效会挡住人物一两帧。 */
     private const val LORD_FRAMES = 5
     private const val ME_LORD_FRAMES = 12
@@ -72,6 +76,8 @@ internal object JjDdzTurn {
         /** 最近一次读稳的手牌;一手被当成打完时连同记牌一起留着,特效挡住手牌后原样回来就接着记(见 drive)。 */
         var lastRanks: List<String>? = null
         var closed: DdzTracker? = null
+        /** 左右两家认不准的那手:点数和第一次看到的时刻;连着 [STEADY_MS] 一样就算认准(见 steady)。 */
+        val unsure = mutableMapOf<DdzSide, Pair<List<String>, Long>>()
         var closedHand: List<String>? = null
         var lastHandAt = 0L
         var settleSince = 0L
@@ -225,7 +231,7 @@ internal object JjDdzTurn {
             val tracker = s.tracker!!
             tracker.observe(
                 rawTurn = view.turn,
-                read = table::seen,
+                read = { side -> steady(s, table, side) },
                 bottom = { table.bottom },
                 leadingWith20 = view.phase == DdzPhase.Lead && table.hand.size == 20,
                 leading = view.phase == DdzPhase.Lead,
@@ -350,6 +356,17 @@ internal object JjDdzTurn {
     private suspend fun byRules(ctx: ToolContext, s: Session, view: JjView, table: JjTable): Boolean {
         think()
         if (view.phase == DdzPhase.Follow) {
+            if (beatsByHint(s, table) && view.buttons.size >= 2) {
+                // 「提示」把能压的牌抬起来;抬不起来(没有能压的)或出牌没变绿就不出
+                tap(ctx, view.buttons[1].x, JjDdzScreen.TAP_Y)
+                val lifted = settled(ctx, s)
+                val x = if (lifted != null && lifted.lifted.isNotEmpty()) playable(ctx) else null
+                trace(s, "rules_hint lifted=${lifted?.lifted?.map { lifted.hand[it].rank }} playable=${x != null}")
+                if (x != null) {
+                    tap(ctx, x, JjDdzScreen.TAP_Y)
+                    return true
+                }
+            }
             tap(ctx, view.buttons[0].x, JjDdzScreen.TAP_Y)
             return true
         }
@@ -360,6 +377,43 @@ internal object JjDdzTurn {
         trace(s, "rules_lead want=${want.map { table.hand[it].rank }} playable=${x != null}")
         tap(ctx, x ?: view.buttons[2].x, JjDdzScreen.TAP_Y)
         return true
+    }
+
+    /**
+     * 别家出的牌认不准([JjCards.SURE] 以下)时,连着 [STEADY_MS] 点数都一样就当认准。
+     * 真机 15:30:地主出小王,认牌一直只有 0.73–0.80,等了 4 秒记牌断掉,手里有大王也一路不出。
+     */
+    internal fun steady(s: Session, table: JjTable, side: DdzSide): DdzSeen {
+        val seen = table.seen(side)
+        val found = if (side == DdzSide.Left) table.leftCards else table.rightCards
+        if (seen != DdzSeen.Unsure || found.isEmpty() || found.any { it.rank == "PASS" || it.score < STEADY_MIN_SCORE }) {
+            s.unsure.remove(side)
+            return seen
+        }
+        val ranks = found.sortedBy { it.cx }.map { it.rank }
+        val now = PhoneDdzTurn.clock()
+        val first = s.unsure[side]
+        if (first == null || first.first != ranks) {
+            s.unsure[side] = ranks to now
+            return seen
+        }
+        if (now - first.second < STEADY_MS) return seen
+        trace(s, "steady $side ${ranks.joinToString(" ")} scores=${found.sortedBy { it.cx }.map { "%.2f".format(it.score) }}")
+        return DdzSeen.Cards(ranks)
+    }
+
+    /**
+     * 记牌断了、轮到我跟牌:桌上是地主的牌就按游戏的「提示」压,是队友的牌就不出。
+     * 最后出牌的是左家(他之后就轮到我);左家不出才看右家。地主按人物的红衣服认(不靠记牌),认不出就不压。
+     */
+    internal fun beatsByHint(s: Session, table: JjTable): Boolean {
+        val lord = s.lordSeen?.takeIf { s.lordFrames >= if (it == DdzSeat.Me) ME_LORD_FRAMES else LORD_FRAMES } ?: return false
+        val owner = when {
+            table.left is DdzSeen.Cards -> DdzSeat.Left
+            table.left == DdzSeen.Pass && table.right is DdzSeen.Cards -> DdzSeat.Right
+            else -> return false
+        }
+        return lord == DdzSeat.Me || owner == lord
     }
 
     /** 手里最小的一组对子或三张(序号);没有为 null。手牌从大到小排,从右往左找。 */

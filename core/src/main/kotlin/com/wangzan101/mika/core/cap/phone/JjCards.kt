@@ -25,6 +25,9 @@ internal data class JjTable(
     val mine: DdzSeen,
     /** 顶栏的三张底牌;不是正好三张(还没翻开、动画盖着)为 null。 */
     val bottom: List<String>?,
+    /** 左右两家出牌区认到的原始框(含 PASS),给「连着几帧一样就算认准」用。 */
+    val leftCards: List<JjCard> = emptyList(),
+    val rightCards: List<JjCard> = emptyList(),
 ) {
     val handRanks: List<String> get() = hand.map { it.rank }
     /** 有一张手牌认不准:这一帧的手牌不能拿去算。 */
@@ -122,6 +125,8 @@ internal object JjCards {
             right = seen(right),
             mine = seen(cards.filter { it.cy >= MINE_Y0 && it.cy < HAND_Y0 }),
             bottom = bottom.takeIf { it.size == 3 && it.all { c -> c.score >= SURE } }?.map { it.rank },
+            leftCards = left,
+            rightCards = right,
         )
     }
 
