@@ -216,8 +216,12 @@ def best(infoset, budget=1.5, likelihood=None):
     me = infoset.player_position
     left = infoset.num_cards_left_dict
     others = [s for s in SEATS if s != me]
-    # 三家合计多、但两家对手手里合起来没几张时也值得算:看不见的牌少,分法就少(见 MAX_UNKNOWN)
-    if sum(left.values()) > MAX_CARDS and sum(left[s] for s in others) > MAX_UNKNOWN:
+    # 三家合计多、但两家对手手里合起来没几张时也值得算:看不见的牌少,分法就少(见 MAX_UNKNOWN)。
+    # 有一家对手只剩一两张时分法也少(n 张看不见的牌最多 n·(n−1)/2 种,超过 MAX_SPLITS 照样退回):
+    # 2026-11-22 15:04 JJ 我当地主剩 A K K Q Q J J 9 9 先出,上家剩 1 张、下家 12 张,看不见 13 张超过 MAX_UNKNOWN 没搜,
+    # 13 种分法其实瞬间算完:出任意对子必赢,出单张 9 输
+    short = min(left[s] for s in others) <= 2
+    if sum(left.values()) > MAX_CARDS and sum(left[s] for s in others) > MAX_UNKNOWN and not short:
         return None
     unknown = sorted(infoset.other_hand_cards)
     if len(unknown) != left[others[0]] + left[others[1]]:

@@ -1640,6 +1640,26 @@ class LiveControlRegressionTest(unittest.TestCase):
         with mock.patch("server.successive_halving", stub):
             self.assertEqual(["BJ"], names(ROLLOUT_ADVISOR.act(**self.SHORT_FARMER)))
 
+    def test_150450_searches_the_endgame_when_a_farmer_has_one_card(self):
+        # 15:04 JJ:上家剩 1 张(7)、下家 12 张,看不见 13 张。原来不搜,结果先出单张 9 被下家 2 管住再喂上家走完;
+        # 明牌搜出任意对子必赢
+        position = dict(
+            seat="landlord", hand=["A", "K", "K", "Q", "Q", "J", "J", "9", "9"], bottom=[],
+            history=[["5", "6", "7", "8", "9", "10"], [], ["J", "10", "9", "8", "7", "6"], [], [],
+                     ["5", "5", "5", "3"], [], [], ["6"], ["7"], ["J"], ["2"], [], [], ["K", "K"], [], [],
+                     ["A", "A"], ["2", "2"], ["4", "4", "4", "4"], [], ["SJ", "BJ"], [], []])
+        import endgame
+        real = endgame.best
+        results = []
+        with mock.patch("endgame.best", lambda *a, **k: results.append(real(*a, **k)) or results[-1]):
+            move = names(ROLLOUT_ADVISOR.act(**position))
+        # 残局搜索真的跑了、算完了;出的对子在各种分法下赢得比单张 9 多
+        self.assertTrue(results and results[-1] is not None)
+        wins, total, _, _ = results[-1]
+        self.assertEqual(2, len(move))
+        self.assertEqual(move[0], move[1])
+        self.assertGreater(wins.get(tuple(sorted(cards(move))), 0), wins.get(tuple(sorted(cards(["9"]))), 0))
+
     def test_123244_finishes_in_two(self):
         self.assertEqual(["3", "3", "A", "A", "A"], names(ROLLOUT_ADVISOR.act(**self.TWO_PLAYS)))
 
