@@ -42,7 +42,7 @@ class JjDdzTurnTest {
         return RawFrame(image.width, image.height, JjDdzScreen.ROWS.associateWith { image.getRGB(0, it, image.width, 1, null, 0, image.width) })
     }
 
-    private class Game(var app: String, val frame: RawFrame) : ScreenPort by FakeScreen() {
+    private class Game(var app: String, var frame: RawFrame) : ScreenPort by FakeScreen() {
         val taps = mutableListOf<Pair<Int, Int>>()
         override suspend fun peek() = ScreenSnapshot("p1", app, emptyList(), frame.width, frame.height)
         override suspend fun rawFrame(rows: List<Int>) = frame
@@ -86,6 +86,19 @@ class JjDdzTurnTest {
         run(game, start)
         val three = JjDdzScreen.read(game.frame).buttons[3]
         assertEquals(listOf(three.x to JjDdzScreen.TAP_Y), game.taps)
+    }
+
+    @Test fun bidsAgainAfterARedeal() = runTest {
+        // 都不叫重新发牌:手牌一直没空,新发的 17 张也要叫(真机 10:02 没叫,超时进了托管)
+        PhoneDdzTurn.adviseBid = { _, _ -> PhoneDdzTurn.BidAdvice(3, 0.8) }
+        val game = Game(JjDdzScreen.PACKAGE, frame("call_beach"))
+        val redealt = listOf("SJ", "2", "A", "K", "K", "K", "K", "J", "10", "10", "8", "8", "7", "7", "6", "4", "3")
+        // 一帧认牌之后换下一帧画面:叫分 → 别人叫分(没按钮)→ 新发的牌又轮到我叫
+        val steps = ArrayDeque(listOf(hand(seventeen) to "beach_scenery", hand(seventeen) to "call_beach", hand(redealt) to "call_beach", hand(redealt) to "call_beach"))
+        JjDdzTurn.detect = { _, _ -> steps.removeFirstOrNull()?.let { (cards, next) -> game.frame = frame(next); cards } }
+        run(game, start)
+        val three = JjDdzScreen.read(frame("call_beach")).buttons[3]
+        assertEquals(listOf(three.x to JjDdzScreen.TAP_Y, three.x to JjDdzScreen.TAP_Y), game.taps)
     }
 
     @Test fun passesOnTheGrayThreeWhenTheBidIsTaken() = runTest {

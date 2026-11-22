@@ -59,6 +59,8 @@ internal object JjDdzTurn {
         /** DouZero 出完这一手后手里该剩的牌;下一手认到的不一样就是有张牌认错、点错了。 */
         var expectedHand: List<String>? = null
         var bid = false
+        /** 叫分时的手牌:都不叫游戏会重新发牌,再轮到叫分时手牌不一样就是新发的,要重新叫。 */
+        var bidHand: List<String>? = null
         /** 这一个决定已经点过了:按钮还会留几帧,等它消失前不再点。 */
         var acted = false
         var noHand = 0
@@ -222,6 +224,7 @@ internal object JjDdzTurn {
         s.lordFrames = 0
         s.expectedHand = null
         s.bid = false
+        s.bidHand = null
         s.settleSince = 0
         if (table.hand.size != HAND_SIZE) s.tracker!!.fail(DdzSessionReason.JOINED_MID_GAME)
     }
@@ -230,6 +233,11 @@ internal object JjDdzTurn {
     private suspend fun decide(ctx: ToolContext, s: Session, view: JjView, table: JjTable, width: Int): Boolean {
         val tracker = s.tracker ?: return false
         if (view.phase == DdzPhase.Call) {
+            // 都不叫重新发牌(真机 10:02):手一直没空,还当已经叫过,叫分超时进了托管
+            if (s.bid && !table.handUnsure && table.hand.size == HAND_SIZE && table.handRanks.sorted() != s.bidHand) {
+                trace(s, "redeal")
+                newHand(s, table, view)
+            }
             if (s.bid || table.handUnsure || table.hand.size != HAND_SIZE) return false
             val level = PhoneDdzTurn.adviseBid(s.advisor, table.handRanks)?.level ?: ConservativeDdzPolicy.callLevel(table.handRanks)
             // 按位置认几分(漏认一个按钮时按序号会错位:2026-11-21 想叫 3 分点成了不叫);想叫的分不能叫(灰的)就不叫
@@ -238,6 +246,7 @@ internal object JjDdzTurn {
             trace(s, "call level=$level x=${button.x} buttons=${view.buttons.map { "${JjDdzScreen.callLevel(it, width)}${it.color.name.first()}" }}")
             tap(ctx, button.x, JjDdzScreen.TAP_Y)
             s.bid = true
+            s.bidHand = table.handRanks.sorted()
             return true
         }
         if (view.onlyPass) {
