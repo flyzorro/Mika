@@ -43,8 +43,7 @@ internal object JjDdzTurn {
     private const val IDLE_MS = 300_000L
     /** 轮到自己时别家的牌还没读稳,最多再等这么久(倒计时 15 秒)。 */
     private const val SETTLE_MS = 4_000L
-    private const val TAP_GAP_MS = 120L
-    /** 抬牌动画约 200ms:点完隔这么久再认。 */
+    /** 松手后留出约 200ms 给抬牌动画，再点下一张或截屏核对。 */
     private const val LIFT_MS = 200L
     private const val SETTLE_READS = 4
     private const val SELECT_STALLED_ROUNDS = 2
@@ -601,7 +600,7 @@ internal object JjDdzTurn {
         if (playX == null) {
             trace(s, "select_failed want=$want")
             tracker.fail(DdzSessionReason.REJECTED_ACTION)
-            return byRules(ctx, s, view, table)
+            return byRules(ctx, s, view, table, rejectedPlay = play)
         }
         tap(ctx, playX, JjDdzScreen.TAP_Y)
         tracker.mine(play)
@@ -615,10 +614,14 @@ internal object JjDdzTurn {
         return now - s.settleSince >= SETTLE_MS
     }
 
-    internal suspend fun byRules(ctx: ToolContext, s: Session, view: JjView, table: JjTable): Boolean {
+    internal suspend fun byRules(
+        ctx: ToolContext, s: Session, view: JjView, table: JjTable, rejectedPlay: List<String>? = null,
+    ): Boolean {
         think()
         if (view.phase == DdzPhase.Follow) {
             val play = opposingPlay(s, table)?.let { JjCards.smallestOvercall(table, it) }
+                // 同一回合刚选失败的牌，别再花一轮时间重试。
+                ?.takeUnless { it.sorted() == rejectedPlay?.sorted() }
             val want = play?.let { target(table, it) }
             val x = want?.let { select(ctx, s, it, table) }
             trace(s, "rules_follow play=$play playable=${x != null}")
@@ -763,9 +766,10 @@ internal object JjDdzTurn {
             val drop = current.lifted - want
             val missing = want - current.lifted
             val batch = drop.ifEmpty { missing }
-            for (i in batch.sorted()) {
+            for ((offset, i) in batch.sorted().withIndex()) {
+                // pressAt 等松手。最后一张由 settled 在首次截屏前等动画。
+                if (offset > 0) delay(LIFT_MS)
                 tap(ctx, JjCards.tapX(current, i), JjCards.HAND_TAP_Y)
-                delay(TAP_GAP_MS)
             }
             val before = current.lifted
             confirmed = settled(ctx, s, hand) ?: return null

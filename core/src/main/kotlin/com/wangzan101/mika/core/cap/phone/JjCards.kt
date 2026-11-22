@@ -1,5 +1,6 @@
 package com.wangzan101.mika.core.cap.phone
 
+import com.wangzan101.mika.core.cap.phone.DdzSnapshotRecovery.Kind
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
@@ -62,14 +63,11 @@ internal object JjCards {
         return ranks
     }
 
-    /** 找同牌型最小的压牌。枚举点数和张数,同点数的框只取一次。 */
+    /** 优先用同牌型最小的压牌。压不住时用最小可赢炸弹，再考虑王炸。 */
     fun smallestOvercall(table: JjTable, play: List<String>): List<String>? {
         if (table.handUnsure) return null
         val lead = DdzSnapshotRecovery.classify(play) ?: return null
-        when (lead.kind) {
-            DdzSnapshotRecovery.Kind.Pass, DdzSnapshotRecovery.Kind.Bomb, DdzSnapshotRecovery.Kind.Rocket -> return null
-            else -> Unit
-        }
+        if (lead.kind == Kind.Pass || lead.kind == Kind.Rocket) return null
         val counts = table.handRanks.groupingBy { it }.eachCount()
         val ranks = DdzCards.RANKS.filter { it in counts }
         val remaining = IntArray(ranks.size + 1)
@@ -96,8 +94,14 @@ internal object JjCards {
                 repeat(take) { cards.removeAt(cards.lastIndex) }
             }
         }
-        search(0, lead.length)
-        return best
+        if (lead.kind != Kind.Bomb) search(0, lead.length)
+        best?.let { return it }
+        for (rank in ranks) {
+            if (counts.getValue(rank) != 4) continue
+            val bomb = DdzSnapshotRecovery.Move(Kind.Bomb, 4, DdzCards.ORDER.getValue(rank))
+            if (DdzSnapshotRecovery.beats(lead, bomb)) return List(4) { rank }
+        }
+        return if ("SJ" in counts && "BJ" in counts) listOf("SJ", "BJ") else null
     }
     private const val BASE_WIDTH = 2408.0
     /** 录屏里左家出的牌最左在 x≈600–700,右家的最右到 x≈1700–1800,翻底牌的动画只在 1000–1400 之间。 */
