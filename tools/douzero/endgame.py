@@ -216,8 +216,12 @@ def best(infoset, budget=1.5, likelihood=None):
     me = infoset.player_position
     left = infoset.num_cards_left_dict
     others = [s for s in SEATS if s != me]
-    # 三家合计多、但两家对手手里合起来没几张时也值得算:看不见的牌少,分法就少(见 MAX_UNKNOWN)
-    if sum(left.values()) > MAX_CARDS and sum(left[s] for s in others) > MAX_UNKNOWN:
+    # 三家合计多、但两家对手手里合起来没几张时也值得算:看不见的牌少,分法就少(见 MAX_UNKNOWN)。
+    # 有一家对手只剩一两张时分法也少(n 张看不见的牌最多 n·(n−1)/2 种,超过 MAX_SPLITS 照样退回):
+    # 2026-11-22 15:04 JJ 我当地主剩 A K K Q Q J J 9 9 先出,上家剩 1 张、下家 12 张,看不见 13 张超过 MAX_UNKNOWN 没搜,
+    # 13 种分法其实瞬间算完:出任意对子必赢,出单张 9 输
+    short = min(left[s] for s in others) <= 2
+    if sum(left.values()) > MAX_CARDS and sum(left[s] for s in others) > MAX_UNKNOWN and not short:
         return None
     unknown = sorted(infoset.other_hand_cards)
     if len(unknown) != left[others[0]] + left[others[1]]:
@@ -265,7 +269,7 @@ SAMPLES = 300
 
 
 def finish_in_two(hand, legal, rival, unknown, left_a, left_b, samples=SAMPLES, limit=SAFE_FIRST, seed=0,
-                  deadline=None, kept=()):
+                  deadline=None, kept=(), b_is_mate=False, prefer=None):
     """剩的牌多、搜不动时的一条捷径:自己手里能两手出完(先出一手、剩下的正好是一手)时,挑第一手最不容易被压的。
 
     把 [unknown](两家手里合起来的牌)随机分成 [left_a]、[left_b] 张,看有没有一家压得住第一手;第一手没人压就接着出完。
@@ -274,6 +278,9 @@ def finish_in_two(hand, legal, rival, unknown, left_a, left_b, samples=SAMPLES, 
     炸弹留到最后能管任何牌,先甩出去只是给对手一个用炸弹的靶子。
     [legal] 是现在能出的牌,[rival] 是要压的那手(() 是自己先出)。返回 (第一手, 被压的机会),没有够安全的为 None。
     [deadline] 是这一手牌总预算的截止时刻(monotonic):到了就返回 None,照用 DouZero 的,别把现场模拟的时间也吃掉。
+    [b_is_mate]:[b] 是我的队友(我是农民),他压得住也不会压我,只看地主 [a] 压不压得住。
+    2026-11-22 12:32 JJ:我是地主下家剩 A A A 4 3 3,队友 17 张一张没出,把队友也算进去被压机会 0.73 超了门槛,
+    捷径作废,现场模拟 14 局一手的噪声里挑了先出 4;只看地主是 0.14,该先出 A A A 3 3。
     """
     kept = tuple(sorted((Counter(unknown) & Counter(kept)).elements()))
     need_a = left_a - len(kept)
@@ -299,11 +306,13 @@ def finish_in_two(hand, legal, rival, unknown, left_a, left_b, samples=SAMPLES, 
             rng.shuffle(pool)
             a = list(kept) + pool[:need_a]
             b = pool[need_a:need_a + left_b]
-            if any(m for m in moves(a, list(move))) or any(m for m in moves(b, list(move))):
+            if any(m for m in moves(a, list(move))) or (not b_is_mate and any(m for m in moves(b, list(move)))):
                 beaten += 1
         chance = beaten / samples
-        # 先比「炸弹是不是留到了最后」,再比被压机会:炸弹先出的一律排在非炸弹先出的后面
-        key = (is_bomb(move) and not is_bomb(rest), chance)
+        # 先比「炸弹是不是留到了最后」,再比被压机会:炸弹先出的一律排在非炸弹先出的后面。
+        # 被压机会一样时听 DouZero 的([prefer]):16:30 JJ 小王 A A A J J,A A A + J J 和 A A A + 小王 都是 0.17,
+        # 原来按列表顺序挑了带小王;第一手被炸时留着王才抢得回来
+        key = (is_bomb(move) and not is_bomb(rest), round(chance, 2), tuple(sorted(move)) != prefer)
         if best_key is None or key < best_key:
             best, best_key = (tuple(sorted(move)), chance), key
     return best if best is not None and best[1] <= limit else None

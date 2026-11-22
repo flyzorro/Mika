@@ -33,6 +33,20 @@ SHA-256 前 16 位应为：`landlord` 6f2971813495e9c5，`landlord_down` c173dbe
 .venv/bin/python -m unittest test_server   # 只凭可见信息重建的局面,出牌要与完整局面一致
 ```
 
+## 认牌 `/cards`（JJ 斗地主）
+
+`POST /cards` 的请求体是一张截图的 JPEG 原始字节，返回 `{"cards": [{"rank", "box": [x0, y0, x1, y1], "score"}], "ms"}`：
+截图里每张看得见的牌各一项（只有点数，不分花色）。模型在 `tools/cardvision`，要多装 torchvision 和 pillow：
+
+```bash
+uv pip install --python .venv/bin/python torch==2.15.0 torchvision==0.29.2 pillow
+DDZ_CARDS_WEIGHTS=~/data/cardvision/runs/jj-v2.pt .venv/bin/python -I server.py 3426
+```
+
+权重不进仓库，按 `tools/cardvision/README.md` 训练。当前用的 `jj-v2.pt` 的 SHA-256 前 16 位是 `e340332e0a650188`。
+没设 `DDZ_CARDS_WEIGHTS` 时 `/cards` 回 503 `cards_unavailable`，其余接口照常工作。
+在 M3 Max 的 MPS 上，第一次请求要加载模型，约 1 秒；之后每张 2408×1080 的截图约 60ms。
+
 `POST /act` 的参数见 `server.py` 开头。识别到的出牌历史在 DouZero 的牌局里重放，对不上就返回
 `history_mismatch` 一类的错误，调用方把这一手交还模型。
 

@@ -355,4 +355,10 @@ interface ScreenPort {
 
     /** 只点一下,不等界面、不核实效果;只给调用方自己看画面判断结果的快速路径用。发不出去返回 false。 */
     suspend fun quickTap(x: Int, y: Int): Boolean = false
+
+    /**
+     * 和 [quickTap] 一样,只是手指按住 [holdMs] 再抬起。Unity 一类游戏在 Mika 的屏上帧率低,
+     * 50ms 的点按会落在两帧之间被漏掉(JJ 斗地主点牌);默认照 [quickTap]。
+     */
+    suspend fun pressAt(x: Int, y: Int, holdMs: Long): Boolean = quickTap(x, y)
 }

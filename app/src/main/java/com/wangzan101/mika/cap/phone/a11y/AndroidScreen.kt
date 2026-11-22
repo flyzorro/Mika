@@ -193,6 +193,11 @@ class AndroidScreen(
         if (!hasDisplay) return@withContext false
         a11y.gesture(displayId, Path().apply { moveTo(x.toFloat(), y.toFloat()) }, QUICK_TAP_MS) || shell.injectTap(displayId, x, y)
     }
+
+    override suspend fun pressAt(x: Int, y: Int, holdMs: Long): Boolean = withContext(Dispatchers.IO) {
+        if (!hasDisplay) return@withContext false
+        a11y.gesture(displayId, Path().apply { moveTo(x.toFloat(), y.toFloat()) }, holdMs) || shell.injectTap(displayId, x, y)
+    }
     override suspend fun checkScreen(): ScreenCheck = capture.checkScreen()
     override suspend fun waitStable(timeoutMs: Long): Boolean = capture.waitStable(timeoutMs)
     override suspend fun awaitChange(timeoutMs: Long): Boolean = capture.awaitChange(timeoutMs)

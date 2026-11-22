@@ -62,6 +62,7 @@ class SmsPrivateScreen(private val inner: ScreenPort) : ScreenPort by inner, Aut
     override suspend fun rawFrame(rows: List<Int>) = if (imagesPrivate) null else inner.rawFrame(rows)
     override suspend fun quickShot() = if (imagesPrivate) null else inner.quickShot()
     override suspend fun quickTap(x: Int, y: Int) = if (privateLogin) false else inner.quickTap(x, y)
+    override suspend fun pressAt(x: Int, y: Int, holdMs: Long) = if (privateLogin) false else inner.pressAt(x, y, holdMs)
     override suspend fun checkScreen() = if (imagesPrivate) null else inner.checkScreen()
     override suspend fun isProtected() = privateLogin || inner.isProtected()
     override suspend fun nextEvent(kind: String, packageName: String?, timeoutMs: Long) =
