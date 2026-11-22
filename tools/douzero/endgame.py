@@ -269,7 +269,7 @@ SAMPLES = 300
 
 
 def finish_in_two(hand, legal, rival, unknown, left_a, left_b, samples=SAMPLES, limit=SAFE_FIRST, seed=0,
-                  deadline=None, kept=(), b_is_mate=False):
+                  deadline=None, kept=(), b_is_mate=False, prefer=None):
     """剩的牌多、搜不动时的一条捷径:自己手里能两手出完(先出一手、剩下的正好是一手)时,挑第一手最不容易被压的。
 
     把 [unknown](两家手里合起来的牌)随机分成 [left_a]、[left_b] 张,看有没有一家压得住第一手;第一手没人压就接着出完。
@@ -309,8 +309,10 @@ def finish_in_two(hand, legal, rival, unknown, left_a, left_b, samples=SAMPLES, 
             if any(m for m in moves(a, list(move))) or (not b_is_mate and any(m for m in moves(b, list(move)))):
                 beaten += 1
         chance = beaten / samples
-        # 先比「炸弹是不是留到了最后」,再比被压机会:炸弹先出的一律排在非炸弹先出的后面
-        key = (is_bomb(move) and not is_bomb(rest), chance)
+        # 先比「炸弹是不是留到了最后」,再比被压机会:炸弹先出的一律排在非炸弹先出的后面。
+        # 被压机会一样时听 DouZero 的([prefer]):16:30 JJ 小王 A A A J J,A A A + J J 和 A A A + 小王 都是 0.17,
+        # 原来按列表顺序挑了带小王;第一手被炸时留着王才抢得回来
+        key = (is_bomb(move) and not is_bomb(rest), round(chance, 2), tuple(sorted(move)) != prefer)
         if best_key is None or key < best_key:
             best, best_key = (tuple(sorted(move)), chance), key
     return best if best is not None and best[1] <= limit else None

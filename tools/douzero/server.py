@@ -959,7 +959,8 @@ class Agent:
             quick = endgame.finish_in_two(tuple(sorted(infoset.player_hand_cards)), infoset.legal_actions, rival,
                                           sorted(infoset.other_hand_cards), left[others[0]], left[others[1]],
                                           deadline=deadline - ACT_BUDGET_SAFETY_S, kept=kept,
-                                          b_is_mate=infoset.player_position != "landlord")
+                                          b_is_mate=infoset.player_position != "landlord",
+                                          prefer=tuple(sorted(move)))
             # 桌上那手是队友出的:捷径不能直接压他,把它和「不出」一起交给下面的现场模拟比;地主没有队友,照旧走捷径
             forced = None
             # 12:32:44 地主下家领出，捷径和模型都选 AAA33；直接走这条两手出完路线。

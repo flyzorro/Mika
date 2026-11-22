@@ -1665,6 +1665,12 @@ class LiveControlRegressionTest(unittest.TestCase):
         position = dict(seat='landlord', hand=['BJ', '2', '2', '2', 'K', 'Q', '10', '10', '9', '8', '7', '7', '6', '5', '4'], bottom=['A', '9', '4'], history=[['3', '3'], ['J', 'J'], [], ['A', 'A'], [], [], ['9'], ['2'], [], [], ['10', '9', '8', '7', '6', '5', '4', '3'], [], [], ['K', 'K', 'K', '4'], []])
         self.assertEqual(sorted(["2", "2", "2", "4"]), sorted(names(ROLLOUT_ADVISOR.act(**position))))
 
+    def test_163059_a_tie_in_finish_in_two_keeps_the_joker(self):
+        # 16:30 JJ:小王 A A A J J 先出。两手出完 A A A + J J 和 A A A + 小王被压机会一样,原来挑了带小王;
+        # DouZero 首选 A A A + J J,留着王
+        position = dict(seat='landlord_up', hand=['SJ', 'A', 'A', 'A', 'J', 'J'], bottom=[], history=[['4'], ['7'], ['Q'], [], ['K'], [], ['A'], [], ['2'], [], [], ['5', '6', '7', '8', '9'], [], [], ['3', '3'], ['9', '9'], [], ['K', 'K'], [], []])
+        self.assertEqual(sorted(["A", "A", "A", "J", "J"]), sorted(names(ROLLOUT_ADVISOR.act(**position))))
+
     def test_123244_finishes_in_two(self):
         self.assertEqual(["3", "3", "A", "A", "A"], names(ROLLOUT_ADVISOR.act(**self.TWO_PLAYS)))
 
