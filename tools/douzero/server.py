@@ -1762,8 +1762,9 @@ def handler(advisor, card_reader=None):
 
 if __name__ == "__main__":
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 3426
-    # DDZ_ROLLOUT=0 关掉出牌时的现场模拟,分数接近时直接用 DouZero 的首选(残局搜索、两手出完等规则照旧)。
-    # 2026-11-22 JJ 真机:每手只有十几到几十局,模拟在噪声里一再推翻 DouZero(拆 9 9 10 10 J J、先出 4 不出 A A A 3 3),
-    # 用户看下来 DouZero 自己的选择更好,先关掉,等自对弈比较的结果
-    rollout = os.environ.get("DDZ_ROLLOUT", "1") != "0"
+    # 出牌时的现场模拟默认关掉,分数接近时直接用 DouZero 的首选(残局搜索、两手出完、抢牌权等规则照旧);DDZ_ROLLOUT=1 才打开。
+    # 2026-11-22 JJ 真机:每手只有十几到几十局,模拟在噪声里一再推翻 DouZero(拆 9 9 10 10 J J、先出 4 不出 A A A 3 3)。
+    # 同一批 178 副自对弈:不模拟 58.4%,原来的模拟 55.1%,只在差距显著时才换 55.6%(差距都在置信区间内),
+    # 每手还慢约 25 倍。用户决定关掉。
+    rollout = os.environ.get("DDZ_ROLLOUT", "0") == "1"
     ThreadingHTTPServer(("0.0.0.0", port), handler(Advisor(WEIGHTS, rollout=rollout), Cards(os.environ.get("DDZ_CARDS_WEIGHTS")))).serve_forever()
