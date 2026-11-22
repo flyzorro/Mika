@@ -9,6 +9,7 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import java.net.HttpURLConnection
 import java.net.URI
+import kotlin.math.abs
 
 /** 电脑 /cards 认出的一样东西:一张牌的点数,或 PASS(「不出」的气泡)。坐标是截图像素。 */
 internal data class JjCard(
@@ -26,13 +27,16 @@ internal data class JjTable(
     val left: DdzSeen,
     val right: DdzSeen,
     val mine: DdzSeen,
-    /** 顶栏的三张底牌;不是正好三张(还没翻开、动画盖着)为 null。 */
-    val bottom: List<String>?,
+    /** 底牌槽从左到右，每槽保留当帧的候选框，供跨帧投票。 */
+    val bottomSlots: List<List<JjCard>>,
     /** 左右两家出牌区认到的原始框(含 PASS),给「连着几帧一样就算认准」用。 */
     val leftCards: List<JjCard> = emptyList(),
     val rightCards: List<JjCard> = emptyList(),
 ) {
     val handRanks: List<String> get() = hand.map { it.rank }
+    /** 三个槽都只有一个高分框时，可以直接取本帧的票。 */
+    val bottom: List<String>?
+        get() = bottomSlots.map { it.singleOrNull()?.takeIf { card -> card.score >= JjCards.SURE }?.rank ?: return null }
     /** 有一张手牌认不准:这一帧的手牌不能拿去算。 */
     val handUnsure: Boolean get() = hand.any { it.score < JjCards.SURE }
     fun seen(side: DdzSide): DdzSeen = if (side == DdzSide.Left) left else right
@@ -42,7 +46,7 @@ internal data class JjTable(
 
 /**
  * JJ 斗地主的牌交给电脑认(tools/douzero 的 POST /cards,模型在 tools/cardvision),这里只按位置分。
- * 位置按 2408×1080 的录屏量(框中心):底牌 y<90;两家出的牌和「不出」y 160–450,按挨着的牌分组再看在哪边;
+ * 位置按 2408×1080 的录屏量(框中心):底牌 y<60;两家出的牌和「不出」y 160–450,按挨着的牌分组再看在哪边;
  * 我出的牌、我的「不出」y 450–700;手牌 y≥700(点数中心平放约 805、抬起约 768,王的竖排字中心约 840)。
  */
 internal object JjCards {
@@ -100,7 +104,9 @@ internal object JjCards {
     private const val GROUP_GAP = 150.0
     /** 低于这个分数的牌算认不准。 */
     const val SURE = 0.8
-    private const val BOTTOM_Y = 90.0
+    private const val BOTTOM_Y = 60.0
+    private val BOTTOM_SLOT_X = listOf(870.0, 940.0, 1010.0)
+    private const val BOTTOM_SLOT_HALF_WIDTH = 25.0
     private const val PLAY_Y0 = 160.0
     private const val MINE_Y0 = 450.0
     private const val HAND_Y0 = 700.0
@@ -116,6 +122,8 @@ internal object JjCards {
     /** 两个同点数的框重叠超过小框的这么多,算同一张牌。 */
     private const val SAME_CARD = 0.5
     private const val RANK_OVERLAP = 0.75
+    /** 18:11:33–41 同一张 8/3 的重叠占大框的 0.827–0.890，分数接近时也必须并框。 */
+    private const val NEARLY_IDENTICAL_RANK_OVERLAP = 0.82
     private const val RANK_WINNER_SCORE = 0.95
     private const val RANK_SCORE_GAP = 0.08
     /** 赢的框过了 SURE、弱框低一大截也算同一张(16:08:50 左家 K K K 8 8:8 是 0.90,同一处还有个 0.53 的 3)。 */
@@ -173,14 +181,17 @@ internal object JjCards {
         // 手牌的点数字高约 78(王的竖排字约 178),上沿平放 770、抬起 735;
         // 每手结算浮层里摆的各家剩牌也在这一带,字矮(约 50–68)、上沿高(670 起)
         val hand = cards.filter { it.cy >= HAND_Y0 && it.rank != PASS && it.y0 >= HAND_MIN_TOP && it.y1 - it.y0 >= HAND_MIN_H }.sortedBy { it.cx }
-        val bottom = cards.filter { it.cy < BOTTOM_Y && it.rank != PASS }.sortedBy { it.cx }
+        val top = cards.filter { it.cy < BOTTOM_Y && it.rank in DdzCards.RANKS }
+        val bottomSlots = BOTTOM_SLOT_X.map { center ->
+            top.filter { abs(it.cx / scale - center) <= BOTTOM_SLOT_HALF_WIDTH }
+        }
         return JjTable(
             hand = hand,
             lifted = hand.indices.filterTo(LinkedHashSet()) { hand[it].y0 < LIFTED_TOP },
             left = seen(left),
             right = seen(right),
             mine = seen(cards.filter { it.cy >= MINE_Y0 && it.cy < HAND_Y0 }),
-            bottom = bottom.takeIf { it.size == 3 && it.all { c -> c.score >= SURE } }?.map { it.rank },
+            bottomSlots = bottomSlots,
             leftCards = left,
             rightCards = right,
         )
@@ -200,17 +211,21 @@ internal object JjCards {
     }
 
     /**
-     * 15:28 左家连对:同一张 10 还报了一个 9。两个框几乎是同一个、分数明显一高一低时，把弱框的点数留作备选。
+     * 同一张牌报出两个点数。重叠很高就并框，重叠稍低时要求分数拉开，把弱框的点数留作备选。
      * 用大框面积核对，避免宽框盖住旁边真正的一张。只处理对手出牌区，且不去掉 PASS。
      */
     private fun dedupeRankLabels(cards: List<JjCard>): List<JjCard> {
         val kept = mutableListOf<JjCard>()
         for (card in cards.sortedByDescending { it.score }) {
             val duplicate = kept.indexOfFirst { other ->
-                card.rank != PASS && other.rank != PASS && other.rank != card.rank &&
-                    ((other.score >= RANK_WINNER_SCORE && other.score - card.score >= RANK_SCORE_GAP) ||
-                        (other.score >= SURE && other.score - card.score >= RANK_WIDE_GAP)) &&
-                    overlap(other, card) > RANK_OVERLAP * maxOf(area(other), area(card))
+                if (card.rank == PASS || other.rank == PASS || other.rank == card.rank) return@indexOfFirst false
+                val intersect = overlap(other, card)
+                val larger = maxOf(area(other), area(card))
+                val gap = other.score - card.score
+                intersect > NEARLY_IDENTICAL_RANK_OVERLAP * larger ||
+                    intersect > RANK_OVERLAP * larger &&
+                    (other.score >= RANK_WINNER_SCORE && gap >= RANK_SCORE_GAP ||
+                        other.score >= SURE && gap >= RANK_WIDE_GAP)
             }
             if (duplicate == -1) {
                 kept += card

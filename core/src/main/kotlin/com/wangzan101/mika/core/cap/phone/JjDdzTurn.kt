@@ -57,29 +57,42 @@ internal object JjDdzTurn {
     private const val STEADY_MS = 1_500L
     /** 低于这个分数的框不算,怎么稳也不认。 */
     private const val STEADY_MIN_SCORE = 0.6
-    private const val TRICK_PLAY_FRAMES = 3
-    private const val TRICK_PASS_FRAMES = 2
+    private const val TRICK_PLAY_FRAMES = 2
+    /** 18:00:43 的左槽「2」最低约 0.56，右槽 6/9 的分差约 0.16。 */
+    private const val BOTTOM_MIN_SCORE = 0.55
+    private const val BOTTOM_SCORE_GAP = 0.10
+    private const val BOTTOM_MIN_VOTES = 4
+    private const val BOTTOM_VOTE_GAP = 3
     /** 炸弹、火箭的特效会挡住人物一两帧。 */
     private const val LORD_FRAMES = 5
     private const val ME_LORD_FRAMES = 12
     private const val AGAIN_GAP_MS = 5_000L
-    private const val MAX_HANDS = 10
+    private const val MAX_HANDS = 30
     private const val HAND_SIZE = 17
     private const val DUMP_FRAMES = 6
+    private const val DUMP_HISTORY_SECONDS = 20
+    private const val SECOND_MS = 1_000L
     private const val DUMP_FILES = 300
     private val dumpWriter = Executors.newSingleThreadExecutor { job -> Thread(job, "jjdump").apply { isDaemon = true } }
 
     internal class OpponentTrick(val seat: DdzSeat, val historySize: Int, val cards: List<String>) {
         var cardFrames = 0
-        var cleared = false
+        var clearedAt: Long? = null
         var sawOtherBeforePass = false
-        var passFrames = 0
+        var sawMeBeforePass = false
+        var otherPassed = false
+        var mePassed = false
+        var clockSteps = 0
     }
 
     internal class Session(val advisor: String, var handsLeft: Int, private val dumpDirectory: () -> File? = { null }) {
-        private val recentShots = ArrayDeque<ByteArray>(DUMP_FRAMES)
+        private class Shot(val at: Long, val jpeg: ByteArray)
+        private val recentShots = ArrayDeque<Shot>(DUMP_FRAMES)
+        private val sampledShots = ArrayDeque<Shot>(DUMP_HISTORY_SECONDS + 1)
         var tracker: DdzTracker? = null
+        val bottomVotes = List(3) { mutableMapOf<String, Int>() }
         var opponentTrick: OpponentTrick? = null
+        var previousPlayBoxes = emptyMap<DdzSide, List<JjCard>>()
         var previousRawTurn: DdzSeat? = null
         var state = DdzSessionState.Idle
         var reason: String? = null
@@ -113,12 +126,19 @@ internal object JjDdzTurn {
         var handCount = 0
 
         fun rememberShot(jpeg: ByteArray) {
+            val shot = Shot(PhoneDdzTurn.clock(), jpeg)
             if (recentShots.size == DUMP_FRAMES) recentShots.removeFirst()
-            recentShots.addLast(jpeg)
+            recentShots.addLast(shot)
+            if (sampledShots.lastOrNull()?.at?.div(SECOND_MS) == shot.at / SECOND_MS) sampledShots.removeLast()
+            sampledShots.addLast(shot)
+            val cutoff = shot.at - DUMP_HISTORY_SECONDS * SECOND_MS
+            while (sampledShots.size > DUMP_HISTORY_SECONDS + 1 || sampledShots.first().at < cutoff) sampledShots.removeFirst()
         }
 
         fun dump(reason: String) {
-            val frames = recentShots.toList()
+            val cutoff = PhoneDdzTurn.clock() - DUMP_HISTORY_SECONDS * SECOND_MS
+            val sampled = sampledShots.filter { it.at >= cutoff && it !in recentShots }.takeLast(DUMP_HISTORY_SECONDS)
+            val frames = (sampled + recentShots).map { it.jpeg }
             if (frames.isEmpty()) return
             val at = System.currentTimeMillis()
             dumpWriter.execute {
@@ -135,7 +155,7 @@ internal object JjDdzTurn {
                     var basename: String
                     do {
                         basename = "${format.format(Date(timestamp++))}_$safeReason"
-                    } while ((0 until DUMP_FRAMES).any { File(dir, "${basename}_$it.jpg").exists() })
+                    } while ((0 until DUMP_FRAMES + DUMP_HISTORY_SECONDS).any { File(dir, "${basename}_$it.jpg").exists() })
                     frames.forEachIndexed { i, jpeg -> File(dir, "${basename}_$i.jpg").writeBytes(jpeg) }
                     println("JJTRACE dump $basename frames=${frames.size}")
                 }.onFailure { println("JJTRACE dump_error $reason ${it.message}") }
@@ -321,6 +341,7 @@ internal object JjDdzTurn {
 
     private fun Session.resetTurnReads() {
         opponentTrick = null
+        previousPlayBoxes = emptyMap()
         previousRawTurn = null
     }
 
@@ -329,69 +350,128 @@ internal object JjDdzTurn {
         val turn = view.turn
         // 左家后该轮到我。自己的出牌区还空着时，等右家闹钟再亮一帧才认作跳过了我。
         val skipsMe = turn == DdzSeat.Right && tracker.nextOpponent() == DdzSeat.Left && table.mine == DdzSeen.Empty
-        val confirmedTurn = if (skipsMe && s.previousRawTurn != turn) null else turn
+        val previousTurn = s.previousRawTurn
+        val confirmedTurn = if (skipsMe && previousTurn != turn) null else turn
         s.previousRawTurn = turn
-        recoverOpponentTrick(s, tracker, table, turn)
+        val previousBoxes = s.previousPlayBoxes
+        val playBoxes = DdzSide.entries.associateWith { side ->
+            table.opponentBoxes(side).takeIf { boxes ->
+                boxes.all { it.rank != "PASS" && it.score >= STEADY_MIN_SCORE }
+            }.orEmpty()
+        }
+        s.previousPlayBoxes = playBoxes
+        fun repeated(side: DdzSide, ranks: List<String>): Boolean =
+            listOf(previousBoxes[side].orEmpty(), playBoxes.getValue(side)).all { boxes ->
+                boxes.size == ranks.size && boxes.indices.all { i ->
+                    ranks[i] == boxes[i].rank || ranks[i] == boxes[i].alternateRank
+                }
+            }
+        val clockTurn = if (turn == DdzSeat.Me && previousTurn != turn) null else confirmedTurn
+        recoverOpponentTrick(s, tracker, table, clockTurn)
+        val bottom = votedBottom(s, tracker, table, view)
         tracker.observe(
             rawTurn = confirmedTurn,
             read = { side -> steady(s, table, side) },
-            bottom = { table.bottom },
+            bottom = { bottom },
             leadingWith20 = view.phase == DdzPhase.Lead && table.hand.size == 20,
             leading = view.phase == DdzPhase.Lead,
             hand = { table.handRanks.takeUnless { table.handUnsure } },
             checkOpponentDeck = true,
+            repeatedOpponentPlay = ::repeated,
             opponentBoxes = { side ->
                 val boxes = table.opponentBoxes(side)
                 val reading = s.unsure[side]
                 val steady = reading != null && reading.first == boxes.map { it.rank } &&
                     PhoneDdzTurn.clock() - reading.second >= STEADY_MS
-                boxes.takeIf { table.seen(side) is DdzSeen.Cards || steady }.orEmpty()
+                boxes.takeIf { (table.seen(side) is DdzSeen.Cards || steady) && repeated(side, boxes.map { it.rank }) }.orEmpty()
             },
             expireOpponentDeckRetries = settleExpired,
         )
     }
 
-    /**
-     * 闹钟可能从出牌人直接回到他自己。只在新牌连着读稳、另一家随后连着亮「不出」、
-     * 我也亮了「不出」且手里确定压不住时补整轮。读数冲突或看见另一家的闹钟就交回正常跟踪。
-     */
+    /** 地主已确认或人物衣服、20 张手牌显示已定地主时才投票，避免累积上一手的底牌。 */
+    private fun votedBottom(s: Session, tracker: DdzTracker, table: JjTable, view: JjView): List<String>? {
+        if (view.phase == DdzPhase.Call) {
+            s.bottomVotes.forEach { it.clear() }
+            return null
+        }
+        if (tracker.landlord == null && view.redLord == null && table.hand.size != 20) return null
+        if (tracker.bottom?.size == 3) return null
+
+        val reads = table.bottom ?: table.bottomSlots.map { boxes ->
+            val ranked = boxes.sortedByDescending { it.score }.distinctBy { it.rank }
+            val best = ranked.firstOrNull() ?: return@map null
+            val runnerUp = ranked.getOrNull(1)?.score ?: 0.0
+            best.rank.takeIf { best.score >= BOTTOM_MIN_SCORE && best.score - runnerUp >= BOTTOM_SCORE_GAP }
+        }
+        for ((slot, rank) in reads.withIndex()) {
+            if (rank != null) s.bottomVotes[slot].merge(rank, 1, Int::plus)
+        }
+        return s.bottomVotes.map { votes ->
+            val ranked = votes.entries.sortedByDescending { it.value }
+            val winner = ranked.firstOrNull() ?: return null
+            val runnerUp = ranked.getOrNull(1)?.value ?: 0
+            if (winner.value < BOTTOM_MIN_VOTES || winner.value - runnerUp < BOTTOM_VOTE_GAP) return null
+            winner.key
+        }
+    }
+
+    /** 快速清桌时保留已经连续读到的出牌，等新出现的两个「不出」或完整走过一圈的闹钟确认。 */
     private fun recoverOpponentTrick(s: Session, tracker: DdzTracker, table: JjTable, turn: DdzSeat?) {
-        val seat = tracker.nextOpponent()
         val previous = s.opponentTrick
         s.opponentTrick = null
-        if (seat == null || (turn != null && turn != seat) || table.handUnsure) return
-
-        fun read(side: DdzSide): DdzSeen {
-            val seen = table.seen(side)
-            return if (seen is DdzSeen.Cards) steady(s, table, side) else seen
-        }
-        val seen = read(sideOf(seat))
-        val old = previous?.takeIf { it.seat == seat && it.historySize == tracker.history.size }
+        if (table.handUnsure || tracker.broken != null) return
+        val seat = previous?.seat ?: tracker.nextOpponent() ?: return
+        val side = sideOf(seat)
+        val boxes = s.previousPlayBoxes.getValue(side)
+        val ranks = boxes.takeIf { it.isNotEmpty() }?.let { opponentRanks(s, table, side, it) }
+        val cleared = table.seen(side) == DdzSeen.Empty
+        val now = PhoneDdzTurn.clock()
         val trick = when {
-            seen is DdzSeen.Cards && seen.ranks != tracker.lastOpponentPlay(seat) ->
-                old?.takeIf { !it.cleared && it.cards == seen.ranks }
-                    ?: OpponentTrick(seat, tracker.history.size, seen.ranks)
-            seen == DdzSeen.Empty && old != null && old.cardFrames >= TRICK_PLAY_FRAMES && !old.cleared -> old
+            previous != null && previous.cardFrames >= TRICK_PLAY_FRAMES &&
+                (cleared || previous.clearedAt != null && previous.clockSteps == 2 && turn == seat) &&
+                now - (previous.clearedAt ?: now) <= STEADY_MS -> previous
+            previous != null && previous.clearedAt == null && ranks == previous.cards -> previous
+            ranks != null && tracker.nextOpponent() == seat && ranks != tracker.lastOpponentPlay(seat) &&
+                (turn == null || turn == seat || turn == seat.next) -> OpponentTrick(seat, tracker.history.size, ranks)
             else -> return
         }
-        if (seen == DdzSeen.Empty) trick.cleared = true else trick.cardFrames++
+        if (cleared) trick.clearedAt = trick.clearedAt ?: now
+        if (ranks == trick.cards && trick.clearedAt == null) trick.cardFrames++
 
         val other = if (seat == DdzSeat.Left) DdzSeat.Right else DdzSeat.Left
-        when (val otherSeen = read(sideOf(other))) {
+        when (val otherSeen = table.seen(sideOf(other))) {
             DdzSeen.Unsure -> return
-            DdzSeen.Pass -> if (trick.sawOtherBeforePass) trick.passFrames++
+            DdzSeen.Pass -> if (trick.sawOtherBeforePass) trick.otherPassed = true
             else -> {
                 // 他可能真的压了一手。桌上还摆着已记过的牌，可以等随后出现的不出。
-                if (otherSeen is DdzSeen.Cards && otherSeen.ranks != tracker.lastOpponentPlay(other)) return
+                if (otherSeen is DdzSeen.Cards) {
+                    val otherRanks = (steady(s, table, sideOf(other)) as? DdzSeen.Cards)?.ranks ?: return
+                    if (otherRanks != tracker.lastOpponentPlay(other)) return
+                }
                 trick.sawOtherBeforePass = true
-                trick.passFrames = 0
             }
         }
-        if (trick.cardFrames >= TRICK_PLAY_FRAMES && trick.passFrames >= TRICK_PASS_FRAMES &&
-            table.mine == DdzSeen.Pass && cannotBeat(table.handRanks, trick.cards) &&
-            tracker.recordOpponentPlayAndPasses(seat, trick.cards, table.handRanks)
+        if (table.mine == DdzSeen.Pass) {
+            if (trick.sawMeBeforePass) trick.mePassed = true
+        } else {
+            trick.sawMeBeforePass = true
+        }
+        val clockReturned = turn == seat && trick.clockSteps == 2 && trick.clearedAt != null
+        if (trick.clockSteps >= 0) {
+            when (turn) {
+                seat.next -> trick.clockSteps = if (trick.clockSteps <= 1) 1 else -1
+                seat.next.next -> trick.clockSteps = if (trick.clockSteps >= 1) 2 else -1
+                seat -> if (trick.clockSteps != 0) trick.clockSteps = -1
+                else -> Unit
+            }
+        }
+        // 缺闹钟时只认确定要不起的自动过牌，避免把能压牌的回合当成已经跳过。
+        val bothPassed = trick.otherPassed && trick.mePassed && cannotBeat(table.handRanks, trick.cards)
+        if (trick.cardFrames >= TRICK_PLAY_FRAMES && (clockReturned || bothPassed) &&
+            tracker.recordOpponentPlayAndPasses(seat, trick.cards, table.handRanks, trick.historySize)
         ) return
-        if (!trick.cleared) s.opponentTrick = trick
+        s.opponentTrick = trick
     }
 
     /** 只检查能确定要不起的情况。其余牌型走正常跟踪。 */
@@ -399,7 +479,11 @@ internal object JjDdzTurn {
         val move = DdzSnapshotRecovery.classify(cards) ?: return false
         if (move.kind == DdzSnapshotRecovery.Kind.Rocket) return true
         if ("SJ" in hand && "BJ" in hand) return false
-        if (move.kind != DdzSnapshotRecovery.Kind.Bomb && hand.size >= cards.size) return false
+        when (move.kind) {
+            DdzSnapshotRecovery.Kind.Single -> if (hand.any { (DdzCards.ORDER[it] ?: Int.MAX_VALUE) > move.main }) return false
+            DdzSnapshotRecovery.Kind.Bomb -> Unit
+            else -> if (hand.size >= cards.size) return false
+        }
         return hand.groupingBy { it }.eachCount().none { (rank, n) ->
             n == 4 && (move.kind != DdzSnapshotRecovery.Kind.Bomb || (DdzCards.ORDER[rank] ?: -1) > move.main)
         }
@@ -408,6 +492,7 @@ internal object JjDdzTurn {
     /** 看到新发的 17 张从头记;轮到我出牌时才第一次看到手牌(张数不对)是中途进来的,这一手只按规则打完。 */
     private fun newHand(s: Session, table: JjTable, view: JjView) {
         s.tracker = DdzTracker(DdzSettlingPolicy.HUMAN, onBroken = s::dump)
+        s.bottomVotes.forEach { it.clear() }
         s.resetTurnReads()
         s.brokenLogged = false
         s.lordSeen = null
@@ -553,41 +638,39 @@ internal object JjDdzTurn {
         return DdzSeen.Cards(ranks)
     }
 
-    /** 首选点数超出一副牌的张数时,只试同一位置实际读到的备选点数。 */
+    /** 首选点数不合牌规或超张时，只试同一位置实际读到的备选点数。 */
     private fun opponentRanks(s: Session, table: JjTable, side: DdzSide, found: List<JjCard>): List<String>? {
-        val ranks = found.map { it.rank }.toMutableList()
+        val primary = found.map { it.rank }
         val seat = if (side == DdzSide.Left) DdzSeat.Left else DdzSeat.Right
-        s.tracker?.maskedOpponentPlay(seat, ranks)?.let { return it }
-        val previous = s.tracker?.lastOpponentPlay(seat)
-        // 出牌区可能还摆着已记过的同一手,它已经算在历史里。
-        if (ranks == previous) return ranks
+        val tracker = s.tracker
+        tracker?.maskedOpponentPlay(seat, primary)?.let { return it }
+        val previous = tracker?.lastOpponentPlay(seat)
+        if (primary == previous) return primary
         val hand = if (table.handUnsure) emptyList() else table.handRanks
-        val left = DdzCards.copiesLeft(s.tracker?.history.orEmpty().flatten() + hand)
-        val used = ranks.groupingBy { it }.eachCount().toMutableMap()
-        fun excess() = used.keys.firstOrNull { used.getValue(it) > left.getOrDefault(it, 0) }
-        if (excess() == null) return ranks
+        val left = DdzCards.copiesLeft(tracker?.history.orEmpty().flatten() + hand)
+        fun fits(ranks: List<String>) =
+            ranks.groupingBy { it }.eachCount().all { (rank, n) -> n <= left.getOrDefault(rank, 0) }
+        fun legal(ranks: List<String>) = tracker?.jjOpponentPlayIsLegal(seat, ranks) ?: true
+
+        val primaryFits = fits(primary)
+        val alternatives = found.indices.filter { found[it].alternateRank != null }.sortedBy { found[it].score }
+        if (primaryFits && (alternatives.isEmpty() || legal(primary))) return primary
         if (previous?.size == found.size && found.indices.all { previous[it] == found[it].rank || previous[it] == found[it].alternateRank }) {
             return previous
         }
 
-        val alternatives = found.indices.filter { found[it].alternateRank != null }.sortedBy { found[it].score }
-        fun replaceExcess(): Boolean {
-            val rank = excess() ?: return true
-            for (i in alternatives) {
-                val box = found[i]
-                if (box.rank != rank || ranks[i] != rank) continue
-                val alternate = checkNotNull(box.alternateRank)
-                ranks[i] = alternate
-                used.merge(rank, -1, Int::plus)
-                used.merge(alternate, 1, Int::plus)
-                if (replaceExcess()) return true
-                ranks[i] = rank
-                used.merge(rank, 1, Int::plus)
-                used.merge(alternate, -1, Int::plus)
+        val ranks = primary.toMutableList()
+        fun replace(from: Int): List<String>? {
+            for (i in from until alternatives.size) {
+                val index = alternatives[i]
+                ranks[index] = checkNotNull(found[index].alternateRank)
+                if (fits(ranks) && legal(ranks)) return ranks.toList()
+                replace(i + 1)?.let { return it }
+                ranks[index] = primary[index]
             }
-            return false
+            return null
         }
-        return ranks.takeIf { replaceExcess() }
+        return replace(0) ?: primary.takeIf { primaryFits }
     }
 
     /**
@@ -696,7 +779,7 @@ internal object JjDdzTurn {
         val body = buildJsonObject {
             put("seat", tracker.seat())
             put("hand", JsonArray(hand.map(::JsonPrimitive)))
-            put("bottom", JsonArray(tracker.bottom.orEmpty().map(::JsonPrimitive)))
+            put("bottom", JsonArray(tracker.jjAdvisoryBottom(hand).map(::JsonPrimitive)))
             put("history", JsonArray(tracker.history.map { m -> JsonArray(m.map(::JsonPrimitive)) }))
         }.toString()
         val reply = PhoneDdzTurn.advise(s.advisor, body)

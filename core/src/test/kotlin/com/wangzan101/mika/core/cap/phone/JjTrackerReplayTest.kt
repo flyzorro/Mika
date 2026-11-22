@@ -6,6 +6,113 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class JjTrackerReplayTest {
+    @Test fun theRevealedBottomIsReadAcrossFramesEvenWithOverlappingRanks() {
+        val tracker = replayBottom()
+        assertEquals(DdzSeat.Right, tracker.landlord)
+        assertEquals(listOf("2", "10", "6"), tracker.bottom)
+    }
+
+    @Test fun aNoisyFrameAndMissingBoxesDoNotOutvoteTheSameSlotAcrossFrames() {
+        val tracker = replayBottom { frame, cards ->
+            cards.filterNot { it.cy < 60 && it.rank == if (frame % 2 == 0) "2" else "10" }.map {
+                if (frame == 36708 && it.cy < 60 && it.rank == "9") it.copy(score = 0.99) else it
+            }
+        }
+        assertEquals(listOf("2", "10", "6"), tracker.bottom)
+    }
+
+    @Test fun theBottomStaysUnknownWhenOneSlotIsNeverRead() {
+        val tracker = replayBottom { _, cards -> cards.filterNot { it.cy < 60 && it.cx > 980 } }
+        assertEquals(DdzSeat.Right, tracker.landlord)
+        assertNull(tracker.bottom)
+    }
+
+    @Test fun evenACompleteHighScoreBottomNeedsRepeatedFrames() {
+        val tracker = DdzTracker(DdzSettlingPolicy.HUMAN).apply { restore(DdzSeat.Right, emptyList(), emptyList()) }
+        replayBottom(tracker) { frame, cards ->
+            cards.filter { it.cy >= 700 || frame == 36701 && it.cy < 60 && it.rank != "9" }
+                .map { it.copy(score = 0.99) }
+        }
+        assertTrue(tracker.bottom.orEmpty().isEmpty())
+    }
+
+    @Test fun aVotedBottomCannotReuseCardsIAlreadyPlayed() {
+        val history = moves("3 3//2 2")
+        val tracker = DdzTracker(DdzSettlingPolicy.HUMAN).apply { restore(DdzSeat.Right, emptyList(), history) }
+        replayBottom(tracker) { _, cards ->
+            cards.filter { it.cy < 60 && it.rank != "9" || it.cy >= 700 && it.rank != "Q" }.map { it.copy(score = 0.99) }
+        }
+        assertTrue("played two 2s and still hold two 2s, bottom=${tracker.bottom}", tracker.bottom.orEmpty().isEmpty())
+    }
+
+    private fun replayBottom(
+        tracker: DdzTracker = DdzTracker(DdzSettlingPolicy.HUMAN),
+        changeBoxes: (Int, List<JjCard>) -> List<JjCard> = { _, boxes -> boxes },
+    ): DdzTracker {
+        val session = JjDdzTurn.Session("", 1).apply { this.tracker = tracker }
+        val lines = javaClass.getResourceAsStream("/ddz-jj/replay-bottom-1800.tsv")!!.bufferedReader().use { it.readLines() }
+        val hand = JjCards.parse(lines[1])!!
+        for (line in lines.drop(2)) {
+            val (number, _, boxes) = line.split('\t', limit = 3)
+            val frame = number.toInt()
+            val table = JjCards.table(changeBoxes(frame, hand + JjCards.parse(boxes)!!), 2412)
+            val turn = if (frame < 36716) DdzSeat.Right else DdzSeat.Left
+            JjDdzTurn.observe(session, table, JjView(DdzPhase.Other, emptyList(), turn, redLord = DdzSeat.Right))
+            assertNull("frame=$frame trace=${tracker.trace}", tracker.broken)
+        }
+        return tracker
+    }
+
+    @Test fun twoFastDealsWithAutomaticPassesAreRecovered() {
+        val history = moves("3 3//Q Q///3 4 5 6 7 8/9 8 7 6 5 4/A K Q J 10 9///7/A///8 8/2 2///6/10/SJ")
+        val tracker = replay("1801", DdzSeat.Right, DdzSeat.Right, history)
+        assertHistory(tracker, history + moves("BJ///J J 10 10 9 9///5/K"))
+    }
+
+    @Test fun anOverlappingLabelUsesTheRankThatMakesALegalOvercall() {
+        val history = moves("4 4 4 7")
+        val tracker = replay("1811", DdzSeat.Right, DdzSeat.Left, history, myPassAt = 40)
+        assertEquals(history + moves("8 8 8 3//J J J 3"), tracker.history.take(4))
+    }
+
+    @Test fun aSingleFramePlayIsNotRecordedAfterTheTableClears() {
+        val tracker = DdzTracker(DdzSettlingPolicy.HUMAN).apply { restore(DdzSeat.Right, emptyList(), emptyList()) }
+        val session = JjDdzTurn.Session("", 1).apply { this.tracker = tracker }
+        val view = JjView(DdzPhase.Other, emptyList(), DdzSeat.Left)
+        val flash = JjCard("5", 1640.0, 270.0, 1675.0, 324.0, 0.99)
+        JjDdzTurn.observe(session, JjCards.table(listOf(flash), 2412), view)
+        repeat(5) { JjDdzTurn.observe(session, JjCards.table(emptyList(), 2412), view) }
+        assertEquals(emptyList<List<String>>(), tracker.history)
+        assertNull(tracker.broken)
+    }
+
+    @Test fun theDeadlineDoesNotMaskAndRecordASingleFrameOpeningPlay() {
+        val tracker = DdzTracker(DdzSettlingPolicy.HUMAN)
+        val session = JjDdzTurn.Session("", 1).apply { this.tracker = tracker }
+        val hand = List(4) { i -> JjCard("J", 500.0 + i * 96, 772.0, 535.0 + i * 96, 850.0, 0.99) }
+        val flash = JjCard("J", 1640.0, 270.0, 1675.0, 324.0, 0.99)
+        val view = JjView(DdzPhase.Follow, emptyList(), DdzSeat.Me)
+        JjDdzTurn.observe(session, JjCards.table(hand + flash, 2412), view, settleExpired = true)
+        assertEquals(emptyList<List<String>>(), tracker.history)
+        assertNull(tracker.landlord)
+    }
+
+    @Test fun twoReadsBeforeTheClockGoesAroundCountEvenWithoutPassBubbles() {
+        val tracker = DdzTracker(DdzSettlingPolicy.HUMAN).apply { restore(DdzSeat.Right, emptyList(), emptyList()) }
+        val session = JjDdzTurn.Session("", 1).apply { this.tracker = tracker }
+        val hand = List(17) { i -> JjCard(DdzCards.RANKS[i / 2], 500.0 + i * 96, 772.0, 535.0 + i * 96, 850.0, 0.99) }
+        val play = JjCard("BJ", 1640.0, 270.0, 1675.0, 324.0, 0.74)
+        fun observe(turn: DdzSeat, cards: List<JjCard> = hand) {
+            JjDdzTurn.observe(session, JjCards.table(cards, 2412), JjView(DdzPhase.Other, emptyList(), turn))
+        }
+        repeat(2) { observe(DdzSeat.Right, hand + play) }
+        observe(DdzSeat.Left)
+        repeat(2) { observe(DdzSeat.Me) }
+        observe(DdzSeat.Right)
+        assertEquals(moves("BJ//"), tracker.history)
+        assertNull(tracker.broken)
+    }
+
     @Test fun leftBombClearedBeforeTheClockReturnedStillCounts() {
         val history = moves("3/8/J/K/A//2/SJ//BJ///J J J 4 4//3 3 2 2 2///Q/A///6/Q//A///10 9 8 7 6///A")
         val tracker = replay("1212", DdzSeat.Right, DdzSeat.Left, history, myPassAt = 253)

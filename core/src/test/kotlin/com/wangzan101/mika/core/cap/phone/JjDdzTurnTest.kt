@@ -1,6 +1,7 @@
 package com.wangzan101.mika.core.cap.phone
 
 import com.wangzan101.mika.core.assembly.toolDispatcher
+import com.wangzan101.mika.core.tool.ArgError
 import com.wangzan101.mika.core.tool.Args
 import com.wangzan101.mika.core.tool.FakeScreen
 import com.wangzan101.mika.core.tool.ToolContext
@@ -136,6 +137,47 @@ class JjDdzTurnTest {
         run(game, """{"action":"start","mode":"human","advisor":"http://mac:3426","auto":true,"hands":2}""")
         val again = JjDdzScreen.read(game.frame).buttons.single()
         assertEquals(listOf(again.x to JjDdzScreen.AGAIN_TAP_Y), game.taps)
+    }
+
+    @Test fun staysInJjUntilThirtyHandsEnd() = runTest {
+        val dealt = hand(seventeen)
+        var reads = 0
+        JjDdzTurn.detect = { _, _ -> if (reads++ % 7 == 0) dealt else emptyList() }
+        val game = Game(JjDdzScreen.PACKAGE, frame("beach_scenery"))
+        val result = run(game, """{"action":"start","mode":"human","advisor":"http://mac:3426","auto":true,"hands":30}""")
+        assertEquals("result", result.text("state"))
+        assertEquals("30", result.text("handsPlayed"))
+        assertEquals(210, reads)
+    }
+
+    @Test fun sendsTheVotedBottomToDouZero() = runTest {
+        val fixture = javaClass.getResourceAsStream("/ddz-jj/replay-bottom-1800.tsv")!!.bufferedReader().use { it.readLines() }
+        val dealt = JjCards.parse(fixture[1])!!
+        val frames = fixture.drop(2).map { dealt + JjCards.parse(it.substringAfterLast('\t'))!! }
+        val game = Game(JjDdzScreen.PACKAGE, frame("left_turn"))
+        val follow = frame("follow")
+        var reads = 0
+        JjDdzTurn.detect = { _, _ ->
+            if (reads == frames.lastIndex) game.frame = follow
+            val index = reads++
+            frames.getOrNull(index) ?: frames.last().takeIf { index < frames.size + 6 }
+        }
+        var sentBottom: String? = null
+        PhoneDdzTurn.advise = { _, request ->
+            sentBottom = Json.parseToJsonElement(request).jsonObject["bottom"].toString()
+            """{"play":[]}"""
+        }
+        run(game, start)
+        assertEquals("""["2","10","6"]""", sentBottom)
+    }
+
+    @Test fun rejectsHandsAboveThirty() = runTest {
+        val game = Game(JjDdzScreen.PACKAGE, frame("beach_scenery"))
+        val error = runCatching {
+            run(game, """{"action":"start","mode":"human","advisor":"http://mac:3426","auto":true,"hands":31}""")
+        }.exceptionOrNull()
+        assertTrue(error is ArgError)
+        assertEquals("hands: must be between 1 and 30", error?.message)
     }
 
     @Test fun cancelsAutoPlayRightAway() = runTest {
@@ -276,7 +318,7 @@ class JjDdzTurnTest {
         return game
     }
 
-    @Test fun aTrackingFailureDumpsOnlyTheLastSixSentJpegsAndPrunesOldFiles() = runTest {
+    @Test fun aTrackingFailureDumpsTheLastSixSentJpegsAndPrunesOldFiles() = runTest {
         val dir = temp.newFolder("jjdump")
         repeat(301) { index ->
             File(dir, "old-$index.jpg").apply { writeText("old"); setLastModified(1_000L + 1_000 * index) }
@@ -310,6 +352,33 @@ class JjDdzTurnTest {
         assertTrue(File(dir, "old-7.jpg").exists())
     }
 
+    @Test fun aTrackingFailureKeepsSixRecentFramesAndSamplesTwentySeconds() = runTest {
+        val dir = temp.newFolder("window")
+        val session = JjDdzTurn.Session("", 1) { dir }
+        repeat(151) { i ->
+            now = i * 200L
+            session.rememberShot(byteArrayOf(i.toByte()))
+        }
+        DdzTracker(onBroken = session::dump).fail("window")
+        // 后台写入串行。等后续的一张写完，断档的文件就全部可读。
+        val marker = temp.newFolder("marker")
+        JjDdzTurn.Session("", 1) { marker }.apply {
+            rememberShot(byteArrayOf(1))
+            dump("marker")
+        }
+        withContext(Dispatchers.IO) {
+            withTimeout(3_000) {
+                while (marker.listFiles().orEmpty().none { it.length() == 1L }) delay(10)
+            }
+        }
+        val shots = dir.listFiles()!!.map { it.readBytes().single().toUByte().toInt() }.sorted()
+        assertTrue(shots.toString(), shots.size <= 26)
+        assertEquals((145..150).toList(), shots.takeLast(6))
+        val sampled = shots.dropLast(6)
+        assertEquals((10..28).toList(), sampled.map { it / 5 })
+        assertTrue(sampled.first() in 50..54)
+    }
+
     @Test fun aDouZeroErrorDumpsAtTheDecisionThatBrokeTracking() = runTest {
         val dir = temp.newFolder("jjdump")
         val game = Game(JjDdzScreen.PACKAGE, frame("beach_scenery"), dir)
@@ -335,11 +404,11 @@ class JjDdzTurnTest {
         assertEquals("douzero_ambiguous_card", run(game, start).text("douzeroOff"))
         val dumped = withContext(Dispatchers.IO) {
             withTimeout(3_000) {
-                while (dir.listFiles().orEmpty().count { it.length() == 1L } < 6) delay(10)
-                dir.listFiles()!!.sortedBy { it.name }
+                while (dir.listFiles().orEmpty().count { it.length() == 1L } < lastAtAdvice) delay(10)
+                dir.listFiles()!!.toList()
             }
         }
-        assertEquals((lastAtAdvice - 5..lastAtAdvice).toList(), dumped.map { it.readBytes().single().toInt() })
+        assertEquals((1..lastAtAdvice).toList(), dumped.map { it.readBytes().single().toInt() }.sorted())
         assertTrue(dumped.all { "_douzero_ambiguous_card_" in it.name })
     }
 

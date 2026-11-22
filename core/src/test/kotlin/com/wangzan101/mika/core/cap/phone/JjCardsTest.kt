@@ -58,6 +58,15 @@ class JjCardsTest {
         assertEquals(DdzSeen.Cards(listOf("10", "10")), JjCards.table(listOf(card("10", 1651.0, 274.0, 46.0), card("10", 1693.0, 275.0, 46.0)), width).right)
     }
 
+    @Test fun nearlyCoincidentDifferentRanksKeepOneBoxAndTheOtherRank() {
+        val row = javaClass.getResourceAsStream("/ddz-jj/replay-1811.tsv")!!.bufferedReader().useLines { lines ->
+            lines.first { it.startsWith("37891\t") }
+        }
+        val table = JjCards.table(JjCards.parse(row.split('\t', limit = 4).last())!!, 2412)
+        assertEquals(listOf("8", "8", "3", "3"), table.opponentBoxes(DdzSide.Left).map { it.rank })
+        assertEquals("8", table.opponentBoxes(DdzSide.Left)[2].alternateRank)
+    }
+
     @Test fun anUnsureCardMakesThePlayUnsure() {
         val t = JjCards.table(listOf(card("9", 1600.0, 280.0, 50.0, score = 0.55), card("9", 1650.0, 280.0, 50.0)), width)
         assertEquals(DdzSeen.Unsure, t.right)
