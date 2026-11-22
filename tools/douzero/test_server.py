@@ -1660,6 +1660,11 @@ class LiveControlRegressionTest(unittest.TestCase):
         self.assertEqual(move[0], move[1])
         self.assertGreater(wins.get(tuple(sorted(cards(move))), 0), wins.get(tuple(sorted(cards(["9"]))), 0))
 
+    def test_162548_take_lead_kicker_is_the_low_card(self):
+        # 16:25 JJ:下家剩 2 张出 K K K 4,我当地主抢牌权出了 2 2 2 + 10;带牌该是顺子 4–10 头上的 4
+        position = dict(seat='landlord', hand=['BJ', '2', '2', '2', 'K', 'Q', '10', '10', '9', '8', '7', '7', '6', '5', '4'], bottom=['A', '9', '4'], history=[['3', '3'], ['J', 'J'], [], ['A', 'A'], [], [], ['9'], ['2'], [], [], ['10', '9', '8', '7', '6', '5', '4', '3'], [], [], ['K', 'K', 'K', '4'], []])
+        self.assertEqual(sorted(["2", "2", "2", "4"]), sorted(names(ROLLOUT_ADVISOR.act(**position))))
+
     def test_123244_finishes_in_two(self):
         self.assertEqual(["3", "3", "A", "A", "A"], names(ROLLOUT_ADVISOR.act(**self.TWO_PLAYS)))
 

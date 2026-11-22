@@ -944,6 +944,8 @@ class Agent:
         if solved is None:
             control = take_short_opponent_lead(infoset, values)
             if control is not None:
+                # 抢牌权那手也换带牌:16:25 JJ 2 2 2 + 10 抢牌权,带牌应是顺子 4–10 头上的 4(换带牌不影响能不能压住短手)
+                control = self.swap_high_kickers(infoset, control, ok=lambda m: True)
                 if report is not None:
                     report["take_lead"] = move_label(control)
                 return control
