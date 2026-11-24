@@ -8,6 +8,8 @@ import com.wangzan101.mika.core.cap.web.PagePacing
 import com.wangzan101.mika.core.uistate.PlacePace
 import kotlin.random.Random
 import com.wangzan101.mika.core.action.OutwardPacing
+import com.wangzan101.mika.core.action.TargetAppRestoreFailed
+import com.wangzan101.mika.core.access.AppAccessDenied
 import com.wangzan101.mika.core.cap.phone.AppPacePlan
 import com.wangzan101.mika.core.cap.phone.OperatingPace
 import com.wangzan101.mika.core.usage.DeepSeekPriceCache
@@ -25,6 +27,7 @@ import com.wangzan101.mika.chat.WorkspaceResolver
 import android.graphics.Bitmap
 import android.hardware.display.DisplayManager
 import android.os.Build
+import android.os.DeadObjectException
 import android.os.IBinder
 import android.os.RemoteException
 import android.os.SystemClock
@@ -37,6 +40,7 @@ import com.wangzan101.mika.cap.phone.a11y.CalendarBulkWriter
 import com.wangzan101.mika.cap.phone.a11y.LazyPhoneScreen
 import com.wangzan101.mika.cap.phone.a11y.ScreenAccessibility
 import com.wangzan101.mika.cap.phone.a11y.PhoneUnavailable
+import com.wangzan101.mika.core.uistate.ActionResult
 import com.wangzan101.mika.cap.phone.PhoneServices
 import com.wangzan101.mika.cap.phone.setup.RootShell
 import com.wangzan101.mika.cap.root.RootCommands
@@ -745,6 +749,27 @@ class TaskRun(
                 val id = phone?.display?.current?.displayId ?: return false
                 return moveTask(taskId, id)
             }
+            suspend fun moveBackTarget(fromMainOnly: Boolean = false): Boolean {
+                val p = phone ?: return false
+                val id = p.display.current?.displayId ?: return false
+                val target = p.screen.target.value ?: return true
+                return try {
+                    withContext(Dispatchers.IO) {
+                        restoreTargetApp(p.screen._target, p.shell, id, fromMainOnly, ::moveBackToAgent) { t ->
+                            try {
+                                if (t.userId >= 0) accessedPhone.openAppCopy(t.packageName, t.userId, cold = false)
+                                else accessedPhone.openApp(t.packageName, cold = false)
+                            } catch (e: AppAccessDenied) {
+                                ActionResult.Failed(e.code)
+                            }
+                        }
+                    }
+                } catch (_: DeadObjectException) {
+                    false
+                } catch (_: RemoteException) {
+                    throw TargetAppRestoreFailed(target.packageName, "Couldn't check the current task for ${target.packageName}.")
+                }
+            }
             val app = service.application as MikaApp
             // 微信只使用当前绑定会话的独立授权；仍保留 Channel 来源及原有确认/接管规则。
             val unlockAuthorized = taskUnlockAuthorization(provenance.origin, channelPeer) { peer ->
@@ -764,8 +789,7 @@ class TaskRun(
                     tr(if (provenance.origin == RunOrigin.Channel) R.string.wechat_unlock_failed else R.string.trigger_unlock_failed)
                 },
             ) {
-                val t = phone?.screen?.target?.value
-                t != null && t.taskId >= 0 && moveBackToAgent(t.taskId)
+                moveBackTarget()
             }
             gate = taskGate
             // 记录开不起来就不记,任务照跑
@@ -1100,6 +1124,7 @@ class TaskRun(
                 override suspend fun displayOf(taskId: Int) = phone?.let { p -> io(-1) { p.shell.displayOfTask(taskId) } } ?: -1
                 override suspend fun moveToMain(taskId: Int) = moveTask(taskId, Display.DEFAULT_DISPLAY)
                 override suspend fun moveBack(taskId: Int) = moveBackToAgent(taskId)
+                override suspend fun restoreTarget() = moveBackTarget(fromMainOnly = true)
                 override fun setSound(packageName: String, on: Boolean) {
                     val p = phone ?: return
                     // 交出去的若是目标 App,按目标所属的那份算;别的按本来那份

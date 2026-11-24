@@ -2,6 +2,7 @@ package com.wangzan101.mika.task
 
 import com.wangzan101.mika.R
 import com.wangzan101.mika.i18n.tr
+import com.wangzan101.mika.core.action.TargetAppRestoreFailed
 import com.wangzan101.mika.core.agent.GateReason
 import com.wangzan101.mika.core.agent.TaskState
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -72,7 +73,13 @@ class TaskGate(
                 }
                 onPhone && movedAway.value -> {
                     pauseUntilResume(MOVED_AWAY, setWaiting, seen = resumesAtMove)
-                    while (shellAvailable.value && !moveBack()) pauseUntilResume(MOVE_BACK_FAILED, setWaiting)
+                    try {
+                        while (shellAvailable.value && !moveBack()) pauseUntilResume(MOVE_BACK_FAILED, setWaiting)
+                    } catch (e: TargetAppRestoreFailed) {
+                        movedAway.value = false
+                        setWaiting(null)
+                        throw e
+                    }
                     if (shellAvailable.value) movedAway.value = false
                 }
                 locked.value -> {

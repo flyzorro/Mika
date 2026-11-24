@@ -1,5 +1,6 @@
 package com.wangzan101.mika.takeover
 
+import com.wangzan101.mika.core.action.TargetAppRestoreFailed
 import com.wangzan101.mika.core.agent.TaskState
 import com.wangzan101.mika.core.tool.HandBack
 import com.wangzan101.mika.core.tool.HandBackOutcome
@@ -25,6 +26,8 @@ interface TakeoverPort {
     suspend fun displayOf(taskId: Int): Int
     suspend fun moveToMain(taskId: Int): Boolean
     suspend fun moveBack(taskId: Int): Boolean
+    /** 挪回目标 App。旧任务已消失时按同一份 App 恢复；恢复不了抛 [TargetAppRestoreFailed]。 */
+    suspend fun restoreTarget(): Boolean
     /** 开或关该 App 的声音。 */
     fun setSound(packageName: String, on: Boolean)
     /** 用户明确恢复声音;实现要连同本次任务的自动静音规则一起更新。 */
@@ -287,13 +290,20 @@ class Takeover(
                 val activity = port.handoverActivity()
                 result = result.copy(durationMs = now() - handedAt, inputCount = activity?.inputCount, stoppedAt = activity?.stoppedAt)
             }
-            // 交出去的任务可能已经办完自己关掉了(不在了就不用挪);launch_app 的任务若还在主屏也一并挪回
+            // 另外交出去的页面可能已经办完自己关掉了。launch_app 的目标即使换了任务编号也要恢复。
             val target = port.targetTask()
-            for (id in listOf(handed, target).filter { it >= 0 }.distinct()) {
-                if (port.displayOf(id) == MAIN_DISPLAY && !port.moveBack(id)) {
-                    _problem.value = Problem.MoveBackFailed
-                    return false
-                }
+            val handedMoved = if (handed >= 0 && handed != target && port.displayOf(handed) == MAIN_DISPLAY) {
+                port.moveBack(handed)
+            } else true
+            val restored = try {
+                handedMoved && (target < 0 || port.restoreTarget())
+            } catch (e: TargetAppRestoreFailed) {
+                result = result.copy(appReturnFailure = e.message)
+                true
+            }
+            if (!restored) {
+                _problem.value = Problem.MoveBackFailed
+                return false
             }
             port.stopWatching()
             setOfNotNull(handedPackage, port.targetPackage()).forEach { port.setSound(it, false) }

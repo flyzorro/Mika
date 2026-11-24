@@ -41,6 +41,9 @@ import com.wangzan101.mika.core.run.waitOrSteer
 import com.wangzan101.mika.core.tool.failCode
 import com.wangzan101.mika.core.capability.Paced
 
+/** 手机屏幕关卡无法恢复目标 App，交给 Agent 处理，当前动作没有执行。 */
+class TargetAppRestoreFailed(val packageName: String, message: String) : Exception(message)
+
 /**
  * 所有改变外部世界的动作唯一的执行入口:[ToolDispatcher.execute] 要一张 [ActionPass],只有这里有。
  * 每个来源都按同一顺序:操作守卫 → 锁屏/被拿走的关卡(写操作)→ 不可逆判定与同意核对(按过关卡之后此刻的屏幕)→
@@ -126,7 +129,17 @@ class ActionExecutor(
         if (guards.stop != null) return refuse("guard_stopped", origin, before)
         if (policy.stopOnGuardWarning && before.isNotEmpty()) return refuse("guard_warning", origin, before)
         val writing = tools.writesScreen(call.name)
-        if (writing && !policy.gatedByCaller) gate()
+        if (writing && !policy.gatedByCaller) {
+            try {
+                gate()
+            } catch (e: TargetAppRestoreFailed) {
+                val failure = ToolExecution(buildJsonObject {
+                    put("ok", false); put("error", "target_app_restore_failed"); put("message", e.message)
+                    put("package", e.packageName); put("executed", false); put("recoverable", true); put("counts_as_failure", false)
+                })
+                return ran(Step(call, args, origin, before, writing = false, offScreen, verb, null, followUp, reads, preset = failure))
+            }
+        }
         // 没有可用的同意就不执行,也不计入失败熔断
         var d = decision.judge(call.name, args, origin)
         // 不在屏上、工具声明要问的一步(会改动东西的 root 命令):调用方问得到人就当场问,同意了按这次同意再判一次;
