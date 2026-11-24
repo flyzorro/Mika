@@ -701,6 +701,57 @@ class BombRestraintTest(unittest.TestCase):
         self.assertEqual([], move)
 
 
+class EndgameLastTurnLikelihoodTest(unittest.TestCase):
+    # 2026-11-24 21:04:39 JJ：地主领出 2 2，实际还剩 7 7。
+    LIVE = dict(seat="landlord_down", hand=["K", "K", "K", "K", "Q", "Q", "J", "10", "10", "9", "5"],
+                bottom=["5", "3", "7"],
+                history=[["10"], [], ["A"], ["SJ"], ["BJ"], [], [], ["3", "4", "5", "6", "7"], [],
+                         ["Q", "J", "10", "9", "8"], [], [], ["7", "6", "5", "4", "3"], [], [],
+                         ["A", "A", "A", "J"], [], [], ["2", "2"]])
+
+    def test_jj_bombs_the_landlords_pair(self):
+        import endgame
+        result = []
+        best = endgame.best
+
+        def record(*args, **kwargs):
+            result.append(best(*args, **kwargs))
+            return result[-1]
+
+        with mock.patch("endgame.best", side_effect=record):
+            play = ADVISOR.act(**self.LIVE)
+        self.assertEqual(["K"] * 4, names(play))
+        self.assertIsNotNone(result[0])
+        wins, _, _, _ = result[0]
+        self.assertGreater(wins[tuple(play)], wins[()])
+
+    def test_a_landlord_who_led_a_pair_could_not_have_gone_out(self):
+        import endgame
+        me, history, current, _, unseen, _ = request_split(self.LIVE)
+        splits = [dict(landlord=hand, landlord_down=current[me], landlord_up=endgame.minus(unseen, hand))
+                  for hand in (cards(["2", "7"]), cards(["7", "7"]))]
+        weights = ADVISOR.likelihood(history, me)
+        self.assertEqual([0.0, 1.0], weights(splits, time.monotonic() + 5))
+        self.assertEqual([1.0], weights(splits[:1], time.monotonic() + 5))
+
+    def test_a_teammate_who_followed_could_have_bombed_to_go_out(self):
+        # 上家用 A 接我的 5。原有 4 张 A 时可直接炸完，有 AAA2 时整手三带一接不住单张。
+        history = [cards(["3"]), cards(["5"]), cards(["A"])]
+        splits = [dict(landlord=cards(["3", "4", left]), landlord_down=cards(["6"]),
+                       landlord_up=cards(["A", "A", right]))
+                  for left, right in (("2", "A"), ("A", "2"))]
+        weights = ADVISOR.likelihood(history, "landlord_down", seats=["landlord"])
+        self.assertEqual([0.0, 1.0], weights(splits, time.monotonic() + 5))
+
+    def test_two_jokers_cannot_both_be_used_as_kickers_to_go_out(self):
+        history = [cards(["3"] * 4)]
+        pairs = (["4", "4"], ["SJ", "BJ"])
+        splits = [dict(landlord=cards(hand), landlord_down=cards(["6"]), landlord_up=cards(other))
+                  for hand, other in (pairs, pairs[::-1])]
+        weights = ADVISOR.likelihood(history, "landlord_down")
+        self.assertEqual([0.0, 1.0], weights(splits, time.monotonic() + 5))
+
+
 class LikelihoodFloorTest(unittest.TestCase):
     """似然下限:软证据把一种分法压到最可能分法的 LIKELIHOOD_FLOOR 以下时按下限算,不再往 0 压。
 
