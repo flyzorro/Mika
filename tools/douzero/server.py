@@ -1318,6 +1318,8 @@ class Advisor:
             return None
         plan = []
         for (ha, hb), weight in zip(ways, weights):
+            if weight == 0:
+                continue
             current = {me: tuple(sorted(infoset.player_hand_cards)), short: ha, far: hb}
             plan.append(({s: sorted(list(current[s]) + list(infoset.played_cards[s])) for s in SEATS}, weight))
         self.short_plans[key] = plan
@@ -1524,8 +1526,8 @@ class Advisor:
     def likelihood(self, history, me, auction=None, seats=None):
         """给 endgame.best 的似然回调:按两家对手最近 [LIKELIHOOD_MOVES] 手不是不出的出牌,判断一种分法像不像他们当时会这么出。
 
-        [seats] 可选:只看这几家对手的出牌(默认两家都看)。现场模拟估计牌最少那一家的手牌时只传他,
-        另一家很早以前的出牌和这一手关系不大,却会在 200 多种分法里把权重整个带走。
+        [seats] 可选:只给这几家对手的出牌打分(默认两家都看)。现场模拟估计牌最少那一家的手牌时只传他,
+        另一家很早以前的出牌和这一手关系不大,却会在 200 多种分法里把权重整个带走。两家最近一轮都做走完检查。
 
         每个对手的每一手都把他当时的手牌和局面用 history 倒推出来,用他自己座位的 DouZero 模型给当时所有
         合法出牌打分,取这一手的 log softmax 概率 P(那手 | 当时手牌);同一对手各手 log 概率相加,
@@ -1547,25 +1549,31 @@ class Advisor:
 
         def callback(splits_hands, deadline):
             indices = {}
+            seen_seats = set()
+            finish_checks = []
             for i in range(len(history) - 1, -1, -1):
                 seat = SEATS[i % 3]
-                if history[i] and seat in watched:
+                played = history[i]
+                if seat != me:
+                    latest = seat not in seen_seats
+                    if latest or (not played and seat in watched):
+                        after, _, _, _, last = history_frame(history, i)
+                        if latest or last:
+                            finish_checks.append((seat, after[seat], last, len(played)))
+                    seen_seats.add(seat)
+                if played and seat in watched:
                     moves = indices.setdefault(seat, [])
                     if len(moves) < LIKELIHOOD_MOVES:
                         moves.append(i)
             logs = [0.0] * len(splits_hands)
-            # 硬约束:能一手走完却不出的人不会存在。某家在第 i 手不出,而按这种分法他那一刻的整手牌
-            # (现在剩的 + 第 i 手之后出过的)本身就是一手能管上当时上家出牌的合法牌,这种分法权重记 0。
-            passes = [frame for frame in pass_frames(history, me) if frame[0] in watched]
-            if passes:
+            # 能走完却没走完的分法权重记 0。检查两家最近一轮（出牌或过牌），也保留历史过牌约束。
+            if finish_checks:
                 for k, hands in enumerate(splits_hands):
                     if k % 32 == 0 and time.monotonic() > deadline:
                         raise endgame.Timeout()
-                    for seat, after, last in passes:
+                    for seat, after, last, played_count in finish_checks:
                         whole = tuple(sorted(list(hands[seat]) + after))
-                        if md.get_move_type(list(whole))["type"] == md.TYPE_0_PASS:
-                            continue
-                        if whole in endgame.moves(whole, last):
+                        if len(whole) > played_count and whole in endgame.moves(whole, last):
                             logs[k] = float("-inf")
                             break
             for seat, moves in indices.items():
