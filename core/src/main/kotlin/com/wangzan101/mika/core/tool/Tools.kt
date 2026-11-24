@@ -96,6 +96,8 @@ data class HandBack(
     val url: String? = null,
     /** 用户交回时写的备注(用户原话,可作记忆的出处)。 */
     val note: String? = null,
+    /** 用户交回了操作权，但 Mika 无法在虚拟屏上恢复目标 App。 */
+    val appReturnFailure: String? = null,
 )
 
 

@@ -152,6 +152,7 @@ internal class UserExchange(
         setState(running)
         return ToolExecution(buildJsonObject {
             put("outcome", back.outcome.name)
+            back.appReturnFailure?.let { put("appReturnFailure", it) }
             if (back.outcome == HandBackOutcome.complete) {
                 put("ok", true)
                 put("durationMs", back.durationMs ?: (now() - since))
