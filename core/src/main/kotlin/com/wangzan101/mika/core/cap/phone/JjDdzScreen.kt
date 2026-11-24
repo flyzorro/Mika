@@ -1,6 +1,6 @@
 package com.wangzan101.mika.core.cap.phone
 
-import com.wangzan101.mika.core.uistate.RawFrame
+import com.wangzan101.mika.core.screen.uistate.RawFrame
 import kotlin.math.roundToInt
 
 internal enum class JjColor { Yellow, Green, Gray, Red }

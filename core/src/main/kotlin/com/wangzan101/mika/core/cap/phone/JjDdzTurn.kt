@@ -5,8 +5,8 @@ import com.wangzan101.mika.core.run.waitOrSteer
 import com.wangzan101.mika.core.tool.Args
 import com.wangzan101.mika.core.tool.ToolContext
 import com.wangzan101.mika.core.tool.ToolExecution
-import com.wangzan101.mika.core.uistate.RawFrame
-import com.wangzan101.mika.core.uistate.screen
+import com.wangzan101.mika.core.screen.uistate.RawFrame
+import com.wangzan101.mika.core.screen.uistate.screen
 import kotlinx.coroutines.delay
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject

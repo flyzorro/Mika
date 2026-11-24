@@ -1,11 +1,11 @@
 package com.wangzan101.mika.core.cap.phone
 
 import com.wangzan101.mika.core.cap.phone.DdzPopups.Step
-import com.wangzan101.mika.core.uistate.RawFrame
-import com.wangzan101.mika.core.uistate.ScreenSnapshot
-import com.wangzan101.mika.core.uistate.UiElement
-import com.wangzan101.mika.core.uistate.VisibleTextLine
-import com.wangzan101.mika.core.uistate.toPx
+import com.wangzan101.mika.core.screen.uistate.RawFrame
+import com.wangzan101.mika.core.screen.uistate.ScreenSnapshot
+import com.wangzan101.mika.core.screen.uistate.UiElement
+import com.wangzan101.mika.core.screen.uistate.VisibleTextLine
+import com.wangzan101.mika.core.screen.uistate.toPx
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue

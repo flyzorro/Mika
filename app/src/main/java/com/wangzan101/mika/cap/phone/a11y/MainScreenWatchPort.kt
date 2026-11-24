@@ -10,10 +10,10 @@ import android.util.Log
 import android.view.Display
 import android.view.accessibility.AccessibilityWindowInfo
 import com.wangzan101.mika.capsule.CapsuleController
-import com.wangzan101.mika.core.access.AppAccessPolicy
-import com.wangzan101.mika.core.userscreen.HintHud
-import com.wangzan101.mika.core.userscreen.MainScreenPort
-import com.wangzan101.mika.vision.BitmapImageOps
+import com.wangzan101.mika.core.device.access.AppAccessPolicy
+import com.wangzan101.mika.core.screen.user.HintHud
+import com.wangzan101.mika.core.screen.user.MainScreenPort
+import com.wangzan101.mika.media.BitmapImageOps
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay

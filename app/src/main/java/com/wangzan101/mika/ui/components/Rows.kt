@@ -108,10 +108,13 @@ enum class TileTone {
     }
 }
 
-/** 行左边的图标块:30dp、圆角 9,里面图形 18dp。 */
+/**
+ * 行左边的图标块:30dp、圆角 9,里面图形 18dp。
+ * [brandTile] 非空时是自着色的品牌标:底色用它(两种模式一致),图形保留自身颜色。
+ */
 @Composable
-fun IconTile(icon: ImageVector, tone: TileTone = TileTone.Neutral) {
-    val (bg, fg) = tone.colors(MikaTheme.colors)
+fun IconTile(icon: ImageVector, tone: TileTone = TileTone.Neutral, brandTile: Color? = null) {
+    val (bg, fg) = if (brandTile != null) (brandTile to Color.Unspecified) else tone.colors(MikaTheme.colors)
     Box(Modifier.size(MikaSize.Tile).background(bg, MikaShapes.Tile), contentAlignment = Alignment.Center) {
         Icon(icon, null, Modifier.size(MikaSize.TileIcon), tint = fg)
     }
@@ -142,6 +145,7 @@ fun ListRow(
     first: Boolean = false,
     titleColor: Color = Color.Unspecified,
     tone: TileTone = TileTone.Neutral,
+    brandTile: Color? = null,
     detail: String? = null,
     detailColor: Color = Color.Unspecified,
     onClick: (() -> Unit)? = null,
@@ -158,7 +162,7 @@ fun ListRow(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(14.dp),
     ) {
-        if (icon != null) IconTile(icon, tone)
+        if (icon != null) IconTile(icon, tone, brandTile)
         Column(Modifier.weight(1f).padding(vertical = 11.dp)) {
             Text(title, style = MikaType.Body, color = titleColor.takeOrElse { c.ink })
             if (!subtitle.isNullOrEmpty()) Text(subtitle, Modifier.padding(top = 2.dp), style = MikaType.Caption, color = c.ink3)
@@ -206,11 +210,12 @@ fun RadioRow(
     titleStyle: TextStyle = MikaType.Body,
     /** 标题下面的附加内容(例如能力小标签)。 */
     below: (@Composable () -> Unit)? = null,
+    modifier: Modifier = Modifier,
     trailing: @Composable RowScope.() -> Unit = {},
 ) {
     val c = MikaTheme.colors
     Row(
-        Modifier.fillMaxWidth()
+        modifier.fillMaxWidth()
             .topHairline(first, 50.dp, c.hair)
             .selectable(selected, enabled = enabled, role = Role.RadioButton, onClick = onClick)
             .heightIn(min = 56.dp)

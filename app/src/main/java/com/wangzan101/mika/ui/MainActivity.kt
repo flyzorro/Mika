@@ -1,16 +1,5 @@
 package com.wangzan101.mika.ui
 
-import com.wangzan101.mika.i18n.AppLanguage
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.statusBarsPadding
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.unit.dp
-import androidx.compose.ui.Modifier
-import com.wangzan101.mika.ui.components.KeyboardDismissArea
-import com.wangzan101.mika.ui.components.glassSource
-import com.wangzan101.mika.ui.components.rememberGlassBackdrop
 import android.Manifest
 import android.content.ActivityNotFoundException
 import android.content.Context
@@ -27,71 +16,153 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.consumeWindowInsets
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import com.wangzan101.mika.confirm.ConfirmationNotifier
-import com.wangzan101.mika.memory.MemoryRuntime
-import androidx.compose.runtime.rememberCoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.produceState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.compose.LifecycleStartEffect
 import androidx.lifecycle.lifecycleScope
-import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.Job
-import androidx.compose.ui.platform.LocalContext
-import com.wangzan101.mika.cap.web.WebHandover
-import com.wangzan101.mika.cap.web.WebSites
-import com.wangzan101.mika.browser.UserBrowser
 import com.wangzan101.mika.BuildConfig
-import com.wangzan101.mika.R
 import com.wangzan101.mika.MikaApp
+import com.wangzan101.mika.R
 import com.wangzan101.mika.about.Diagnostics
 import com.wangzan101.mika.about.DiagnosticsCollector
 import com.wangzan101.mika.about.MikaLinks
 import com.wangzan101.mika.about.QrImage
 import com.wangzan101.mika.about.ReleaseInfo
+import com.wangzan101.mika.browser.UserBrowser
+import com.wangzan101.mika.calls.activeVoiceProfile
+import com.wangzan101.mika.cap.phone.PhoneServices
+import com.wangzan101.mika.cap.sandbox.AttachmentFailure
+import com.wangzan101.mika.cap.phone.setup.DeveloperSettings
+import com.wangzan101.mika.cap.phone.setup.PairingNotifier
+import com.wangzan101.mika.cap.web.WebHandover
+import com.wangzan101.mika.cap.web.WebSites
 import com.wangzan101.mika.chat.ConversationStore
 import com.wangzan101.mika.chat.CurrentChat
 import com.wangzan101.mika.chat.SharedDraft
 import com.wangzan101.mika.chat.SharedDraftImporter
-import com.wangzan101.mika.chat.SharedDraftStore
+import com.wangzan101.mika.task.ConfirmationNotifier
+import com.wangzan101.mika.core.learn.knowledge.GuideCatalog
+import com.wangzan101.mika.core.device.shell.BuiltinShellStatus
+import com.wangzan101.mika.i18n.AppLanguage
+import com.wangzan101.mika.memory.MemoryRuntime
 import com.wangzan101.mika.record.RunStore
-import com.wangzan101.mika.replay.FileRouteStore
-import com.wangzan101.mika.task.TaskService
-import com.wangzan101.mika.settings.Prerequisites
+import com.wangzan101.mika.knowledge.FileRouteStore
 import com.wangzan101.mika.settings.FeatureFlags
+import com.wangzan101.mika.settings.Prerequisites
 import com.wangzan101.mika.settings.ProviderStore
 import com.wangzan101.mika.settings.SystemStatusMonitor
-import com.wangzan101.mika.cap.phone.PhoneServices
-import com.wangzan101.mika.cap.phone.setup.DeveloperSettings
-import com.wangzan101.mika.cap.phone.setup.PairingNotifier
-import com.wangzan101.mika.core.shell.BuiltinShellStatus
-import com.wangzan101.mika.core.knowledge.GuideCatalog
+import com.wangzan101.mika.task.TaskService
+import com.wangzan101.mika.ui.components.KeyboardDismissArea
+import com.wangzan101.mika.ui.components.glassSource
+import com.wangzan101.mika.ui.components.rememberGlassBackdrop
 import com.wangzan101.mika.ui.theme.MikaTheme
 import com.wangzan101.mika.ui.theme.animationsOff
 import com.wangzan101.mika.ui.theme.appearanceDark
 import com.wangzan101.mika.ui.theme.systemBarsFor
+import com.wangzan101.mika.voicecall.ui.VoiceCallDeps
+import com.wangzan101.mika.task.screenConversations
+import com.wangzan101.mika.voicecall.ui.VoiceCallBar
+import com.wangzan101.mika.voicecall.ui.VoiceCallHost
+import com.wangzan101.mika.voicecall.ui.VoiceCallScreen
+import com.wangzan101.mika.voicecall.ui.liveCall
+import com.wangzan101.mika.voicecall.ui.rememberVoiceCallController
+import com.wangzan101.mika.voicecall.VoiceCallService
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import com.wangzan101.mika.about.ui.AboutCopy
+import com.wangzan101.mika.about.ui.AboutScreen
+import com.wangzan101.mika.about.ui.LicensesScreen
+import com.wangzan101.mika.about.ui.UpdateMirrorsScreen
+import com.wangzan101.mika.about.ui.UpdateReadyCapsule
+import com.wangzan101.mika.about.ui.UpdateSheet
+import com.wangzan101.mika.browser.ui.BrowserScreen
+import com.wangzan101.mika.browser.ui.WebSitesState
+import com.wangzan101.mika.calls.ui.CallModeScreen
+import com.wangzan101.mika.calls.ui.CallSettingsScreen
+import com.wangzan101.mika.chat.ui.AttachFiles
+import com.wangzan101.mika.chat.ui.ChatScreen
+import com.wangzan101.mika.chat.ui.ChatWithDrawer
+import com.wangzan101.mika.chat.ui.ScreensScreen
+import com.wangzan101.mika.chat.ui.ShareContent
+import com.wangzan101.mika.chat.ui.SourceScreen
+import com.wangzan101.mika.chat.ui.SourceViewModel
+import com.wangzan101.mika.chat.ui.draft
+import com.wangzan101.mika.chat.ui.isShareIntent
+import com.wangzan101.mika.chat.ui.readShare
+import com.wangzan101.mika.chat.ui.shareCanRead
+import com.wangzan101.mika.files.ui.FileLibraryScreen
+import com.wangzan101.mika.memory.ui.MemoryDataScreen
+import com.wangzan101.mika.memory.ui.MemoryViewModel
+import com.wangzan101.mika.memory.ui.Segment
+import com.wangzan101.mika.personal.ui.PersonalAgentScreen
+import com.wangzan101.mika.settings.ui.Fix
+import com.wangzan101.mika.settings.ui.LanguagePromptDialog
+import com.wangzan101.mika.settings.ui.PersonaScreen
+import com.wangzan101.mika.settings.ui.PhoneSetupScreen
+import com.wangzan101.mika.settings.ui.SettingsScreen
+import com.wangzan101.mika.settings.ui.UsageScreen
+import com.wangzan101.mika.settings.ui.models.ImageModelScreen
+import com.wangzan101.mika.settings.ui.models.ModelSetupScreen
+import com.wangzan101.mika.settings.ui.models.ModelsScreen
+import com.wangzan101.mika.settings.ui.models.refresh
+import com.wangzan101.mika.setup.ui.Onboarding
+import com.wangzan101.mika.setup.ui.OnboardingState
+import com.wangzan101.mika.setup.ui.OnboardingStep
+import com.wangzan101.mika.setup.ui.WelcomeScreen
+import com.wangzan101.mika.task.ui.PlansScreen
+import com.wangzan101.mika.task.ui.RunTimelineScreen
+import com.wangzan101.mika.task.ui.RunTimelineViewModel
+import com.wangzan101.mika.task.ui.TaskPlaybackScreen
+import com.wangzan101.mika.task.ui.TaskReportScreen
+import com.wangzan101.mika.task.ui.TaskReportViewModel
+import com.wangzan101.mika.teach.ui.TeachScreen
+import com.wangzan101.mika.voice.ui.RealtimeVoiceScreen
+import com.wangzan101.mika.voice.ui.SpeechModelScreen
+import com.wangzan101.mika.voice.ui.VoiceCatalogScreen
+import com.wangzan101.mika.voice.ui.VoiceModelScreen
+import com.wangzan101.mika.voice.ui.VoiceServicesScreen
 
 class MainActivity : ComponentActivity() {
     private lateinit var monitor: SystemStatusMonitor
     private var requestedConversation by mutableStateOf<String?>(null)
     private var requestedCalls by mutableStateOf(false)
     private var requestedCallHistoryId by mutableStateOf<String?>(null)
+    private var voiceCallSignal by mutableIntStateOf(0)
     private var openTeach by mutableStateOf(false)
     private var requestedSharedDraft by mutableStateOf<SharedDraftRequest?>(null)
     private var shareJob: Job? = null
     private var shareSerial = 0L
     private var shareInCurrent = false
     private var shareHandled = false
+    private var verifiedShareUris: List<String> = emptyList()
 
     private val notificationPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         // 用户选过「不再询问」时系统不再弹窗,只能去设置里打开
@@ -113,11 +184,13 @@ class MainActivity : ComponentActivity() {
         requestedConversation = intent.getStringExtra(EXTRA_OPEN_CONVERSATION)
         requestedCalls = intent.getBooleanExtra(EXTRA_OPEN_CALLS, false)
         requestedCallHistoryId = intent.getStringExtra(EXTRA_CALL_HISTORY_ID)
+        takeVoiceCall(intent)
         takeTeach(intent)
         shareInCurrent = savedInstanceState?.getBoolean(STATE_SHARE_IN_CURRENT, false) ?: false
         shareHandled = savedInstanceState?.getBoolean(STATE_SHARE_HANDLED, false) ?: false
+        verifiedShareUris = savedInstanceState?.getStringArrayList(STATE_VERIFIED_SHARE_URIS).orEmpty()
         // 已处理完的分享在旋转/重建时不重复触发;真正的冷启动分享或尚未完成的后台分享继续收下。
-        if (!shareHandled && (savedInstanceState == null || intent.action == Intent.ACTION_SEND)) {
+        if (!shareHandled && (savedInstanceState == null || isShareIntent(intent))) {
             receiveShare(intent, inCurrentConversation = shareInCurrent)
         }
         monitor = SystemStatusMonitor(this, PhoneServices.of(this).shellControl)
@@ -132,6 +205,7 @@ class MainActivity : ComponentActivity() {
                     MikaRoot(
                         store, monitor, ::perform, requestedConversation, { requestedConversation = null },
                         requestedCalls, requestedCallHistoryId, { requestedCalls = false; requestedCallHistoryId = null },
+                        voiceCallSignal,
                         requestedSharedDraft,
                         onSharedDraftOpened = { accepted, draft ->
                             requestedSharedDraft = null
@@ -139,7 +213,7 @@ class MainActivity : ComponentActivity() {
                             // 处理完后换掉 intent,避免后续旋转屏幕再次把这次分享当成新分享或重复弹失败提示。
                             setIntent(Intent(this@MainActivity, MainActivity::class.java))
                             if (!accepted) {
-                                (application as MikaApp).sharedDrafts.discard(draft.image)
+                                (application as MikaApp).sharedDrafts.discard(draft.attachments)
                                 Toast.makeText(this@MainActivity, R.string.share_draft_failed, Toast.LENGTH_SHORT).show()
                             }
                         },
@@ -153,7 +227,11 @@ class MainActivity : ComponentActivity() {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-        setIntent(intent)
+        if (Build.VERSION.SDK_INT >= 35) {
+            setIntent(intent, runCatching { currentCaller }.getOrNull())
+        } else {
+            setIntent(intent)
+        }
         val app = application as MikaApp
         shareJob?.cancel()
         requestedConversation = intent.getStringExtra(EXTRA_OPEN_CONVERSATION)
@@ -162,12 +240,14 @@ class MainActivity : ComponentActivity() {
         if (requestedConversation != null || intent.getBooleanExtra(EXTRA_OPEN_TEACH, false)) {
             app.chat.cancelPendingSharedDraft()
         }
+        takeVoiceCall(intent)
         takeTeach(intent)
-        requestedSharedDraft?.let { app.sharedDrafts.discard(it.draft.image) }
+        requestedSharedDraft?.let { app.sharedDrafts.discard(it.draft.attachments) }
         requestedSharedDraft = null
         // 界面已在后台存活时收到分享:放入当前打开的会话,而不是新建会话。
         shareInCurrent = true
         shareHandled = false
+        verifiedShareUris = emptyList()
         receiveShare(intent, inCurrentConversation = true)
     }
 
@@ -175,6 +255,9 @@ class MainActivity : ComponentActivity() {
         super.onSaveInstanceState(outState)
         outState.putBoolean(STATE_SHARE_IN_CURRENT, shareInCurrent)
         outState.putBoolean(STATE_SHARE_HANDLED, shareHandled)
+        if (!shareHandled && verifiedShareUris.isNotEmpty()) {
+            outState.putStringArrayList(STATE_VERIFIED_SHARE_URIS, ArrayList(verifiedShareUris))
+        }
     }
 
     private fun rejectShare() {
@@ -184,42 +267,27 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun receiveShare(intent: Intent, inCurrentConversation: Boolean) {
-        if (intent.action != Intent.ACTION_SEND) return
+        val content = readShare(intent) ?: return
         shareJob?.cancel()
-        val type = intent.type.orEmpty()
-        val text = intent.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString().orEmpty()
-        if (text.length > SharedDraftStore.MAX_TEXT_CHARS) {
-            rejectShare()
-            return
-        }
-        when {
-            type == "text/plain" -> {
-                if (text.isBlank()) {
-                    rejectShare()
-                    return
+        when (content) {
+            ShareContent.Rejected -> rejectShare()
+            is ShareContent.Text -> requestedSharedDraft = SharedDraftRequest(SharedDraft("", content.text), ++shareSerial, inCurrentConversation)
+            is ShareContent.Files -> {
+                val uriStrings = content.uris.map { it.toString() }
+                if (verifiedShareUris != uriStrings && content.uris.any { !shareCanRead(intent, it, content.clipUris) }) {
+                    return rejectShare()
                 }
-                requestedSharedDraft = SharedDraftRequest(SharedDraft("", text), ++shareSerial, inCurrentConversation)
-            }
-            type.startsWith("image/") -> {
-                val uri = if (Build.VERSION.SDK_INT >= 33) intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)
-                    else @Suppress("DEPRECATION") intent.getParcelableExtra<Uri>(Intent.EXTRA_STREAM)
-                if (uri == null || (intent.clipData?.itemCount ?: 0) > 1) {
-                    rejectShare()
-                    return
-                }
+                verifiedShareUris = uriStrings
                 shareJob = lifecycleScope.launch {
-                    val prepared = try {
-                        SharedDraftImporter(this@MainActivity, (application as MikaApp).sharedDrafts).image(text, uri, type)
-                    } catch (e: CancellationException) {
-                        throw e
-                    } catch (e: Exception) {
-                        null
-                    }
+                    val prepared = SharedDraftImporter(this@MainActivity, (application as MikaApp).sharedDrafts)
+                        .attachments(content.text, content.uris, content.type)
                     if (prepared == null) rejectShare()
-                    else requestedSharedDraft = SharedDraftRequest(prepared, ++shareSerial, inCurrentConversation)
+                    else requestedSharedDraft = SharedDraftRequest(
+                        prepared.draft, ++shareSerial, inCurrentConversation,
+                        rejected = prepared.failures, overLimit = content.overLimit,
+                    )
                 }
             }
-            else -> rejectShare()
         }
     }
 
@@ -228,7 +296,7 @@ class MainActivity : ComponentActivity() {
     override fun onStart() {
         super.onStart()
         // 用户先前点了「完全退出」:打开 Mika 就回来,胶囊和退出时略过的启动工作在这里补上
-        com.wangzan101.mika.quit.MikaQuit.resume(this)
+        com.wangzan101.mika.MikaQuit.resume(this)
         monitor.start()
         // 每次打开都悄悄查一次新版本(两分钟内连着打开的只查一次),失败不吭声
         val app = application as MikaApp
@@ -259,7 +327,7 @@ class MainActivity : ComponentActivity() {
     override fun onDestroy() {
         shareJob?.cancel()
         // 还没绑到对话的私有副本随这次接收结束清掉;已接受的草稿由 CurrentChat 恢复,不在这里删除。
-        requestedSharedDraft?.let { (application as MikaApp).sharedDrafts.discard(it.draft.image) }
+        requestedSharedDraft?.let { (application as MikaApp).sharedDrafts.discard(it.draft.attachments) }
         requestedSharedDraft = null
         if (isFinishing) {
             (application as MikaApp).chat.cancelPendingSharedDraft()
@@ -342,14 +410,23 @@ class MainActivity : ComponentActivity() {
         intent.removeExtra(EXTRA_OPEN_TEACH)
     }
 
+    /** 胶囊菜单「语音聊天」直开:信号 +1 交给界面层;读一次就摘掉,旋转不重复触发。 */
+    private fun takeVoiceCall(intent: Intent) {
+        if (!intent.getBooleanExtra(EXTRA_OPEN_VOICE_CALL, false)) return
+        voiceCallSignal++
+        intent.removeExtra(EXTRA_OPEN_VOICE_CALL)
+    }
+
     companion object {
         const val EXTRA_OPEN_CONVERSATION = "open_conversation"
         const val EXTRA_OPEN_CALLS = "open_calls"
         const val EXTRA_CALL_HISTORY_ID = "call_history_id"
         const val EXTRA_OPEN_TEACH = "open_teach"
         const val EXTRA_TEACH_GOAL = "teach_goal"
+        const val EXTRA_OPEN_VOICE_CALL = "open_voice_call"
         private const val STATE_SHARE_IN_CURRENT = "share_in_current"
         private const val STATE_SHARE_HANDLED = "share_handled"
+        private const val STATE_VERIFIED_SHARE_URIS = "verified_share_uris"
         private const val TAG = "MikaMain"
 
         /** 主界面(聊天)此刻是否在前台可见。任务完成时据此决定要不要弹完成通知(#731)。 */
@@ -369,7 +446,13 @@ internal fun openInBrowser(context: Context, url: String) {
 /** 依次试 [candidates],第一个 [start] 成功的就停;都不行返回 false。系统设置页各家不一定都有,靠这个退回通用页。 */
 internal fun <T> firstThatStarts(candidates: List<T>, start: (T) -> Boolean): Boolean = candidates.any(start)
 
-private data class SharedDraftRequest(val draft: SharedDraft, val serial: Long, val inCurrentConversation: Boolean = false)
+private data class SharedDraftRequest(
+    val draft: SharedDraft,
+    val serial: Long,
+    val inCurrentConversation: Boolean = false,
+    val rejected: List<AttachmentFailure> = emptyList(),
+    val overLimit: Int = 0,
+)
 
 /**
  * 页面切换:对话页是根,侧栏和设置等入口把页面压进 [NavStack],返回键和页面上的返回按钮都走 [NavStack.back]。
@@ -385,6 +468,7 @@ private fun MikaRoot(
     requestedCalls: Boolean,
     requestedCallHistoryId: String?,
     onCallsOpened: () -> Unit,
+    voiceCallSignal: Int,
     sharedDraft: SharedDraftRequest?,
     onSharedDraftOpened: (Boolean, SharedDraft) -> Unit,
     openTeach: Boolean,
@@ -416,16 +500,62 @@ private fun MikaRoot(
         }
     }
     var runId by rememberSaveable { mutableStateOf<String?>(null) }
+    // 「运行过程」是从通话页点开的:返回时调它把通话页亮回来;从别处打开时为 null
     var reportRunId by rememberSaveable { mutableStateOf<String?>(null) }
     var playbackScreenshotId by rememberSaveable { mutableStateOf<Int?>(null) }
     var sourceRunId by rememberSaveable { mutableStateOf<String?>(null) }
     var sourceLegacyText by rememberSaveable { mutableStateOf<String?>(null) }
     val status by monitor.status.collectAsState()
     val roles by store.roles.collectAsState()
-    val hasMain = roles.main != null
+    val hasMain = roles.hasMain
     val check = Prerequisites.check(status, hasMain)
     val app = context.applicationContext as MikaApp
     val personasOn = FeatureFlags.get(context).persona()
+    // 通话入口:输入栏常驻听筒按钮;信号一涨就亮出通话页(直开 extra 或按钮都行)
+    var localVoiceCall by remember { mutableIntStateOf(0) }
+    val voiceCallScope = rememberCoroutineScope()
+    val voiceCallResumed = remember { MutableStateFlow(true) }
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { voiceCallResumed.value = true }
+    LifecycleEventEffect(Lifecycle.Event.ON_PAUSE) { voiceCallResumed.value = false }
+    val voiceCallDeps = remember(app) {
+        VoiceCallDeps(
+            context = context,
+            scope = voiceCallScope,
+            appScope = app.appScope,
+            profile = { app.calls.activeVoiceProfile() },
+            credentials = { app.calls.voiceProfiles.credentials(it) },
+            foregroundResumed = voiceCallResumed,
+            desks = app.desks,
+            conversationId = { app.chat.ui.value.conversationId },
+            newConversation = { app.chat.claimConversation() },
+            deskParent = { ConversationStore.shared(context).deskParent(it) },
+            turns = { ConversationStore.shared(context).turns(it) },
+            // 通话里边说边存,从应用级作用域调过来:文件读写放到 IO 上
+            appendTurn = { id, turn -> withContext(Dispatchers.IO) { ConversationStore.shared(context).append(id, turn) } },
+            recordCall = { id, call -> withContext(Dispatchers.IO) { ConversationStore.shared(context).recordCall(id, call) } },
+            attachService = { VoiceCallService.attach(context, it) },
+            persona = { com.wangzan101.mika.frontdesk.deskPersona(app) },
+            openConversation = { id ->
+                app.chat.openConversation(id)
+                nav.reset()
+            },
+            // 运行过程压在通话页上面,返回就回到通话页
+            openRun = { id ->
+                runId = id
+                nav.push(Route.Run)
+            },
+            calls = { ConversationStore.shared(context).observeCalls(it) },
+            // 通话记录里点一条:到聊天里那一通开头(通话接着通,顶上有「通话中」那条)
+            openCallRecord = { id, callId ->
+                app.chat.openConversationAt(id, com.wangzan101.mika.chat.ui.ChatTarget.Call(callId))
+                nav.reset()
+            },
+            liveRun = { id -> app.taskState.runs.value.firstOrNull { it.conversationId == id }?.runId?.value },
+            screens = app.taskState.screenConversations(app.appScope),
+            frames = { id -> app.taskState.runs.value.firstOrNull { it.conversationId == id }?.frames },
+        )
+    }
+    val voiceCall = rememberVoiceCallController(voiceCallDeps)
     // 查到的新版本:侧栏、设置首页、关于页的红点都看它
     val updateState by app.updates.state.collectAsState()
     val autoUpdate by app.automaticUpdates.enabled.collectAsState()
@@ -453,7 +583,12 @@ private fun MikaRoot(
     LaunchedEffect(sharedDraft) {
         val draft = sharedDraft?.draft
         if (draft != null) {
-            val accepted = app.chat.openSharedDraft(draft, inCurrentConversation = sharedDraft.inCurrentConversation)
+            val accepted = app.chat.openSharedDraft(
+                draft,
+                inCurrentConversation = sharedDraft.inCurrentConversation,
+                rejected = sharedDraft.rejected,
+                overLimit = sharedDraft.overLimit,
+            )
             if (accepted) nav.reset()
             onSharedDraftOpened(accepted, draft)
         }
@@ -501,7 +636,7 @@ private fun MikaRoot(
     // 第一次打开:欢迎 → 配置模型 → 手机操作;配过模型的跳过前两步,手机操作已就绪或看过引导的跳过最后一步
     val onboardingState = remember { OnboardingState(context) }
     fun onboardingInputs() = Onboarding.Inputs(
-        hasMainModel = store.roles.value.main != null,
+        hasMainModel = store.roles.value.hasMain,
         modelSetupDone = onboardingState.modelSetupDone(),
         phoneNeeded = status.builtinShell != BuiltinShellStatus.Running && status.sdkInt >= Prerequisites.MIN_SDK,
         phoneGuideSeen = phoneSetup.guideSeen(),
@@ -521,13 +656,25 @@ private fun MikaRoot(
             Onboarding.start(onboardingInputs())?.let(::goOnboarding)
         }
     }
-    val phoneSetupNeeded by phoneSetup.needed.collectAsState()
+    val phoneSetupNeed by phoneSetup.needed.collectAsState()
     // 页面有自己的返回处理时(设置页里的子页、侧栏)由它们先接;这里只管退回上一页
     BackHandler(enabled = nav.canGoBack) { nav.back() }
     val back: () -> Unit = { nav.back() }
     // 聊天页离开组合树时保留列表位置和输入内容，返回设置页等子页面后原样恢复。
     val screenStates = rememberSaveableStateHolder()
-    when (nav.current) {
+    val sidebarPage = nav.current in setOf(Route.Chat, Route.Personal, Route.Plans, Route.Memory, Route.Browser)
+    // 通话页不在最上面时,顶上一条「通话中 · 回到通话」;下面的页面从它下面开始
+    val liveCall = voiceCall.liveCall()
+    val callBar = liveCall != null && nav.current != Route.VoiceCall
+    Column(Modifier.fillMaxSize()) {
+    if (callBar && liveCall != null) VoiceCallBar(liveCall) { nav.bringToTop(Route.VoiceCall) }
+    Box(Modifier.weight(1f).fillMaxWidth().then(if (callBar) Modifier.consumeWindowInsets(WindowInsets.statusBars) else Modifier)) {
+    AdaptiveWindow(navigation = sidebarPage) {
+        val page: @Composable (() -> Unit) -> Unit = { openDrawer ->
+    // 全局换页套滑动推入过渡;页内一律用 route 不用 nav.current:过渡动画期间旧页还在渲染,读实时状态会瞬间变脸
+    NavSlide(nav.stack, depth = { it.size }) { stack ->
+    val route = stack.last()
+    when (route) {
         Route.PhoneSetup -> PhoneSetupScreen(status, setupRepair, onFix, onboarding = onboarding == OnboardingStep.Phone) {
             phoneSetup.markGuideSeen()
             if (onboarding == OnboardingStep.Phone) goOnboarding(null) else nav.back()
@@ -546,34 +693,22 @@ private fun MikaRoot(
                 },
             )
         }
-        Route.Chat, Route.Personal -> screenStates.SaveableStateProvider(nav.current.name) {
+        Route.Chat, Route.Personal -> screenStates.SaveableStateProvider(route.name) {
             // 对话页重新看得见(回到前台、从别的页面回来):补上别处存进来的轮次,接上别处开始的任务
             LifecycleStartEffect(Unit) {
                 app.chat.refresh()
                 onStopOrDispose {}
             }
-            ChatWithDrawer(
-                vm = app.chat,
-                check = check,
-                reduceMotion = MikaTheme.reduceMotion,
-                conversations = { ConversationStore.shared(context).list(includeArchived = true) },
-                conversationChanges = ConversationStore.shared(context).changes,
-                conversationTitle = { ConversationStore.shared(context).title(it) },
-                search = ConversationStore.shared(context).search,
-                onSettings = { nav.pushFromDrawer(Route.Settings) },
-                onScreens = { nav.pushFromDrawer(Route.Screens) },
-                onAbout = { nav.pushFromDrawer(Route.About) },
-                updateAvailable = AboutCopy.drawerDot(updateState),
-                reopen = nav.reopenDrawer,
-                onReopened = nav::drawerReopened,
-                onRegularChat = nav::reset,
-                resetKey = nav.resetSerial,
-            ) { openDrawer ->
-                Box(Modifier.fillMaxSize()) {
+            // 聊天页看得见时,前台的汇报说在对话里;离开或退到后台就交回兜底(通知)
+            LifecycleStartEffect(route) {
+                app.chat.pageShown(route == Route.Chat)
+                onStopOrDispose { app.chat.pageShown(false) }
+            }
+            Box(Modifier.fillMaxSize()) {
                     val readyRelease = readyUpdate?.takeIf { autoUpdate && it.apkUrl == updateState.update?.apkUrl }
                     val updateBackdrop = if (readyRelease != null) rememberGlassBackdrop() else null
                     Box(Modifier.fillMaxSize().glassSource(updateBackdrop)) {
-                        if (nav.current == Route.Personal) PersonalAgentScreen(
+                        if (route == Route.Personal) PersonalAgentScreen(
                             runtime = app.personal,
                             voice = app.voice,
                             onOpenDrawer = openDrawer,
@@ -587,31 +722,34 @@ private fun MikaRoot(
                             frames = app.taskState.frames,
                             webOpen = app.tasks.webScreenOpen,
                             pipInput = app.taskState.pipInput,
+                            screens = remember(app) { app.taskState.screenConversations(app.appScope) },
                             pipSoundOn = app.taskState.pipSoundOn,
                             pipOperateEnabled = FeatureFlags.get(context).pipOperate(),
                             reduceMotion = MikaTheme.reduceMotion,
                             onOpenDrawer = openDrawer,
                             openSettings = { nav.push(Route.Settings) },
+                            onOpenBrowser = { nav.push(Route.Browser) },
                             openRun = { runId = it; nav.push(Route.Run) },
-                            openReport = { reportRunId = it; nav.push(Route.Report) },
-                            openPlayback = { reportRunId = it; playbackScreenshotId = null; nav.push(Route.Playback) },
-                            phoneSetupNeeded = phoneSetupNeeded && status.builtinShell != BuiltinShellStatus.Running,
+                            phoneSetupNeed = (if (status.builtinShell != BuiltinShellStatus.Running) phoneSetupNeed else null),
                             openPhoneSetup = { onFix(Fix.OpenPhoneSetup) },
-                            loadSource = { id ->
-                                withContext(Dispatchers.IO) { evidenceSource(RunStore(context).events(id)) { ConfirmationNotifier.appLabel(context, it) } }
-                            },
-                            openSource = { id, legacy ->
-                                sourceRunId = id
-                                sourceLegacyText = legacy
-                                nav.push(Route.Source)
-                            },
                             voice = app.voice,
                             openSpeechModel = { nav.push(Route.SpeechModel) },
-                            onOpenPersonas = if (personasOn) ({ nav.push(Route.Persona) }) else ({}),
                             onOpenTeach = { hint ->
                                 app.teach.prefill(hint)
                                 nav.push(Route.Teach)
                             },
+                            // 入口常驻:没配凭据/协议不兼容时进的是门禁页(说明 + 去配置),不静默消失
+                            onVoiceCall = { localVoiceCall++ },
+                            openDeskRun = { id, phase ->
+                                voiceCallScope.launch {
+                                    val live = app.taskState.runs.value.firstOrNull { it.conversationId == id }?.runId?.value
+                                    val run = withContext(Dispatchers.IO) {
+                                        com.wangzan101.mika.voicecall.VoiceCallTaskLink.runFor(phase, live) { ConversationStore.shared(context).turns(id) }
+                                    }
+                                    if (run == null) app.chat.openConversation(id) else { runId = run; nav.push(Route.Run) }
+                                }
+                            },
+                            openCallSettings = { nav.push(Route.CallMode) },
                         )
                     }
                     var installUpdate by remember { mutableStateOf<ReleaseInfo?>(null) }
@@ -633,7 +771,6 @@ private fun MikaRoot(
                             onOpenUrl = { openInBrowser(context, it) }, onDismiss = { installUpdate = null })
                     }
                 }
-            }
         }
         Route.Settings -> {
             val autonomous by app.approvals.autonomous.collectAsState()
@@ -646,14 +783,21 @@ private fun MikaRoot(
                 onOpenPersonas = if (personasOn) ({ nav.push(Route.Persona) }) else null,
                 autonomous = autonomous, onAutonomous = app.approvalControl::setAutonomous,
                 updateVersion = updateState.update?.version, onOpenAbout = { nav.push(Route.About) },
+                onOpenVoiceCatalog = { nav.push(Route.VoiceServices) },
                 mcpServers = app.mcpServers,
                 openPhoneOps = openPhoneOps, onPhoneOpsOpened = { openPhoneOps = false })
         }
-        Route.Models -> ModelsScreen(store, onBack = back, onOpenSpeech = { nav.push(Route.SpeechModel) }, onOpenVoice = { nav.push(Route.VoiceModel) }, onOpenUsage = { nav.push(Route.Usage) })
-        Route.VoiceModel -> VoiceModelScreen(store, onBack = back)
+        Route.Models -> ModelsScreen(store, onBack = back, onOpenSpeech = { nav.push(Route.SpeechModel) }, onOpenVoice = { nav.push(Route.VoiceModel) }, onOpenImage = { nav.push(Route.ImageModel) }, onOpenUsage = { nav.push(Route.Usage) }, onOpenVoiceCatalog = { nav.push(Route.VoiceServices) }, onOpenCallMode = { nav.push(Route.CallMode) })
+        Route.VoiceModel -> VoiceModelScreen(store, onBack = back, onOpenServices = { nav.push(Route.VoiceServices) })
+        Route.VoiceCall -> VoiceCallScreen(voiceCall, onGone = { nav.leave(Route.VoiceCall) })
+        Route.CallMode -> CallModeScreen(onBack = back, onOpenStt = { nav.push(Route.SpeechModel) }, onOpenTts = { nav.push(Route.VoiceModel) }, onOpenRealtime = { nav.push(Route.RealtimeVoice) })
+        Route.RealtimeVoice -> RealtimeVoiceScreen(store, onBack = back, onOpenCalls = { nav.push(Route.Calls) }, onOpenServices = { nav.push(Route.VoiceServices) })
+        Route.VoiceServices -> VoiceServicesScreen(store, onBack = back, onOpenCustom = { nav.push(Route.VoiceCatalog) })
+        Route.VoiceCatalog -> VoiceCatalogScreen(com.wangzan101.mika.voice.model.VoiceModelEnvironment.get(context), onBack = back)
+        Route.ImageModel -> ImageModelScreen(store, onBack = back)
         Route.Persona -> if (personasOn) PersonaScreen(app.personas, onBack = back) else LaunchedEffect(Unit) { nav.back() }
-        Route.Usage -> UsageScreen(app.usage, store, onBack = back, onOpenUrl = { openInBrowser(context, it) })
-        Route.SpeechModel -> SpeechModelScreen(store, onBack = back)
+        Route.Usage -> UsageScreen(app.usage, store, onBack = back)
+        Route.SpeechModel -> SpeechModelScreen(store, onBack = back, onOpenServices = { nav.push(Route.VoiceServices) })
         Route.About -> AboutScreen(
             versionName = BuildConfig.VERSION_NAME, build = BuildConfig.GIT_HASH, beta = BuildConfig.BETA,
             update = updateState,
@@ -755,7 +899,7 @@ private fun MikaRoot(
             val id = reportRunId
             val vm = remember(id) { id?.let { TaskReportViewModel(RunStore(context), it) } }
             if (vm == null) LaunchedEffect(Unit) { nav.back() }
-            else if (nav.current == Route.Report) TaskReportScreen(vm, back,
+            else if (route == Route.Report) TaskReportScreen(vm, back,
                 onReplay = { playbackScreenshotId = it; nav.push(Route.Playback) },
                 onTimeline = { runId = id; nav.push(Route.Run) })
             else TaskPlaybackScreen(vm, playbackScreenshotId, back)
@@ -773,16 +917,71 @@ private fun MikaRoot(
         Route.Teach -> TeachScreen(
             app.teach,
             onBack = { nav.back() },
-            onOpenDrafts = {
-                memoryRuntime.requestOpen(com.wangzan101.mika.memory.MemoryOpen(app.teach.ui.value.session?.draftId))
-                nav.push(Route.Memory)
-            },
         )
         Route.Screens -> ScreensScreen(app.taskState, onBack = back, onOpenConversation = {
             app.chat.openConversation(it)
             nav.reset()
         })
-        Route.Calls -> CallSettingsScreen(app.calls, onBack = back, standalone = true, initialHistoryCallId = focusedCallHistoryId)
+        Route.Calls -> CallSettingsScreen(app.calls, onBack = back, standalone = true, initialHistoryCallId = focusedCallHistoryId, onOpenVoiceCatalog = { nav.push(Route.VoiceServices) })
+    }
+    }
+        }
+        val permanent = LocalAdaptiveLayout.current.hasNavigation
+        if (nav.current == Route.Chat || nav.current == Route.Personal || (permanent && sidebarPage)) {
+            fun openFromSidebar(route: Route) {
+                if (permanent && nav.current != Route.Chat && nav.current != Route.Personal) nav.reset()
+                nav.pushFromDrawer(route)
+            }
+            ChatWithDrawer(
+                vm = app.chat,
+                check = check,
+                reduceMotion = MikaTheme.reduceMotion,
+                conversations = { ConversationStore.shared(context).list(includeArchived = true) },
+                conversationChanges = ConversationStore.shared(context).changes,
+                conversationTitle = { ConversationStore.shared(context).title(it) },
+                search = ConversationStore.shared(context).search,
+                onSettings = { openFromSidebar(Route.Settings) },
+                onScreens = { openFromSidebar(Route.Screens) },
+                onAbout = { openFromSidebar(Route.About) },
+                updateAvailable = AboutCopy.drawerDot(updateState),
+                reopen = nav.reopenDrawer,
+                onReopened = nav::drawerReopened,
+                onRegularChat = nav::reset,
+                resetKey = nav.resetSerial,
+                onPersonal = { nav.show(Route.Personal) },
+                onPlans = { openFromSidebar(Route.Plans) },
+                onMemory = { openFromSidebar(Route.Memory) },
+                onBrowser = { openFromSidebar(Route.Browser) },
+                frames = if (nav.current == Route.Chat) app.taskState.frames else null,
+                operationRun = app.taskState::run,
+                chatActive = nav.current == Route.Chat || nav.current == Route.Personal,
+                content = page,
+            )
+        } else page({})
+    }
+    }
+    }
+
+    // 通话的宿主在导航外面:通话页是页面栈里的一页,离开它通话接着通(服务保活),随时能回去
+    VoiceCallHost(voiceCall, voiceCallSignal + localVoiceCall, showPage = { nav.bringToTop(Route.VoiceCall) }, hidePage = { nav.leave(Route.VoiceCall) }, onGoConfigure = { gate ->
+        // 标准通话缺的是听和说的模型,去「通话方式」;实时通话缺凭据,去电话页的语音设置
+        nav.push(if (gate == com.wangzan101.mika.voicecall.ui.VoiceCallGateStage.NeedListenSpeak) Route.CallMode else Route.Calls)
+    })
+
+    var showLanguagePrompt by rememberSaveable { mutableStateOf(!AppLanguage.hasPrompted(context)) }
+    if (showLanguagePrompt && onboarding == null) {
+        LanguagePromptDialog(
+            initial = AppLanguage.current(context),
+            onConfirm = { lang ->
+                showLanguagePrompt = false
+                AppLanguage.markPrompted(context)
+                AppLanguage.set(context, lang)
+            },
+            onDismiss = {
+                showLanguagePrompt = false
+                AppLanguage.markPrompted(context)
+            },
+        )
     }
 }
 

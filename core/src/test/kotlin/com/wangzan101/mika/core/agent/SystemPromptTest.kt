@@ -6,9 +6,9 @@ import com.wangzan101.mika.core.model.StopReason
 import com.wangzan101.mika.core.cap.sandbox.FakeSandbox
 import com.wangzan101.mika.core.cap.sandbox.SandboxStatus
 import com.wangzan101.mika.core.tool.FakeScreen
-import com.wangzan101.mika.core.access.AppAccessPolicy
-import com.wangzan101.mika.core.access.AppAccessState
-import com.wangzan101.mika.core.uistate.AppAccessScreenPort
+import com.wangzan101.mika.core.device.access.AppAccessPolicy
+import com.wangzan101.mika.core.device.access.AppAccessState
+import com.wangzan101.mika.core.screen.uistate.AppAccessScreenPort
 import com.wangzan101.mika.core.tool.ToolDispatcher
 import com.wangzan101.mika.core.cap.web.FakeWebPort
 import kotlinx.coroutines.runBlocking
@@ -53,7 +53,7 @@ class SystemPromptTest {
     // 结局的约定只说一次:不带调用的回复就是最终回答;做不成、要问、要用户亲手做各有工具;不再写依据行
     @Test fun endingContractStatedOnce() {
         val p = flat()
-        assertTrue("a reply without any tool call is your final answer to the user and ends the task" in p)
+        assertTrue("a reply without any tool call is your final answer and ends the task" in p)
         assertTrue("call end_not_done" in p && "call ask_user" in p && "calling hand_to_user" in p)
         assertTrue("Do not write a separate evidence or sources line" in p)
         assertFalse("依据" in p)

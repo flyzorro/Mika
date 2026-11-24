@@ -1,6 +1,6 @@
 package com.wangzan101.mika.core.cap.phone
 
-import com.wangzan101.mika.core.uistate.RawFrame
+import com.wangzan101.mika.core.screen.uistate.RawFrame
 import kotlin.math.roundToInt
 
 /** 牌桌上除了自己以外的两家。 */

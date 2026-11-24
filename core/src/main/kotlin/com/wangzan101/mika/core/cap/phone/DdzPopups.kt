@@ -1,10 +1,10 @@
 package com.wangzan101.mika.core.cap.phone
 
-import com.wangzan101.mika.core.uistate.RawFrame
-import com.wangzan101.mika.core.uistate.ScreenSnapshot
-import com.wangzan101.mika.core.uistate.UiElement
-import com.wangzan101.mika.core.uistate.VisibleTextLine
-import com.wangzan101.mika.core.uistate.toPx
+import com.wangzan101.mika.core.screen.uistate.RawFrame
+import com.wangzan101.mika.core.screen.uistate.ScreenSnapshot
+import com.wangzan101.mika.core.screen.uistate.UiElement
+import com.wangzan101.mika.core.screen.uistate.VisibleTextLine
+import com.wangzan101.mika.core.screen.uistate.toPx
 
 /**
  * 斗地主经典版里工具自己收拾的弹窗:救济金(能直接领就直接领,只剩看视频的就看)、激励视频广告、领取结果。

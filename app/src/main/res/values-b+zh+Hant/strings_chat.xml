@@ -231,7 +231,7 @@
     <string name="chat_branch_retry">從這裡重新問</string>
     <string name="chat_branch_attachments_readd">附件需要重新加入</string>
     <string name="chat_attach_unavailable">沒能加入：%1$s。請確認檔案存在且未超過大小限制。</string>
-    <string name="chat_attach_too_large">%1$s：超過 200 MiB 限制</string>
+    <string name="chat_attach_too_large">%1$s：超過 %2$s 限制</string>
     <string name="chat_attach_low_device_space">%1$s：手機儲存空間不足，請清理空間後重試</string>
     <string name="chat_attach_workspace_limit">%1$s：工作區儲存已達上限，請清理工作區檔案後重試</string>
     <string name="chat_attach_io_error">%1$s：無法讀取或複製，請確認檔案可用後重試</string>
@@ -298,4 +298,16 @@
     <string name="chat_audio">Audio</string>
     <string name="chat_audio_play">Play</string>
     <string name="chat_audio_stop">Stop</string>
+    <string name="plus_sub_album">從相冊選,可多選</string>
+    <string name="plus_sub_files">文件、PDF、壓縮包</string>
+    <string name="plus_sub_device">瀏覽手機裡的資料夾</string>
+    <string name="plus_clipboard">剪貼簿</string>
+    <string name="plus_sub_clipboard">貼上剛剛複製的內容</string>
+    <string name="plus_sub_teach">做一遍,讓它學會</string>
+    <string name="plus_sub_skills">選一個技能用在這一輪</string>
+    <string name="plus_sub_tasks">把常用的說法填進輸入框</string>
+    <string name="plus_sub_browser">內建瀏覽器</string>
+    <string name="plus_skills_empty">還沒有個人技能。Mika 從做成的任務裡學會的技能會出現在這裡。</string>
+    <string name="plus_clipboard_empty">剪貼簿裡沒有可貼上的文字</string>
+    <string name="plus_skill_directive">用「%1$s」技能：</string>
 </resources>

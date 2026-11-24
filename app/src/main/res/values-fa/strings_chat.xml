@@ -273,7 +273,7 @@
     <string name="recommendations_unreadable">کارهای پیشنهادی ذخیره‌شده خوانده نشدند، بنابراین فعلاً قابل تغییر نیستند.</string>
     <string name="share_draft_replace_body">این محتوای به‌اشتراک‌گذاشته‌شده جایگزین پیش‌نویس فعلی شما می‌شود.</string>
     <string name="chat_attach_unavailable">افزودن ممکن نشد: %1$s. بررسی کنید فایل‌ها در دسترس و در محدودهٔ حجم باشند.</string>
-    <string name="chat_attach_too_large">%1$s: از محدودیت 200 MiB بیشتر است</string>
+    <string name="chat_attach_too_large">%1$s: از محدودیت %2$s بیشتر است</string>
     <string name="chat_attach_low_device_space">%1$s: فضای ذخیره‌سازی گوشی کافی نیست؛ فضا را آزاد کنید و دوباره تلاش کنید</string>
     <string name="chat_attach_workspace_limit">%1$s: فضای ذخیره‌سازی محیط کار به سقف رسیده است؛ فایل‌های محیط کار را پاک کنید و دوباره تلاش کنید</string>
     <string name="chat_attach_io_error">%1$s: خواندن یا کپی کردن ممکن نیست؛ بررسی کنید فایل در دسترس باشد و دوباره تلاش کنید</string>
@@ -312,4 +312,16 @@
     <string name="chat_audio">Audio</string>
     <string name="chat_audio_play">Play</string>
     <string name="chat_audio_stop">Stop</string>
+    <string name="plus_sub_album">از عکس‌ها انتخاب کن، چندتا هم می‌شود</string>
+    <string name="plus_sub_files">سند، PDF، آرشیو</string>
+    <string name="plus_sub_device">پوشه‌های این گوشی را بگرد</string>
+    <string name="plus_clipboard">تخته‌شمار</string>
+    <string name="plus_sub_clipboard">آنچه تازه کپی کردی را بچسبان</string>
+    <string name="plus_sub_teach">یک بار نشان بده تا Mika یاد بگیرد</string>
+    <string name="plus_sub_skills">یک مهارت برای این نوبت انتخاب کن</string>
+    <string name="plus_sub_tasks">کار ذخیره‌شده را در کادر ورودی پر کن</string>
+    <string name="plus_sub_browser">مرورگر داخلی</string>
+    <string name="plus_skills_empty">هنوز مهارت شخصی نداری. مهارت‌هایی که Mika از کارهای انجام‌شده یاد می‌گیرد اینجا نمایش داده می‌شوند.</string>
+    <string name="plus_clipboard_empty">متنی برای چسباندن از تخته‌شمار نیست</string>
+    <string name="plus_skill_directive">از مهارت «%1$s» استفاده کن: </string>
 </resources>

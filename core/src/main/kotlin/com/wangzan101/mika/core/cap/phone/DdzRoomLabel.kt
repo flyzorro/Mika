@@ -1,6 +1,6 @@
 package com.wangzan101.mika.core.cap.phone
 
-import com.wangzan101.mika.core.uistate.RawFrame
+import com.wangzan101.mika.core.screen.uistate.RawFrame
 
 /**
  * 读真人经典牌桌底部的场次名「经典××场」。

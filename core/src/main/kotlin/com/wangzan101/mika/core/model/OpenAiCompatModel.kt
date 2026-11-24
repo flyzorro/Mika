@@ -42,7 +42,8 @@ class OpenAiCompatModel(
     /** 用户选的思考强度(`reasoning_effort`);null 不发。 */
     private val reasoningEffort: String? = null,
     private val keySupplier: (() -> String?)? = null,
-    private val onRateLimit: ((key: String, retryAfterMs: Long?) -> Unit)? = null,
+    /** 密钥被上游拒绝(429/401/403)时带上 HTTP 状态码回调;接线处按状态决定冷却(429)还是标耗尽(401/403)。 */
+    private val onKeyRejected: ((key: String, retryAfterMs: Long?, status: Int) -> Unit)? = null,
 ) : StreamingChatModel {
     override val name: String get() = model
     private val endpoint = baseUrl.trimEnd('/') + "/chat/completions"
@@ -59,23 +60,10 @@ class OpenAiCompatModel(
     }
 
     override suspend fun complete(system: String, messages: List<Message>, tools: List<ToolSpec>): ModelReply {
-        val key = resolveKey()
-        val response = HttpSupport.execute(http, request(system, messages, tools, stream = false, key = key))
-        val (status, retryAfter, text) = response
-        if ((status == 429 || status == 401 || status == 403) && onRateLimit != null && key != null) {
-            onRateLimit.invoke(key, HttpSupport.retryAfterMs(retryAfter, text))
-            val nextKey = resolveKey()
-            if (nextKey != null && nextKey != key) {
-                val r2 = HttpSupport.execute(http, request(system, messages, tools, stream = false, key = nextKey))
-                if (r2.status in 200..299) {
-                    if (!looksLikeEvents(r2.body)) return parse(r2.body)
-                    val s2 = OpenAiStream({}, ::parseUsage, ::thinking)
-                    r2.replay(eventsOf(r2.body), s2::accept)
-                    return s2.finish()
-                }
-                if (r2.status !in 200..299) throw mapError(r2.status, r2.retryAfter, r2.body)
-            }
+        val response = requestWithKeyRotation(::resolveKey, onKeyRejected) { key ->
+            HttpSupport.execute(http, request(system, messages, tools, stream = false, key = key))
         }
+        val (status, retryAfter, text) = response
         if (status !in 200..299) throw mapError(status, retryAfter, text)
         // 有的兼容端点不守 OpenAI 的默认值:没让流式也照样回 SSE(本地、局域网上的自建服务常见)。按流读完再拼,别把 `data:` 当成坏 JSON。
         if (!looksLikeEvents(text)) return parse(text)
@@ -87,27 +75,16 @@ class OpenAiCompatModel(
     override suspend fun completeStreaming(
         system: String, messages: List<Message>, tools: List<ToolSpec>, onText: (String) -> Unit,
     ): ModelReply {
-        val key = resolveKey()
         var stream = OpenAiStream(onText, ::parseUsage, ::thinking)
-        var response = HttpSupport.stream(http, request(system, messages, tools, stream = true, key = key), stream::accept)
-        if (response.status == 400 && response.body.contains("stream_options")) {
-            // 一些兼容端点能流式生成，却没有用量选项。
+        val response = requestWithKeyRotation(::resolveKey, onKeyRejected) { key ->
             stream = OpenAiStream(onText, ::parseUsage, ::thinking)
-            response = HttpSupport.stream(http, request(system, messages, tools, stream = true, includeUsage = false, key = key), stream::accept)
-        }
-        if ((response.status == 429 || response.status == 401 || response.status == 403) && onRateLimit != null && key != null) {
-            onRateLimit.invoke(key, HttpSupport.retryAfterMs(response.retryAfter, response.body))
-            val nextKey = resolveKey()
-            if (nextKey != null && nextKey != key) {
-                var s2 = OpenAiStream(onText, ::parseUsage, ::thinking)
-                var r2 = HttpSupport.stream(http, request(system, messages, tools, stream = true, key = nextKey), s2::accept)
-                if (r2.status == 400 && r2.body.contains("stream_options")) {
-                    s2 = OpenAiStream(onText, ::parseUsage, ::thinking)
-                    r2 = HttpSupport.stream(http, request(system, messages, tools, stream = true, includeUsage = false, key = nextKey), s2::accept)
-                }
-                if (r2.status in 200..299) return s2.finish()
-                if (r2.status !in 200..299) throw mapError(r2.status, r2.retryAfter, r2.body)
+            var raw = HttpSupport.stream(http, request(system, messages, tools, stream = true, key = key), stream::accept)
+            if (raw.status == 400 && raw.body.contains("stream_options")) {
+                // 一些兼容端点能流式生成，却没有用量选项。
+                stream = OpenAiStream(onText, ::parseUsage, ::thinking)
+                raw = HttpSupport.stream(http, request(system, messages, tools, stream = true, includeUsage = false, key = key), stream::accept)
             }
+            raw
         }
         val (status, retryAfter, text) = response
         if (status !in 200..299) {
@@ -129,9 +106,12 @@ class OpenAiCompatModel(
             reasoningEffort?.let { put("reasoning_effort", it) }
             // 思考只在带工具的请求里回传(工具调用一步接一步时要接着想);不带工具的旁路调用不需要
             val replayReasoning = tools.isNotEmpty()
+            // 末尾每次都变的 uncached 消息不参与标记:移动的缓存标记落在它们前面
+            val stable = messages.size - messages.takeLastWhile { it.uncached }.size
             val wire = listOf(buildJsonObject { put("role", "system"); put("content", system) }) +
-                messages.flatMap { serialize(it, replayReasoning) }
-            put("messages", JsonArray(if (capabilities.promptCaching == PromptCaching.Explicit) withCacheMarks(wire) else wire))
+                messages.take(stable).flatMap { serialize(it, replayReasoning) }
+            val tail = messages.drop(stable).flatMap { serialize(it, replayReasoning) }
+            put("messages", JsonArray((if (capabilities.promptCaching == PromptCaching.Explicit) withCacheMarks(wire) else wire) + tail))
             if (tools.isNotEmpty()) putJsonArray("tools") { tools.forEach { add(toolJson(it)) } }
             if (stream) {
                 put("stream", true)
@@ -378,8 +358,8 @@ private class OpenAiStream(
         if (data == "[DONE]") { done = true; return true }
         val root = try { json.parseToJsonElement(data).jsonObject }
         catch (e: Exception) { throw ModelError.BadResponse("流式响应不是合法 JSON", e) }
-        // 有的服务流式请求一开头就出错时回 200,在事件流里给一帧错误;说的是超长,和 400 一样按超长处理
-        root["error"]?.toString()?.let { e -> throw if (ModelHttp.saysContextTooLong(e)) ModelError.ContextTooLong() else ModelError.BadResponse(e.take(200)) }
+        // 有的服务流式请求一开头就出错时回 200,也要按错误类型接入重试与备援
+        ModelHttp.streamError(root)?.let { throw it }
         chunks++
         usageOf(root["usage"])?.let { usage = it }
         val choice = (root["choices"] as? JsonArray)?.firstOrNull() as? JsonObject ?: return false

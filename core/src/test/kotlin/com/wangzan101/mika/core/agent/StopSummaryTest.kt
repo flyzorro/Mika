@@ -5,7 +5,7 @@ import com.wangzan101.mika.core.model.Message
 import com.wangzan101.mika.core.model.ModelReply
 import com.wangzan101.mika.core.model.Part
 import com.wangzan101.mika.core.model.ToolSpec
-import com.wangzan101.mika.core.record.RunEvent
+import com.wangzan101.mika.core.run.record.RunEvent
 import com.wangzan101.mika.core.testing.answerReply
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.test.runTest
@@ -151,5 +151,19 @@ class StopSummaryTest {
         assertTrue(text, text.contains("2. The user said: 看四个设置页; the user stopped this task partway; before the stop: 已经停下。看完了网络、蓝牙;显示、声音还没看。"))
         assertEquals(null, Conversation.stopSummary(old))
         assertEquals("已经停下。看完了网络、蓝牙;显示、声音还没看。", Conversation.stopSummary(stopped))
+    }
+
+    @Test fun stopSummarySupportsMultipleLanguagesWithoutBias() {
+        val enText = StopSummary.plain("Send messages to jobs", greeting, null, ::label, ::app, language = "en")
+        assertTrue(enText, enText.startsWith("Stopped. Actions before stop:"))
+        assertTrue(enText, enText.contains("Visited: jobs.example.com"))
+
+        val jaText = StopSummary.plain("メッセージを送信", greeting, null, ::label, ::app, language = "ja")
+        assertTrue(jaText, jaText.startsWith("停止しました。停止前:"))
+        assertTrue(jaText, jaText.contains("アクセス先: jobs.example.com"))
+
+        val esText = StopSummary.plain("Enviar mensajes", greeting, null, ::label, ::app, language = "es")
+        assertTrue(esText, esText.startsWith("Detenida. Antes de detener:"))
+        assertTrue(esText, esText.contains("Visitado: jobs.example.com"))
     }
 }

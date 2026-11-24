@@ -84,7 +84,10 @@ class KeyPoolManager(
             providerPools.remove(providerId)
             return
         }
-        val existing = providerPools[providerId]?.keys?.associateBy { it.key }.orEmpty()
+        val previous = providerPools[providerId]
+        // 请求时会反复注册同一份配置,不能重建池并把轮询计数归零。
+        if (previous?.keys?.map { it.key } == keys) return
+        val existing = previous?.keys?.associateBy { it.key }.orEmpty()
         val entries = keys.map { k ->
             existing[k]?.copy() ?: KeyEntry(key = k)
         }
@@ -146,6 +149,16 @@ class KeyPoolManager(
         val entry = pool.keys.firstOrNull { it.key == key } ?: return
         entry.status = KeyStatus.Exhausted
         entry.failureCount++
+    }
+
+    /**
+     * 上游拒绝密钥(429/401/403)后的池侧处理:429 是临时限流,按 [retryAfterMs](或默认)冷却;
+     * 401/403 是密钥无效或被封,标 [KeyStatus.Exhausted] 不再复活,免得坏密钥每轮冷却期满又被轮询选中。
+     */
+    @Synchronized
+    fun markRejected(providerId: String, key: String, status: Int, retryAfterMs: Long? = null) {
+        if (status == 429) markRateLimited(providerId, key, retryAfterMs)
+        else markExhausted(providerId, key)
     }
 
     /**

@@ -3,7 +3,7 @@ package com.wangzan101.mika.task
 import android.util.Log
 import com.wangzan101.mika.BuildConfig
 import com.wangzan101.mika.chat.ConversationStore
-import com.wangzan101.mika.confirm.ConfirmationNotifier
+import com.wangzan101.mika.task.ConfirmationNotifier
 import com.wangzan101.mika.core.agent.AgentLoop
 import com.wangzan101.mika.core.agent.JudgedOutcome
 import com.wangzan101.mika.core.agent.LearnGate
@@ -13,24 +13,24 @@ import com.wangzan101.mika.core.agent.StopSummary
 import com.wangzan101.mika.core.agent.TaskState
 import com.wangzan101.mika.core.agent.Turn
 import com.wangzan101.mika.core.assembly.knownTools
-import com.wangzan101.mika.core.knowledge.AppKnowledgeDrafter
-import com.wangzan101.mika.core.knowledge.GuideCatalog
-import com.wangzan101.mika.core.knowledge.KnowledgeStore
-import com.wangzan101.mika.core.memory.MemoryExtractor
-import com.wangzan101.mika.core.memory.MemoryStore
-import com.wangzan101.mika.core.memory.TaskMemoryRecorder
-import com.wangzan101.mika.core.memory.UserUtterances
+import com.wangzan101.mika.core.learn.knowledge.AppKnowledgeDrafter
+import com.wangzan101.mika.core.learn.knowledge.GuideCatalog
+import com.wangzan101.mika.core.learn.knowledge.KnowledgeStore
+import com.wangzan101.mika.core.learn.memory.MemoryExtractor
+import com.wangzan101.mika.core.learn.memory.MemoryStore
+import com.wangzan101.mika.core.learn.memory.TaskMemoryRecorder
+import com.wangzan101.mika.core.learn.memory.UserUtterances
 import com.wangzan101.mika.core.model.ChatModel
 import com.wangzan101.mika.core.model.ModelSession
 import com.wangzan101.mika.core.proactive.NoticeRuns
-import com.wangzan101.mika.core.record.RunEvent
-import com.wangzan101.mika.core.replay.RouteRecorder
+import com.wangzan101.mika.core.run.record.RunEvent
+import com.wangzan101.mika.core.learn.replay.RouteRecorder
 import com.wangzan101.mika.core.run.RunProvenance
-import com.wangzan101.mika.core.skills.SkillDrafter
+import com.wangzan101.mika.core.learn.skills.SkillDrafter
 import com.wangzan101.mika.core.tool.ToolDispatcher
 import com.wangzan101.mika.core.tool.ToolIndex
 import com.wangzan101.mika.memory.MemoryRuntime
-import com.wangzan101.mika.replay.FileRouteStore
+import com.wangzan101.mika.knowledge.FileRouteStore
 import com.wangzan101.mika.record.RunStore
 import com.wangzan101.mika.settings.MemorySwitches
 import com.wangzan101.mika.ui.ToolLabels
@@ -81,10 +81,11 @@ internal class RunTeardown(
         }
         val events = recorded?.takeIf { StopSummary.worthSaying(it, null) } ?: synchronized(state.activityLog) { state.activityLog.toList() }
         if (!StopSummary.worthSaying(events, null)) return null
+        val lang = com.wangzan101.mika.i18n.AppLanguage.resolved(service).tag
         val labels = ToolLabels(knownTools())
-        return StopSummary.plain(k?.agent?.taskText ?: goal, events, null, labels::label) {
+        return StopSummary.plain(k?.agent?.taskText ?: goal, events, null, labels::label, {
             ConfirmationNotifier.appLabel(service, it)
-        }
+        }, language = lang)
     }
 
     /**
@@ -101,8 +102,9 @@ internal class RunTeardown(
         val (main, light) = if (k != null) k.model to k.light else withContext(Dispatchers.IO) {
             runCatching { env.modelFactory(service, session) }.getOrNull() to runCatching { env.lightModelFactory(service, session) }.getOrNull()
         }
+        val lang = com.wangzan101.mika.i18n.AppLanguage.resolved(service).tag
         val labels = ToolLabels(knownTools())
-        return StopSummary(light ?: main, main).summarize(k?.agent?.taskText ?: goal, events, draft, labels::label) {
+        return StopSummary(light ?: main, main, language = lang).summarize(k?.agent?.taskText ?: goal, events, draft, labels::label) {
             ConfirmationNotifier.appLabel(service, it)
         }
     }
@@ -145,6 +147,7 @@ internal class RunTeardown(
             drafter = SkillDrafter(k.model),
             appDrafter = AppKnowledgeDrafter(k.light ?: k.model),
             appDrafts = memoryRuntime.appKnowledge(),
+            screenMaps = memoryRuntime.screenMaps(),
             ids = { UUID.randomUUID().toString() },
             autoApprove = env.evalHooks.autoApproveSkillDrafts,
             yieldToForeground = { while (service.hasActiveRuns()) delay(500) },
