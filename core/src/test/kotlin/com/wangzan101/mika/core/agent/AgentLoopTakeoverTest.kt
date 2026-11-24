@@ -111,6 +111,21 @@ class AgentLoopTakeoverTest {
         assertTrue(end.toString(), end is TaskState.Succeeded && !end.verified && end.unconfirmed.isNotEmpty())
     }
 
+    @Test fun handBackWithRestoreFailureReturnsRecoverableToolError() = runTest {
+        val main = FakeModel(tools(takeover()), finish())
+        val message = "Could not reopen com.chat."
+        val (end, _) = handBack(HandBack(HandBackOutcome.complete, appReturnFailure = message), main)
+
+        com.wangzan101.mika.core.testing.assertAnswered(ANSWER, end)
+        val result = main.takeoverResult()
+        assertEquals("complete", result.s("outcome"))
+        assertEquals("target_app_restore_failed", result.s("error"))
+        assertEquals(message, result.s("message"))
+        assertEquals("false", result.s("ok"))
+        assertEquals("true", result.s("recoverable"))
+        assertEquals("false", result.s("counts_as_failure"))
+    }
+
     @Test fun waitingPastTheOldTimeoutKeepsTheSameRunAlive() = runTest {
         val main = FakeModel(tools(takeover()), finish())
         val l = AgentLoop(main, toolDispatcher(FakeScreen()), "BASE")

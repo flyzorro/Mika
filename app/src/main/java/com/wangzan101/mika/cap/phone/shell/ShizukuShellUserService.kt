@@ -75,6 +75,9 @@ class ShizukuShellUserService : IMikaShell.Stub {
 
     override fun packageOfTask(taskId: Int): String? = delegate.packageOfTask(taskId)
 
+    override fun findTaskForPackage(packageName: String, userId: Int, displayId: Int): IntArray? =
+        delegate.findTaskForPackage(packageName, userId, displayId)
+
     override fun setClipText(text: String): Int = delegate.setClipText(text)
 
     override fun restoreClip(): Boolean = delegate.restoreClip()

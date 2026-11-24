@@ -4,6 +4,7 @@ import com.wangzan101.mika.core.action.ConfirmChoice
 import com.wangzan101.mika.core.action.Refusals
 import com.wangzan101.mika.core.safety.gate.ConfirmationGate
 import com.wangzan101.mika.core.safety.gate.DeclareResult
+import com.wangzan101.mika.core.safety.gate.TargetAppRestoreFailed
 import com.wangzan101.mika.core.general.RequestConfirmation
 import com.wangzan101.mika.core.learn.memory.UserUtterances
 import com.wangzan101.mika.core.prompt.Feedback
@@ -153,7 +154,7 @@ internal class UserExchange(
         return ToolExecution(buildJsonObject {
             put("outcome", back.outcome.name)
             if (back.outcome == HandBackOutcome.complete) {
-                put("ok", true)
+                put("ok", back.appReturnFailure == null)
                 put("durationMs", back.durationMs ?: (now() - since))
                 back.inputCount?.let { put("inputCount", it) }
                 back.stoppedAt?.let { put("stoppedAt", it) }
@@ -166,6 +167,12 @@ internal class UserExchange(
                 put("reason", if (back.outcome == HandBackOutcome.skipped) "takeover_skipped" else "takeover_timeout")
                 put("counts_as_failure", false)
                 put("note", NO_HANDBACK_NOTE)
+            }
+            back.appReturnFailure?.let {
+                put("error", TargetAppRestoreFailed.CODE)
+                put("message", it)
+                put("recoverable", true)
+                put("counts_as_failure", false)
             }
         })
     }

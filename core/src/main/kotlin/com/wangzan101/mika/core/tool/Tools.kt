@@ -96,6 +96,8 @@ data class HandBack(
     val url: String? = null,
     /** 用户交回时写的备注(用户原话,可作记忆的出处)。 */
     val note: String? = null,
+    /** 用户已交回操作权,目标 App 恢复失败时给模型的原因。 */
+    val appReturnFailure: String? = null,
 )
 
 

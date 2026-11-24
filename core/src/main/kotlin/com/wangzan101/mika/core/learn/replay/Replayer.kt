@@ -7,6 +7,7 @@ import com.wangzan101.mika.core.model.Part
 import com.wangzan101.mika.core.run.record.Redactor
 import com.wangzan101.mika.core.run.record.RunEvent
 import com.wangzan101.mika.core.run.record.RunSink
+import com.wangzan101.mika.core.safety.gate.TargetAppRestoreFailed
 import com.wangzan101.mika.core.screen.uistate.ScreenSnapshot
 import com.wangzan101.mika.core.screen.uistate.UiElement
 import com.wangzan101.mika.core.screen.uistate.interfaces
@@ -72,6 +73,8 @@ class Replayer(
             // 锁屏、被拿走时先等;等完再读屏,核对和执行都按等完之后的一屏(执行入口不再等第二次)
             try { gate() } catch (_: com.wangzan101.mika.core.safety.gate.ScreenRecoveryRequired) {
                 return diverged("screen changed during lock; read the current state before continuing", "")
+            } catch (e: TargetAppRestoreFailed) {
+                return diverged("could not restore the target app", e.message.orEmpty(), error = TargetAppRestoreFailed.CODE)
             }
             val snap = read() ?: return diverged("the screen could not be read", "")
             if (snap.protected) return diverged("the page is protected", PROTECTED_SEEN)

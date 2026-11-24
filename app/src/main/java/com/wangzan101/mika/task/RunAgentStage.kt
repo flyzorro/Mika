@@ -149,7 +149,7 @@ internal suspend fun TaskRun.assembleAgent(a: RunAssembly, m: RunModels, ph: Run
     return agent
 }
 
-internal suspend fun TaskRun.assembleTakeover(a: RunAssembly, agent: AgentLoop, t: RunTools) {
+internal suspend fun TaskRun.assembleTakeover(a: RunAssembly, agent: AgentLoop, ph: RunPhone, t: RunTools) {
     var webStack by a::webStack
     val side = a.side
     val tools = t.tools
@@ -166,6 +166,7 @@ internal suspend fun TaskRun.assembleTakeover(a: RunAssembly, agent: AgentLoop, 
         override suspend fun displayOf(taskId: Int) = phone?.let { p -> io(-1) { p.shell.displayOfTask(taskId) } } ?: -1
         override suspend fun moveToMain(taskId: Int) = moveTask(taskId, Display.DEFAULT_DISPLAY)
         override suspend fun moveBack(taskId: Int) = moveBackToAgent(taskId)
+        override suspend fun restoreTarget() = moveBackTarget(ph, fromMainOnly = true)
         override fun setSound(packageName: String, on: Boolean) {
             val p = phone ?: return
             // 交出去的若是目标 App,按目标所属的那份算;别的按本来那份

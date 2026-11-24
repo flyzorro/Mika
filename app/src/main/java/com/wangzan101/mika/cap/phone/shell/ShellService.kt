@@ -402,6 +402,26 @@ class ShellService(
         null
     }
 
+    override fun findTaskForPackage(packageName: String, userId: Int, displayId: Int): IntArray? = try {
+        val user = TASK_INFO.getField("userId")
+        val display = TASK_INFO.getField("displayId")
+        val appUser = userId.takeIf { it >= 0 } ?: myUser
+        val current = allTasks().asSequence()
+            .filter { user.getInt(it) == appUser && packageName in packagesOf(it) }
+            .minByOrNull {
+                when (display.getInt(it)) {
+                    displayId -> 0
+                    Display.DEFAULT_DISPLAY -> 1
+                    else -> 2
+                }
+            }
+        if (current == null) intArrayOf()
+        else intArrayOf(TASK_INFO.getField("taskId").getInt(current), display.getInt(current))
+    } catch (e: Exception) {
+        Log.w(TAG, "findTaskForPackage failed", e)
+        null
+    }
+
     override fun topTaskId(displayId: Int): Int = try {
         tasksOn(displayId).firstOrNull()?.let { TASK_INFO.getField("taskId").getInt(it) } ?: -1
     } catch (t: Throwable) {

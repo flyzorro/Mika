@@ -69,6 +69,7 @@ class WebStackTakeoverTest {
             override suspend fun displayOf(taskId: Int) = -1
             override suspend fun moveToMain(taskId: Int) = false
             override suspend fun moveBack(taskId: Int) = false
+            override suspend fun restoreTarget() = false
             override fun setSound(packageName: String, on: Boolean) {}
             override fun watchInput(packageName: String) {}
             override suspend fun handoverActivity(): HandoverActivity? = null

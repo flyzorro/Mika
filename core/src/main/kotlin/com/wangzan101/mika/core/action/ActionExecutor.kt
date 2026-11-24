@@ -3,6 +3,7 @@ package com.wangzan101.mika.core.action
 import com.wangzan101.mika.core.tool.Risk
 import com.wangzan101.mika.core.safety.gate.ConfirmationGate
 import com.wangzan101.mika.core.safety.gate.Irreversible
+import com.wangzan101.mika.core.safety.gate.TargetAppRestoreFailed
 import com.wangzan101.mika.core.safety.guard.DIAGNOSTIC_VERBS
 import com.wangzan101.mika.core.safety.guard.GuardVerdict
 import com.wangzan101.mika.core.safety.guard.OperationGuards
@@ -149,6 +150,12 @@ class ActionExecutor(
                 put("message", "The phone locked and was unlocked while the task was running. This pending action was not executed. Read the current screen and verify whether the previous action already completed before taking another action.")
             })
             return ran(Step(call, args, origin, before, writing = false, offScreen, verb, null, followUp, reads, preset = notice))
+        } catch (e: TargetAppRestoreFailed) {
+            val failure = ToolExecution(buildJsonObject {
+                put("ok", false); put("error", TargetAppRestoreFailed.CODE); put("message", e.message)
+                put("package", e.packageName); put("executed", false); put("recoverable", true); put("counts_as_failure", false)
+            })
+            return ran(Step(call, args, origin, before, writing = false, offScreen, verb, null, followUp, reads, preset = failure))
         }
         // 没有可用的同意就不执行,也不计入失败熔断
         var d = decision.judge(call.name, args, origin)

@@ -676,7 +676,7 @@ class TaskRun(
             val pr = assemblePrompt(a, priorTurns)
             val t = assembleTools(a, m, ph, mem, rec, pr, web)
             val agent = assembleAgent(a, m, ph, taskGate, mem, rec, pr, web, t, priorTurns)
-            assembleTakeover(a, agent, t)
+            assembleTakeover(a, agent, ph, t)
             val end = withContext(a.tally) { agent.run(pr.runSpec, inbox) }
             resultReadyAtMs = SystemClock.elapsedRealtime()
             return end.also { manualControl.awaitAutomatic(); usedGroups = agent.usedGroups.toList() }.let(::localizeTaskFailure).let(::withRetestHint)
