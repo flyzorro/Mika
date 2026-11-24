@@ -41,7 +41,8 @@ class GeminiModel(
     /** 用户选的思考档位;null 不发,`none` 尽量关掉思考,其余作为 `thinkingConfig.thinkingLevel` 发出。 */
     private val reasoningEffort: String? = null,
     private val keySupplier: (() -> String?)? = null,
-    private val onRateLimit: ((key: String, retryAfterMs: Long?) -> Unit)? = null,
+    /** 密钥被上游拒绝(429/401/403)时带上 HTTP 状态码回调;接线处按状态决定冷却(429)还是标耗尽(401/403)。 */
+    private val onKeyRejected: ((key: String, retryAfterMs: Long?, status: Int) -> Unit)? = null,
 ) : StreamingChatModel {
     override val name: String get() = model
     private val endpoint = baseUrl.trimEnd('/') + "/v1beta/models/$model:generateContent"
@@ -51,16 +52,8 @@ class GeminiModel(
     private fun resolveKey(): String = keySupplier?.invoke()?.takeIf { it.isNotBlank() } ?: apiKey
 
     override suspend fun complete(system: String, messages: List<Message>, tools: List<ToolSpec>): ModelReply {
-        val key = resolveKey()
-        val (status, retryAfter, text) = HttpSupport.execute(http, request(system, messages, tools, stream = false, key = key))
-        if ((status == 429 || status == 401 || status == 403) && onRateLimit != null) {
-            onRateLimit.invoke(key, HttpSupport.retryAfterMs(retryAfter, text))
-            val nextKey = resolveKey()
-            if (nextKey != key) {
-                val (s2, r2, t2) = HttpSupport.execute(http, request(system, messages, tools, stream = false, key = nextKey))
-                if (s2 in 200..299) return parse(t2)
-                if (s2 !in 200..299) throw mapError(s2, r2, t2)
-            }
+        val (status, retryAfter, text) = requestWithKeyRotation(::resolveKey, onKeyRejected) { key ->
+            HttpSupport.execute(http, request(system, messages, tools, stream = false, key = key.orEmpty()))
         }
         if (status !in 200..299) throw mapError(status, retryAfter, text)
         return parse(text)
@@ -69,23 +62,10 @@ class GeminiModel(
     override suspend fun completeStreaming(
         system: String, messages: List<Message>, tools: List<ToolSpec>, onText: (String) -> Unit,
     ): ModelReply {
-        val key = resolveKey()
-        val stream = GeminiStream(onText, ::parse, ::parseUsage)
-        val (status, retryAfter, text) = HttpSupport.stream(http, request(system, messages, tools, stream = true, key = key), stream::accept)
-        if ((status == 429 || status == 401 || status == 403) && onRateLimit != null) {
-            onRateLimit.invoke(key, HttpSupport.retryAfterMs(retryAfter, text))
-            val nextKey = resolveKey()
-            if (nextKey != key) {
-                val stream2 = GeminiStream(onText, ::parse, ::parseUsage)
-                val (s2, r2, t2) = HttpSupport.stream(http, request(system, messages, tools, stream = true, key = nextKey), stream2::accept)
-                if (s2 in 200..299) {
-                    if (t2.isNotEmpty()) return parse(t2).also { reply ->
-                        reply.parts.filterIsInstance<Part.Text>().joinToString("") { it.text }.takeIf(String::isNotEmpty)?.let(onText)
-                    }
-                    return stream2.finish()
-                }
-                if (s2 !in 200..299) throw mapError(s2, r2, t2)
-            }
+        var stream = GeminiStream(onText, ::parse, ::parseUsage)
+        val (status, retryAfter, text) = requestWithKeyRotation(::resolveKey, onKeyRejected) { key ->
+            stream = GeminiStream(onText, ::parse, ::parseUsage)
+            HttpSupport.stream(http, request(system, messages, tools, stream = true, key = key.orEmpty()), stream::accept)
         }
         if (status !in 200..299) throw mapError(status, retryAfter, text)
         if (text.isNotEmpty()) return parse(text).also { reply ->

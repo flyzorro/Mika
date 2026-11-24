@@ -2,6 +2,8 @@ package com.wangzan101.mika.backup
 
 import com.wangzan101.mika.settings.AesGcmKeyCipher
 import com.wangzan101.mika.settings.KeyCipher
+import com.wangzan101.mika.settings.McpServerStore
+import okhttp3.OkHttpClient
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
@@ -11,6 +13,7 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
 import java.io.ByteArrayInputStream
+import java.io.RandomAccessFile
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.util.Base64
@@ -171,6 +174,46 @@ class BackupEngineTest {
         assertTrue(File(dstPrefs, "plain.xml").readText().contains("nickname\">Vagif</string>"))
     }
 
+    @Test fun mcpFieldSecretsSurviveBackupWithNewKey() {
+        val srcFiles = tmp.newFolder("mcp-src-files")
+        val srcPrefs = tmp.newFolder("mcp-src-prefs")
+        val source = McpServerStore(File(srcFiles, "settings"), exportCipher, OkHttpClient())
+        val config = source.add("Demo", "https://demo.example/mcp").getOrThrow()
+        source.setSecret(config.id, "apiKey", "backup-secret-one")
+        source.setSecret(config.id, "signingKey", "backup-secret-two")
+        assertFalse(File(srcFiles, "settings/mcp-servers.json").readText().contains("backup-secret-one"))
+
+        val zip = exportBytes(srcFiles, srcPrefs)
+        val dstFiles = tmp.newFolder("mcp-dst-files")
+        val dstPrefs = tmp.newFolder("mcp-dst-prefs")
+        val manifest = engine(dstFiles, dstPrefs, importCipher).import(ByteArrayInputStream(zip), replace = false)
+        assertTrue(manifest.entries.any {
+            it.path == "files/settings/mcp-server-secrets.bin" && it.encrypted && it.alias == "mika-mcp-servers"
+        })
+
+        val restored = McpServerStore(File(dstFiles, "settings"), importCipher, OkHttpClient())
+        assertEquals("backup-secret-one", restored.secret(config.id, "apiKey"))
+        assertEquals("backup-secret-two", restored.secret(config.id, "signingKey"))
+        assertFalse(File(dstFiles, "settings/mcp-servers.json").readText().contains("backup-secret-two"))
+    }
+
+    @Test fun exportRefusesABackupTheImportCouldNotReadBack() {
+        val srcFiles = tmp.newFolder("src-files")
+        val srcPrefs = tmp.newFolder("src-prefs")
+        buildSource(srcFiles, srcPrefs)
+        val huge = File(srcFiles, "conversations/huge.json").also { it.parentFile.mkdirs() }
+        RandomAccessFile(huge, "rw").use { it.setLength(BackupEngine.MAX_BACKUP_BYTES + 1) }
+
+        val out = ByteArrayOutputStream()
+        try {
+            engine(srcFiles, srcPrefs, exportCipher).export(out)
+            fail("an oversized export must be refused")
+        } catch (e: BackupException) {
+            assertTrue(e.message!!.contains("too large"))
+        }
+        assertEquals(0, out.size())
+    }
+
     @Test fun inspectDoesNotWriteAnything() {
         val srcFiles = tmp.newFolder("src-files")
         val srcPrefs = tmp.newFolder("src-prefs")
@@ -216,6 +259,8 @@ class BackupEngineTest {
         val dstFiles = tmp.newFolder("dst-files")
         val dstPrefs = tmp.newFolder("dst-prefs")
         dstFiles.write("settings/mcp.json", "OLD")
+        dstFiles.write("conversations/local-only.json", "OLD CHAT")
+        dstPrefs.write("local-only.xml", "<map/>")
         try {
             engine(dstFiles, dstPrefs, importCipher).import(ByteArrayInputStream(broken), replace = true)
             fail("a corrupt payload must fail the import")
@@ -224,6 +269,8 @@ class BackupEngineTest {
         }
 
         assertEquals("OLD", File(dstFiles, "settings/mcp.json").readText())
+        assertEquals("OLD CHAT", File(dstFiles, "conversations/local-only.json").readText())
+        assertEquals("<map/>", File(dstPrefs, "local-only.xml").readText())
         assertTrue(
             (dstFiles.walkTopDown().filter { it.isFile && it.name.endsWith(".import-tmp") }.toList()).isEmpty(),
         )
@@ -273,6 +320,29 @@ class BackupEngineTest {
         val manifest = engine(dstFiles, dstPrefs, importCipher).import(ByteArrayInputStream(zip), replace = true)
         assertEquals(1, manifest.formatVersion)
         assertEquals("""{"messages":[]}""", File(dstFiles, "conversations/abc.json").readText())
+        assertFalse(File(dstFiles, "conversations/old.json").exists())
+    }
+
+    @Test fun replacingRemovesStaleSettingsButPreservesExcludedData() {
+        val srcFiles = tmp.newFolder("replacement-source")
+        val srcPrefs = tmp.newFolder("replacement-source-prefs")
+        buildSource(srcFiles, srcPrefs)
+        val zip = exportBytes(srcFiles, srcPrefs)
+        val dstFiles = tmp.newFolder("replacement-target")
+        val dstPrefs = tmp.newFolder("replacement-target-prefs")
+        dstFiles.write("settings/stale.json", "old")
+        dstFiles.write("conversations/old.json.title", "old title")
+        dstFiles.write("sandbox/work/keep.txt", "workspace")
+        dstFiles.write("library-attachments/keep.txt", "attachment")
+        dstPrefs.write("stale.xml", "<map/>")
+
+        engine(dstFiles, dstPrefs, importCipher).import(ByteArrayInputStream(zip), replace = true)
+
+        assertFalse(File(dstFiles, "settings/stale.json").exists())
+        assertFalse(File(dstFiles, "conversations/old.json.title").exists())
+        assertFalse(File(dstPrefs, "stale.xml").exists())
+        assertEquals("workspace", File(dstFiles, "sandbox/work/keep.txt").readText())
+        assertEquals("attachment", File(dstFiles, "library-attachments/keep.txt").readText())
     }
 
     @Test fun undecryptableFileFailsExportLoudly() {

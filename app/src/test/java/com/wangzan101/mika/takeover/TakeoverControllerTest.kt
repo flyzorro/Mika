@@ -4,7 +4,7 @@ import com.wangzan101.mika.cap.phone.a11y.AndroidScreen.TargetApp
 import com.wangzan101.mika.core.agent.TaskState
 import com.wangzan101.mika.core.tool.HandBack
 import com.wangzan101.mika.core.tool.HandBackOutcome
-import com.wangzan101.mika.core.uistate.ActionResult
+import com.wangzan101.mika.core.screen.uistate.ActionResult
 import com.wangzan101.mika.shell.IMikaShell
 import com.wangzan101.mika.task.restorePipSound
 import com.wangzan101.mika.task.restoreTargetApp

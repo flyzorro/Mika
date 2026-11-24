@@ -231,7 +231,7 @@
     <string name="chat_branch_retry">Tanya ulang dari sini</string>
     <string name="chat_branch_attachments_readd">Tambahkan ulang lampiran yang ingin disertakan</string>
     <string name="chat_attach_unavailable">Tidak dapat menambahkan: %1$s. Pastikan berkas tersedia dan tidak melebihi batas ukuran.</string>
-    <string name="chat_attach_too_large">%1$s: melebihi batas 200 MiB</string>
+    <string name="chat_attach_too_large">%1$s: melebihi batas %2$s</string>
     <string name="chat_attach_low_device_space">%1$s: ruang penyimpanan ponsel tidak cukup; kosongkan ruang lalu coba lagi</string>
     <string name="chat_attach_workspace_limit">%1$s: penyimpanan ruang kerja mencapai batas; hapus berkas di ruang kerja lalu coba lagi</string>
     <string name="chat_attach_io_error">%1$s: tidak dapat membaca atau menyalin berkas; pastikan berkas tersedia lalu coba lagi</string>
@@ -298,4 +298,16 @@
     <string name="chat_audio">Audio</string>
     <string name="chat_audio_play">Play</string>
     <string name="chat_audio_stop">Stop</string>
+    <string name="plus_sub_album">Pilih dari foto, boleh beberapa</string>
+    <string name="plus_sub_files">Dokumen, PDF, arsip</string>
+    <string name="plus_sub_device">Jelajahi folder di ponsel ini</string>
+    <string name="plus_clipboard">Papan klip</string>
+    <string name="plus_sub_clipboard">Tempel yang baru saja disalin</string>
+    <string name="plus_sub_teach">Tunjukkan sekali, Mika akan belajar</string>
+    <string name="plus_sub_skills">Pilih skill untuk giliran ini</string>
+    <string name="plus_sub_tasks">Isi tugas tersimpan ke kolom input</string>
+    <string name="plus_sub_browser">Browser bawaan</string>
+    <string name="plus_skills_empty">Belum ada skill pribadi. Skill yang dipelajari Mika dari tugas yang selesai akan muncul di sini.</string>
+    <string name="plus_clipboard_empty">Tidak ada teks untuk ditempel dari papan klip</string>
+    <string name="plus_skill_directive">Gunakan skill “%1$s”: </string>
 </resources>

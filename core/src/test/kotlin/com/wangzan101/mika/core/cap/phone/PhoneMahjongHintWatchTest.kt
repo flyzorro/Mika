@@ -7,8 +7,8 @@ import com.wangzan101.mika.core.tool.Args
 import com.wangzan101.mika.core.tool.FakeScreen
 import com.wangzan101.mika.core.tool.ToolExecution
 import com.wangzan101.mika.core.tool.execute
-import com.wangzan101.mika.core.userscreen.HintHud
-import com.wangzan101.mika.core.userscreen.MainScreenPort
+import com.wangzan101.mika.core.screen.user.HintHud
+import com.wangzan101.mika.core.screen.user.MainScreenPort
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.cancelAndJoin

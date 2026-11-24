@@ -23,7 +23,7 @@ internal object OpenAiCallProtocol {
                 }
                 putJsonObject("output") { put("format", format); put("voice", config.speaker) }
             }
-            if (config.enablePhoneDtmf) put("tools", VolcRealtimeProtocol.phoneTools())
+            if (config.enablePhoneDtmf) put("tools", VolcRealtimeProtocol.phoneCallTools())
         }
     }.toString()
 
@@ -47,6 +47,22 @@ internal object OpenAiCallProtocol {
             put("tool_choice", "none")
         }
     }.toString()
+
+    /** 给模型的一条提示:作为 system 文字项进对话(不是对方说的话);要模型接着说就再发 [respond]。 */
+    fun systemNote(text: String) = buildJsonObject {
+        put("type", "conversation.item.create")
+        putJsonObject("item") {
+            put("type", "message")
+            put("role", "system")
+            put("content", JsonArray(listOf(buildJsonObject {
+                put("type", "input_text")
+                put("text", text)
+            })))
+        }
+    }.toString()
+
+    /** 请模型按现有上下文回一段话(不带 instructions,不是照念)。 */
+    fun respond() = """{"type":"response.create"}"""
 
     fun toolResult(id: String, result: JsonObject) = buildJsonObject {
         put("type", "conversation.item.create")

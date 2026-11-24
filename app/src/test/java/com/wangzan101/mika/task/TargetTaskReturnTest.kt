@@ -4,7 +4,7 @@ import android.view.Display
 import com.wangzan101.mika.cap.phone.a11y.AndroidScreen.TargetApp
 import com.wangzan101.mika.core.action.TargetAppRestoreFailed
 import com.wangzan101.mika.core.agent.TaskState
-import com.wangzan101.mika.core.uistate.ActionResult
+import com.wangzan101.mika.core.screen.uistate.ActionResult
 import com.wangzan101.mika.i18n.ChineseTexts
 import com.wangzan101.mika.shell.IMikaShell
 import kotlinx.coroutines.flow.MutableStateFlow

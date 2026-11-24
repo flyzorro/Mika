@@ -15,6 +15,10 @@ import com.wangzan101.mika.ui.theme.MikaTheme
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
+import com.wangzan101.mika.chat.ui.ChatViewModel
+import com.wangzan101.mika.chat.ui.Exchange
+import com.wangzan101.mika.chat.ui.ExchangeStatus
+import com.wangzan101.mika.chat.ui.WorkBlock
 
 @RunWith(AndroidJUnit4::class)
 class TaskGoalProgressTest {
@@ -29,7 +33,7 @@ class TaskGoalProgressTest {
                 TaskState.Running(4, action, "phone_observe", progress, narration = action))
         }
         val ex = mutableStateOf(running(setOf(1), false, "打开店铺页"))
-        compose.setContent { MikaTheme { WorkBlock(ex.value, true, false) {} } }
+        compose.setContent { MikaTheme { WorkBlock(ex.value, emptyList(), true, false) {} } }
         compose.onNodeWithText("打开店铺页").assertIsDisplayed()
         compose.onNodeWithText("已确认目标 1/3").performClick()
         compose.onNodeWithText("✓  确认地址").assertIsDisplayed()

@@ -231,7 +231,7 @@
     <string name="chat_branch_retry">ここから聞き直す</string>
     <string name="chat_branch_attachments_readd">添付ファイルは追加し直してください</string>
     <string name="chat_attach_unavailable">追加できませんでした: %1$s。ファイルが存在し、サイズ制限内であることを確認してください。</string>
-    <string name="chat_attach_too_large">%1$s: 200 MiB の上限を超えています</string>
+    <string name="chat_attach_too_large">%1$s: %2$s の上限を超えています</string>
     <string name="chat_attach_low_device_space">%1$s: 端末の空き容量が不足しています。空き容量を増やしてから再試行してください</string>
     <string name="chat_attach_workspace_limit">%1$s: ワークスペースのストレージが上限に達しました。ワークスペースのファイルを削除してから再試行してください</string>
     <string name="chat_attach_io_error">%1$s: 読み取りまたはコピーできません。ファイルが利用可能か確認してから再試行してください</string>
@@ -298,4 +298,16 @@
     <string name="chat_audio">Audio</string>
     <string name="chat_audio_play">Play</string>
     <string name="chat_audio_stop">Stop</string>
+    <string name="plus_sub_album">写真から選択、複数可</string>
+    <string name="plus_sub_files">文書、PDF、圧縮ファイル</string>
+    <string name="plus_sub_device">このスマホのフォルダーを参照</string>
+    <string name="plus_clipboard">クリップボード</string>
+    <string name="plus_sub_clipboard">コピーした内容を貼り付け</string>
+    <string name="plus_sub_teach">一度見せれば Mika が覚えます</string>
+    <string name="plus_sub_skills">このターンで使うスキルを選ぶ</string>
+    <string name="plus_sub_tasks">保存したタスクを入力欄に入れる</string>
+    <string name="plus_sub_browser">内蔵ブラウザー</string>
+    <string name="plus_skills_empty">個人スキルはまだありません。やり遂げたタスクから Mika が覚えたスキルがここに表示されます。</string>
+    <string name="plus_clipboard_empty">クリップボードに貼り付けられる文字がありません</string>
+    <string name="plus_skill_directive">「%1$s」スキルを使う：</string>
 </resources>

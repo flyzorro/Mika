@@ -139,9 +139,26 @@ class BackupEngine(
         val skippedProviderKeys = mutableListOf<String>()
         val skippedPrefs = mutableMapOf<String, List<String>>()
         val payloads = mutableListOf<Pair<String, ByteArray>>()
+        var totalBytes = 0L
+        fun charge(bytes: Long, label: String) {
+            totalBytes += bytes
+            if (totalBytes > MAX_BACKUP_BYTES) {
+                throw BackupException(
+                    "Backup would be too large (over ${MAX_BACKUP_BYTES / (1024 * 1024)} MB): $label",
+                )
+            }
+        }
+        fun refuseOversize(file: File, label: String) {
+            if (totalBytes + file.length() > MAX_BACKUP_BYTES) {
+                throw BackupException(
+                    "Backup would be too large (over ${MAX_BACKUP_BYTES / (1024 * 1024)} MB): $label",
+                )
+            }
+        }
 
         collectFiles().forEach { (zipPath, file) ->
             val rel = zipPath.removePrefix("files/")
+            refuseOversize(file, zipPath)
             val bytes = try {
                 file.readBytes()
             } catch (e: Exception) {
@@ -152,6 +169,7 @@ class BackupEngine(
                     val (plain, skipped) = decryptProviderKeys(bytes)
                     skippedProviderKeys += skipped
                     payloads += zipPath to plain
+                    charge(plain.size.toLong(), zipPath)
                     entries += BackupEntryInfo(zipPath, encrypted = true, alias = PROVIDER_KEYS_ALIAS)
                 }
                 encryptedFiles.containsKey(rel) -> {
@@ -162,10 +180,12 @@ class BackupEngine(
                         throw BackupException("Could not decrypt $rel: the backup cannot be completed")
                     }
                     payloads += zipPath to plain
+                    charge(plain.size.toLong(), zipPath)
                     entries += BackupEntryInfo(zipPath, encrypted = true, alias = alias)
                 }
                 else -> {
                     payloads += zipPath to bytes
+                    charge(bytes.size.toLong(), zipPath)
                     entries += BackupEntryInfo(zipPath, encrypted = false)
                 }
             }
@@ -176,6 +196,7 @@ class BackupEngine(
             ?.sortedBy { it.name }
             ?.forEach { file ->
                 val zipPath = "shared_prefs/${file.name}"
+                refuseOversize(file, zipPath)
                 val bytes = try {
                     file.readBytes()
                 } catch (e: Exception) {
@@ -185,6 +206,7 @@ class BackupEngine(
                 if (transformed.isNotEmpty()) decryptedPrefs[file.name] = transformed
                 if (skipped.isNotEmpty()) skippedPrefs[file.name] = skipped
                 payloads += zipPath to plain
+                charge(plain.size.toLong(), zipPath)
                 entries += BackupEntryInfo(zipPath, encrypted = transformed.isNotEmpty())
             }
 
@@ -226,6 +248,15 @@ class BackupEngine(
             throw BackupException("This install already has chats and providers; import needs Replace all")
         }
         val byPath = payloads.toMap()
+        // Validate all destination paths before staging, and snapshot obsolete files
+        // before temporary imports appear in the tree. Excluded data stays outside
+        // the replacement scope, just as it is outside the export scope.
+        val targets = manifest.entries.associate { it.path to targetFile(it.path) }
+        val obsolete = if (replace) {
+            val retained = targets.values.toSet()
+            val prefs = sharedPrefsDir.listFiles()?.filter { it.isFile && it.name.endsWith(".xml") }.orEmpty()
+            (collectFiles().map { it.second } + prefs).filter { it.canonicalFile !in retained }
+        } else emptyList()
         // Stage every entry before replacing anything: a corrupt payload or a full
         // disk then fails with the install's existing data untouched.
         val staged = mutableListOf<Pair<File, File>>()
@@ -233,7 +264,7 @@ class BackupEngine(
             manifest.entries.forEach { info ->
                 val bytes = byPath[info.path]
                     ?: throw BackupException("Backup is missing ${info.path}")
-                val target = targetFile(info.path)
+                val target = targets.getValue(info.path)
                 val out: ByteArray = when {
                     info.path.removePrefix("files/") == PROVIDER_KEYS_PATH -> {
                         val alias = info.alias ?: PROVIDER_KEYS_ALIAS
@@ -268,6 +299,10 @@ class BackupEngine(
                     throw BackupException("Could not replace ${target.name}")
                 }
                 if (!tmp.renameTo(target)) throw BackupException("Could not write ${target.name}")
+            }
+            // Do not delete old-only data if validation, encryption or staging fails.
+            obsolete.forEach { old ->
+                if (old.exists() && !old.delete()) throw BackupException("Could not remove ${old.name}")
             }
         } catch (e: Exception) {
             staged.forEach { (tmp, _) -> tmp.delete() }

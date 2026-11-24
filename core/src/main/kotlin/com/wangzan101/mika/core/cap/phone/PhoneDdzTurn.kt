@@ -11,7 +11,7 @@ import com.wangzan101.mika.core.tool.ToolContext
 import com.wangzan101.mika.core.tool.ToolDef
 import com.wangzan101.mika.core.tool.ToolExecution
 import com.wangzan101.mika.core.tool.Verb
-import com.wangzan101.mika.core.uistate.screen
+import com.wangzan101.mika.core.screen.uistate.screen
 import kotlinx.coroutines.delay
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
@@ -345,7 +345,7 @@ internal object PhoneDdzTurn : PhoneTool {
      * (landlord_up)、在左边我是他的下家(landlord_down)。地主的位置看对手牌背上的张数:加倍时地主 20 张、农民 17 张;
      * 认不出地主坐哪边就交 "farmer",让服务两个农民座位都算。手牌或底牌认不全为 null,不问服务。
      */
-    private fun doubleSeat(hand: List<String>?, bottom: List<String>?, handCount: Int, frame: com.wangzan101.mika.core.uistate.RawFrame): String? {
+    private fun doubleSeat(hand: List<String>?, bottom: List<String>?, handCount: Int, frame: com.wangzan101.mika.core.screen.uistate.RawFrame): String? {
         if (hand == null || bottom?.size != 3 || hand.size != handCount) return null
         if (hand.size == 20) return "landlord"
         if (hand.size != 17) return null
@@ -364,7 +364,7 @@ internal object PhoneDdzTurn : PhoneTool {
      * 第一手出来时看清过、还没读到有标签的记 false。一直看不清的不记,不发这个座位。
      * 第一手出来以后读数就定了,后面的帧(出牌特效压在头像下沿也会被认成标签)不再改。
      */
-    private fun readAuction(turn: Turn, frame: com.wangzan101.mika.core.uistate.RawFrame) {
+    private fun readAuction(turn: Turn, frame: com.wangzan101.mika.core.screen.uistate.RawFrame) {
         if (turn.mode != DdzMode.Human) return
         if (turn.auctionClosed) return
         // 第一手已经摆进出牌区、但这一帧还没记进 history:按第一手已出处理,不读这一帧的标签。
@@ -986,7 +986,7 @@ internal object PhoneDdzTurn : PhoneTool {
      * 牌桌/匹配画面底部写的场次和要的 room 对不上:记下读到的名字、停下,返回 false 表示能对上或读不出。
      * 核对的是 [Turn.checkedRoom](room=auto 爬到的最后一场);读不出(精英场、弹窗挡住)不算不符——调用方照旧往下打。
      */
-    private fun roomMismatch(frame: com.wangzan101.mika.core.uistate.RawFrame, turn: Turn): Boolean {
+    private fun roomMismatch(frame: com.wangzan101.mika.core.screen.uistate.RawFrame, turn: Turn): Boolean {
         val room = turn.checkedRoom ?: return false
         val expected = expectedRoomLabel(room) ?: return false
         val label = DdzRoomLabel.read(frame) ?: return false
@@ -1535,7 +1535,7 @@ internal object PhoneDdzTurn : PhoneTool {
      */
     private suspend fun retakeAfterAutoPlay(
         ctx: ToolContext, turn: Turn,
-    ): Pair<com.wangzan101.mika.core.uistate.RawFrame, DdzView>? {
+    ): Pair<com.wangzan101.mika.core.screen.uistate.RawFrame, DdzView>? {
         val frame = ctx.screen.rawFrame(FULL_ROWS) ?: return null
         val view = DdzScreen.read(frame, classic = classicTable(turn))
         if (view.phase != DdzPhase.AutoPlay || view.buttons.isEmpty() || !DdzCards.classicHumanTable(frame)) {
@@ -1961,7 +1961,7 @@ internal object PhoneDdzTurn : PhoneTool {
     private fun playedSinceDeal(turn: Turn) = turn.tracker?.history?.any { it.isNotEmpty() } == true
 
     /** 把这一帧喂给这一局的出牌历史;叫分时还没开局,换一局重新记。 */
-    private fun track(turn: Turn, frame: com.wangzan101.mika.core.uistate.RawFrame, view: DdzView) {
+    private fun track(turn: Turn, frame: com.wangzan101.mika.core.screen.uistate.RawFrame, view: DdzView) {
         if (view.phase == DdzPhase.Call) {
             turn.tracker = null; turn.expectedHand = null; turn.joining = false; turn.doubleDecided = false
             turn.tookBackAuto = false
@@ -1998,7 +1998,7 @@ internal object PhoneDdzTurn : PhoneTool {
      * 没有按钮、没有闹钟的一帧,别家出牌区还摆着读得准的一手牌:这是游戏替我「要不起」时的牌桌。
      * 结算页、弹窗、大厅两家出牌区被整片盖住,只会读到 Unsure / Empty,不会读到 Cards。
      */
-    private fun readableOpponentPlay(frame: com.wangzan101.mika.core.uistate.RawFrame): Boolean =
+    private fun readableOpponentPlay(frame: com.wangzan101.mika.core.screen.uistate.RawFrame): Boolean =
         DdzSide.entries.any { DdzCards.play(frame, it) is DdzSeen.Cards }
 
     /** 闹钟/按钮直接对应的座位,不含单帧闪烁的确认:轮到自己出牌时闹钟是藏起来的。 */
@@ -2036,7 +2036,7 @@ internal object PhoneDdzTurn : PhoneTool {
     /** Human mode keeps the same advisor protocol as single-player while refusing to act on an
      * unconfirmed table, hand, or visible history. */
     private suspend fun byHuman(
-        ctx: ToolContext, turn: Turn, frame: com.wangzan101.mika.core.uistate.RawFrame, view: DdzView,
+        ctx: ToolContext, turn: Turn, frame: com.wangzan101.mika.core.screen.uistate.RawFrame, view: DdzView,
     ): Auto {
         val tracker = turn.tracker ?: return humanPause(turn, DdzSessionReason.HISTORY_MISMATCH).let { Auto.Off }
         val advisor = turn.advisor ?: return humanPause(turn, DdzSessionReason.SERVICE_UNAVAILABLE).let { Auto.Off }
@@ -2140,7 +2140,7 @@ internal object PhoneDdzTurn : PhoneTool {
      * 地主只剩一张时(和先出用同一份张数)跟单张要顶牌:桌上是谁的单张(含队友出的)都用能压过它的最大单张,压不住才不出。
      */
     private suspend fun fallback(
-        ctx: ToolContext, turn: Turn, tracker: DdzTracker, frame: com.wangzan101.mika.core.uistate.RawFrame, view: DdzView,
+        ctx: ToolContext, turn: Turn, tracker: DdzTracker, frame: com.wangzan101.mika.core.screen.uistate.RawFrame, view: DdzView,
     ): Auto {
         val lord = tracker.landlord
         // 地主还剩几张:优先用屏上的读数,读不出按 tracker 记的;先出和跟牌顶牌都按这一份,只算一次
@@ -2199,7 +2199,7 @@ internal object PhoneDdzTurn : PhoneTool {
     }
 
     /** 从大厅/场次页走进真人牌桌的结果:[frame] 是牌桌;[error] 是要交还模型的明确画面。 */
-    private class HumanEntry(val frame: com.wangzan101.mika.core.uistate.RawFrame?, val error: String? = null)
+    private class HumanEntry(val frame: com.wangzan101.mika.core.screen.uistate.RawFrame?, val error: String? = null)
 
     /**
      * 从游戏主大厅点中间的「真人对战」、在真人场次页点([room] 那张卡:普通场、精英场、土豪场、大师场或至尊场),然后等匹配和牌桌;单机的经典场次页不点。
@@ -2209,9 +2209,9 @@ internal object PhoneDdzTurn : PhoneTool {
      * 最多等约 45 秒(真人场匹配的倒计时就有 30 秒),弹窗另算。只认 Mika 的屏,认不出的画面一律不点。
      */
     private suspend fun awaitHumanEntry(
-        ctx: ToolContext, turn: Turn, first: com.wangzan101.mika.core.uistate.RawFrame, room: String, climb: Boolean,
+        ctx: ToolContext, turn: Turn, first: com.wangzan101.mika.core.screen.uistate.RawFrame, room: String, climb: Boolean,
     ): HumanEntry {
-        var page: com.wangzan101.mika.core.uistate.RawFrame? = first
+        var page: com.wangzan101.mika.core.screen.uistate.RawFrame? = first
         /** 当前要点的场次卡:room=auto 每被拒一次就往上换一场。 */
         var candidate = room
         var lobbyTapped = false
@@ -2394,7 +2394,7 @@ internal object PhoneDdzTurn : PhoneTool {
      * 段位弹窗只点橙色「确定」,绝不点绿色「炫耀一下」;「至尊特权升级」弹窗只点蓝色「我知道了」,
      * 绝不点橙色「查看更多特权」(会进特权/充值页)。处理了(这一帧先等着,或已经点下去)为 true。
      */
-    private suspend fun tapGamePopup(ctx: ToolContext, turn: Turn, frame: com.wangzan101.mika.core.uistate.RawFrame?): Boolean {
+    private suspend fun tapGamePopup(ctx: ToolContext, turn: Turn, frame: com.wangzan101.mika.core.screen.uistate.RawFrame?): Boolean {
         val privilege = frame?.let { DdzCards.privilegePopup(it) }
         if (privilege != null) {
             turn.rankSightings = 0
@@ -2426,7 +2426,7 @@ internal object PhoneDdzTurn : PhoneTool {
     }
 
     /** 工具认得的弹窗:点一下,或者视频还在倒计时就等着;处理了为 true,调用方接着等。 */
-    private suspend fun clearPopup(ctx: ToolContext, turn: Turn, frame: com.wangzan101.mika.core.uistate.RawFrame?): Boolean {
+    private suspend fun clearPopup(ctx: ToolContext, turn: Turn, frame: com.wangzan101.mika.core.screen.uistate.RawFrame?): Boolean {
         val screen = ctx.screen.peek()
         if (screen.packageName != PACKAGE) return false
         if (tapGamePopup(ctx, turn, frame)) return true
@@ -2472,7 +2472,7 @@ internal object PhoneDdzTurn : PhoneTool {
             broken == "pass_not_taken")
 
     /** Known non-table scenes that end automatic human play; null when the scene is just unrecognised. */
-    private fun humanHandoff(frame: com.wangzan101.mika.core.uistate.RawFrame): String? = when {
+    private fun humanHandoff(frame: com.wangzan101.mika.core.screen.uistate.RawFrame): String? = when {
         DdzCards.humanResult(frame) -> null
         DdzCards.singleLobby(frame) -> DdzSessionReason.LOBBY_RETURN
         DdzCards.unknownPopup(frame) -> DdzSessionReason.UNKNOWN_POPUP
@@ -2483,7 +2483,7 @@ internal object PhoneDdzTurn : PhoneTool {
      * 这一帧是不是连着第 [POPUP_CONFIRM_FRAMES] 帧「认不出的弹窗」。不是就清零:要的是同一判定连续几帧,
      * 结算页上的「春天」等全屏特效只盖住一两帧,不能一帧就暂停。
      */
-    private fun confirmUnknownPopup(frame: com.wangzan101.mika.core.uistate.RawFrame?, turn: Turn): Boolean {
+    private fun confirmUnknownPopup(frame: com.wangzan101.mika.core.screen.uistate.RawFrame?, turn: Turn): Boolean {
         if (frame == null || !DdzCards.unknownPopup(frame)) {
             turn.popupSightings = 0
             return false
@@ -2493,7 +2493,7 @@ internal object PhoneDdzTurn : PhoneTool {
 
     /** Wait out one short transition before calling a human-table scene unknown. Returns the first
      * readable table frame, the first lobby/popup frame (nothing left to wait for), or null. */
-    private suspend fun recoverHumanScene(ctx: ToolContext, turn: Turn): com.wangzan101.mika.core.uistate.RawFrame? {
+    private suspend fun recoverHumanScene(ctx: ToolContext, turn: Turn): com.wangzan101.mika.core.screen.uistate.RawFrame? {
         var misses = 0
         var popupPolls = 0
         while (misses < HUMAN_SCENE_RETRY_POLLS && popupPolls < POPUP_POLLS) {
@@ -2518,7 +2518,7 @@ internal object PhoneDdzTurn : PhoneTool {
     }
 
     /** Check the recovered state against the next visible screen before any automatic input. */
-    private fun snapshotMatches(snapshot: DdzSnapshot, frame: com.wangzan101.mika.core.uistate.RawFrame, view: DdzView, turn: Turn): Boolean {
+    private fun snapshotMatches(snapshot: DdzSnapshot, frame: com.wangzan101.mika.core.screen.uistate.RawFrame, view: DdzView, turn: Turn): Boolean {
         if (view.phase != phaseOf(snapshot.phase)) return false
         val hand = DdzCards.hand(frame, view) ?: return false
         if (hand.sorted() != snapshot.hand.sorted() || hand.size != snapshot.hand.size) return false
@@ -2536,7 +2536,7 @@ internal object PhoneDdzTurn : PhoneTool {
      * 单机经典场这一局剩下的由工具按简单规则打完(模型一手 8-15 秒,15 秒的倒计时等不起),下一局叫分时
      * tracker 重来再交给 DouZero;闯关仍交还模型([Auto.Off])。
      */
-    private suspend fun byDouZero(ctx: ToolContext, turn: Turn, frame: com.wangzan101.mika.core.uistate.RawFrame, view: DdzView): Auto {
+    private suspend fun byDouZero(ctx: ToolContext, turn: Turn, frame: com.wangzan101.mika.core.screen.uistate.RawFrame, view: DdzView): Auto {
         val tracker = turn.tracker ?: return Auto.Off
         val advisor = turn.advisor ?: return Auto.Off
         if (!turn.single) return Auto.Off
@@ -2686,7 +2686,7 @@ internal object PhoneDdzTurn : PhoneTool {
     })
 
     /** 游戏没铺满 2412×1080(安卓的兼容小窗),所有按主屏量出来的坐标都对不上。 */
-    private fun letterboxed(frame: com.wangzan101.mika.core.uistate.RawFrame) =
+    private fun letterboxed(frame: com.wangzan101.mika.core.screen.uistate.RawFrame) =
         frame.width != 2412 || frame.height != 1080
 
     private fun strings(a: Args, key: String): List<String> =
