@@ -33,7 +33,7 @@ internal data class JjHandResult(
     val stakes: String?, val multiplier: Double?, val stakes_source: String?,
     val bombs: Int, val rockets: Int, val spring: Boolean?, val history_complete: Boolean,
     val failures: Map<String, Int>, val tracker_breaks: Map<String, Int>,
-    val advisor_host: String?, val advisor_reachable: Boolean?,
+    val advisor_host: String?, val advisor_reachable: Boolean?, val ocr_ms: Long? = null,
 )
 
 /** Only the last table JPEG and a possible payout JPEG survive the poll. Never OCR on a turn. */
@@ -41,6 +41,7 @@ internal class JjHandLog(val index: Int) {
     var endedAt: Long? = null
     var tableShot: ByteArray? = null
     var settlementShot: ByteArray? = null
+    var sawResultPage = false
     var stableLandlord: DdzSeat? = null
     var bid: JjBid? = null
     var advisorReachable: Boolean? = null
@@ -94,33 +95,37 @@ internal class JjHandLog(val index: Int) {
         private fun stakes(lines: List<VisibleTextLine>) = lines.texts(400..750, 0..85)
             .flatMap { stake.findAll(it).map { m -> "${m.groupValues[1]}x${m.groupValues[2]}" }.toList() }.distinct().singleOrNull()
 
-        internal fun enrich(record: JjHandResult, settlement: List<VisibleTextLine>, table: List<VisibleTextLine>): JjHandResult {
+        internal fun enrich(record: JjHandResult, lines: List<VisibleTextLine>, settlement: Boolean): JjHandResult {
             // Own payout above the revealed hand, beach +10 (x≈.29, y≈.51), sea −450 (.31, .59).
             // Reject rank, balance, other seats and conflicting readings from the two OCR models.
-            val score = settlement.texts(270..520, 475..685).map { it.filterNot(Char::isWhitespace).replace('−', '-').replace('－', '-').replace('＋', '+') }
-                .filter { signedScore.matches(it) }.mapNotNull { it.toIntOrNull() }.distinct().singleOrNull()
+            val score = lines.texts(270..520, 475..685).map { it.filterNot(Char::isWhitespace).replace('−', '-').replace('－', '-').replace('＋', '+') }
+                .filter { signedScore.matches(it) }.mapNotNull { it.toIntOrNull() }.distinct().singleOrNull().takeIf { settlement }
             val paidWin = score?.takeUnless { it == 0 }?.let { it > 0 }
-            val atEnd = stakes(settlement)
-            val shown = atEnd ?: stakes(table)
+            val shown = stakes(lines)
             val conflict = paidWin != null && record.win != null && paidWin != record.win
             return record.copy(end = if (paidWin != null) "settlement" else record.end, win = paidWin ?: record.win, score_change = score,
                 evidence = if (paidWin != null) "settlement_score" else record.evidence,
                 winner = record.winner.takeUnless { conflict }, spring = record.spring.takeUnless { conflict },
                 history_complete = record.history_complete && !conflict,
                 stakes = shown, multiplier = shown?.substringAfter('x')?.toDoubleOrNull(),
-                stakes_source = when { atEnd != null -> "settlement"; shown != null -> "last_table"; else -> null })
+                stakes_source = shown?.let { if (settlement) "settlement" else "last_table" })
         }
 
         fun write(record: JjHandResult, payout: ByteArray?, lastTable: ByteArray?,
                   read: suspend (ByteArray) -> List<VisibleTextLine>?, dumpDirectory: () -> File?) {
             writer.execute {
-                fun lines(shot: ByteArray?) = shot?.let {
-                    runCatching { runBlocking { withTimeoutOrNull(4_000) { read(it) } } }.getOrNull()
-                }.orEmpty()
                 runCatching {
-                    val settlement = lines(payout)
-                    val table = if (payout === lastTable || stakes(settlement) != null) emptyList() else lines(lastTable)
-                    val json = Json.encodeToString(enrich(record, settlement, table))
+                    val shot = when (record.end) {
+                        "stopped", "replaced", "redeal" -> null
+                        else -> payout ?: lastTable
+                    }
+                    val result = if (shot == null) record else {
+                        val started = System.nanoTime()
+                        val lines = runCatching { runBlocking { withTimeoutOrNull(4_000) { read(shot) } } }.getOrNull()
+                        val elapsedMs = (System.nanoTime() - started) / 1_000_000
+                        enrich(record, lines.orEmpty(), settlement = payout != null).copy(ocr_ms = elapsedMs)
+                    }
+                    val json = Json.encodeToString(result)
                     println("JJTRACE hand_result $json")
                     val dir = checkNotNull(dumpDirectory()?.parentFile) { "external files unavailable" }.resolve("jjhands")
                     check(dir.isDirectory || dir.mkdirs()) { "mkdir $dir" }

@@ -14,7 +14,7 @@ class JjHandLogTest {
             line("100x4.5", 534, 27, 598, 65), line("262", 310, 684, 357, 729))
         val trackerResult = hand.snapshot("session", null, "hand_gap", null).copy(
             win = true, winner = "me", history_complete = true, spring = false)
-        val row = JjHandLog.enrich(trackerResult, payout, listOf(line("100x3", 595, 27, 644, 63)))
+        val row = JjHandLog.enrich(trackerResult, payout, settlement = true)
         assertEquals(false, row.win)
         assertEquals(-450, row.score_change)
         assertEquals("settlement_score", row.evidence)
@@ -30,7 +30,7 @@ class JjHandLogTest {
         assertNull(row.role)
         assertNull(row.advisor_reachable)
         val lines = listOf("+30", "-30", "500").map { line(it, 285, 508, 375, 614) }
-        val result = JjHandLog.enrich(row, lines, emptyList())
+        val result = JjHandLog.enrich(row, lines, settlement = true)
         assertEquals("unknown", result.evidence)
         assertNull(result.win)
         assertNull(result.score_change)

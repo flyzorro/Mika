@@ -10,6 +10,7 @@ import com.wangzan101.mika.core.screen.uistate.RawFrame
 import com.wangzan101.mika.core.screen.uistate.ScreenPort
 import com.wangzan101.mika.core.screen.uistate.VisibleTextLine
 import com.wangzan101.mika.core.screen.uistate.ScreenSnapshot
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.test.currentTime
@@ -99,11 +100,14 @@ class JjDdzTurnTest {
         val scenery = frame("beach_scenery")
         val settlement = frame("table_again")
         assertTrue(JjDdzScreen.payoutVisible(settlement))
+        val ocrShots = mutableListOf<Int>()
         val game = object : Game(JjDdzScreen.PACKAGE, frame("call_sea_2412"), dir) {
-            override suspend fun readShotText(jpeg: ByteArray) = when (jpeg.single().toInt()) {
-                // Lines and normalized boxes from archived table_again.jpg and follow.jpg.
-                10 -> listOf(VisibleTextLine("+10", listOf(277, 504, 364, 611)))
-                else -> listOf(VisibleTextLine("100х3", listOf(595, 27, 644, 63)))
+            override suspend fun readShotText(jpeg: ByteArray): List<VisibleTextLine> {
+                ocrShots += jpeg.single().toInt()
+                return when (jpeg.single().toInt()) {
+                    10 -> listOf(VisibleTextLine("+10", listOf(277, 504, 364, 611)))
+                    else -> listOf(VisibleTextLine("100х3", listOf(595, 27, 644, 63)))
+                }
             }
         }
         val ctx = toolDispatcher(game).ctx
@@ -140,9 +144,82 @@ class JjDdzTurnTest {
         assertEquals(true, row.win)
         assertEquals("settlement_score", row.evidence)
         assertEquals(10, row.score_change)
-        assertEquals("100x3", row.stakes)
+        assertEquals(listOf(10), ocrShots)
+        assertTrue(row.ocr_ms != null)
+        assertEquals(null, row.stakes)
+        assertEquals(null, row.stakes_source)
+        assertEquals(null, row.multiplier)
+    }
+
+    @Test fun nextHandBidsWhileLastHandOcrIsPending() = runTest {
+        val dir = temp.newFolder("jjdump")
+        val entered = CompletableDeferred<Unit>()
+        val release = CompletableDeferred<Unit>()
+        val finished = CompletableDeferred<Unit>()
+        val game = object : Game(JjDdzScreen.PACKAGE, frame("beach_scenery"), dir) {
+            override suspend fun readShotText(jpeg: ByteArray): List<VisibleTextLine> {
+                entered.complete(Unit)
+                try {
+                    release.await()
+                    return listOf(VisibleTextLine("100х3", listOf(595, 27, 644, 63)))
+                } finally {
+                    finished.complete(Unit)
+                }
+            }
+
+            override suspend fun quickTap(x: Int, y: Int): Boolean {
+                // The second hand can actually tap its bid while the writer is waiting.
+                withContext(Dispatchers.IO) { withTimeout(2_000) { entered.await() } }
+                assertTrue(!finished.isCompleted)
+                app = "other"
+                return super.quickTap(x, y)
+            }
+        }
+        val call = frame("call_beach")
+        var reads = 0
+        JjDdzTurn.detect = { _, _ ->
+            when (++reads) {
+                1, 8 -> hand(seventeen)
+                7 -> emptyList<JjCard>().also { game.frame = call }
+                else -> emptyList()
+            }
+        }
+        try {
+            run(game, start.replace("\"auto\":true", "\"auto\":true,\"hands\":2"))
+            assertEquals(1, game.taps.size)
+        } finally {
+            release.complete(Unit)
+        }
+        val row = Json.decodeFromString<JjHandResult>(awaitHandLine(dir))
+        assertEquals(1, row.hand)
         assertEquals("last_table", row.stakes_source)
         assertEquals(3.0, row.multiplier)
+    }
+
+    @Test fun settlementWithVisibleCardsWaitsForSixEmptyReads() = runTest {
+        val settlement = frame("table_again")
+        val dir = temp.newFolder("jjdump")
+        var ocrAttempts = 0
+        val game = object : Game(JjDdzScreen.PACKAGE, frame("beach_scenery"), dir) {
+            override suspend fun readShotText(jpeg: ByteArray): List<VisibleTextLine> {
+                ocrAttempts++
+                error("OCR offline")
+            }
+        }
+        var reads = 0
+        JjDdzTurn.detect = { _, _ ->
+            when (++reads) {
+                1 -> hand(seventeen).also { game.frame = settlement }
+                2 -> hand(seventeen)
+                else -> emptyList()
+            }
+        }
+        assertEquals("result", run(game, start).text("state"))
+        assertEquals(8, reads)
+        val row = Json.decodeFromString<JjHandResult>(awaitHandLine(dir))
+        assertEquals(1, ocrAttempts)
+        assertEquals("settlement", row.end)
+        assertEquals("unknown", row.evidence)
     }
 
     private suspend fun awaitHandLine(dir: File): String = withContext(Dispatchers.IO) {
@@ -156,7 +233,7 @@ class JjDdzTurnTest {
         }
     }
 
-    @Test fun failedHandKeepsCountersAcrossPauseAndOcrFailure() = runTest {
+    @Test fun stoppingMidHandKeepsFailureCountersAndSkipsOcr() = runTest {
         val dir = temp.newFolder("jjdump")
         val game = object : Game(JjDdzScreen.PACKAGE, frame("follow"), dir) {
             override suspend fun readShotText(jpeg: ByteArray): List<VisibleTextLine> = error("OCR offline")
@@ -176,6 +253,7 @@ class JjDdzTurnTest {
         run(game, """{"action":"stop"}""", ctx)
         val row = Json.decodeFromString<JjHandResult>(awaitHandLine(dir))
         assertEquals("stopped", row.end)
+        assertEquals(null, row.ocr_ms)
         assertEquals(mapOf("rules_fallback" to 1, "auto_play" to 1, "cancel_auto" to 1, "cards_error" to 4), row.failures)
         assertEquals(mapOf(DdzSessionReason.JOINED_MID_GAME to 1), row.tracker_breaks)
         assertEquals("unknown", row.evidence)
