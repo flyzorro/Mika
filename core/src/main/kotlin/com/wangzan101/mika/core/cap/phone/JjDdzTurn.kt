@@ -56,7 +56,7 @@ internal object JjDdzTurn {
     private const val SLOW_FRAME_MS = 3_000L
     /** 别家出的牌分数不到 SURE、但连着这么久点数都一样,就算认准。 */
     private const val STEADY_MS = 1_500L
-    /** 低于这个分数的框不算,怎么稳也不认。 */
+    /** 单凭重复读数可接受的最低分；更低的重叠框还要用副牌张数排除所有其他点数。 */
     private const val STEADY_MIN_SCORE = 0.6
     private const val TRICK_PLAY_FRAMES = 2
     /** 18:00:43 的左槽「2」最低约 0.56，右槽 6/9 的分差约 0.16。 */
@@ -90,6 +90,10 @@ internal object JjDdzTurn {
 
     internal data class RocketGap(val seat: DdzSeat, val historySize: Int, val counts: Map<DdzSide, Int>?, val explosion: Boolean)
 
+    internal class CountedPlay(val seat: DdzSeat, val historySize: Int, val cards: List<String>, val hand: List<String>) {
+        var sawPasses = false
+    }
+
     internal class Session(val advisor: String, var handsLeft: Int, private val dumpDirectory: () -> File? = { null }) {
         private class Shot(val at: Long, val jpeg: ByteArray)
         private val recentShots = ArrayDeque<Shot>(DUMP_FRAMES)
@@ -101,6 +105,7 @@ internal object JjDdzTurn {
         var emptyBottomInCall = 0
         var opponentTrick: OpponentTrick? = null
         var rocketGap: RocketGap? = null
+        var countedPlay: CountedPlay? = null
         var recoveredLeader: DdzSeat? = null
         var previousPlayBoxes = emptyMap<DdzSide, List<JjCard>>()
         var previousRawTurn: DdzSeat? = null
@@ -327,7 +332,8 @@ internal object JjDdzTurn {
             val decisionAt = PhoneDdzTurn.clock()
             val settleExpired = view.phase.mine() && !s.acted && s.settleSince != 0L && decisionAt - s.settleSince >= SETTLE_MS
             val before = tracker.history.size
-            observe(s, table, view, settleExpired, if (s.rocketGap != null) JjDdzScreen.counts(frame) else null)
+            val counts = if (tracker.landlord != null && tracker.broken == null) JjDdzScreen.counts(frame) else null
+            observe(s, table, view, settleExpired, counts)
             // 刚补记的牌后面可能还有一家要确认，留出读稳那一手的时间。
             if (settleExpired && !tracker.ready() && tracker.history.asSequence().drop(before).any { DdzCards.UNKNOWN in it }) {
                 s.settleSince = decisionAt
@@ -360,6 +366,7 @@ internal object JjDdzTurn {
     private fun Session.resetTurnReads() {
         opponentTrick = null
         rocketGap = null
+        countedPlay = null
         previousPlayBoxes = emptyMap()
         previousRawTurn = null
     }
@@ -418,6 +425,7 @@ internal object JjDdzTurn {
         }
         val clockTurn = confirmedTurn.takeUnless { s.recoveredLeader != null || turn == DdzSeat.Me && previousTurn != turn }
         recoverHiddenRocket(s, tracker, table, view.phase, clockTurn, counts, ::repeated)
+        recoverCountedTrick(s, tracker, table, view, counts, ::repeated)
         recoverOpponentTrick(s, tracker, table, clockTurn)
         val bottom = votedBottom(s, tracker, table, view)
         val before = tracker.history.size
@@ -439,6 +447,7 @@ internal object JjDdzTurn {
             },
             expireOpponentDeckRetries = settleExpired,
             opponentPlayedAfterMine = opponentPlayedAfterMine,
+            deadlineCounts = counts.takeIf { settleExpired && !table.handUnsure },
         )
         // 刚读定炸前那一家的不出，队头才轮到炸家。这一帧可能是新领出的最后一帧。
         if (s.rocketGap != null && tracker.history.size > before) {
@@ -518,6 +527,43 @@ internal object JjDdzTurn {
             s.rocketGap = null
             s.opponentTrick = null
         }
+    }
+
+    /** 连续看见同一家出两手，中间两家同时亮过「不出」。两次立牌分别核对第一手和合计张数。 */
+    private fun recoverCountedTrick(
+        s: Session, tracker: DdzTracker, table: JjTable, view: JjView, counts: Map<DdzSide, Int>?,
+        repeated: (DdzSide, List<String>) -> Boolean,
+    ) {
+        val previous = s.countedPlay
+        s.countedPlay = null
+        if (tracker.broken != null || table.handUnsure || view.phase !in listOf(DdzPhase.Other, DdzPhase.Follow)) return
+        val hand = table.handRanks
+        val saved = previous?.takeIf { it.historySize == tracker.history.size && it.hand == hand }
+        val seat = saved?.seat ?: tracker.nextOpponent() ?: return
+        val side = sideOf(seat)
+        val other = if (seat == DdzSeat.Left) DdzSeat.Right else DdzSeat.Left
+        val shown = (table.seen(side) as? DdzSeen.Cards)?.ranks
+        val otherSeen = table.seen(sideOf(other))
+        if (otherSeen is DdzSeen.Cards && otherSeen.ranks != tracker.lastOpponentPlay(other)) return
+        val play = saved ?: run {
+            if (shown == null || counts == null || shown == tracker.lastOpponentPlay(seat) ||
+                !tracker.countsMatchPlay(seat, shown.size, counts) || !tracker.jjOpponentPlayIsLegal(seat, shown)) return
+            // 单帧牌角会认错；只有张数是一，且剩牌中仅此点数能压上一手，才放行单帧。
+            if (!repeated(side, shown) && !(shown.size == 1 && tracker.onlyPossibleSingle(shown.single(), hand))) return
+            CountedPlay(seat, tracker.history.size, shown, hand)
+        }
+        if (shown != null && shown != play.cards) {
+            if (!play.sawPasses || table.mine !in listOf(DdzSeen.Empty, DdzSeen.Pass) ||
+                otherSeen !in listOf(DdzSeen.Empty, DdzSeen.Pass)) return
+            if (counts != null && view.turn != null && view.turn != seat && repeated(side, shown) &&
+                tracker.recordTrickAndNewLead(seat, play.cards, counts, shown, hand)) {
+                s.opponentTrick = null
+                return
+            }
+        } else if (table.mine == DdzSeen.Pass && otherSeen == DdzSeen.Pass) {
+            play.sawPasses = true
+        }
+        s.countedPlay = play
     }
 
     /** 快速清桌时保留已经连续读到的出牌，等新出现的两个「不出」或完整走过一圈的闹钟确认。 */
@@ -735,11 +781,16 @@ internal object JjDdzTurn {
     internal fun steady(s: Session, table: JjTable, side: DdzSide): DdzSeen {
         val seen = table.seen(side)
         val found = table.opponentBoxes(side)
-        if (found.isEmpty() || found.any { it.rank == "PASS" || it.score < STEADY_MIN_SCORE }) {
+        if (found.isEmpty() || found.any { it.rank == "PASS" }) {
             s.unsure.remove(side)
             return seen
         }
-        val ranks = opponentRanks(s, table, side, found)
+        val ranks = if (found.any { it.score < STEADY_MIN_SCORE }) {
+            uniqueWeakRank(s, table, side, found) ?: run {
+                s.unsure.remove(side)
+                return seen
+            }
+        } else opponentRanks(s, table, side, found)
         if (seen != DdzSeen.Unsure) {
             s.unsure.remove(side)
             return ranks?.let { DdzSeen.Cards(it) } ?: DdzSeen.Unsure
@@ -755,6 +806,25 @@ internal object JjDdzTurn {
         if (ranks == null || now - first.second < STEADY_MS) return seen
         trace(s, "steady $side ${ranks.joinToString(" ")} scores=${found.map { "%.2f".format(it.score) }}")
         return DdzSeen.Cards(ranks)
+    }
+
+    /** 只有一个低分牌角，且用整副牌排除后只剩一个实测点数。仍需经过 steady 计时。 */
+    private fun uniqueWeakRank(s: Session, table: JjTable, side: DdzSide, boxes: List<JjCard>): List<String>? {
+        val tracker = s.tracker ?: return null
+        if (table.handUnsure || table.hand.isEmpty()) return null
+        val at = boxes.indices.singleOrNull { boxes[it].score < JjCards.SURE } ?: return null
+        val weak = boxes[at]
+        if (weak.alternateRanks.isEmpty()) return null
+        val fixed = boxes.filterIndexed { i, _ -> i != at }.map { it.rank }
+        val left = DdzCards.copiesLeft(tracker.history.flatten() + table.handRanks)
+        val counts = fixed.groupingBy { it }.eachCount()
+        if (counts.any { (rank, n) -> n > left.getOrDefault(rank, 0) }) return null
+        val rank = (weak.alternateRanks + weak.rank).singleOrNull {
+            left.getOrDefault(it, 0) > counts.getOrDefault(it, 0)
+        } ?: return null
+        val seat = if (side == DdzSide.Left) DdzSeat.Left else DdzSeat.Right
+        return boxes.mapIndexed { i, box -> if (i == at) rank else box.rank }
+            .takeIf { tracker.jjOpponentPlayIsLegal(seat, it) }
     }
 
     /** 首选点数不合牌规或超张时，只试同一位置实际读到的备选点数。 */
