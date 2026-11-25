@@ -18,6 +18,31 @@ class DdzTrackerTest {
     private var counts = mapOf<DdzSide, Int?>()
     private fun seeCounted(turn: DdzSeat?) = tracker.observe(turn, { if (it == DdzSide.Left) left else right }, { bottom }, counts = { counts })
 
+    @Test fun aPassBubbleCannotMakeTheLeaderPassAfterTwoPasses() {
+        val moves = listOf(listOf("7"), emptyList(), emptyList())
+        tracker.restore(DdzSeat.Left, bottom, moves, DdzSeat.Left)
+        left = DdzSeen.Pass
+        repeat(5) { see(DdzSeat.Me) }
+        assertEquals("pass_on_lead", tracker.broken)
+        assertEquals(moves, tracker.history)
+        assertFalse(tracker.ready())
+    }
+
+    @Test fun followButtonsCannotSendAHistoryWhereIHaveTheLead() {
+        tracker.restore(DdzSeat.Me, bottom, listOf(listOf("7"), emptyList(), emptyList()), DdzSeat.Me)
+        tracker.checkJjDecision(List(19) { DdzCards.RANKS[it / 4] }, leading = false)
+        assertEquals("history_phase", tracker.broken)
+        assertFalse(tracker.ready())
+    }
+
+    @Test fun anEarlierUnknownCannotHideAnIllegalFollowToAKnownLead() {
+        val moves = listOf(listOf("?"), emptyList(), emptyList(), listOf("A"))
+        tracker.restore(DdzSeat.Left, bottom, moves, DdzSeat.Me)
+        tracker.mine(listOf("K"))
+        assertEquals("illegal_me", tracker.broken)
+        assertEquals(moves, tracker.history)
+    }
+
     @Test fun anUnreadableBottomDoesNotHoldTheGameBack() {
         repeat(4) { tracker.observe(DdzSeat.Me, { if (it == DdzSide.Right) DdzSeen.Cards(listOf("5")) else DdzSeen.Empty }, { null }) }
         assertEquals(DdzSeat.Right, tracker.landlord)
@@ -313,7 +338,7 @@ class DdzTrackerTest {
     }
 
     @Test fun myLeadInfersPassesWhenOneAreaWasCleared() {
-        left = DdzSeen.Cards(listOf("5"))
+        left = DdzSeen.Cards(listOf("5", "5"))
         repeat(4) { see(DdzSeat.Me) }
         tracker.mine(listOf("9", "9"))
         right = DdzSeen.Empty
@@ -323,7 +348,7 @@ class DdzTrackerTest {
         see(DdzSeat.Me)
         tracker.observe(DdzSeat.Me, { if (it == DdzSide.Left) left else right }, { bottom }, leading = true)
         assertNull(tracker.broken)
-        assertEquals(listOf(listOf("5"), listOf("9", "9"), emptyList(), emptyList()), tracker.history)
+        assertEquals(listOf(listOf("5", "5"), listOf("9", "9"), emptyList(), emptyList()), tracker.history)
         assertTrue(tracker.ready())
     }
 
@@ -568,8 +593,8 @@ class DdzTrackerTest {
     }
 
     @Test fun aTurnTheGameSkipsForMeIsMyPass() {
-        // 右家是地主,出了 3;左家不要;我出顺子,地主王炸,左家不要,我管不了,游戏不轮到我,地主接着出 9
-        right = DdzSeen.Cards(listOf("3"))
+        // 右家地主出顺子，左家不要。我用更大的顺子压，地主出王炸，两家过后他领出 9。
+        right = DdzSeen.Cards("3 4 5 6 7".split(' '))
         repeat(3) { see(DdzSeat.Left) }
         left = DdzSeen.Pass
         repeat(4) { see(DdzSeat.Me) }
@@ -639,16 +664,18 @@ class DdzTrackerTest {
     }
 
     @Test fun aRocketThatSkipsMeRightAfterItsCountDroppedIsMyPass() {
-        // 右家地主出 4445,左家农民王炸:张数一少就当轮到我了;我管不了,闹钟直接到了地主
+        // 地主的 4445 无人跟，重新领出 6，左家王炸。张数一少就轮到我，游戏直接跳过。
         counts = mapOf(DdzSide.Left to 17, DdzSide.Right to 16)
         right = DdzSeen.Cards("4 4 4 5".split(' '))
         repeat(2) { seeCounted(null) }
         left = DdzSeen.Pass
         repeat(4) { seeCounted(DdzSeat.Me) }
         tracker.mine(emptyList())
-        right = DdzSeen.Pass
+        right = DdzSeen.Cards(listOf("6"))
+        counts = mapOf(DdzSide.Left to 17, DdzSide.Right to 15)
+        repeat(3) { seeCounted(DdzSeat.Left) }
         left = DdzSeen.Cards(listOf("BJ", "SJ"))
-        counts = mapOf(DdzSide.Left to 15, DdzSide.Right to 16)
+        counts = mapOf(DdzSide.Left to 15, DdzSide.Right to 15)
         repeat(3) { seeCounted(null) }
         repeat(3) { seeCounted(DdzSeat.Right) }
         assertEquals(listOf(listOf("BJ", "SJ"), emptyList()), tracker.history.takeLast(2))

@@ -6,6 +6,13 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class JjTrackerReplayTest {
+    @Test fun aSecondTwoFromTheRightBeatsTheLandlordsSeven() {
+        val history = moves("9/J/A/2//SJ///J J 10 10 9 9 8 8///3/10//2")
+        val tracker = replay("155653", DdzSeat.Left, DdzSeat.Left, history, myPassAt = setOf(68, 75))
+        tracker.checkJjDecision("K Q Q Q Q 8 7 6 6 5 5 4 4 3 3 3".split(' '), leading = false)
+        assertHistory(tracker, history + moves("BJ///7//2/"))
+    }
+
     @Test fun theRightShiftedBottomIsReadInSlotOrder() {
         val tracker = DdzTracker(DdzSettlingPolicy.HUMAN).apply { restore(DdzSeat.Right, emptyList(), emptyList()) }
         val session = JjDdzTurn.Session("", 1).apply { this.tracker = tracker }
@@ -85,7 +92,7 @@ class JjTrackerReplayTest {
 
     @Test fun anOverlappingLabelUsesTheRankThatMakesALegalOvercall() {
         val history = moves("4 4 4 7")
-        val tracker = replay("1811", DdzSeat.Right, DdzSeat.Left, history, myPassAt = 40)
+        val tracker = replay("1811", DdzSeat.Right, DdzSeat.Left, history, myPassAt = setOf(40))
         assertEquals(history + moves("8 8 8 3//J J J 3"), tracker.history.take(4))
     }
 
@@ -129,7 +136,7 @@ class JjTrackerReplayTest {
 
     @Test fun leftBombClearedBeforeTheClockReturnedStillCounts() {
         val history = moves("3/8/J/K/A//2/SJ//BJ///J J J 4 4//3 3 2 2 2///Q/A///6/Q//A///10 9 8 7 6///A")
-        val tracker = replay("1212", DdzSeat.Right, DdzSeat.Left, history, myPassAt = 253)
+        val tracker = replay("1212", DdzSeat.Right, DdzSeat.Left, history, myPassAt = setOf(253))
         assertHistory(tracker, history + moves("5 5 5 5///9 9 9 4 4///3"))
     }
 
@@ -291,13 +298,13 @@ class JjTrackerReplayTest {
 
     @Test fun passesAfterTheBombDoNotCountAgainstTheLandlordsNextLead() {
         val history = moves("5 5//Q Q/A A//2 2///8 7 6 5 4 3///10/K//A/2///4 4/9 9//Q Q//K K")
-        val tracker = replay("2201", DdzSeat.Left, DdzSeat.Left, history, myPassAt = 170)
+        val tracker = replay("2201", DdzSeat.Left, DdzSeat.Left, history, myPassAt = setOf(170))
         assertHistory(tracker, history + moves("J J J J///10"))
     }
 
     @Test fun myPassOnTheJokerDoesNotCountAgainstMyTeammatesNextLead() {
         val history = moves("4 4//10 10/K K//2 2///Q/2")
-        val tracker = replay("2204", DdzSeat.Right, DdzSeat.Left, history, myPassAt = 88)
+        val tracker = replay("2204", DdzSeat.Right, DdzSeat.Left, history, myPassAt = setOf(88))
         assertHistory(tracker, history + moves("SJ///6"))
     }
 
@@ -307,7 +314,7 @@ class JjTrackerReplayTest {
         active: DdzSeat,
         history: List<List<String>>,
         throughFrame: Int = Int.MAX_VALUE,
-        myPassAt: Int? = null,
+        myPassAt: Set<Int> = emptySet(),
         changeBoxes: (List<JjCard>) -> List<JjCard> = { it },
     ): DdzTracker {
         val tracker = DdzTracker(DdzSettlingPolicy.HUMAN).apply { restore(landlord, emptyList(), history, active) }
@@ -329,7 +336,7 @@ class JjTrackerReplayTest {
                 JjDdzTurn.observe(session, table, JjView(phase, emptyList(), turn))
                 assertNull("/cards line $logLine, frame $frame, trace=${tracker.trace}", tracker.broken)
                 // The live fallback also tapped pass at this point. In the replay the tracker can record it.
-                if (frameNo == myPassAt && tracker.ready()) tracker.mine(emptyList())
+                if (frameNo in myPassAt && tracker.ready()) tracker.mine(emptyList())
             }
         } finally {
             PhoneDdzTurn.clock = originalClock

@@ -21,6 +21,7 @@ class JjHiddenRocketTest {
     private fun observe(
         turn: DdzSeat?, hand: String, left: String = "", right: String = "", mine: String = "",
         badges: Map<DdzSide, Int>? = null, explosion: Boolean = false,
+        phase: DdzPhase = if (turn == DdzSeat.Me) DdzPhase.Follow else DdzPhase.Other,
     ) {
         fun boxes(ranks: String, x: Int, y: Int, height: Int) = ranks.split(' ').filter { it.isNotEmpty() }.mapIndexed { i, rank ->
             val cx = x + 60.0 * i
@@ -28,9 +29,50 @@ class JjHiddenRocketTest {
         }
         val table = JjCards.table(boxes(hand, 500, 772, 84) + boxes(left, 670, 270, 54) +
             boxes(right, 1630, 270, 54) + boxes(mine, 1100, 520, 54), 2412)
-        val phase = if (turn == DdzSeat.Me) DdzPhase.Follow else DdzPhase.Other
         if (hand.isEmpty()) JjDdzTurn.observeClearedTable(session, table, emptyView, badges, explosion)
         else JjDdzTurn.observe(session, table, JjView(phase, emptyList(), turn), counts = badges)
+    }
+
+    @Test fun myConfirmedRocketReturnsTheLeadOnAnEmptyTable() {
+        // 16:04:08 dump 0–8: follow a straight, select both jokers. Four empty /cards replies
+        // (dump 9–11), then six Lead frames (12–17) with the same 14 cards and no pass bubbles.
+        val straight = "10 9 8 7 6 5 4 3"
+        val before = moves("4/6/J/Q/A/2///9 9///5 5/7 7/J J///Q Q///$straight/")
+        val after = "2 2 A K K Q J 10 9 8 8 8 6 3"
+        tracker.restore(DdzSeat.Me, emptyList(), before, DdzSeat.Me)
+        repeat(4) { observe(DdzSeat.Me, "BJ SJ $after", left = "PASS", right = straight) }
+        tracker.mine(listOf("SJ", "BJ"), jjHandAfterPlay = after.split(' '))
+        session.acted = true
+        assertEquals(before + moves("SJ BJ//"), tracker.history)
+        assertFalse(tracker.ready())
+        repeat(4) { observe(null, "", explosion = it == 2) }
+        repeat(6) { observe(DdzSeat.Me, after, phase = DdzPhase.Lead) }
+        tracker.checkJjDecision(after.split(' '), leading = true)
+        assertEquals(before + moves("SJ BJ//"), tracker.history)
+        assertTrue("trace=${tracker.trace}", tracker.ready())
+        assertFalse(session.acted)
+    }
+
+    @Test fun myRocketWaitsForThePostPlayHandAndLeadButtons() {
+        val after = "2 2 A K K Q J 10 9 8 8 8 6 4 3"
+        val before = "BJ SJ $after"
+        tracker.restore(DdzSeat.Left, emptyList(), moves("A"), DdzSeat.Me)
+        repeat(3) { observe(DdzSeat.Me, before, left = "A") }
+        tracker.mine(listOf("SJ", "BJ"), jjHandAfterPlay = after.split(' '))
+        repeat(3) { observe(DdzSeat.Me, before, phase = DdzPhase.Lead) }
+        repeat(3) { observe(DdzSeat.Me, after.replace("4", "5"), phase = DdzPhase.Lead) }
+        repeat(3) { observe(DdzSeat.Me, after, phase = DdzPhase.Follow) }
+        assertEquals(moves("A/SJ BJ//"), tracker.history)
+        assertFalse(tracker.ready())
+        assertNull(tracker.broken)
+    }
+
+    @Test fun playingMyLastTwoCardsAsARocketDoesNotAppendPasses() {
+        val before = moves("3 3 3 4 4 4 5 5 5 6 6 6 7 7 7 8 8 8//")
+        tracker.restore(DdzSeat.Me, emptyList(), before, DdzSeat.Me)
+        tracker.mine(listOf("BJ", "SJ"), jjHandAfterPlay = emptyList())
+        assertEquals(before + listOf(listOf("BJ", "SJ")), tracker.history)
+        assertFalse(tracker.awaitingRocketLead)
     }
 
     private fun replayJ(
