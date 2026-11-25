@@ -15,8 +15,9 @@ import kotlin.math.abs
 /** 电脑 /cards 认出的一样东西:一张牌的点数,或 PASS(「不出」的气泡)。坐标是截图像素。 */
 internal data class JjCard(
     val rank: String, val x0: Double, val y0: Double, val x1: Double, val y1: Double, val score: Double,
-    val alternateRank: String? = null,
+    val alternateRanks: List<String> = emptyList(),
 ) {
+    val alternateRank: String? get() = alternateRanks.firstOrNull()
     val cx: Double get() = (x0 + x1) / 2
     val cy: Double get() = (y0 + y1) / 2
 }
@@ -50,7 +51,7 @@ internal data class JjTable(
     val handUnsure: Boolean get() = hand.any { it.score < JjCards.SURE }
     fun seen(side: DdzSide): DdzSeen = if (side == DdzSide.Left) left else right
     fun opponentBoxes(side: DdzSide): List<JjCard> =
-        (if (side == DdzSide.Left) leftCards else rightCards).sortedBy { it.cx }
+        if (side == DdzSide.Left) leftCards else rightCards
 }
 
 /**
@@ -182,7 +183,7 @@ internal object JjCards {
             return when {
                 found.isEmpty() -> DdzSeen.Empty
                 // 有牌又有不出,或有一张认不准:牌在飞、气泡在消,先别算
-                ranks.isNotEmpty() -> if (pass.isEmpty() && ranks.all { it.score >= SURE }) DdzSeen.Cards(ranks.sortedBy { it.cx }.map { it.rank }) else DdzSeen.Unsure
+                ranks.isNotEmpty() -> if (pass.isEmpty() && ranks.all { it.score >= SURE }) DdzSeen.Cards(ranks.map { it.rank }) else DdzSeen.Unsure
                 pass.any { it.score >= SURE } -> DdzSeen.Pass
                 else -> DdzSeen.Unsure
             }
@@ -191,8 +192,8 @@ internal object JjCards {
         // 整组都在中间的是叫完分翻底牌的动画(三张牌从中间飞到顶栏),不是谁出的牌
         val scale = width / BASE_WIDTH
         val groups = groups(cards.filter { it.cy >= PLAY_Y0 && it.cy < MINE_Y0 }, GROUP_GAP * scale)
-        val left = groups.filter { g -> g.minOf { it.x0 } < LEFT_EDGE * scale }.flatMap(::dedupeRankLabels)
-        val right = groups.filter { g -> g.minOf { it.x0 } >= LEFT_EDGE * scale && g.maxOf { it.x1 } > RIGHT_EDGE * scale }.flatMap(::dedupeRankLabels)
+        val left = playOrder(groups.filter { g -> g.minOf { it.x0 } < LEFT_EDGE * scale }.flatMap(::dedupeRankLabels))
+        val right = playOrder(groups.filter { g -> g.minOf { it.x0 } >= LEFT_EDGE * scale && g.maxOf { it.x1 } > RIGHT_EDGE * scale }.flatMap(::dedupeRankLabels))
         // 手牌的点数字高约 78(王的竖排字约 178),上沿平放 770、抬起 735;
         // 每手结算浮层里摆的各家剩牌也在这一带,字矮(约 50–68)、上沿高(670 起)
         val hand = cards.filter { it.cy >= HAND_Y0 && it.rank != PASS && it.y0 >= HAND_MIN_TOP && it.y1 - it.y0 >= HAND_MIN_H }.sortedBy { it.cx }
@@ -202,12 +203,18 @@ internal object JjCards {
             lifted = hand.indices.filterTo(LinkedHashSet()) { hand[it].y0 < LIFTED_TOP },
             left = seen(left),
             right = seen(right),
-            mine = seen(cards.filter { it.cy >= MINE_Y0 && it.cy < HAND_Y0 }),
+            mine = seen(cards.filter { it.cy >= MINE_Y0 && it.cy < HAND_Y0 }.sortedBy { it.cx }),
             topCards = top,
             bottomCenters = bottomCenters(top, scale),
             leftCards = left,
             rightCards = right,
         )
+    }
+
+    /** 对手一排最多八张，第九张折到下行，和第一张的 x 几乎相同。按行再按列给两条读牌路径同一顺序。 */
+    private fun playOrder(boxes: List<JjCard>): List<JjCard> {
+        val top = boxes.minOfOrNull { it.y0 } ?: return boxes
+        return boxes.sortedWith(compareBy({ it.y0 - top > 42 }, { it.cx }))
     }
 
     /** 顶栏会整体平移。按实测槽距聚框，也允许中间一张暂时漏读。 */
@@ -251,14 +258,20 @@ internal object JjCards {
                 val larger = maxOf(area(other), area(card))
                 val gap = other.score - card.score
                 intersect > NEARLY_IDENTICAL_RANK_OVERLAP * larger ||
+                    // 换行的 9 也会被标成 5：中心相近，弱框向上偏约 8px，覆盖大框约 70%。
+                    (other.score >= RANK_WINNER_SCORE && gap >= RANK_WIDE_GAP &&
+                        intersect > 0.68 * larger && abs(other.cx - card.cx) < 0.2 * (other.x1 - other.x0)) ||
                     intersect > RANK_OVERLAP * larger &&
                     (other.score >= RANK_WINNER_SCORE && gap >= RANK_SCORE_GAP ||
                         other.score >= SURE && gap >= RANK_WIDE_GAP)
             }
             if (duplicate == -1) {
                 kept += card
-            } else if (kept[duplicate].alternateRank == null) {
-                kept[duplicate] = kept[duplicate].copy(alternateRank = card.rank)
+            } else {
+                val winner = kept[duplicate]
+                if (card.rank !in winner.alternateRanks) {
+                    kept[duplicate] = winner.copy(alternateRanks = winner.alternateRanks + card.rank)
+                }
             }
         }
         return kept
