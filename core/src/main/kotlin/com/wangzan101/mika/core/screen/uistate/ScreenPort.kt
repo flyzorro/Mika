@@ -362,6 +362,9 @@ interface ScreenPort {
     /** 这一刻的画面,编码比 [screenshotPng] 快得多;给分秒必争的快速路径。 */
     suspend fun quickShot(): ByteArray? = screenshotPng()
 
+    /** Local OCR of a supplied screenshot; never captures a new frame. */
+    suspend fun readShotText(jpeg: ByteArray): List<VisibleTextLine>? = null
+
     /** JJ 记牌断掉时保存最近认牌截图的目录。 */
     fun jjDumpDirectory(): File? = null
 

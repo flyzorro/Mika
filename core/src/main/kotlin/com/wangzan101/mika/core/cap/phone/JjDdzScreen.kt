@@ -73,7 +73,27 @@ internal object JjDdzScreen {
     private const val LORD_PIXELS = 40
 
     val ROWS = (listOf(TOP_ROW, BOTTOM_ROW) + CLOCK_ROWS + AGAIN_ROWS + listOf(903, 980) + LORD_ROWS +
-        (448..490 step 2)).distinct()
+        (448..490 step 2) + listOf(602, 690)).distinct()
+
+    /** Choose an OCR frame, never a result on color alone. Horizontal stroke of our gold + / silver −. */
+    fun payoutVisible(frame: RawFrame): Boolean {
+        if (frame.height != FRAME_HEIGHT) return false
+        fun stroke(cx: Int, y: Int): Boolean {
+            val row = frame.row(y) ?: return false
+            val center = (cx * frame.width / BASE_WIDTH).roundToInt()
+            if (center - 34 < 0 || center + 34 >= row.size) return false
+            fun ink(dx: Int): Boolean {
+                val p = row[center + dx]
+                val r = p shr 16 and 255
+                val g = p shr 8 and 255
+                val b = p and 255
+                return r > 205 && g > 155 && r - b > 65 ||
+                    r > 155 && g > 155 && kotlin.math.abs(r - b) < 27 && kotlin.math.abs(r - g) < 22
+            }
+            return !ink(-34) && !ink(34) && (-18..18 step 6).all(::ink)
+        }
+        return stroke(724, 602) || stroke(766, 690)
+    }
 
     /** 海景、船舷两种牌桌的剩牌立牌位置不同。两个数字都读清才用，单帧遮挡不能作补牌证据。 */
     fun counts(frame: RawFrame): Map<DdzSide, Int>? {

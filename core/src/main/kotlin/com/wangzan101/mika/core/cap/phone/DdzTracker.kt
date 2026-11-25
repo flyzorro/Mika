@@ -2,6 +2,12 @@ package com.wangzan101.mika.core.cap.phone
 
 /** 牌桌上的三家,按出牌顺序:我 → 右 → 左 → 我(逆时针;下家在右边,上家在左边)。 */
 internal enum class DdzSeat { Me, Right, Left;
+    fun myRole(): String = when (this) {
+        Me -> "landlord"
+        Left -> "landlord_down"
+        Right -> "landlord_up"
+    }
+
     val next: DdzSeat get() = entries[(ordinal + 1) % 3]
 }
 
@@ -809,11 +815,13 @@ internal class DdzTracker(
     }
 
     /** 自己在 DouZero 里的位置。 */
-    fun seat(): String = when (landlord) {
-        DdzSeat.Me -> "landlord"
-        // 地主在左边,我就是他的下家;在右边,我就是他的上家
-        DdzSeat.Left -> "landlord_down"
-        else -> "landlord_up"
+    fun seat(): String = landlord?.myRole() ?: "landlord_up"
+
+    internal fun finishedSeat(): DdzSeat? {
+        if (landlord == null || broken != null || history.size != confirmedSeats.size) return null
+        val left = DdzSeat.entries.associateWith(::remainingBeforePlay)
+        if (left.values.any { it < 0 }) return null
+        return left.keys.singleOrNull { left[it] == 0 }
     }
 
     fun fail(reason: String) {

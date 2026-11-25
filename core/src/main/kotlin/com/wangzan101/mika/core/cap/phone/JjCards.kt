@@ -9,6 +9,7 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import java.net.HttpURLConnection
+import java.net.SocketTimeoutException
 import java.net.URI
 import kotlin.math.abs
 
@@ -164,7 +165,10 @@ internal object JjCards {
             } finally {
                 conn.disconnect()
             }
-        }.onFailure { println("JJTRACE cards_error ${it.javaClass.simpleName}: ${it.message}") }.getOrNull()
+        }.onFailure {
+            if (it is SocketTimeoutException) coroutineContext[JjTimeoutCounter]?.count?.invoke()
+            println("JJTRACE cards_error ${it.javaClass.simpleName}: ${it.message}")
+        }.getOrNull()
     }
 
     fun parse(body: String): List<JjCard>? = runCatching {
