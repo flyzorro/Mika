@@ -96,6 +96,7 @@ internal object JjDdzTurn {
 
     internal class CountedPlay(val seat: DdzSeat, val historySize: Int, val cards: List<String>, val hand: List<String>) {
         var sawPasses = false
+        var sawOtherPass = false
     }
 
     internal class Session(
@@ -453,7 +454,6 @@ internal object JjDdzTurn {
                 boxes.all { it.rank != "PASS" && it.score >= STEADY_MIN_SCORE }
             }.orEmpty()
         }
-        s.previousPlayBoxes = playBoxes
         fun repeated(side: DdzSide, ranks: List<String>): Boolean =
             listOf(previousBoxes[side].orEmpty(), playBoxes.getValue(side)).all { boxes ->
                 boxes.size == ranks.size && boxes.indices.all { i ->
@@ -479,7 +479,8 @@ internal object JjDdzTurn {
         }
         val clockTurn = confirmedTurn.takeUnless { s.recoveredLeader != null || turn == DdzSeat.Me && previousTurn != turn }
         recoverHiddenRocket(s, tracker, table, view.phase, clockTurn, counts, ::repeated)
-        recoverCountedTrick(s, tracker, table, view, counts, ::repeated)
+        recoverCountedTrick(s, tracker, table, view, clockTurn == previousTurn && clockTurn != null, counts, ::repeated)
+        s.previousPlayBoxes = playBoxes
         recoverOpponentTrick(s, tracker, table, clockTurn)
         val bottom = votedBottom(s, tracker, table, view)
         val before = tracker.history.size
@@ -501,7 +502,8 @@ internal object JjDdzTurn {
             },
             expireOpponentDeckRetries = settleExpired,
             opponentPlayedAfterMine = opponentPlayedAfterMine,
-            deadlineCounts = counts.takeIf { settleExpired && !table.handUnsure },
+            jjCounts = counts.takeUnless { table.handUnsure },
+            canRecordMyPass = { cards -> table.mine == DdzSeen.Pass || s.mustPass(table, cards) },
         )
         // 刚读定炸前那一家的不出，队头才轮到炸家。这一帧可能是新领出的最后一帧。
         if (s.rocketGap != null && tracker.history.size > before) {
@@ -583,9 +585,9 @@ internal object JjDdzTurn {
         }
     }
 
-    /** 连续看见同一家出两手，中间两家同时亮过「不出」。两次立牌分别核对第一手和合计张数。 */
+    /** 用立牌核对短暂亮出的牌。我的手牌确定要不起时，清桌后回到出牌者的闹钟也能确认这一轮。 */
     private fun recoverCountedTrick(
-        s: Session, tracker: DdzTracker, table: JjTable, view: JjView, counts: Map<DdzSide, Int>?,
+        s: Session, tracker: DdzTracker, table: JjTable, view: JjView, steadyClock: Boolean, counts: Map<DdzSide, Int>?,
         repeated: (DdzSide, List<String>) -> Boolean,
     ) {
         val previous = s.countedPlay
@@ -593,7 +595,7 @@ internal object JjDdzTurn {
         if (tracker.broken != null || table.handUnsure || view.phase !in listOf(DdzPhase.Other, DdzPhase.Follow)) return
         val hand = table.handRanks
         val saved = previous?.takeIf { it.historySize == tracker.history.size && it.hand == hand }
-        val seat = saved?.seat ?: tracker.nextOpponent() ?: return
+        val seat = saved?.seat ?: tracker.nextOpponent(includeWaiting = true) ?: return
         val side = sideOf(seat)
         val other = if (seat == DdzSeat.Left) DdzSeat.Right else DdzSeat.Left
         val shown = (table.seen(side) as? DdzSeen.Cards)?.ranks
@@ -602,9 +604,19 @@ internal object JjDdzTurn {
         val play = saved ?: run {
             if (shown == null || counts == null || shown == tracker.lastOpponentPlay(seat) ||
                 !tracker.countsMatchPlay(seat, shown.size, counts) || !tracker.jjOpponentPlayIsLegal(seat, shown)) return
-            // 单帧牌角会认错；只有张数是一，且剩牌中仅此点数能压上一手，才放行单帧。
-            if (!repeated(side, shown) && !(shown.size == 1 && tracker.onlyPossibleSingle(shown.single(), hand))) return
+            // 对子特效先露一个牌角，下一帧才露全。两帧点数相同，且两个立牌已核对。
+            val corner = s.previousPlayBoxes[side]?.singleOrNull()
+            val pair = shown.size == 2 && shown[0] == shown[1] && corner?.rank == shown[0] && corner.score >= JjCards.SURE
+            if (!repeated(side, shown) && !pair && !(shown.size == 1 && tracker.onlyPossibleSingle(shown.single(), hand))) return
             CountedPlay(seat, tracker.history.size, shown, hand)
+        }
+        if (shown == play.cards && otherSeen == DdzSeen.Pass) play.sawOtherPass = true
+        if (play.sawOtherPass && steadyClock && view.turn == seat && table.mine == DdzSeen.Empty &&
+            table.seen(side) == DdzSeen.Empty && otherSeen in listOf(DdzSeen.Pass, DdzSeen.Empty) &&
+            counts != null && tracker.countsMatchPlay(seat, play.cards.size, counts) && s.mustPass(table, play.cards) &&
+            tracker.recordOpponentPlayAndPasses(seat, play.cards, hand, play.historySize)) {
+            s.opponentTrick = null
+            return
         }
         if (shown != null && shown != play.cards) {
             if (!play.sawPasses || table.mine !in listOf(DdzSeen.Empty, DdzSeen.Pass) ||
@@ -661,7 +673,8 @@ internal object JjDdzTurn {
         } else {
             trick.sawMeBeforePass = true
         }
-        val clockReturned = turn == seat && trick.clockSteps == 2 && trick.clearedAt != null
+        val clockReturned = turn == seat && trick.clockSteps == 2 && trick.clearedAt != null &&
+            (trick.mePassed || s.mustPass(table, trick.cards))
         if (trick.clockSteps >= 0) {
             when (turn) {
                 seat.next -> trick.clockSteps = if (trick.clockSteps <= 1) 1 else -1
@@ -671,7 +684,7 @@ internal object JjDdzTurn {
             }
         }
         // 缺闹钟时只认确定要不起的自动过牌，避免把能压牌的回合当成已经跳过。
-        val bothPassed = trick.otherPassed && trick.mePassed && cannotBeat(table.handRanks, trick.cards)
+        val bothPassed = trick.otherPassed && trick.mePassed && s.mustPass(table, trick.cards)
         if (trick.cardFrames >= TRICK_PLAY_FRAMES && (clockReturned || bothPassed) &&
             tracker.recordOpponentPlayAndPasses(seat, trick.cards, table.handRanks, trick.historySize)
         ) {
@@ -681,19 +694,10 @@ internal object JjDdzTurn {
         s.opponentTrick = trick
     }
 
-    /** 只检查能确定要不起的情况。其余牌型走正常跟踪。 */
-    private fun cannotBeat(hand: List<String>, cards: List<String>): Boolean {
-        val move = DdzSnapshotRecovery.classify(cards) ?: return false
-        if (move.kind == DdzSnapshotRecovery.Kind.Rocket) return true
-        if ("SJ" in hand && "BJ" in hand) return false
-        when (move.kind) {
-            DdzSnapshotRecovery.Kind.Single -> if (hand.any { (DdzCards.ORDER[it] ?: Int.MAX_VALUE) > move.main }) return false
-            DdzSnapshotRecovery.Kind.Bomb -> Unit
-            else -> if (hand.size >= cards.size) return false
-        }
-        return hand.groupingBy { it }.eachCount().none { (rank, n) ->
-            n == 4 && (move.kind != DdzSnapshotRecovery.Kind.Bomb || (DdzCards.ORDER[rank] ?: -1) > move.main)
-        }
+    private fun Session.mustPass(table: JjTable, cards: List<String>): Boolean {
+        if (table.handUnsure || table.hand.isEmpty() || table.hand.size != tracker?.remainingBeforePlay(DdzSeat.Me)) return false
+        if (expectedHand?.let { it.sorted() != table.handRanks.sorted() } == true) return false
+        return DdzSnapshotRecovery.classify(cards) != null && JjCards.smallestOvercall(table, cards) == null
     }
 
     /** 看到新发的 17 张从头记;轮到我出牌时才第一次看到手牌(张数不对)是中途进来的,这一手只按规则打完。 */
