@@ -550,6 +550,19 @@ internal class DdzTracker(
 
     internal fun lastOpponentPlay(seat: DdzSeat): List<String>? = lastPlay[seat]
 
+    internal fun recordHiddenRocket(seat: DdzSeat, counts: Map<DdzSide, Int>, lead: List<String>, hand: List<String>): Boolean {
+        val other = if (seat == DdzSeat.Left) DdzSeat.Right else DdzSeat.Left
+        if (trickLead() == null || DdzSnapshotRecovery.classify(lead) == null ||
+            remainingBeforePlay(seat) - lead.size - 2 != counts[sideOf(seat)] || remainingBeforePlay(other) != counts[sideOf(other)]) return false
+        val rocket = listOf("SJ", "BJ")
+        val left = DdzCards.copiesLeft(history.flatten() + hand + rocket)
+        if (lead.groupingBy { it }.eachCount().any { (rank, n) -> n > left.getOrDefault(rank, 0) }) return false
+        if (!recordOpponentPlayAndPasses(seat, rocket, hand, history.size)) return false
+        record(seat, lead)
+        active = seat.next
+        return true
+    }
+
     internal fun maskedOpponentPlay(seat: DdzSeat, ranks: List<String>): List<String>? =
         lastPlay[seat]?.takeIf { jjMaskedReads[seat] == ranks }
 

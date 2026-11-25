@@ -60,6 +60,13 @@ internal object DdzCards {
     private val handGlyphs by lazy { load("/ddz/hand.txt", HAND_W * HAND_H) }
     private val tableGlyphs by lazy { load("/ddz/table.txt", TABLE_W * TABLE_H) }
     private val countGlyphs by lazy { load("/ddz/count.txt", COUNT_W * COUNT_H) }
+    private val jjCountGlyphs by lazy { load("/ddz/jj-count.txt", COUNT_W * COUNT_H) }
+
+    internal fun jjCountDigit(ink: Array<BooleanArray>): Int? {
+        val box = inkBox(ink) ?: return null
+        if (box.size !in 11..15 || box[0].size !in 7..22) return null
+        return nearest(jjCountGlyphs, boxSig(box, COUNT_W, COUNT_H), 0.17, 0.05)?.toIntOrNull()
+    }
     private const val COUNT_W = 12
     private const val COUNT_H = 18
 

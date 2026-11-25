@@ -88,6 +88,8 @@ internal object JjDdzTurn {
 
     internal data class BottomRow(val centers: List<Double>, val ranks: List<String>)
 
+    internal data class RocketGap(val seat: DdzSeat, val historySize: Int, val counts: Map<DdzSide, Int>?, val explosion: Boolean)
+
     internal class Session(val advisor: String, var handsLeft: Int, private val dumpDirectory: () -> File? = { null }) {
         private class Shot(val at: Long, val jpeg: ByteArray)
         private val recentShots = ArrayDeque<Shot>(DUMP_FRAMES)
@@ -98,6 +100,7 @@ internal object JjDdzTurn {
         var staleBottom: BottomRow? = null
         var emptyBottomInCall = 0
         var opponentTrick: OpponentTrick? = null
+        var rocketGap: RocketGap? = null
         var recoveredLeader: DdzSeat? = null
         var previousPlayBoxes = emptyMap<DdzSide, List<JjCard>>()
         var previousRawTurn: DdzSeat? = null
@@ -269,7 +272,7 @@ internal object JjDdzTurn {
                 continue
             }
             if (table.hand.isEmpty()) {
-                s.resetTurnReads()
+                observeClearedTable(s, table, view, JjDdzScreen.counts(frame), JjDdzScreen.explosion(frame))
                 if (++s.noHand == NEW_HAND_GAP && s.tracker != null) {
                     // 一手打完。记牌先留着:王炸、炸弹的特效会挡住手牌好几帧,手牌原样回来就不是新的一手
                     s.closed = s.tracker
@@ -324,7 +327,7 @@ internal object JjDdzTurn {
             val decisionAt = PhoneDdzTurn.clock()
             val settleExpired = view.phase.mine() && !s.acted && s.settleSince != 0L && decisionAt - s.settleSince >= SETTLE_MS
             val before = tracker.history.size
-            observe(s, table, view, settleExpired)
+            observe(s, table, view, settleExpired, if (s.rocketGap != null) JjDdzScreen.counts(frame) else null)
             // 刚补记的牌后面可能还有一家要确认，留出读稳那一手的时间。
             if (settleExpired && !tracker.ready() && tracker.history.asSequence().drop(before).any { DdzCards.UNKNOWN in it }) {
                 s.settleSince = decisionAt
@@ -356,11 +359,26 @@ internal object JjDdzTurn {
 
     private fun Session.resetTurnReads() {
         opponentTrick = null
+        rocketGap = null
         previousPlayBoxes = emptyMap()
         previousRawTurn = null
     }
 
-    internal fun observe(s: Session, table: JjTable, view: JjView, settleExpired: Boolean = false) {
+    /** 王炸过场连手牌、底牌都收起。只留当时出牌者和两个立牌，等画面回来再核对。 */
+    internal fun observeClearedTable(s: Session, table: JjTable, view: JjView, counts: Map<DdzSide, Int>?, explosion: Boolean) {
+        val turn = s.previousRawTurn
+        val gap = s.rocketGap
+        s.resetTurnReads()
+        val tracker = s.tracker ?: s.closed ?: return
+        if (view.phase != DdzPhase.Other || table.topCards.isNotEmpty() || table.mine != DdzSeen.Empty ||
+            DdzSide.entries.any { table.seen(it) != DdzSeen.Empty }) return
+        val seat = gap?.seat ?: turn ?: tracker.nextOpponent() ?: return
+        if (seat != DdzSeat.Me) s.rocketGap = RocketGap(seat, tracker.history.size, counts ?: gap?.counts, explosion || gap?.explosion == true)
+    }
+
+    internal fun observe(
+        s: Session, table: JjTable, view: JjView, settleExpired: Boolean = false, counts: Map<DdzSide, Int>? = null,
+    ) {
         val tracker = s.tracker!!
         val turn = view.turn
         // 左家后该轮到我。自己的旧「不出」可能还留着，右家闹钟要再亮一帧才认作跳过了我。
@@ -399,8 +417,10 @@ internal object JjDdzTurn {
             }
         }
         val clockTurn = confirmedTurn.takeUnless { s.recoveredLeader != null || turn == DdzSeat.Me && previousTurn != turn }
+        recoverHiddenRocket(s, tracker, table, view.phase, clockTurn, counts, ::repeated)
         recoverOpponentTrick(s, tracker, table, clockTurn)
         val bottom = votedBottom(s, tracker, table, view)
+        val before = tracker.history.size
         tracker.observe(
             rawTurn = confirmedTurn.takeUnless { s.recoveredLeader != null },
             read = { side -> steady(s, table, side) },
@@ -420,6 +440,10 @@ internal object JjDdzTurn {
             expireOpponentDeckRetries = settleExpired,
             opponentPlayedAfterMine = opponentPlayedAfterMine,
         )
+        // 刚读定炸前那一家的不出，队头才轮到炸家。这一帧可能是新领出的最后一帧。
+        if (s.rocketGap != null && tracker.history.size > before) {
+            recoverHiddenRocket(s, tracker, table, view.phase, clockTurn, counts, ::repeated)
+        }
     }
 
     /** 叫分时记录尚未翻掉的旧底牌，看到地主信号和新的一组后才投票。 */
@@ -466,6 +490,34 @@ internal object JjDdzTurn {
         val best = ranked.firstOrNull() ?: return@map null
         val runnerUp = ranked.getOrNull(1)?.score ?: 0.0
         best.rank.takeIf { best.score >= BOTTOM_MIN_SCORE && best.score - runnerUp >= BOTTOM_SCORE_GAP }
+    }
+
+    /** 动画后同一家重新领出。两次立牌之间只少了读稳的新牌，另外两家的张数没动。 */
+    private fun recoverHiddenRocket(
+        s: Session, tracker: DdzTracker, table: JjTable, phase: DdzPhase, turn: DdzSeat?,
+        counts: Map<DdzSide, Int>?, repeated: (DdzSide, List<String>) -> Boolean,
+    ) {
+        val gap = s.rocketGap ?: return
+        val side = sideOf(gap.seat)
+        val other = if (side == DdzSide.Left) DdzSide.Right else DdzSide.Left
+        fun skipped(seen: DdzSeen) = seen == DdzSeen.Empty || seen == DdzSeen.Pass
+        // 炸前那一家的不出可能刚读定。其余新增历史都意味着这条过场线索已过期。
+        val added = tracker.history.size - gap.historySize
+        val priorPass = added == 1 && tracker.confirmedSeats.last() == gap.seat.next.next && tracker.history.last().isEmpty()
+        if (!gap.explosion || !skipped(table.mine) || !skipped(table.seen(other)) ||
+            phase !in listOf(DdzPhase.Other, DdzPhase.Follow) || tracker.broken != null ||
+            (added != 0 && !priorPass)) {
+            s.rocketGap = null
+            return
+        }
+        val lead = (table.seen(side) as? DdzSeen.Cards)?.ranks ?: return
+        if (table.handUnsure || turn == null || turn == gap.seat || !repeated(side, lead) || counts == null) return
+        val during = gap.counts
+        if (during != null && (counts[other] != during[other] || counts[side] != during.getValue(side) - lead.size)) return
+        if (tracker.recordHiddenRocket(gap.seat, counts, lead, table.handRanks)) {
+            s.rocketGap = null
+            s.opponentTrick = null
+        }
     }
 
     /** 快速清桌时保留已经连续读到的出牌，等新出现的两个「不出」或完整走过一圈的闹钟确认。 */
