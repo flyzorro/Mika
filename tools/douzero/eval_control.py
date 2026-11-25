@@ -1,7 +1,7 @@
 """配对自对弈，保留线上每手时限，逐副写 JSONL。
 
 DOUZERO_WEIGHTS=... nice -n 15 python -I eval_control.py \
-    --study rollout --deals 1000 --workers 8 --out /tmp/rollout.jsonl
+    --study rollout --deals 1000 --workers 6 --out /tmp/rollout.jsonl
 python -I eval_control.py --study rollout --summarize /tmp/rollout.jsonl
 """
 import argparse
@@ -19,9 +19,11 @@ from douzero.env.game import GameEnv
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import server
+import eval_rules
 
 
 ARMS = {
+    "rules": eval_rules.ARMS,
     "take-lead": ("take_on", "take_off"),
     "rollout": ("old_gate", "se_gate", "rollout_off"),
 }
@@ -184,6 +186,9 @@ def summarize_group(label, rows, study):
 
 
 def summarize(rows, study):
+    if study == "rules":
+        eval_rules.summarize(rows)
+        return
     summarize_group("overall", rows, study)
     if not rows:
         return
@@ -215,10 +220,12 @@ def main():
     parser.add_argument("--base", default="95af39b9")
     parser.add_argument("--seed", type=int, default=20261122)
     parser.add_argument("--deals", type=int, default=1000)
-    parser.add_argument("--workers", type=int, default=8)
+    parser.add_argument("--workers", type=int)
     parser.add_argument("--out", type=Path)
     parser.add_argument("--summarize", type=Path)
     args = parser.parse_args()
+    if args.workers is None:
+        args.workers = 6 if args.study == "rules" else 8
     if args.summarize:
         summarize([json.loads(line) for line in args.summarize.read_text().splitlines()], args.study)
         return
@@ -230,10 +237,18 @@ def main():
     if args.study == "rollout":
         baseline = subprocess.check_output(["git", "show", f"{args.base}:tools/douzero/server.py"], text=True)
     jobs = [(args.seed + i, server.SEATS[i % len(server.SEATS)], args.study) for i in range(args.deals)]
+    initializer, initargs, worker = init, (baseline,), work
+    if args.study == "rules":
+        if args.workers > 6:
+            parser.error("--study rules allows at most six workers")
+        if Path(server.WEIGHTS).name != "douzero_WP":
+            parser.error("--study rules requires DOUZERO_WEIGHTS pointing to baselines/douzero_WP")
+        jobs = range(args.seed, args.seed + args.deals)
+        initializer, initargs, worker = eval_rules.init, (), eval_rules.work
     rows = []
     started = time.monotonic()
-    with args.out.open("x") as out, mp.Pool(args.workers, initializer=init, initargs=(baseline,)) as pool:
-        for row in pool.imap_unordered(work, jobs):
+    with args.out.open("x") as out, mp.Pool(args.workers, initializer=initializer, initargs=initargs) as pool:
+        for row in pool.imap_unordered(worker, jobs):
             rows.append(row)
             print(json.dumps(row), file=out, flush=True)
     print(f"Wall time {time.monotonic() - started:.1f}s")
