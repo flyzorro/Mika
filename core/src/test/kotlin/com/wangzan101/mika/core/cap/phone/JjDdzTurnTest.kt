@@ -324,7 +324,9 @@ class JjDdzTurnTest {
     @Test fun anEightCardBatchLeavesTimeForEachLiftAfterRelease() = runTest {
         val ranks = listOf("SJ", "Q", "8", "8", "7", "7", "4", "4", "4", "4", "3")
         val wanted = (2..9).toSet()
-        replies(hand(ranks), hand(ranks), hand(ranks, wanted), hand(ranks, wanted))
+        // 没有联动时，第一张 4 只抬自己，下一批要先补齐其余 4。
+        val oneFour = hand(ranks, setOf(6))
+        replies(hand(ranks), hand(ranks), oneFour, oneFour, hand(ranks, wanted), hand(ranks, wanted))
         val presses = mutableListOf<Pair<Long, Long>>()
         val game = object : Game(JjDdzScreen.PACKAGE, frame("lead")) {
             override suspend fun pressAt(x: Int, y: Int, holdMs: Long): Boolean {
@@ -338,12 +340,78 @@ class JjDdzTurnTest {
         val x = JjDdzTurn.select(toolDispatcher(game).ctx, JjDdzTurn.Session("", 1), wanted, JjCards.table(hand(ranks), 2408))
 
         assertEquals(JjDdzScreen.read(game.frame).buttons[2].x, x)
-        assertEquals(wanted.toList(), handTappedIndices(game))
+        assertEquals(listOf(6, 7, 8, 9, 2, 3, 4, 5), handTappedIndices(game))
         assertEquals(List(8) { 150L }, presses.map { (down, up) -> up - down })
         for ((previous, next) in presses.zipWithNext()) {
             assertTrue("press started at ${next.first}, previous ended at ${previous.second}", next.first - previous.second >= 200)
         }
         assertTrue("eight-card selection took ${currentTime}ms", currentTime <= 4_000)
+    }
+
+    @Test fun finishesFourKingsWithTwoJacksInTwoRounds() = replayQuad(
+        ranks = "K K K K J J", centers = listOf(897, 994, 1090, 1187, 1282, 1379),
+        play = "J J K K K K", quad = 0..3, scene = "lead",
+        // 13:24 的每两帧依次读稳这五组抬牌。
+        oldRounds = listOf(
+            (0..5).toList() to setOf(0, 4, 5), listOf(1, 2, 3) to setOf(0, 1),
+            listOf(2, 3, 4, 5) to setOf(0, 1, 2, 4, 5), listOf(3) to (0..3).toSet(),
+            listOf(4, 5) to (0..5).toSet(),
+        ),
+        expectedTaps = listOf(0, 4, 5), expectedReads = 6,
+    )
+
+    @Test fun selectsFourSevensOverBigJokerInOneRound() = replayQuad(
+        ranks = "2 A A A 7 7 7 7 6 6", centers = listOf(706, 802, 899, 995, 1090, 1186, 1283, 1379, 1475, 1572),
+        play = "7 7 7 7", quad = 4..7, scene = "follow",
+        // 13:40 第 7–10 帧先剩一张、再剩两张，第 12 帧只剩三张 7，第 13 帧已托管。
+        oldRounds = listOf((4..7).toList() to setOf(4), listOf(5, 6, 7) to setOf(4, 5), listOf(6, 7) to setOf(4, 5, 6)),
+        expectedTaps = listOf(4), expectedReads = 4,
+    )
+
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    private fun replayQuad(
+        ranks: String, centers: List<Int>, play: String, quad: IntRange, scene: String,
+        oldRounds: List<Pair<List<Int>, Set<Int>>>, expectedTaps: List<Int>, expectedReads: Int,
+    ) = runTest {
+        val hand = ranks.split(' ')
+        var lifted = emptySet<Int>()
+        // 两组 dump 都只有批后的截图。用能逐批重现读数的联动模拟触摸，复用同一模型检验新批次。
+        fun touch(i: Int) {
+            lifted = when (i) {
+                in lifted -> lifted - i
+                in quad -> quad.toSet()
+                else -> lifted + i
+            }
+        }
+        for ((batch, recorded) in oldRounds) {
+            batch.forEach(::touch)
+            assertEquals(recorded, lifted)
+        }
+        lifted = emptySet()
+        fun boxes() = hand.mapIndexed { i, rank ->
+            val top = if (i in lifted) 735.0 else 770.0
+            JjCard(rank, centers[i] - 22.0, top, centers[i] + 22.0, top + 78, 0.99)
+        }
+        val game = object : Game(JjDdzScreen.PACKAGE, frame(scene)) {
+            override suspend fun pressAt(x: Int, y: Int, holdMs: Long): Boolean {
+                assertEquals(JjCards.HAND_TAP_Y, y)
+                val index = centers.indexOf(x)
+                assertTrue("tap outside hand at $x", index >= 0)
+                delay(holdMs)
+                touch(index)
+                return super.pressAt(x, y, holdMs)
+            }
+        }
+        var reads = 0
+        JjDdzTurn.detect = { _, _ -> reads++; delay(300); boxes() }
+        val want = PhoneDdzTurn.pick(hand, play.split(' '))!!
+        val playX = JjDdzTurn.select(toolDispatcher(game).ctx, JjDdzTurn.Session("", 1), want, JjCards.table(boxes(), 2412))
+
+        assertEquals(JjDdzScreen.read(game.frame).buttons[2].x, playX)
+        assertEquals(want, lifted)
+        assertEquals(expectedTaps.map(centers::get), game.taps.map { it.first })
+        assertEquals(expectedReads, reads)
+        assertTrue("selection took ${currentTime}ms", currentTime <= 4_000)
     }
 
     @Test fun anyTwoOfThreeAcesArePairOfAces() = runTest {
@@ -373,7 +441,7 @@ class JjDdzTurnTest {
 
         assertEquals(null, result.text("douzeroOff"))
         val play = JjDdzScreen.read(game.frame).buttons[2]
-        assertEquals(listOf(0, 1, 2, 16, 9, 10, 11, 12, 10, 11, 12, 11, 12, 12), handTappedIndices(game))
+        assertEquals(listOf(0, 1, 2, 16, 9, 10, 11, 12, 11, 12, 12), handTappedIndices(game))
         assertEquals(play.x to JjDdzScreen.TAP_Y, game.taps.last())
     }
 
@@ -394,7 +462,7 @@ class JjDdzTurnTest {
 
         assertTrue(log, "select_failed" in log)
         val pass = JjDdzScreen.read(game.frame).buttons[0]
-        assertEquals(listOf(0, 1, 2, 16, 9, 10, 11, 12, 9, 10, 11, 12), handTappedIndices(game))
+        assertEquals(listOf(0, 1, 2, 16, 9, 9, 10, 11, 12), handTappedIndices(game))
         assertEquals(pass.x to JjDdzScreen.TAP_Y, game.taps.last())
     }
 
@@ -559,7 +627,7 @@ class JjDdzTurnTest {
             listOf("J", "J", "J", "6"), listOf("A", "A", "A", "5"), List(4) { "3" },
         )) {
             val game = fallbackFollow(hand, lead, lifted = bomb.toSet())
-            assertEquals(lead.toString(), bomb, handTappedIndices(game))
+            assertEquals(lead.toString(), listOf(bomb.first()), handTappedIndices(game))
             assertEquals(JjDdzScreen.read(game.frame).buttons[2].x to JjDdzScreen.TAP_Y, game.taps.last())
         }
     }
