@@ -104,49 +104,6 @@ def minus(hand, move):
     return tuple(left)
 
 
-# 出完一手以后还剩几手(自己每次都先出)是「这手干不干净」的尺子。拆分组合多,一次决策最多算 MIN_PLAYS_BUDGET_S 秒;
-# 算过的牌型留着,同一手牌反复问不用重算;服务是长跑进程,攒到上限就整个清掉,免得越积越多
-MIN_PLAYS_BUDGET_S = 0.2
-MIN_PLAYS_MEMO_MAX = 50000
-_MIN_PLAYS = {}
-
-
-def min_plays(hand, deadline=None):
-    """[hand] 自己每次先出时最少几手出完:把牌拆成最少的几手合规牌(牌型同 DouZero,大小王不当带牌)。
-
-    2026-11-16 11:58:20 土豪场那手 BJ 2 J 9 8 7 6 5 5 5 5 4:出 4..9 剩 BJ 2 J 5 5 5 三手(555 带 J、2、BJ),
-    出 5..9 剩 BJ 2 J 5 5 5 4 四手。算不完([deadline] 到了,默认 MIN_PLAYS_BUDGET_S 秒)返回 None,调用方就不比手数。
-    """
-    if deadline is None:
-        deadline = time.monotonic() + MIN_PLAYS_BUDGET_S
-    if len(_MIN_PLAYS) > MIN_PLAYS_MEMO_MAX:
-        _MIN_PLAYS.clear()
-    try:
-        return _min_plays(tuple(sorted(hand)), deadline)
-    except Timeout:
-        return None
-
-
-def _min_plays(hand, deadline):
-    if not hand:
-        return 0
-    if hand in _MIN_PLAYS:
-        return _MIN_PLAYS[hand]
-    if time.monotonic() > deadline:
-        raise Timeout()
-    best = None
-    for move in moves(hand, ()):
-        if not move:
-            continue
-        plays = 1 + _min_plays(minus(hand, move), deadline)
-        if best is None or plays < best:
-            best = plays
-            if best == 1:
-                break
-    _MIN_PLAYS[hand] = best
-    return best
-
-
 class Solver:
     """明牌下地主一方赢不赢。[deadline] 到了就抛 Timeout。"""
 
@@ -310,59 +267,3 @@ def best(infoset, budget=1.5, likelihood=None):
     if time.monotonic() >= deadline:
         return None
     return wins, total, plain, plain_total
-
-
-# 两手出完:第一手被压的机会不超过这么多才换;把未知牌随机分给两家这么多次来估
-SAFE_FIRST = 0.3
-SAMPLES = 300
-
-
-def finish_in_two(hand, legal, rival, unknown, left_a, left_b, samples=SAMPLES, limit=SAFE_FIRST, seed=0,
-                  deadline=None, kept=(), b_is_mate=False, prefer=None):
-    """剩的牌多、搜不动时的一条捷径:自己手里能两手出完(先出一手、剩下的正好是一手)时,挑第一手最不容易被压的。
-
-    把 [unknown](两家手里合起来的牌)随机分成 [left_a]、[left_b] 张,看有没有一家压得住第一手;第一手没人压就接着出完。
-    [kept] 是一定在 [a] 手里的牌:我是农民时地主的底牌还没打出去的那几张(同 server.sample_hands 的守底牌)。
-    先出 [a] 再出 [b]。两种顺序都两手出完、其中一手是炸弹 / 王炸时,优先把炸弹 / 王炸留到最后:
-    炸弹留到最后能管任何牌,先甩出去只是给对手一个用炸弹的靶子。
-    [legal] 是现在能出的牌,[rival] 是要压的那手(() 是自己先出)。返回 (第一手, 被压的机会),没有够安全的为 None。
-    [deadline] 是这一手牌总预算的截止时刻(monotonic):到了就返回 None,照用 DouZero 的,别把现场模拟的时间也吃掉。
-    [b_is_mate]:[b] 是我的队友(我是农民),他压得住也不会压我,只看地主 [a] 压不压得住。
-    2026-11-22 12:32 JJ:我是地主下家剩 A A A 4 3 3,队友 17 张一张没出,把队友也算进去被压机会 0.73 超了门槛,
-    捷径作废,现场模拟 14 局一手的噪声里挑了先出 4;只看地主是 0.14,该先出 A A A 3 3。
-    """
-    kept = tuple(sorted((Counter(unknown) & Counter(kept)).elements()))
-    need_a = left_a - len(kept)
-    rest_pool = list((Counter(unknown) - Counter(kept)).elements())
-    if need_a < 0 or need_a + left_b > len(rest_pool):
-        return None
-    best = None
-    best_key = None
-    for move in legal:
-        if not move:
-            continue
-        rest = minus(hand, move)
-        if not rest:
-            return tuple(sorted(move)), 0.0  # 一手出完
-        if md.get_move_type(list(rest))["type"] == md.TYPE_15_WRONG:
-            continue
-        rng = random.Random(seed)
-        beaten = 0
-        pool = list(rest_pool)
-        for _ in range(samples):
-            if deadline is not None and time.monotonic() > deadline:
-                return None
-            rng.shuffle(pool)
-            a = list(kept) + pool[:need_a]
-            b = pool[need_a:need_a + left_b]
-            if any(m for m in moves(a, list(move))) or (not b_is_mate and any(m for m in moves(b, list(move)))):
-                beaten += 1
-        chance = beaten / samples
-        # 先比「炸弹是不是留到了最后」,再比被压机会:炸弹先出的一律排在非炸弹先出的后面。
-        # 被压机会一样时听 DouZero 的([prefer]):16:30 JJ 小王 A A A J J,A A A + J J 和 A A A + 小王 都是 0.17,
-        # 原来按列表顺序挑了带小王;第一手被炸时留着王才抢得回来
-        key = (is_bomb(move) and not is_bomb(rest), round(chance, 2), tuple(sorted(move)) != prefer)
-        if best_key is None or key < best_key:
-            best, best_key = (tuple(sorted(move)), chance), key
-    return best if best is not None and best[1] <= limit else None
-
