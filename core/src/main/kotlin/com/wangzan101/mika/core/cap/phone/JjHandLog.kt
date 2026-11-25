@@ -1,5 +1,6 @@
 package com.wangzan101.mika.core.cap.phone
 
+import com.wangzan101.mika.core.screen.uistate.RawFrame
 import com.wangzan101.mika.core.screen.uistate.VisibleTextLine
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
@@ -34,14 +35,102 @@ internal data class JjHandResult(
     val bombs: Int, val rockets: Int, val spring: Boolean?, val history_complete: Boolean,
     val failures: Map<String, Int>, val tracker_breaks: Map<String, Int>,
     val advisor_host: String?, val advisor_reachable: Boolean?, val ocr_ms: Long? = null,
+    val end_frames: Int = 0, val end_probes: Int = 0, val ocr_frames: Int = 0,
 )
 
-/** Only the last table JPEG and a possible payout JPEG survive the poll. Never OCR on a turn. */
+/** A three-second window of original game JPEGs. The ordinary poll and the sampler both
+ * feed it, so a slow /cards response cannot consume the whole payout interval. */
+internal class JjEndFrames {
+    companion object {
+        const val INTERVAL_MS = 200L
+        private const val WINDOW_MS = 3_000L
+        private const val MAX_FRAMES = 16
+        private const val OCR_CANDIDATES = 5
+    }
+
+    private val frames = mutableListOf<ByteArray>()
+    private var started: Long? = null
+    private var lastAt: Long? = null
+    private var dealVisible = false
+    private var preferred: ByteArray? = null
+    private var resultPage: ByteArray? = null
+    private val zeroSeats = mutableSetOf<DdzSeat>()
+    val winner @Synchronized get() = zeroSeats.singleOrNull()
+    val sawResult @Synchronized get() = resultPage != null
+    @Volatile var probes = 0
+    @Volatile var captured = 0
+        private set
+
+    @Synchronized fun ownHandCleared() { zeroSeats += DdzSeat.Me }
+
+    /** A rocket or another effect hid the cards; the main loop has recognized the same hand again. */
+    @Synchronized fun resumed(at: Long) {
+        if (sawResult || started == null || lastAt?.let { it > at } == true) return
+        frames.clear()
+        zeroSeats.clear()
+        preferred = null
+        started = null
+        lastAt = null
+        dealVisible = false
+    }
+
+    @Synchronized fun samplingFinished(now: Long) = dealVisible || sawResult || started?.let { now - it > WINDOW_MS } == true
+
+    /** Return whether this observation needs a JPEG. A probe checks eligibility before encoding;
+     * normal polls and completed captures supply their existing bytes. */
+    @Synchronized fun observe(
+        frame: RawFrame, view: JjView, counts: Map<DdzSide, Int>?, at: Long, empty: Boolean, jpeg: ByteArray?,
+    ): Boolean {
+        if (lastAt?.let { it > at } == true) return false
+        if (view.phase == DdzPhase.Result) {
+            if (resultPage == null && jpeg != null) {
+                resultPage = jpeg
+                captured++
+                if (JjDdzScreen.payoutVisible(frame)) preferred = jpeg
+            }
+            return resultPage == null
+        }
+        if (sawResult) return false
+        if (view.phase != DdzPhase.Other || dealVisible) return false
+        val zeros = counts.orEmpty().filterValues { it == 0 }.keys
+        val hint = view.turn == null && JjDdzScreen.payoutVisible(frame)
+        if (zeros.isEmpty() && !hint) {
+            if (JjDdzScreen.handAtBottom(frame) && !empty) {
+                // Keep the previous window until the game loop identifies the deal or resumes it.
+                dealVisible = started != null
+                return false
+            }
+            if (view.turn != null && !empty) return false
+        }
+        for (side in zeros) zeroSeats += if (side == DdzSide.Left) DdzSeat.Left else DdzSeat.Right
+        if (started == null) started = at
+        if (samplingFinished(at) || frames.size >= MAX_FRAMES) return false
+        if (lastAt?.let { at - it < INTERVAL_MS } == true && !(hint && preferred == null)) return false
+        if (jpeg != null) {
+            frames += jpeg
+            captured++
+            lastAt = at
+            if (hint && preferred == null) preferred = jpeg
+        }
+        return true
+    }
+
+    @Synchronized fun samples() = frames + listOfNotNull(resultPage)
+
+    /** Reserve room for the visual hint and Result, then sample the middle of each remaining group. */
+    @Synchronized fun candidates(): List<ByteArray> {
+        val priority = listOfNotNull(preferred, resultPage).distinct()
+        val rest = frames.filterNot { it in priority }
+        val slots = minOf(OCR_CANDIDATES - priority.size, rest.size)
+        val spaced = (0 until slots).map { rest[(2 * it + 1) * rest.size / (2 * slots)] }
+        return (listOfNotNull(preferred) + spaced + listOfNotNull(resultPage)).distinct()
+    }
+}
+
 internal class JjHandLog(val index: Int) {
     var endedAt: Long? = null
     var tableShot: ByteArray? = null
-    var settlementShot: ByteArray? = null
-    var sawResultPage = false
+    val ending = JjEndFrames()
     var stableLandlord: DdzSeat? = null
     var bid: JjBid? = null
     var advisorReachable: Boolean? = null
@@ -62,26 +151,39 @@ internal class JjHandLog(val index: Int) {
             it.broken == null && it.landlord != null && it.landlord == lord &&
                 "tap_failed" !in failures && end !in listOf("stopped", "replaced", "redeal")
         }?.finishedSeat()
-        val win = completeWinner?.let { (it == lord) == (lord == DdzSeat.Me) }
-        val spring = completeWinner?.let { winner ->
+        val badgeWinner = ending.winner.takeUnless { end in listOf("stopped", "replaced", "redeal") }
+        val winner = badgeWinner ?: completeWinner
+        val win = when {
+            winner == DdzSeat.Me -> true
+            winner == null || lord == null -> null
+            else -> (winner == lord) == (lord == DdzSeat.Me)
+        }
+        val historyComplete = completeWinner != null && completeWinner == winner
+        val spring = completeWinner?.let { confirmed ->
+            if (confirmed != winner) return@let null
             val played = tracker.confirmedSeats.filterIndexed { i, _ -> history[i].isNotEmpty() }
-            if (winner == lord) played.all { it == lord } else played.count { it == lord } == 1
+            if (confirmed == lord) played.all { it == lord } else played.count { it == lord } == 1
         }
         val kinds = history.map { DdzSnapshotRecovery.classify(it)?.kind }
         return JjHandResult(
             time = endedAt ?: System.currentTimeMillis(), session = session, hand = index, end = end,
             role = lord?.myRole(), landlord = lord?.name?.lowercase(), bid = bid,
-            win = win, evidence = if (win == null) "unknown" else "tracker_zero",
-            winner = completeWinner?.name?.lowercase(), score_change = null,
+            win = win, evidence = when {
+                badgeWinner != null -> "badge_zero"
+                win != null -> "tracker_zero"
+                else -> "unknown"
+            },
+            winner = winner?.name?.lowercase(), score_change = null,
             stakes = null, multiplier = null, stakes_source = null,
             bombs = kinds.count { it == DdzSnapshotRecovery.Kind.Bomb },
             rockets = kinds.count { it == DdzSnapshotRecovery.Kind.Rocket },
-            spring = spring, history_complete = completeWinner != null,
+            spring = spring, history_complete = historyComplete, end_frames = ending.captured, end_probes = ending.probes,
             failures = failures.toMap(), tracker_breaks = breaks.toMap(), advisor_host = host, advisor_reachable = advisorReachable,
         )
     }
 
     companion object {
+        private val format = Json { encodeDefaults = true }
         private val writer = Executors.newSingleThreadExecutor { r -> Thread(r, "jjhands").apply { isDaemon = true } }
         private val stake = Regex("""(?<![\d.])([1-9]\d{0,6})\s*[xX×хХ]\s*([1-9]\d*(?:\.\d+)?)(?![\d.])""")
         private val signedScore = Regex("""[+\-]\d{1,8}""")
@@ -96,9 +198,10 @@ internal class JjHandLog(val index: Int) {
             .flatMap { stake.findAll(it).map { m -> "${m.groupValues[1]}x${m.groupValues[2]}" }.toList() }.distinct().singleOrNull()
 
         internal fun enrich(record: JjHandResult, lines: List<VisibleTextLine>, settlement: Boolean): JjHandResult {
-            // Own payout above the revealed hand, beach +10 (x≈.29, y≈.51), sea −450 (.31, .59).
+            // 16:26:15 harbour −600 starts at x=.247; 16:27:40 yacht −300 at .189.
+            // Both end above y=.68; the signed total below and opponent payouts above are separate.
             // Reject rank, balance, other seats and conflicting readings from the two OCR models.
-            val score = lines.texts(270..520, 475..685).map { it.filterNot(Char::isWhitespace).replace('−', '-').replace('－', '-').replace('＋', '+') }
+            val score = lines.texts(175..520, 475..685).map { it.filterNot(Char::isWhitespace).replace('−', '-').replace('－', '-').replace('＋', '+') }
                 .filter { signedScore.matches(it) }.mapNotNull { it.toIntOrNull() }.distinct().singleOrNull().takeIf { settlement }
             val paidWin = score?.takeUnless { it == 0 }?.let { it > 0 }
             val shown = stakes(lines)
@@ -111,21 +214,40 @@ internal class JjHandLog(val index: Int) {
                 stakes_source = shown?.let { if (settlement) "settlement" else "last_table" })
         }
 
-        fun write(record: JjHandResult, payout: ByteArray?, lastTable: ByteArray?,
-                  read: suspend (ByteArray) -> List<VisibleTextLine>?, dumpDirectory: () -> File?) {
+        fun write(record: JjHandResult, candidates: List<ByteArray>, lastTable: ByteArray?,
+                  read: suspend (ByteArray) -> List<VisibleTextLine>?, dumpDirectory: () -> File?,
+                  dumpUnknown: () -> Unit) {
             writer.execute {
                 runCatching {
-                    val shot = when (record.end) {
-                        "stopped", "replaced", "redeal" -> null
-                        else -> payout ?: lastTable
-                    }
-                    val result = if (shot == null) record else {
+                    var result = record
+                    var attempts = 0
+                    var elapsed = 0L
+                    fun ocr(shot: ByteArray): List<VisibleTextLine> {
+                        attempts++
                         val started = System.nanoTime()
-                        val lines = runCatching { runBlocking { withTimeoutOrNull(4_000) { read(shot) } } }.getOrNull()
-                        val elapsedMs = (System.nanoTime() - started) / 1_000_000
-                        enrich(record, lines.orEmpty(), settlement = payout != null).copy(ocr_ms = elapsedMs)
+                        return try {
+                            runCatching { runBlocking { withTimeoutOrNull(4_000) { read(shot) } } }.getOrNull().orEmpty()
+                        } finally {
+                            elapsed += System.nanoTime() - started
+                        }
                     }
-                    val json = Json.encodeToString(result)
+                    if (record.end !in listOf("stopped", "replaced", "redeal")) {
+                        for (shot in candidates) {
+                            val lines = ocr(shot)
+                            if (shot === lastTable) result = enrich(record, lines, settlement = false)
+                            val candidate = enrich(record, lines, settlement = true)
+                            if (candidate.evidence == "settlement_score") {
+                                result = candidate
+                                break
+                            }
+                        }
+                        if (result.evidence != "settlement_score" && lastTable != null && lastTable !in candidates) {
+                            result = enrich(record, ocr(lastTable), settlement = false)
+                        }
+                    }
+                    result = result.copy(ocr_ms = elapsed.takeIf { attempts > 0 }?.div(1_000_000), ocr_frames = attempts)
+                    if (result.win == null) dumpUnknown()
+                    val json = format.encodeToString(result)
                     println("JJTRACE hand_result $json")
                     val dir = checkNotNull(dumpDirectory()?.parentFile) { "external files unavailable" }.resolve("jjhands")
                     check(dir.isDirectory || dir.mkdirs()) { "mkdir $dir" }

@@ -3,6 +3,8 @@ package com.wangzan101.mika.core.cap.phone
 import com.wangzan101.mika.core.screen.uistate.VisibleTextLine
 import org.junit.Assert.*
 import org.junit.Test
+import com.wangzan101.mika.core.screen.uistate.RawFrame
+import javax.imageio.ImageIO
 
 class JjHandLogTest {
     private val hand = JjHandLog(1)
@@ -35,6 +37,37 @@ class JjHandLogTest {
         assertNull(result.win)
         assertNull(result.score_change)
         assertNull(result.multiplier)
+    }
+
+    @Test fun badgeZeroSurvivesMissingFinalPlayAndUnknownRoleStaysUnknown() {
+        // Keep the printed 0 from the right-hand "10" on replay row 22; center it on the badge.
+        val sheet = ImageIO.read(javaClass.getResource("/ddz-jj/opponent-counts-1125.png"))
+        val rows = JjDdzScreen.ROWS.associateWith { y ->
+            IntArray(2412).also { pixels ->
+                if (y in 448..490 && y % 2 == 0) {
+                    val src = 22 * 43 + y - 448
+                    sheet.getRGB(0, src, 100, 1, pixels, 265, 100)
+                    sheet.getRGB(142, src, 26, 1, pixels, 2121, 26)
+                }
+            }
+        }
+        val frame = RawFrame(2412, 1080, rows)
+        val counts = JjDdzScreen.counts(frame)
+        assertEquals(mapOf(DdzSide.Left to 1, DdzSide.Right to 0), counts)
+        val view = JjView(DdzPhase.Other, emptyList(), null)
+        hand.ending.observe(frame, view, counts, 0, false, byteArrayOf(1))
+        assertNull(hand.snapshot("s", null, "new_hand", null).win)
+        hand.stableLandlord = DdzSeat.Right
+        val lost = hand.snapshot("s", null, "new_hand", null)
+        assertEquals("badge_zero", lost.evidence)
+        assertEquals("right", lost.winner)
+        assertEquals(false, lost.win)
+        assertFalse(lost.history_complete)
+        assertNull(lost.spring)
+        hand.stableLandlord = DdzSeat.Left
+        assertEquals(true, hand.snapshot("s", null, "new_hand", null).win)
+        hand.ending.ownHandCleared()
+        assertNull(hand.snapshot("s", null, "new_hand", null).winner)
     }
 
     @Test fun landlordAndFarmerVictoriesNeedOneSeatAtZeroAndAnIntactHistory() {

@@ -73,7 +73,7 @@ internal object JjDdzScreen {
     private const val LORD_PIXELS = 40
 
     val ROWS = (listOf(TOP_ROW, BOTTOM_ROW) + CLOCK_ROWS + AGAIN_ROWS + listOf(903, 980) + LORD_ROWS +
-        (448..490 step 2) + listOf(602, 690)).distinct()
+        (448..490 step 2) + listOf(602, 690, 1050)).distinct()
 
     /** Choose an OCR frame, never a result on color alone. Horizontal stroke of our gold + / silver −. */
     fun payoutVisible(frame: RawFrame): Boolean {
@@ -95,8 +95,21 @@ internal object JjDdzScreen {
         return stroke(724, 602) || stroke(766, 690)
     }
 
+    /** Bottom edge of the large playable cards. Disappearance only opens a capture window:
+     * rocket animations hide these cards too. Never infer a winner from these pixels. */
+    fun handAtBottom(frame: RawFrame): Boolean {
+        val row = frame.row(1050) ?: return false
+        return (47..55).count { percent ->
+            val p = row[percent * frame.width / 100]
+            val r = p shr 16 and 255
+            val g = p shr 8 and 255
+            val b = p and 255
+            r in 155..220 && r - g in -5..16 && r - b in -5..22
+        } >= 3
+    }
+
     /** 海景、船舷两种牌桌的剩牌立牌位置不同。两个数字都读清才用，单帧遮挡不能作补牌证据。 */
-    fun counts(frame: RawFrame): Map<DdzSide, Int>? {
+    fun counts(frame: RawFrame, includeZero: Boolean = true): Map<DdzSide, Int>? {
         if (frame.height != FRAME_HEIGHT || frame.width < frame.height) return null
         fun badge(x: Int, y: Int, tilt: Int, minGreen: Int): Int? {
             val cx = (x * frame.width / 2412.0).roundToInt()
@@ -110,9 +123,10 @@ internal object JjDdzScreen {
             var n = 0
             for (col in cols) {
                 val digit = DdzCards.jjCountDigit(Array(ink.size) { ink[it].copyOfRange(col.first, col.last + 1) }) ?: return null
+                if (includeZero && digit == 0 && col == cols.first() && cols.size == 2) return null
                 n = n * 10 + digit
             }
-            return n.takeIf { it in 1..20 }
+            return n.takeIf { it in 1..20 || includeZero && it == 0 }
         }
         fun layout(left: Int?, right: Int?) =
             if (left != null && right != null) mapOf(DdzSide.Left to left, DdzSide.Right to right) else null

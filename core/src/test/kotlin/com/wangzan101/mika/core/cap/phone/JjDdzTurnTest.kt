@@ -151,6 +151,87 @@ class JjDdzTurnTest {
         assertEquals(null, row.multiplier)
     }
 
+    @Test fun capturesShortHarbourPayoutDuringSlowOpponentCardRead() = replayHarbourPayout(resultPage = true)
+
+    @Test fun preservesPayoutWhenOldCardReadReturnsAfterThePopup() = replayHarbourPayout(resultPage = false)
+
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    private fun replayHarbourPayout(resultPage: Boolean) = runTest {
+        val dir = temp.newFolder("jjdump")
+        val active = frame("left_turn")
+        val result = frame("final_page")
+        // Scaled Mika preview from 16:26:15, cropped to the game. These are the normalized
+        // Vision OCR boxes from that crop, including both opponents and our signed total.
+        val photo = ImageIO.read(javaClass.getResource("/ddz-jj/harbour-settlement-preview.jpg"))
+        val harbour = RawFrame(2412, 1080, JjDdzScreen.ROWS.associateWith { y ->
+            IntArray(2412) { x -> photo.getRGB(x * photo.width / 2412, y * photo.height / 1080) }
+        })
+        val transition = RawFrame(2412, 1080, JjDdzScreen.ROWS.associateWith { IntArray(2412) })
+        assertEquals(DdzPhase.Other, JjDdzScreen.read(harbour).phase)
+        assertTrue(!JjDdzScreen.payoutVisible(harbour))
+        val game = object : Game(JjDdzScreen.PACKAGE, active, dir) {
+            fun scene() = when (currentTime) {
+                in 400L until 1_200L -> transition
+                in 1_200L until 2_400L -> harbour
+                in 2_400L until 3_000L -> transition
+                in 3_000L..Long.MAX_VALUE -> if (resultPage) result else transition
+                else -> active
+            }
+            override suspend fun rawFrame(rows: List<Int>) = scene()
+            override suspend fun quickShot() = byteArrayOf(when (scene()) {
+                active -> 1
+                transition -> 2
+                harbour -> 3
+                else -> 4
+            })
+            override suspend fun readShotText(jpeg: ByteArray) = if (jpeg.single().toInt() == 3) listOf(
+                VisibleTextLine("-600", listOf(247, 588, 363, 677)),
+                VisibleTextLine("+1200", listOf(249, 223, 394, 313)),
+                VisibleTextLine("-515", listOf(868, 380, 898, 409)),
+                VisibleTextLine("-503", listOf(253, 684, 333, 723)),
+                VisibleTextLine("193/210 100x6", listOf(407, 18, 595, 64)),
+            ) else emptyList()
+        }
+        PhoneDdzTurn.clock = { currentTime }
+        var calls = 0
+        JjDdzTurn.detect = { _, jpeg ->
+            calls++
+            assertTrue("sample leaked to /cards", jpeg.single().toInt() != 3)
+            if (calls == 2) delay(3_500)
+            if (calls <= 2) hand(seventeen) else emptyList()
+        }
+        assertEquals("result", run(game, start).text("state"))
+        val row = Json.decodeFromString<JjHandResult>(awaitHandLine(dir))
+        assertEquals(8, calls)
+        assertEquals(false, row.win)
+        assertEquals(-600, row.score_change)
+        assertEquals("settlement_score", row.evidence)
+        assertEquals(6.0, row.multiplier)
+        assertTrue(row.end_frames in 5..17)
+        assertTrue(row.ocr_frames in 1..6)
+        assertTrue(row.end_probes >= row.end_frames - 1)
+    }
+
+    @Test fun lastCardTapFollowedByAnEmptyHandWinsWithoutPayoutOrCompleteHistory() = runTest {
+        val dir = temp.newFolder("jjdump")
+        val transition = RawFrame(2412, 1080, JjDdzScreen.ROWS.associateWith { IntArray(2412) })
+        val game = object : Game(JjDdzScreen.PACKAGE, frame("lead"), dir) {
+            override suspend fun quickTap(x: Int, y: Int): Boolean {
+                if (y == JjDdzScreen.TAP_Y) frame = transition
+                return super.quickTap(x, y)
+            }
+        }
+        val ranks = listOf("3")
+        val lifted = hand(ranks, setOf(0))
+        replies(hand(ranks), hand(ranks), hand(ranks), lifted, lifted, *Array(6) { emptyList() })
+        assertEquals("result", run(game, start).text("state"))
+        val row = Json.decodeFromString<JjHandResult>(awaitHandLine(dir))
+        assertEquals(true, row.win)
+        assertEquals("badge_zero", row.evidence)
+        assertEquals("me", row.winner)
+        assertTrue(!row.history_complete)
+    }
+
     @Test fun nextHandBidsWhileLastHandOcrIsPending() = runTest {
         val dir = temp.newFolder("jjdump")
         val entered = CompletableDeferred<Unit>()
@@ -217,7 +298,18 @@ class JjDdzTurnTest {
         assertEquals("result", run(game, start).text("state"))
         assertEquals(8, reads)
         val row = Json.decodeFromString<JjHandResult>(awaitHandLine(dir))
-        assertEquals(1, ocrAttempts)
+        assertEquals(2, ocrAttempts) // result and last table
+        val dumped = withContext(Dispatchers.IO) {
+            withTimeout(2_000) {
+                var files = dir.listFiles().orEmpty().filter { it.name.startsWith("hand_1_") }
+                while (files.none { it.length() > 0 }) {
+                    delay(10)
+                    files = dir.listFiles().orEmpty().filter { it.name.startsWith("hand_1_") }
+                }
+                files
+            }
+        }
+        assertTrue(dumped.any { it.readBytes().contentEquals(byteArrayOf(2)) })
         assertEquals("settlement", row.end)
         assertEquals("unknown", row.evidence)
     }
