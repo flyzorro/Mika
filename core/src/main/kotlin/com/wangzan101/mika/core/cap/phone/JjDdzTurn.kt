@@ -437,6 +437,10 @@ internal object JjDdzTurn {
         s: Session, table: JjTable, view: JjView, settleExpired: Boolean = false, counts: Map<DdzSide, Int>? = null,
     ) {
         val tracker = s.tracker!!
+        if (tracker.awaitingRocketLead) {
+            if (tracker.confirmRocketLead(table, view.phase)) s.acted = false
+            return
+        }
         val turn = view.turn
         // 左家后该轮到我。自己的旧「不出」可能还留着，右家闹钟要再亮一帧才认作跳过了我。
         val skipsMe = turn == DdzSeat.Right && tracker.nextOpponent() == DdzSeat.Left && table.mine !is DdzSeen.Cards
@@ -464,12 +468,7 @@ internal object JjDdzTurn {
             ranks != s.opponentPlaysAtAction[side] && ranks != tracker.lastOpponentPlay(seat)?.sorted() &&
                 repeated(side, cards.ranks) && DdzSnapshotRecovery.classify(cards.ranks) != null
         }
-        // 自己的王炸清桌后可能直接回到领出按钮，两家都不留气泡。手牌须与打掉双王后完全吻合。
-        val leadAfterMyRocket = view.phase == DdzPhase.Lead && tracker.confirmedSeats.lastOrNull() == DdzSeat.Me &&
-            DdzSnapshotRecovery.classify(tracker.history.last())?.kind == DdzSnapshotRecovery.Kind.Rocket &&
-            table.left == DdzSeen.Empty && table.right == DdzSeen.Empty && table.mine == DdzSeen.Empty &&
-            !table.handUnsure && s.expectedHand?.sorted() == table.handRanks.sorted()
-        if (opponentPlayedAfterMine || leadAfterMyRocket) s.acted = false
+        if (opponentPlayedAfterMine) s.acted = false
         // 补齐旧一轮后，闹钟可能还停在上一家。等领出者的闹钟或新牌读稳，再接受后续的轮转。
         s.recoveredLeader?.let { leader ->
             val side = sideOf(leader)
@@ -501,7 +500,7 @@ internal object JjDdzTurn {
                 boxes.takeIf { (table.seen(side) is DdzSeen.Cards || steady) && repeated(side, boxes.map { it.rank }) }.orEmpty()
             },
             expireOpponentDeckRetries = settleExpired,
-            newTurnAfterMine = opponentPlayedAfterMine || leadAfterMyRocket,
+            opponentPlayedAfterMine = opponentPlayedAfterMine,
             deadlineCounts = counts.takeIf { settleExpired && !table.handUnsure },
         )
         // 刚读定炸前那一家的不出，队头才轮到炸家。这一帧可能是新领出的最后一帧。
@@ -805,9 +804,13 @@ internal object JjDdzTurn {
             tracker.fail(DdzSessionReason.REJECTED_ACTION)
             return byRules(ctx, s, view, table, rejectedPlay = play)
         }
-        tap(ctx, s, playX, JjDdzScreen.TAP_Y)
-        tracker.mine(play)
-        s.expectedHand = hand.toMutableList().apply { play.forEach { remove(it) } }
+        if (!tap(ctx, s, playX, JjDdzScreen.TAP_Y)) {
+            tracker.fail(DdzSessionReason.REJECTED_ACTION)
+            return false
+        }
+        val remaining = hand.toMutableList().apply { play.forEach { remove(it) } }
+        tracker.mine(play, jjHandAfterPlay = remaining)
+        s.expectedHand = remaining
         return true
     }
 

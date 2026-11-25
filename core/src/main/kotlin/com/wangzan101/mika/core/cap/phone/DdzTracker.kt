@@ -45,6 +45,8 @@ internal class DdzTracker(
     private var firstIllegal = 0
     /** 自己出完以后见过不是自己的回合了没有:刚按下出牌,按钮还会在画面上留几帧,那不是又轮到自己。 */
     private var leftMe = true
+    private var handAfterRocket: List<String>? = null
+    internal val awaitingRocketLead: Boolean get() = handAfterRocket != null
     /** 第几帧;同一帧里 resolve 会调两次,「不出」要按帧数。 */
     private var frameNo = 0L
     /** 每个读数各自数连着几帧:同一帧里 resolve 和补记会各读一个 key,不能互相清零。 */
@@ -97,14 +99,14 @@ internal class DdzTracker(
     /**
      * 每一帧喂进来:[turn] 此刻轮到谁(没人或看不出为 null),[read] 读某家出牌区,[bottom] 读底牌,
      * [leadingWith20] 此刻轮到自己先出、手里 20 张,[leading] 此刻轮到自己先出,[hand] 读自己的手牌(核对底牌用)。
-     * [newTurnAfterMine] 表示我的按钮连续出现期间，牌桌和手牌已确认回到了我的下一次决策。
+     * [opponentPlayedAfterMine] 表示我的按钮连续出现期间，已经读稳了对手的新出牌。
      */
     fun observe(
         rawTurn: DdzSeat?, read: (DdzSide) -> DdzSeen, bottom: () -> List<String>?, leadingWith20: Boolean = false, leading: Boolean = false,
         counts: () -> Map<DdzSide, Int?> = { emptyMap() }, hand: () -> List<String>? = { null }, checkOpponentDeck: Boolean = false,
         opponentBoxes: ((DdzSide) -> List<JjCard>)? = null, expireOpponentDeckRetries: Boolean = false,
         repeatedOpponentPlay: ((DdzSide, List<String>) -> Boolean)? = null,
-        newTurnAfterMine: Boolean = false,
+        opponentPlayedAfterMine: Boolean = false,
         deadlineCounts: Map<DdzSide, Int>? = null,
     ) {
         if (broken != null) return
@@ -214,7 +216,7 @@ internal class DdzTracker(
         if (rawTurn == DdzSeat.Me && turn != DdzSeat.Me) recordPlayShownAsMyTurnBegins(read)
         // 轮到自己先出,说明上一轮最后出牌的是自己、后面两家都没要;闯关的牌桌一轮结束就清桌,连「不出」都不留
         val seen = if (leading) { side: DdzSide -> read(side).let { if (it == DdzSeen.Empty) DdzSeen.Pass else it } } else read
-        if (turn != DdzSeat.Me || newTurnAfterMine) leftMe = true
+        if (turn != DdzSeat.Me || opponentPlayedAfterMine) leftMe = true
         // 我出的牌没人要得起:两家都被秒过(闹钟没在他们头上停过),又轮到我先出。两家都摆着「不出」,
         // 就不是我刚出完、按钮还留着的那几帧(那时桌上没有他们的「不出」)
         if (turn == DdzSeat.Me && !leftMe && leading && read(DdzSide.Left) == DdzSeen.Pass && read(DdzSide.Right) == DdzSeen.Pass) leftMe = true
@@ -534,7 +536,7 @@ internal class DdzTracker(
     }
 
     /** 自己这一手出了什么([] 是不出);工具按下去之后马上记。 */
-    fun mine(cards: List<String>) {
+    fun mine(cards: List<String>, jjHandAfterPlay: List<String>? = null) {
         if (broken != null) return
         if (active != DdzSeat.Me) return fail("not_my_turn")
         if (waiting.isNotEmpty()) return fail("unread_before_me")
@@ -544,10 +546,25 @@ internal class DdzTracker(
         awaitMeAfterInfer = false
         // 出完就轮到下家:两家出得太快、闹钟又回到我这里时,才看得出中间那两手
         active = DdzSeat.Me.next
+        // JJ 的王炸无人能压，手里还有牌时两家必过。先记下，等新领出画面再给建议。
+        if (broken == null && !jjHandAfterPlay.isNullOrEmpty() &&
+            DdzSnapshotRecovery.classify(cards)?.kind == DdzSnapshotRecovery.Kind.Rocket) {
+            record(DdzSeat.Right, emptyList())
+            record(DdzSeat.Left, emptyList())
+            handAfterRocket = jjHandAfterPlay.sorted()
+            active = DdzSeat.Me
+        }
+    }
+
+    internal fun confirmRocketLead(table: JjTable, phase: DdzPhase): Boolean {
+        if (phase != DdzPhase.Lead || table.handUnsure || table.handRanks.sorted() != handAfterRocket) return false
+        handAfterRocket = null
+        leftMe = true
+        return true
     }
 
     /** 轮到自己时能不能交给 DouZero:别家的都读到了、历史没断。 */
-    fun ready(): Boolean = broken == null && landlord != null && waiting.isEmpty() && active == DdzSeat.Me
+    fun ready(): Boolean = broken == null && landlord != null && waiting.isEmpty() && active == DdzSeat.Me && !awaitingRocketLead
 
     /** 可按顺序记下一手的对手。还有待确认动作时为空。 */
     internal fun nextOpponent(): DdzSeat? =
@@ -802,6 +819,7 @@ internal class DdzTracker(
         passFrames.clear()
         unsureThisTrick.clear()
         broken = null
+        handAfterRocket = null
         leftMe = true
         awaitLeader = null
         awaitSawPlay = false
