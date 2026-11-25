@@ -9,15 +9,12 @@ from douzero.env import move_detector as md
 from douzero.env.game import GameEnv
 
 from server import (
-    ACT_BUDGET_SAFETY_S, ACT_ENDGAME_BUDGET_S, ACT_ROLLOUT_BUDGET_S, ACT_ROLLOUT_MIN_S, ACT_TOTAL_BUDGET_S, DECK,
-    DOUBLE_WIN, FARMER_DOUBLE_WIN, NAMES, ROLLOUT_MIN_GAMES, SEATS, SUPER_DOUBLE_WIN, Advisor, Mismatch, WEIGHTS,
-    Cards, bid_level, cards, fewer_plays, handler, is_bomb, move_label, parse_auction, resolve, should_double,
+    ACT_ENDGAME_BUDGET_S, ACT_ENDGAME_TIE_MARGIN, ACT_TOTAL_BUDGET_S, DECK, DOUBLE_WIN, FARMER_DOUBLE_WIN, NAMES,
+    ROLLOUT_MIN_GAMES, SEATS, SUPER_DOUBLE_WIN, Advisor, Mismatch, WEIGHTS, Cards,
+    bid_level, cards, handler, parse_auction, resolve, should_double,
 )
 
-# 造局面时关掉「接近时现场模拟」:随机走一步有近一半的顶两手分差在 0.1 以内,开着会让原有测试慢到不可用。
-# 模拟本身由下面 CloseCallRolloutTest 用开着模拟的 ROLLOUT_ADVISOR 按公开入口测。
-ADVISOR = Advisor(WEIGHTS, rollout=False)
-ROLLOUT_ADVISOR = Advisor(WEIGHTS)
+ADVISOR = Advisor(WEIGHTS)
 
 
 def names(cards):
@@ -58,39 +55,6 @@ def request_split(position):
     current = {s: server_module.minus(start[s], played[s]) for s in SEATS}
     unseen = sorted(server_module.minus(DECK, current[seat] + sum(played.values(), [])))
     return seat, history, current, left, unseen, played
-
-
-def has_bomb(hand):
-    """[hand] 里有没有炸弹 / 王炸。"""
-    counts = {card: list(hand).count(card) for card in set(hand)}
-    return any(n >= 4 for card, n in counts.items() if card < 20) or (20 in hand and 30 in hand)
-
-
-def short_bomb_mass(position, advisor=ADVISOR, auction=None, only_short=False, counted=True):
-    """牌最少的那家对手,按 [advisor].likelihood 加权后手里有炸弹的概率。
-
-    [only_short] 为真时只看他的出牌(同 Advisor.short_hand_plan):另一家很早以前的出牌
-    会在两百多种分法里把权重整个带走。[counted] 为假时每种不同的剩牌算一个假设,
-    不再按同点数的摆法数放大(同 short_hand_plan)。
-    """
-    import endgame
-    seat, history, current, left, unseen, _ = request_split(position)
-    others = [s for s in SEATS if s != seat]
-    short = min(others, key=lambda s: left[s])
-    far = others[0] if others[1] == short else others[1]
-    ways = endgame.splits(unseen, short, left[short], far, left[far])
-    if ways is None:
-        raise AssertionError("分法太多,这条测试请求不该枚举不完")
-    splits = [{seat: tuple(current[seat]), short: ha, far: hb} for ha, hb in ways]
-    likes = advisor.likelihood(history, seat, auction, seats=[short] if only_short else None)(
-        splits, time.monotonic() + 30)
-    total = bomb = 0.0
-    for ((ha, _), count), like in zip(ways.items(), likes):
-        weight = (count if counted else 1.0) * like
-        total += weight
-        if has_bomb(ha):
-            bomb += weight
-    return bomb / total
 
 
 class ServerTest(unittest.TestCase):
@@ -197,57 +161,6 @@ class RibbonCardTest(unittest.TestCase):
         self.assertIn("ambiguous_card", str(caught.exception))
 
 
-class LastCardTest(unittest.TestCase):
-    def test_the_last_farmer_never_lets_a_one_card_landlord_lead(self):
-        # 实机上的一手:地主只剩一张、单出了 A,下家不要;我手里的小王是场上最大的牌,DouZero 却选了不出
-        history = [["6", "6", "6", "4"], ["2", "2", "2", "10"], [], [], ["J", "10", "9", "8", "7"], [], ["3", "3", "3", "3"], [], [],
-                   ["9", "9", "9", "7"], [], ["4", "J", "J", "J"], [], [], ["5", "5"], ["8", "8"], ["Q", "Q"], [], ["K", "K"], [], [],
-                   ["Q"], ["A"], [], ["2"], ["BJ"], [], [], ["5"], ["6"], ["A"], []]
-        hand = ["SJ", "A", "K", "K", "Q", "10", "10", "8", "7", "7"]
-        self.assertEqual(["SJ"], [NAMES[c] for c in ADVISOR.act("landlord_up", hand, ["A", "4", "7"], history)])
-
-
-class TeammateTest(unittest.TestCase):
-    def test_a_teammate_about_to_finish_is_not_beaten(self):
-        # 实机上的一手:队友只剩三张、出了 2,地主只剩一张不要;DouZero 拿小王压了队友,再出单 9 让地主走了
-        history = [["7", "6", "5", "4", "3"], [], [], ["J", "J", "J", "10", "10", "10", "Q", "9"], [], ["A", "A", "A", "K", "K", "K", "7", "3"], [], [], ["4", "4"], ["8", "8", "8", "8"], [], [], ["Q"], ["2"], [], [], ["2"], [], [], ["7", "7"], ["9", "9"], [], [], ["5"], ["K"], [], ["2"], []]
-        hand = ["BJ", "SJ", "2", "Q", "J", "9", "6", "6", "6", "5", "4", "3", "3"]
-        self.assertEqual([], ADVISOR.act("landlord_down", hand, [], history))
-
-
-class KeepCombosTest(unittest.TestCase):
-    """几手分数几乎一样时,优先不拆三条/对子/炸弹。按公开入口测。残局有结论时仍由残局搜索说了算(见 EndgameTest)。"""
-
-    def test_a_near_tie_keeps_the_triple_and_beats_with_the_single_9(self):
-        # 2026-11-14 13:44 实机:DouZero 拆了 10 10 10 里的 10 去顶队友的 6;单张 9 只差 0.009,不该拆
-        history = [["3"], ["5", "5", "5", "5"], [], [], ["6"]]
-        hand = ["BJ", "2", "K", "K", "Q", "10", "10", "10", "9", "8", "7", "6", "4", "4", "4", "3", "3"]
-        self.assertEqual(["9"], [NAMES[c] for c in ADVISOR.act("landlord_up", hand, ["9", "2", "J"], history)])
-
-    def test_a_clear_best_move_is_left_alone(self):
-        # 最高分那手本来就不拆(一对 3),照旧
-        hand = ["3", "3", "4", "4", "4", "6", "6", "8", "10", "J", "J", "Q", "K", "K", "K", "A", "A", "A", "2", "BJ"]
-        self.assertEqual(["3", "3"], [NAMES[c] for c in ADVISOR.act("landlord", hand, ["A", "A", "A"], [])])
-
-    def test_a_breaking_move_that_is_clearly_better_is_left_alone(self):
-        # 最高分是拆一对 2 的单张 2;不拆的最好一手还差 0.15,超过 KEEP_MARGIN,照旧
-        hand = ["3", "4", "4", "4", "5", "6", "7", "9", "10", "10", "10", "K", "K", "A", "2", "2"]
-        history = [["3", "4", "5", "6", "7", "8"], [], [], ["3"], ["Q"], [], ["A"]]
-        self.assertEqual(["2"], [NAMES[c] for c in ADVISOR.act("landlord_down", hand, ["K", "2"], history)])
-
-    def test_a_breaking_play_is_not_replaced_by_a_pass(self):
-        # 实机同一手:最高分是拆一对 2 的单张 2;不出虽在 margin 内,但规则只在出牌里挑,没有不拆的出牌就保持出牌
-        hand = ["2", "2", "K", "K", "J", "J", "10", "10", "8", "7", "6", "5", "4", "4", "4", "3", "3"]
-        history = [["6", "7", "8", "9", "10", "J", "Q", "K"], [], [], ["5"], [], ["J"], ["Q"]]
-        self.assertEqual(["2"], [NAMES[c] for c in ADVISOR.act("landlord_down", hand, [], history)])
-
-    def test_a_straight_that_breaks_a_pair_is_left_alone(self):
-        # 最高分是拆了一对 5(和一对 6)的顺子;单张 3 只差 0.012,但规则只管单张/对子/三条,顺子不动
-        hand = ["3", "4", "4", "4", "5", "5", "6", "6", "7", "8", "9", "9", "Q", "Q", "Q", "K", "A", "2", "2", "2"]
-        self.assertEqual(["5", "6", "7", "8", "9"],
-                         [NAMES[c] for c in ADVISOR.act("landlord", hand, ["Q", "K", "A"], [])])
-
-
 class JokerKickerTest(unittest.TestCase):
     """带牌里不能同时有大小王(王炸不能当飞机/四带二的带牌),只带一张王、王炸单独出照旧。"""
 
@@ -271,129 +184,6 @@ class JokerKickerTest(unittest.TestCase):
         self.assertIn(tuple(sorted(cards(["4", "4", "4", "5", "5", "5", "SJ", "9"]))), found)
         self.assertIn(tuple(sorted(cards(["4", "4", "4", "5", "5", "5"]))), found)
         self.assertIn(tuple(sorted(cards(["SJ", "BJ"]))), found)
-
-
-class KickerTest(unittest.TestCase):
-    """三带一/飞机带单的带牌是 A 或 2 时,换成手里最小的零散小单张。按公开入口测。"""
-
-    # 2026-11-16 10:04 实机的一局:地主先出 6 6 6 + 3,下家 8 8 8 + 5,地主再出 10 10 10 + 7
-    HISTORY = [["6", "6", "6", "3"], ["8", "8", "8", "5"], [], ["10", "10", "10", "7"], []]
-    BOTTOM = ["6", "Q", "Q"]
-
-    def test_the_single_a_kicker_is_replaced_with_the_smallest_loose_card(self):
-        # 我 K K K + A:A 当带牌丢了控制牌,地主随后 2 2 2 + J 压住走完。3 是剩下的 3..Q 顺子的低端,
-        # 拿走它顺子还有 4..Q,换成最小的 3
-        hand = ["A", "K", "K", "K", "Q", "J", "J", "10", "9", "8", "7", "7", "6", "5", "4", "4", "3"]
-        self.assertEqual(["K", "K", "K", "3"],
-                         [NAMES[c] for c in ADVISOR.act("landlord_up", hand, self.BOTTOM, self.HISTORY)])
-
-    def test_no_loose_single_keeps_the_a_kicker(self):
-        # 5/6/8/9/10 都在 4..Q 顺子的中间,4 和 Q 成对:没有能换的零散小单张,照原样带 A
-        hand = ["A", "K", "K", "K", "Q", "Q", "J", "J", "10", "9", "8", "7", "7", "6", "5", "4", "4"]
-        self.assertEqual(["K", "K", "K", "A"],
-                         [NAMES[c] for c in ADVISOR.act("landlord_up", hand, self.BOTTOM, self.HISTORY)])
-
-    def test_a_triple_of_aces_is_not_a_kicker(self):
-        # 三条本身是 A A A、带牌是 3:A 是三条用的,不是带牌,不动
-        hand = ["A", "A", "A", "4", "4", "4", "5", "5", "7", "7", "9", "9", "J", "J", "Q", "Q", "3"]
-        self.assertEqual(["3", "A", "A", "A"],
-                         [NAMES[c] for c in ADVISOR.act("landlord_up", hand, self.BOTTOM, self.HISTORY)])
-
-    def test_a_joker_kicker_is_left_alone(self):
-        # 规则只管 A/2:单张王当带牌不换(大小王一起当带牌已在 without_double_joker_kickers 里剔掉)
-        info = SimpleNamespace(player_hand_cards=cards(["K", "K", "K", "SJ", "3", "4"]),
-                               legal_actions=[cards(["K", "K", "K", "SJ"]), cards(["K", "K", "K", "3"])])
-        move = cards(["K", "K", "K", "SJ"])
-        self.assertEqual(["K", "K", "K", "SJ"],
-                         [NAMES[c] for c in ADVISOR.agents["landlord_up"].swap_high_kickers(info, move, lambda m: True)])
-
-    def test_the_endgame_verdict_keeps_the_a_kicker(self):
-        # 残局只剩 15 张,搜索算出来 K K K + A 在 4 种分法下都赢、K K K + 3 只赢 2 种:搜索说带 A 更好,
-        # 不合规的那手不进 allowed,规则不换
-        hand = ["K", "K", "K", "A", "3", "4", "5", "6", "7", "8", "8"]
-        env = GameEnv({s: None for s in SEATS})
-        env.card_play_init({"landlord": cards(["Q"]), "landlord_up": cards(hand),
-                            "landlord_down": cards(["8", "SJ", "BJ"]), "three_landlord_cards": []})
-        env.acting_player_position = "landlord_up"
-        env.last_pid = "landlord"
-        env.card_play_action_seq = [cards(["10", "10", "10", "7"]), []]
-        info = env.get_infoset()
-        self.assertEqual(["K", "K", "K", "A"], [NAMES[c] for c in ADVISOR.agents["landlord_up"].act(info)])
-
-
-class KickerChoiceTest(unittest.TestCase):
-    """2026-11-19 实机五手三带一:带牌比手里最小的零散单张大,或者拆了对子 / 三条,就换成最小的零散单张,不只 A/2。
-
-    DouZero 自己的出牌用打桩的 values 钉成当时回复的那手(实机是现场模拟选的,重跑不保证一样);
-    act 末尾的换带牌规则照旧,按公开入口 Advisor.act 测。
-    """
-
-    def advise(self, seat, hand, bottom, history, chosen):
-        import torch
-        agent = ADVISOR.agents[seat]
-        target = sorted(cards(chosen))
-
-        def values(info):
-            scores = torch.zeros(len(info.legal_actions))
-            for i, action in enumerate(info.legal_actions):
-                if sorted(action) == target:
-                    scores[i] = 100.0
-            return scores
-
-        with mock.patch.object(agent, "values", values):
-            return names(ADVISOR.act(seat, hand, bottom, history))
-
-    def test_a_q_kicker_is_replaced_with_the_loose_5(self):
-        # 12:06:46 地主:JJJ+Q,Q 是单张、比手里最小的散牌 5 大
-        hand = ["BJ", "SJ", "2", "2", "A", "A", "A", "Q", "J", "J", "J",
-                "10", "10", "10", "9", "9", "8", "7", "6", "5"]
-        self.assertEqual(sorted(["J", "J", "J", "5"]),
-                         sorted(self.advise("landlord", hand, [], [], ["J", "J", "J", "Q"])))
-
-    def test_a_k_kicker_is_replaced_with_the_loose_8(self):
-        # 13:35:08 我是地主下家:AAA+K,K 是单张、比手里最小的散牌 8 大
-        hand = ["2", "A", "A", "A", "K", "Q", "Q", "10", "9", "9", "8", "7", "7", "7", "7", "4", "4"]
-        history = [["Q", "Q", "J", "J", "10", "10", "9", "9", "8", "8"], [], [], ["6", "6", "6", "3"]]
-        self.assertEqual(sorted(["A", "A", "A", "8"]),
-                         sorted(self.advise("landlord_down", hand, [], history, ["K", "A", "A", "A"])))
-
-    def test_a_10_kicker_from_a_pair_is_replaced_with_the_loose_4(self):
-        # 13:14:37 地主:555+10,10 在手里是一对,换成最小的散牌 4
-        hand = ["SJ", "2", "2", "A", "A", "K", "Q", "J", "10", "10",
-                "9", "8", "8", "8", "6", "6", "5", "5", "5", "4"]
-        self.assertEqual(sorted(["5", "5", "5", "4"]),
-                         sorted(self.advise("landlord", hand, [], [], ["5", "5", "5", "10"])))
-
-    def test_a_10_kicker_from_a_pair_is_replaced_with_the_loose_3(self):
-        # 15:37:58 我是地主上家:444+10,10 在手里是一对,换成最小的散牌 3
-        hand = ["BJ", "K", "K", "Q", "J", "10", "10", "8", "7", "6", "6",
-                "5", "5", "4", "4", "4", "3"]
-        bottom = ["6", "10", "A"]
-        history = [["Q", "J", "10", "9", "8", "7", "6"], [], [], ["3", "3", "3", "7"], []]
-        self.assertEqual(sorted(["4", "4", "4", "3"]),
-                         sorted(self.advise("landlord_up", hand, bottom, history, ["4", "4", "4", "10"])))
-
-    def test_a_paired_9_kicker_with_no_loose_card_is_kept(self):
-        # 12:06:59 地主:101010+9。9 在手里是一对,但 5~9 是五连顺,拿掉哪张都拆不出顺子:
-        # 没有可换的零散单张,保持原样(反例)
-        hand = ["BJ", "SJ", "2", "2", "A", "A", "A", "10", "10", "10", "9", "9", "8", "7", "6", "5"]
-        history = [["J", "J", "J", "Q"], [], []]
-        self.assertEqual(sorted(["9", "10", "10", "10"]),
-                         sorted(self.advise("landlord", hand, [], history, ["9", "10", "10", "10"])))
-
-    def test_a_paired_3_kicker_is_replaced_by_a_bigger_loose_4(self):
-        # 构造的局面:(b) 单独生效——带牌 3 是手里的一对、比最小的散牌 4 还小,仍换成 4,不拆对子
-        hand = ["3", "3", "4", "5", "5", "5", "6", "7", "8", "9", "10", "J",
-                "Q", "K", "A", "2", "K", "Q", "A", "2"]
-        self.assertEqual(sorted(["5", "5", "5", "4"]),
-                         sorted(self.advise("landlord", hand, [], [], ["5", "5", "5", "3"])))
-
-    def test_a_plane_replaces_both_single_kickers_in_order(self):
-        # 构造的局面:飞机带单 333444+QK,两张带牌都换成最小的零散单张,依次是 5、6
-        hand = ["3", "3", "3", "4", "4", "4", "5", "6", "7", "8", "9", "10",
-                "J", "Q", "K", "A", "2", "2", "2", "A"]
-        self.assertEqual(sorted(["3", "3", "3", "4", "4", "4", "5", "6"]),
-                         sorted(self.advise("landlord", hand, [], [], ["3", "3", "3", "4", "4", "4", "Q", "K"])))
 
 
 class EndgameTest(unittest.TestCase):
@@ -541,20 +331,22 @@ class EndgameBudgetTest(unittest.TestCase):
                          ["J", "J"], ["2", "2"], [], [], ["3", "3"], [], [], ["8", "8"], [], [], ["5", "5"], [],
                          [], ["9", "9"], [], []])
 
-    def act(self, position, report=None):
-        return ROLLOUT_ADVISOR.act(position["seat"], position["hand"], position["bottom"],
-                                   position["history"], report)
+    def test_the_search_finishes_inside_the_turn_budget(self):
+        import endgame
+        completed = []
+        original = endgame.best
 
-    def test_the_search_finishes_in_time_without_rollout(self):
-        report = {}
+        def observe(*args, **kwargs):
+            result = original(*args, **kwargs)
+            completed.append(result is not None)
+            return result
+
         started = time.monotonic()
-        agent = ROLLOUT_ADVISOR.agents[self.LIVE["seat"]]
-        with mock.patch.object(agent, "close_rollout", side_effect=AssertionError("残局搜索超时回退到模拟")):
-            move = self.act(self.LIVE, report)
-        elapsed = time.monotonic() - started
+        with mock.patch.object(endgame, "best", side_effect=observe):
+            move = ADVISOR.act(**self.LIVE)
+        self.assertEqual([True], completed)
         self.assertEqual(["J"], names(move))
-        self.assertNotIn("rollout", report, "残局搜索算完了不该退回现场模拟")
-        self.assertLess(elapsed, ACT_TOTAL_BUDGET_S + 0.2)
+        self.assertLess(time.monotonic() - started, ACT_TOTAL_BUDGET_S + 0.2)
 
 
 class EndgameShortLandlordTest(unittest.TestCase):
@@ -652,27 +444,19 @@ class EndgameUnknownTest(unittest.TestCase):
                          ["2", "2"], [], [], ["10", "9", "8", "7", "6"], [], [], ["10"], ["K"], [], ["A"], ["SJ"], [],
                          ["BJ"], [], [], ["4"], ["2"]])
 
-    def act(self, position, report=None):
-        return ROLLOUT_ADVISOR.act(position["seat"], position["hand"], position["bottom"],
-                                   position["history"], report)
-
     def test_the_search_runs_when_only_the_opponents_are_short(self):
-        report = {}
-        move = self.act(self.LIVE, report)
+        move = ADVISOR.act(**self.LIVE)
         self.assertEqual(["5", "5", "5", "5"], names(move))
-        self.assertNotIn("rollout", report, "残局搜索算完了就以它为准,不再现场模拟")
 
     def test_an_existing_endgame_result_is_unchanged(self):
         # 三家合计 18(7/6/5)本来就走残局搜索。放宽门槛后仍出 J。
-        report = {}
         live = EndgameBudgetTest.LIVE
-        move = ROLLOUT_ADVISOR.act(live["seat"], live["hand"], live["bottom"], live["history"], report)
+        move = ADVISOR.act(**live)
         self.assertEqual(["J"], names(move))
-        self.assertNotIn("rollout", report)
 
     def test_the_turn_stays_inside_the_budget(self):
         started = time.monotonic()
-        self.act(self.LIVE)
+        ADVISOR.act(**self.LIVE)
         self.assertLess(time.monotonic() - started, ACT_TOTAL_BUDGET_S)
 
 
@@ -698,20 +482,35 @@ class BombRestraintTest(unittest.TestCase):
                               ["5", "5", "5", "5"], [], []],
                      auction={"double": {"landlord": False, "landlord_down": False}})
 
-    def act(self, position, report=None):
-        return ROLLOUT_ADVISOR.act(position["seat"], position["hand"], position["bottom"],
-                                   position["history"], report,
-                                   auction=parse_auction(position.get("auction")))
+    def act(self, position):
+        return ADVISOR.act(position["seat"], position["hand"], position["bottom"],
+                           position["history"], auction=parse_auction(position.get("auction")))
 
     def test_pass_has_a_higher_win_chance_than_the_bomb(self):
         started = time.monotonic()
         self.assertEqual([], self.act(self.BOMB))
         self.assertLess(time.monotonic() - started, ACT_TOTAL_BUDGET_S)
 
-    def test_the_next_lead_does_not_walk_into_the_two_twos(self):
-        report = {}
-        move = self.act(self.FOLLOW_UP, report)
-        self.assertNotEqual(["8", "8"], names(move))
+    def test_the_next_lead_uses_model_preference_inside_the_solver_tie(self):
+        # ADP 下 88 比最高加权胜率低 0.526 个百分点，也在 1 个百分点平手区内。
+        import endgame
+        original = endgame.best
+        expected = []
+
+        def observe(info, **kwargs):
+            result = original(info, **kwargs)
+            self.assertIsNotNone(result)
+            wins, total, _, _ = result
+            scores = ADVISOR.agents[info.player_position].values(info)
+            best = max(wins.values()) / total
+            eligible = [i for i, a in enumerate(info.legal_actions)
+                        if best - wins.get(tuple(sorted(a)), 0) / total <= ACT_ENDGAME_TIE_MARGIN]
+            top = max(float(scores[i]) for i in eligible)
+            expected.extend(sorted(info.legal_actions[i]) for i in eligible if float(scores[i]) == top)
+            return result
+
+        with mock.patch.object(endgame, "best", side_effect=observe):
+            self.assertIn(sorted(self.act(self.FOLLOW_UP)), expected)
 
     def test_1845_pass_has_a_higher_win_chance_than_the_bomb(self):
         # 2026-11-22 18:45:11 新手启航:不出赢 210/210，炸 QQQQ 赢 192/210。
@@ -762,7 +561,7 @@ class EndgameLastTurnLikelihoodTest(unittest.TestCase):
         splits = [dict(landlord=cards(["3", "4", left]), landlord_down=cards(["6"]),
                        landlord_up=cards(["A", "A", right]))
                   for left, right in (("2", "A"), ("A", "2"))]
-        weights = ADVISOR.likelihood(history, "landlord_down", seats=["landlord"])
+        weights = ADVISOR.likelihood(history, "landlord_down")
         self.assertEqual([0.0, 1.0], weights(splits, time.monotonic() + 5))
 
     def test_two_jokers_cannot_both_be_used_as_kickers_to_go_out(self):
@@ -793,37 +592,13 @@ class LikelihoodFloorTest(unittest.TestCase):
 
     def test_soft_evidence_does_not_push_a_split_to_near_zero(self):
         history = [cards(m) for m in BombRestraintTest.BOMB["history"]]
-        callback = ROLLOUT_ADVISOR.likelihood(history, "landlord_up", None)
+        callback = ADVISOR.likelihood(history, "landlord_up", None)
         likes = callback(self.splits(), time.monotonic() + 5)
         self.assertEqual(1.0, max(likes))
         self.assertEqual(0.2, min(likes))
 
 
 class KeepBombLikelihoodTest(unittest.TestCase):
-    """对手留着炸弹时,他出的杂牌按「炸弹先放一边」打分:真人把炸弹留到最后,先走杂牌。
-
-    2026-11-19 15:06 精英场,我是地主、超级加倍,输光 860 万。下家连出 9 8 7 6 5、K Q J 10 9,
-    剩 5 张时领单张 J,最后 4 张是 4 4 4 4。下面是 15:07:50 / 15:08:02 两条实机请求(照抄 /act)。
-    改前按两家 DouZero 出牌似然加权,P(下家剩的 4 张是炸弹) 只有 0.0003(均匀 0.0004)。
-    这两条请求里 DouZero 本来就觉得下家那两手很像(整手打分 log 0.0),所以「留炸弹」规则本身
-    在这手不加分;真正把炸弹抬起来的是只看他自己的出牌、每种剩牌一个假设(见 report.md)。
-    """
-
-    HAND = ["BJ", "SJ", "2", "K", "K", "7", "7", "5", "5", "5"]
-    BOTTOM = ["7", "K"]
-    BEFORE_J = [["3", "8", "8", "8"], [], ["10", "10", "10", "7"], ["Q", "A", "A", "A"], [], [],
-                ["9", "9"], ["2", "2"], [], [], ["9", "8", "7", "6", "5"], [], [],
-                ["K", "Q", "J", "10", "9"], []]
-    AFTER_J = BEFORE_J + [[], ["J"], []]
-    AUCTION = {"double": {"landlord_down": False, "landlord_up": False}}
-
-    def position(self, history):
-        return dict(seat="landlord", hand=self.HAND, bottom=self.BOTTOM, history=history)
-
-    def auction(self):
-        import server as server_module
-        return server_module.parse_auction(self.AUCTION)
-
     def test_a_kept_bomb_lifts_the_observed_non_bomb_move(self):
         # 只看这一条的因果:下家在第 4 手领出单张 3,按整手牌 4 4 4 4 + 3 打分 log 约 -1694,
         # 把炸弹放一边只剩 3,log 是 0。所以「留着炸弹的 4 4 4 4」这种分法权重该是 1,
@@ -835,290 +610,6 @@ class KeepBombLikelihoodTest(unittest.TestCase):
         likes = ADVISOR.likelihood(history, "landlord")(splits, time.monotonic() + 30)
         self.assertEqual(1.0, likes[0], "留着 4 4 4 4 领单张 3 的分法该是最可能的")
         self.assertEqual(server_module.LIKELIHOOD_FLOOR, likes[1])
-
-    def test_the_short_hand_bomb_is_no_longer_nearly_impossible(self):
-        # 15:08:02:下家只剩 4 张,实际就是 4 4 4 4。改前按两家似然加权只有 0.0003;
-        # 207 种分法里它仍是唯一最像的;下限 0.2 时后验约 2.08%,高于均匀分法的约 0.48%。
-        mass = short_bomb_mass(self.position(self.AFTER_J), advisor=ADVISOR, auction=None,
-                               only_short=True, counted=False)
-        self.assertGreaterEqual(mass, 0.02, f"P(下家剩的 4 张是炸弹) 只有 {mass:.4f}")
-
-
-class ShortHandSamplingTest(unittest.TestCase):
-    """对手牌少、又没进残局搜索时,现场模拟按枚举加权发牌,不再均匀随机。
-
-    用 15:08:02 那条请求:下家只剩 4 张,实际是 4 4 4 4。按公开入口 Advisor.sample_hands 抽 1000 手,
-    他这 4 张是炸弹的次数要接近似然权重,而不是均匀发牌时的千分之一。
-    """
-
-    POSITION = KeepBombLikelihoodTest().position(KeepBombLikelihoodTest.AFTER_J)
-
-    def infoset(self):
-        seat, history, current, left, unseen, played = request_split(self.POSITION)
-        return SimpleNamespace(
-            player_position=seat, player_hand_cards=current[seat], other_hand_cards=unseen,
-            num_cards_left_dict=left, three_landlord_cards=cards(self.POSITION["bottom"]),
-            played_cards=played, card_play_action_seq=[list(m) for m in history],
-            last_move=[], last_two_moves=[[], []], last_move_dict={s: [] for s in SEATS},
-            last_pid=None, bomb_num=0, all_handcards=None)
-
-    def test_the_shortest_opponent_is_dealt_his_likely_bomb(self):
-        import server as server_module
-        info = self.infoset()
-        played = info.played_cards["landlord_down"]
-        rng = random.Random(20261119)
-        draws = [ADVISOR.sample_hands(info, rng) for _ in range(1000)]
-        bombs = sum(1 for hand in draws if has_bomb(server_module.minus(hand["landlord_down"], played)))
-        # 改前均匀发牌 1000 手大约 0.4 手(0.0004),改后约 9 手;后验质量不到 0.2 的原因见 report.md
-        self.assertGreaterEqual(bombs / len(draws), 0.003, f"1000 手只发出 {bombs} 手炸弹")
-
-
-class ShortHandRolloutTest(unittest.TestCase):
-    """15:08:02 那条:下家剩 4 张 4 4 4 4,领单张 2 赢面不该再是 1.0(这一手怎么出都输,只验估计)。"""
-
-    def test_the_single_two_no_longer_wins_every_rollout(self):
-        pos = KeepBombLikelihoodTest()
-        report = {}
-        ROLLOUT_ADVISOR.act("landlord", pos.HAND, pos.BOTTOM, pos.AFTER_J, report,
-                            auction=pos.auction())
-        self.assertIn("rollout", report, "后半局应该现场模拟")
-        self.assertLess(report["rollout"]["rates"]["2"], 1.0)
-
-
-class MinPlaysTest(unittest.TestCase):
-    """出完一手以后还剩几手:自己每次都先出,把牌拆成最少的几手合规牌(同 DouZero 的牌型,大小王不当带牌)。"""
-
-    def test_min_plays_counts_the_cleanest_split(self):
-        import endgame
-        self.assertEqual(3, endgame.min_plays(cards(["BJ", "2", "J", "5", "5", "5"])))  # 555 带 J,再 2、BJ
-        self.assertEqual(1, endgame.min_plays(cards(["3", "4", "5", "6", "7"])))  # 一手顺子
-        self.assertEqual(1, endgame.min_plays(cards(["3", "3"])))  # 一对
-        self.assertEqual(1, endgame.min_plays(cards(["BJ", "SJ"])))  # 王炸
-        self.assertEqual(2, endgame.min_plays(cards(["3", "5", "5"])))  # 单张 + 一对
-
-    def test_an_empty_hand_needs_no_plays(self):
-        import endgame
-        self.assertEqual(0, endgame.min_plays([]))
-
-    def test_the_live_tie_hands_are_three_and_four_plays(self):
-        # 2026-11-16 11:58:20:5..9 出完剩 BJ 2 J 5 5 5 4 四手,4..9 出完剩 BJ 2 J 5 5 5 三手
-        import endgame
-        hand = cards(["BJ", "2", "J", "9", "8", "7", "6", "5", "5", "5", "5", "4"])
-        self.assertEqual(4, endgame.min_plays(endgame.minus(hand, cards(["5", "6", "7", "8", "9"]))))
-        self.assertEqual(3, endgame.min_plays(endgame.minus(hand, cards(["4", "5", "6", "7", "8", "9"]))))
-
-
-class FewerPlaysTest(unittest.TestCase):
-    """模拟赢面不低于 DouZero 那手时才拿手数翻案:赢面更低的候选再干净也不换。"""
-
-    # 2026-11-16 11:58:20 那手:5..9 出完剩 BJ 2 J 5 5 5 4 四手,4..9 出完剩 BJ 2 J 5 5 5 三手
-    HAND = cards(["BJ", "2", "J", "9", "8", "7", "6", "5", "5", "5", "5", "4"])
-    OWN = tuple(cards(["5", "6", "7", "8", "9"]))
-    CLEANER = tuple(cards(["4", "5", "6", "7", "8", "9"]))
-
-    def test_the_fewest_plays_wins_among_equal_rates(self):
-        import endgame
-        self.assertEqual(4, endgame.min_plays(endgame.minus(self.HAND, self.OWN)))
-        self.assertEqual(3, endgame.min_plays(endgame.minus(self.HAND, self.CLEANER)))
-        picked, plays = fewer_plays(self.HAND, [self.OWN, self.CLEANER],
-                                    {self.OWN: 0.6, self.CLEANER: 0.6},
-                                    {self.OWN: 1.0, self.CLEANER: 0.9}, self.OWN)
-        self.assertEqual(self.CLEANER, picked)
-        self.assertEqual({self.OWN: 4, self.CLEANER: 3}, plays)
-
-    def test_a_cleaner_move_the_simulation_rates_worse_is_not_taken(self):
-        self.assertIsNone(fewer_plays(self.HAND, [self.OWN, self.CLEANER],
-                                      {self.OWN: 0.7, self.CLEANER: 0.6},
-                                      {self.OWN: 1.0, self.CLEANER: 0.9}, self.OWN))
-
-
-class FinishInTwoTest(unittest.TestCase):
-    def test_a_safe_pair_then_the_last_card_beats_a_single_into_a_known_joker(self):
-        # Live 2026-11-10 run 19: landlord holding 2 2 6 led a single 2 (the small joker is out there
-        # and beats it) instead of 2 2 (only a K bomb can stop it) then 6. 29 cards left: too many for the search.
-        history = [["4", "4"], ["8", "8"], [], ["9", "9"], [], [], ["Q", "Q"], [], [], ["5", "7", "10", "10", "10", "J", "J", "J"],
-                   ["3", "3", "3", "3"], [], [], ["5"], ["2"], ["BJ"], [], [], ["A", "A"], [], []]
-        play = ADVISOR.act("landlord", ["2", "2", "6"], ["5", "6", "7"], history)
-        self.assertEqual(["2", "2"], [NAMES[c] for c in play])
-
-    def test_an_easily_beaten_first_move_is_left_to_douzero(self):
-        import endgame
-        hand = cards(["3", "3", "6"])
-        unknown = cards(["4", "4", "5", "5", "7", "7", "8", "8", "9", "9", "10", "10", "J", "J", "Q", "Q", "K", "K"])
-        legal = [cards(m) for m in (["3"], ["6"], ["3", "3"])]
-        # any pair beats 3 3: no safe first move
-        self.assertIsNone(endgame.finish_in_two(hand, legal, (), unknown, 9, 9))
-
-    def test_the_landlords_unplayed_bottom_cards_stay_in_his_hand(self):
-        # 我是农民时,地主没出过的底牌一定在他手里:同样是 Q Q Q Q 一手,给地主留一张 A,
-        # 他凑成 A A A A 炸回来的机会就该比纯随机发牌高(其余三张 A 更容易落在他手上)。
-        import endgame
-        hand = cards(["Q", "Q", "Q", "Q", "9", "9", "9", "7"])
-        legal = [cards(["Q", "Q", "Q", "Q"])]
-        unknown = cards(["A", "A", "A", "A", "3", "4", "5", "6"])
-        plain = endgame.finish_in_two(hand, legal, (), unknown, 5, 3, samples=2000, limit=1.0)
-        kept = endgame.finish_in_two(hand, legal, (), unknown, 5, 3, samples=2000, limit=1.0,
-                                     kept=cards(["A"]))
-        self.assertIsNotNone(plain)
-        self.assertIsNotNone(kept)
-        self.assertGreater(kept[1], plain[1])
-
-    def test_a_teammate_who_could_beat_the_first_move_does_not_count(self):
-        # 2026-11-22 12:32 JJ:我是农民剩 A A A 4 3 3,看不见的牌里有炸弹。队友 17 张多半拿着能压的,
-        # 但队友不会压我:只看地主(9 张)压不压得住,A A A 3 3 是够安全的第一手
-        import endgame
-        hand = cards(["A", "A", "A", "4", "3", "3"])
-        legal = [cards(["A", "A", "A", "3", "3"]), cards(["4"]), cards(["A", "A", "A", "4"])]
-        unknown = cards(["K", "K", "K", "K", "Q", "Q", "Q", "Q", "2", "2", "2", "J", "J", "10", "10", "9",
-                         "9", "8", "8", "7", "7", "6", "6", "5", "5", "4"])
-        both = endgame.finish_in_two(hand, legal, (), unknown, 9, 17, samples=2000, limit=1.0)
-        lord = endgame.finish_in_two(hand, legal, (), unknown, 9, 17, samples=2000, limit=1.0, b_is_mate=True)
-        self.assertGreater(both[1], endgame.SAFE_FIRST)
-        self.assertEqual(tuple(sorted(cards(["A", "A", "A", "3", "3"]))), lord[0])
-        self.assertLess(lord[1], endgame.SAFE_FIRST)
-
-    def test_the_bomb_is_kept_for_the_last_of_the_two_moves(self):
-        # Q Q Q Q + 9 9 9 7 两种顺序都两手出完:先出 9 9 9 7,有人管就用 Q Q Q Q 炸回去,
-        # 只有对手留着 A A A A 拦得住;先甩 Q Q Q Q 等于给它一个用炸弹的靶子。
-        import endgame
-        hand = cards(["Q", "Q", "Q", "Q", "9", "9", "9", "7"])
-        # 对手有更大的三带一:9 9 9 7 会被管,QQQQ 却没人炸得动 —— 纯按被压机会会先甩炸弹
-        unknown = cards(["K", "K", "K", "J", "J", "J", "10", "10"])
-        legal = [cards(["Q", "Q", "Q", "Q"]), cards(["9", "9", "9", "7"])]
-        quick = endgame.finish_in_two(hand, legal, (), unknown, 4, 4, samples=100, limit=1.0)
-        self.assertEqual(cards(["9", "9", "9", "7"]), list(quick[0]))
-
-
-class FinishInTwoLiveTest(unittest.TestCase):
-    """2026-11-19 12:13:20 精英场那一手:捷径先甩 Q Q Q Q,地主 A A A A 炸回,炸弹 ×2 再 ×2。"""
-
-    # 我是地主下家(农民),手里 Q Q Q Q 9 9 9 7,我领出;地主剩 16 张、队友 15 张,底牌 4 7 A(地主手里至少一张 A)。
-    REQUEST = dict(seat="landlord_down",
-                   hand=["Q", "Q", "Q", "Q", "9", "9", "9", "7"],
-                   bottom=["4", "7", "A"],
-                   history=[["3"], ["4"], ["5"], ["7"], ["10"], ["J"], ["K"], ["2"], [], ["SJ"], ["BJ"], [], [],
-                            ["6", "6", "6", "J", "J"], [], []],
-                   auction={"double": {"landlord": False, "landlord_up": False}})
-
-    def act(self, advisor, report=None):
-        request = self.REQUEST
-        return advisor.act(request["seat"], request["hand"], request["bottom"], request["history"], report,
-                           auction=parse_auction(request["auction"]))
-
-    def test_the_shortcut_no_longer_throws_the_bomb_first(self):
-        move = self.act(ROLLOUT_ADVISOR)
-        self.assertNotEqual(["Q", "Q", "Q", "Q"], names(move), "捷径不该把炸弹先甩出去")
-        self.assertFalse(is_bomb(move), "这一手不是炸弹,炸弹留到最后一手")
-
-    def test_a_much_higher_douzero_choice_is_not_overridden(self):
-        # DouZero 首选 7 9 9 9 +2.282、捷径那手只有 +1.335:差 0.95 就不该盖。把捷径结果钉成 Q Q Q Q
-        # 验门槛本身(顺序那条规则另验);rollout 关掉,免得等模拟。
-        import endgame
-        bad = (tuple(cards(["Q", "Q", "Q", "Q"])), 0.01)
-        with mock.patch.object(endgame, "finish_in_two", return_value=bad):
-            move = self.act(ADVISOR)
-        self.assertNotEqual(["Q", "Q", "Q", "Q"], names(move), "DouZero 首选高出一大截时,捷径不该盖掉它")
-
-
-class TeammateFinishInTwoTest(unittest.TestCase):
-    """桌上是队友的牌时,「两手出完」不直接压队友:捷径那手和「不出」一起现场模拟,按赢面出。"""
-
-    # 2026-11-17 12:47:36 精英场:我是地主下家(农民),手里 2 2 2 J 7 7,队友(地主上家)刚出 A A A J,地主不要了。
-    # 捷径发现 J 2 2 2 + 7 7 两手能出完,直接压了队友,没跟「不出、让队友接着出」比。
-    MATE = dict(seat="landlord_down",
-                hand=["2", "2", "2", "J", "7", "7"],
-                bottom=["3", "3", "6"],
-                history=[["3", "3", "3", "10"], ["9", "9", "9", "10"], [], [], ["3"], ["10"], ["K"], ["A"], [], ["2"],
-                         ["SJ"], [], [], ["5", "5", "5", "8"], ["A", "A", "A", "J"], []])
-
-    def act(self, position, report=None):
-        return ROLLOUT_ADVISOR.act(position["seat"], position["hand"], position["bottom"],
-                                   position["history"], report)
-
-    def test_a_teammates_cards_are_not_snapped_up_by_finishing_in_two(self):
-        report = {}
-        self.act(self.MATE, report)
-        rollout = report.get("rollout")
-        self.assertIsNotNone(rollout, "桌上是队友的牌时,两手出完那手要交给现场模拟")
-        self.assertIn("J 2 2 2", rollout["rates"])
-        self.assertIn("pass", rollout["rates"])
-
-    def test_the_shortcut_move_is_forced_into_the_candidates(self):
-        # 这一手 DouZero 给「不出」1.13、J 2 2 2 只有 0.99,差 0.13,不在后半局时按分差根本轮不到它;
-        # 桌上是队友的牌,捷径那手必须强制进候选(见 close_rollout 的 required)
-        import server
-        report = {}
-        with mock.patch.object(server, "LATE_CARDS", 0):
-            self.act(self.MATE, report)
-        rollout = report.get("rollout")
-        self.assertIsNotNone(rollout, "不在后半局也要把捷径那手和不出一起模拟")
-        self.assertIn("J 2 2 2", rollout["rates"])
-        self.assertIn("pass", rollout["rates"])
-
-    def test_no_time_to_simulate_falls_back_to_pass(self):
-        # 模拟跑不起来(剩下的时间不够)时退回不出,不压队友,也不退回捷径
-        import server
-        report = {}
-        with mock.patch.object(server, "ACT_ROLLOUT_MIN_S", 100.0):
-            move = self.act(self.MATE, report)
-        self.assertEqual([], move)
-        self.assertEqual("no_time", report.get("rollout_skipped"))
-
-    def test_landlords_own_cards_still_take_the_shortcut(self):
-        # 桌上是农民出的、我是地主:没有队友,两手出完那手照旧直接出,不模拟
-        report = {}
-        play = ROLLOUT_ADVISOR.act(
-            "landlord", ["2", "2", "6"], ["5", "6", "7"],
-            [["4", "4"], ["8", "8"], [], ["9", "9"], [], [], ["Q", "Q"], [], [],
-             ["5", "7", "10", "10", "10", "J", "J", "J"], ["3", "3", "3", "3"], [], [], ["5"], ["2"], ["BJ"], [], [],
-             ["A", "A"], [], []], report)
-        self.assertEqual(["2", "2"], [NAMES[c] for c in play])
-        self.assertNotIn("rollout", report)
-
-
-class FinishInTwoBombTest(unittest.TestCase):
-    """捷径把炸弹拆成四带二时会少一次 ×2:不直接走捷径,回到正常流程让炸弹能单独炸出去。"""
-
-    # 2026-11-17 12:58:35 精英场,我是地主下家(农民),先出:手里 BJ A A A A 9 4,地主剩 5 张、队友 15 张。
-    # DouZero 自己选 4(2.073;9 2.067、A A A A 2.055、BJ 1.920),捷径却出 BJ,再拿 A A A A 当四带二带走,
-    # 炸弹没单独炸、少一次 ×2。先出 4 或 9,有人管就 BJ 收回,再 AAAA 单独炸,同样必赢还翻倍。
-    LIVE = dict(seat="landlord_down",
-                hand=["BJ", "A", "A", "A", "A", "9", "4"],
-                bottom=["5", "6", "10"],
-                history=[["K", "Q", "J", "10", "9", "8", "7", "6", "5", "4", "3"], [], [], ["7", "7"], ["Q", "Q"], [],
-                         [], ["5"], ["Q"], [], ["K"], [], [], ["3"], ["K"], [], ["2"], [], [], ["8", "8"], [], ["9", "9"],
-                         ["J", "J"], [], []])
-
-    def act(self, position, report=None):
-        return ROLLOUT_ADVISOR.act(position["seat"], position["hand"], position["bottom"],
-                                   position["history"], report)
-
-    def test_a_bomb_split_shortcut_is_not_taken(self):
-        report = {}
-        move = self.act(self.LIVE, report)
-        self.assertNotEqual(["BJ"], [NAMES[c] for c in move], "捷径拆了炸弹,不该直接出 BJ")
-        self.assertIn("rollout", report, "拆炸弹的捷径不 return,交给现场模拟")
-
-    def test_a_bomb_split_does_not_win_the_fewer_plays_tiebreak(self):
-        # 四带二 A A A A + 4 + 9 出完只剩一对 8(一手),单张 4 出完还剩两手,手数上确实更少;
-        # 可它把炸弹拆了,不该靠「手数更少」胜出
-        hand = cards(["A", "A", "A", "A", "9", "8", "8", "4"])
-        own = tuple(cards(["4"]))
-        split = tuple(cards(["4", "9", "A", "A", "A", "A"]))
-        self.assertIsNone(fewer_plays(hand, [own, split], {own: 0.8, split: 0.8},
-                                      {own: 2.0, split: 0.7}, own))
-
-    def test_a_shortcut_without_a_bomb_is_still_taken(self):
-        # 不拆炸弹时行为不变:照旧直接出捷径那一手,不模拟
-        report = {}
-        play = ROLLOUT_ADVISOR.act(
-            "landlord", ["2", "2", "6"], ["5", "6", "7"],
-            [["4", "4"], ["8", "8"], [], ["9", "9"], [], [], ["Q", "Q"], [], [],
-             ["5", "7", "10", "10", "10", "J", "J", "J"], ["3", "3", "3", "3"], [], [], ["5"], ["2"], ["BJ"], [], [],
-             ["A", "A"], [], []], report)
-        self.assertEqual(["2", "2"], [NAMES[c] for c in play])
-        self.assertNotIn("rollout", report)
-
 
 class RibbonMisreadTest(unittest.TestCase):
     def test_an_illegal_landlord_play_gets_its_ribboned_card_refilled(self):
@@ -1408,322 +899,7 @@ class GuessTest(unittest.TestCase):
         self.assertEqual(want, got)
 
 
-class CloseCallRolloutTest(unittest.TestCase):
-    """顶两手分数差不到 CLOSE_MARGIN 时,按看得见的牌随机发几百副、三家都用 DouZero 打分打到底,赢面见真章再定。
-    按公开入口 ROLLOUT_ADVISOR.act 测(模拟默认开着)。"""
-
-    # 2026-11-16 10:16 精英场:我是地主,下家农民单张 2 顶住。DouZero 给不出 +0.121、BJ +0.060,
-    # 只差 0.06;实机信了分数选不出。模拟几百局后不出仍更好,这一手必须继续不出。
-    LIVE = dict(seat="landlord",
-                hand=["BJ", "2", "A", "A", "A", "K", "K", "Q", "J", "10", "10", "8", "6", "5", "5", "5", "5", "3", "3"],
-                bottom=["7", "K", "6"],
-                history=[["7"], ["10"], ["2"]])
-
-    # 离线从随机牌局里搜到的一手:DouZero 最高分是单张 K、第二是单张 7,只差 0.011;
-    # 模拟几百局后 7 的赢面明显更高(0.61 对 0.52),要换成第二手。
-    SECOND = dict(seat="landlord",
-                  hand=["3", "3", "3", "6", "6", "7", "K", "A", "A", "2", "2"],
-                  bottom=["6", "A", "2"],
-                  history=[["10"], [], ["A"], ["2"], [], [], ["4"], [], ["7"], ["J"], [], ["2"], [], [],
-                           ["9", "9", "9", "10", "10"], ["8", "8", "Q", "Q", "Q"], [], []])
-
-    # 最高分和第二名差 0.306,远超 CLOSE_MARGIN:不模拟,照旧出那手六张顺子。
-    CLEAR = dict(seat="landlord",
-                 hand=["9", "10", "10", "J", "Q", "K", "K", "A", "SJ", "BJ"],
-                 bottom=["8", "9", "A"],
-                 history=[["7", "7", "7", "8", "8"], [], [], ["4", "4", "5", "5", "5"], [], []])
-
-    # 2026-11-16 10:58:14 精英场:我是地主的第一手。开局每局都长,2.5 秒只跑了 43 局,
-    # 不到 60 局就白模拟了;单张 9 赢面高 13 个点也没换成。开局下限降到 30 局后应该换成 9。
-    OPENING = dict(seat="landlord",
-                   hand=["2", "2", "A", "K", "K", "Q", "Q", "J", "9", "8", "8", "8", "7", "7", "6", "5", "5", "5", "5", "4"],
-                   bottom=["9", "4", "7"],
-                   history=[])
-
-    # 2026-11-16 11:43:53 土豪场:我是地主下家,手里 2 2 K Q J 10 9 8 8 8 4 3 3,三家还剩 33 张。
-    # DouZero 给 8 9 10 J Q K +0.736、8 9 10 J Q +0.627,只差 0.109,按 CLOSE_MARGIN 不模拟就输了;
-    # 按看得见的牌打 400 局 3 3 8 8 8 赢 0.98、8..K 只赢 0.82。后半局要模拟分数最高的 8 手。
-    LATE = dict(seat="landlord_down",
-                hand=["2", "2", "K", "Q", "J", "10", "9", "8", "8", "8", "4", "3", "3"],
-                bottom=["8", "2", "4"],
-                history=[["5"], ["6"], ["9"], ["Q"], ["K"], [], ["SJ"], [], ["BJ"], [], [],
-                         ["K", "Q", "J", "10", "9"], ["A", "K", "Q", "J", "10"], [], [], ["3", "3"], ["7", "7"], [], []])
-
-    # 后半局但顶两手差得开(0.44)、最高分那手也确实最好:照样模拟一遍,仍出原来那手。
-    # 三家正好还剩 35 张,是后半局的上边界。
-    LATE_CLEAR = dict(seat="landlord",
-                      hand=["4", "4", "4", "A", "A"],
-                      bottom=[],
-                      history=[["5", "6", "7", "8", "9", "10", "J", "Q", "K"], [], [], ["10"], ["J"], ["Q"], ["SJ"], [], ["BJ"], [], [],
-                               ["A"], ["2"], [], [], ["Q", "Q"], [], [], ["2"], [], []])
-
-    # 2026-11-16 11:58:20 土豪场:我是地主上家,领出,手里 BJ 2 J 9 8 7 6 5 5 5 5 4。
-    # DouZero 出 5 6 7 8 9,模拟 152 局 5..9 赢 0.59、4..9 赢 0.64,差不到 0.1 的门槛仍出 5..9;
-    # 可 4..9 出完剩 BJ 2 J 5 5 5 三手,5..9 剩 BJ 2 J 5 5 5 4 四手,该出 4..9。
-    TIEBREAK = dict(seat="landlord_up",
-                    hand=["BJ", "2", "J", "9", "8", "7", "6", "5", "5", "5", "5", "4"],
-                    bottom=[],
-                    history=[["9"], ["10"], ["Q"], ["2"], [], ["3", "3", "3", "3"], [], []])
-
-    # 2026-11-19 10:22:39 普通场:我是地主,手里 18 张(单张 BJ、2 2 2),地主上家农民出单张 2、只剩 4 张,
-    # 三家合计 37 张,不算后半局。DouZero 给出不出 -0.912、BJ -1.053,只差 0.141;按 0.1 不模拟就信了分数,
-    # 地主上家拿回出牌权,这一局输了 60 万。差 0.1~0.15 的出牌也要现场模拟,候选里要有 pass 和 BJ。
-    MARGIN_015 = dict(seat="landlord",
-                      hand=["BJ", "2", "2", "2", "A", "Q", "Q", "10", "10", "8", "8", "8", "7", "7", "6", "5", "5", "5"],
-                      bottom=["7", "J", "2"],
-                      history=[["3"], ["5"], ["A"], [], [], ["A", "K", "Q", "J", "10"], [], [],
-                               ["9", "9", "9", "7", "7"], [], [], ["6"], ["J"], ["A"], ["2"]],
-                      auction={"double": {"landlord_down": False, "landlord_up": False}})
-
-    def act(self, position, report=None):
-        return ROLLOUT_ADVISOR.act(position["seat"], position["hand"], position["bottom"],
-                                   position["history"], report,
-                                   auction=parse_auction(position.get("auction")))
-
-    def test_the_live_close_call_keeps_pass(self):
-        report = {}
-        self.assertEqual([], self.act(self.LIVE, report))
-        rollout = report.get("rollout")
-        self.assertIsNotNone(rollout, "顶两手只差 0.06,应该现场模拟")
-        self.assertIn("pass", rollout["rates"])
-        self.assertIn("BJ", rollout["rates"])
-        self.assertEqual("pass", rollout["chosen"])
-
-    def test_a_move_that_leaves_fewer_plays_also_wins_on_amount(self):
-        # 两手差 0.24 个得分单位，配对样本支持换手，不走手数兜底。
-        labels = ("5 6 7 8 9", "4 5 6 7 8 9")
-        stub = BeatLandlordTest.stub_rollout(dict(zip(labels, (-0.37, -0.13))), games=150,
-                                            gap_sd=1.0, finalists=labels)
-        report = {}
-        with mock.patch("server.successive_halving", stub):
-            move = self.act(self.TIEBREAK, report)
-        self.assertEqual(["4", "5", "6", "7", "8", "9"], [NAMES[c] for c in move])
-        rollout = report.get("rollout")
-        self.assertIsNotNone(rollout, "顶两手差不到门槛,应该现场模拟")
-        self.assertEqual("4 5 6 7 8 9", rollout["chosen"])
-        self.assertGreater(rollout["avg_score"]["4 5 6 7 8 9"],
-                           rollout["avg_score"]["5 6 7 8 9"])
-
-    def test_a_close_call_the_rollout_prefers_the_second_move(self):
-        # CLOSE_MARGIN 到 0.15 后第三手 2 也进了候选:2.5 秒里三个候选各只打 50 局上下、够不到 60 局下限,
-        # 模拟就不算数(仍出 K)。这里给足总预算和局数,把「模拟换成比 DouZero 那手更好的牌」单独测出来:
-        # 150 局时 7 赢 0.61、K 0.50。2 和 7 谁高只差在噪声里(300 局时 2 反超),不在这里断言。
-        import server
-        report = {}
-        with mock.patch.object(server, "ACT_TOTAL_BUDGET_S", 60.0), \
-                mock.patch.object(server, "ACT_ROLLOUT_BUDGET_S", 60.0), \
-                mock.patch.object(server, "ACT_ROLLOUT_GAMES", 150):
-            move = self.act(self.SECOND, report)
-        self.assertEqual(["7"], [NAMES[c] for c in move])
-        rollout = report.get("rollout")
-        self.assertIsNotNone(rollout, "顶两手只差 0.011,应该现场模拟")
-        self.assertIn("K", rollout["rates"])
-        self.assertEqual("7", rollout["chosen"])
-        self.assertGreater(rollout["rates"]["7"], rollout["rates"]["K"])
-
-    def test_an_opening_close_call_uses_the_lower_floor(self):
-        labels = ("6", "9", "4")
-        stub = BeatLandlordTest.stub_rollout(dict(zip(labels, (-0.46, -0.20, -0.46))), games=43,
-                                            gap_sd=0.75, finalists=labels)
-        report = {}
-        with mock.patch("server.successive_halving", stub):
-            move = self.act(self.OPENING, report)
-        self.assertEqual(["9"], [NAMES[c] for c in move])
-        rollout = report.get("rollout")
-        self.assertIsNotNone(rollout, "开局顶两手应该现场模拟")
-        self.assertLess(rollout["games"], 60)
-        self.assertEqual(30, rollout["min_games"])
-        self.assertEqual("9", rollout["chosen"])
-
-    def test_a_mid_game_close_call_keeps_the_mid_game_floor(self):
-        report = {}
-        self.act(self.SECOND, report)
-        rollout = report.get("rollout")
-        self.assertIsNotNone(rollout, "顶两手只差 0.011,应该现场模拟")
-        self.assertEqual(30, rollout["min_games"])
-
-    def test_a_clear_best_move_does_not_roll_out(self):
-        report = {}
-        move = self.act(self.CLEAR, report)
-        self.assertNotIn("rollout", report)
-        self.assertEqual(["9", "10", "J", "Q", "K", "A"], [NAMES[c] for c in move])
-        # 不模拟时与关掉模拟的 advisor 完全一样
-        self.assertEqual(sorted(ADVISOR.act(self.CLEAR["seat"], self.CLEAR["hand"], self.CLEAR["bottom"],
-                                            self.CLEAR["history"])), sorted(move))
-
-    def test_a_gap_just_over_the_old_margin_still_rolls_out(self):
-        # 差 0.141:旧的 CLOSE_MARGIN 0.1 不模拟;放到 0.15 后 pass 和 BJ 都进候选。
-        # 模拟结果喂固定数据(每手 71 局,pass 平均得分 0.2、BJ -0.1),机器快慢不影响这一手。
-        games, means = 71, {"pass": 0.2, "BJ": -0.1}
-
-        def stub(keys, own, scores, deal, play, budget, cap=None, pairs=None, anchor=None, **kwargs):
-            by_label = {move_label(k): k for k in keys}
-            alive = [by_label["pass"], by_label["BJ"]]
-            return ({k: 0 for k in keys}, {k: means[move_label(k)] * games for k in keys},
-                    {k: games for k in keys}, [[list(alive), games]], alive)
-
-        report = {}
-        with mock.patch("server.successive_halving", stub):
-            move = self.act(self.MARGIN_015, report)
-        rollout = report.get("rollout")
-        self.assertIsNotNone(rollout, "差 0.141 超过旧的 0.1,CLOSE_MARGIN 到 0.15 后应该现场模拟")
-        self.assertNotIn("late", rollout, "三家还剩 37 张,不该走后半局那条路")
-        self.assertIn("pass", rollout["rates"])
-        self.assertIn("BJ", rollout["rates"])
-        self.assertEqual("pass", rollout["chosen"])
-        self.assertEqual([], move)
-
-    def test_a_close_call_answers_within_the_turn_clock(self):
-        started = time.monotonic()
-        self.act(self.LIVE)
-        self.assertLess(time.monotonic() - started, 3.0)
-
-    def test_the_same_request_gets_the_same_move(self):
-        first, second = {}, {}
-        a, b = self.act(self.SECOND, first), self.act(self.SECOND, second)
-        self.assertEqual(sorted(a), sorted(b))
-        self.assertEqual(first["rollout"]["chosen"], second["rollout"]["chosen"])
-
-    def test_the_late_live_call_rolls_out_the_top_eight(self):
-        # 顶两手只差 0.109,平时不模拟;后半局(33 张)模拟分数最高的 8 手,3 3 8 8 8 该赢
-        report = {}
-        self.assertEqual(["3", "3", "8", "8", "8"], [NAMES[c] for c in self.act(self.LATE, report)])
-        rollout = report.get("rollout")
-        self.assertIsNotNone(rollout, "后半局不管分差都要现场模拟")
-        self.assertTrue(rollout.get("late"))
-        self.assertGreaterEqual(rollout["games"], 60)
-        self.assertEqual("3 3 8 8 8", rollout["chosen"])
-        self.assertGreaterEqual(len(rollout["rates"]), 8, "后半局要模拟分数最高的 8 手")
-
-    def test_a_late_clear_call_still_rolls_out_and_keeps_the_top_move(self):
-        # 44 张的 CLEAR 分差 0.306 不模拟;这里正好 35 张、分差 0.44,照样模拟,但最高分那手本来就最好,不换
-        report = {}
-        move = self.act(self.LATE_CLEAR, report)
-        self.assertEqual(["4", "4", "4", "A", "A"], [NAMES[c] for c in move])
-        rollout = report.get("rollout")
-        self.assertIsNotNone(rollout, "后半局分差再大也要现场模拟")
-        self.assertTrue(rollout.get("late"))
-        self.assertEqual("4 4 4 A A", rollout["chosen"])
-        self.assertEqual(sorted(ADVISOR.act(self.LATE_CLEAR["seat"], self.LATE_CLEAR["hand"],
-                                            self.LATE_CLEAR["bottom"], self.LATE_CLEAR["history"])), sorted(move))
-
-    # 2026-11-16 13:10:11 土豪场:我是地主下家,三家还剩 35 张。8 手平分 2.5 秒每手只打了 27 局,
-    # 不到 60 局整个模拟作废,仍出 DouZero 的 6。改成边打边淘汰后最后两手都要打满 60 局以上。
-    # 本机实测:8 赢 0.80、6 赢 0.76,差 0.04 没到 0.05 的门槛,所以仍保留 6;300 局时两者打平(0.75 对 0.75),
-    # 13:10 那手 8 领先 7 个点只是 27 局的运气,60 局以上就分不开了。
-    HALVING = dict(seat="landlord_down",
-                   hand=["2", "A", "Q", "Q", "Q", "J", "J", "10", "10", "9", "9", "8", "6"],
-                   bottom=["K", "9", "A"],
-                   history=[["3", "3"], ["4", "4"], ["5", "5"], ["K", "K"], [], ["2", "2"], [], [], ["3", "3"], [], [],
-                            ["6", "6"], [], ["7", "7"], [], ["A", "A"], [], [], ["5"]])
-
-    def test_the_logged_eight_way_call_halves_the_field_and_uses_sixty_games(self):
-        import server
-        original = server.successive_halving
-        calls = 0
-
-        def halving(keys, own, scores, deal, play, budget, **kwargs):
-            def sample_score(_, key):
-                nonlocal calls
-                calls += 1
-                return 1 if key == own else -1
-
-            return original(keys, own, scores, lambda: None, sample_score, budget,
-                            clock=lambda: calls / 200, **kwargs)
-
-        report = {}
-        with mock.patch.object(server, "successive_halving", halving):
-            move = self.act(self.HALVING, report)
-        rollout = report.get("rollout")
-        self.assertIsNotNone(rollout, "后半局不管分差都要现场模拟")
-        self.assertTrue(rollout.get("late"))
-        self.assertGreaterEqual(rollout["games"], 60, "最后两手都要打满 60 局")
-        self.assertGreaterEqual(len(rollout["rates"]), 8, "每个候选的赢面都要留在诊断里")
-        # 8 -> 4 -> 2:第一轮淘汰前每手至少打 12 局,最后两手再打完剩下的时间
-        self.assertEqual([4, 2, 2], [len(alive) for alive, _ in rollout["rounds"]])
-        self.assertGreaterEqual(rollout["rounds"][0][1], 12, "7 局就淘汰太靠运气")
-        finalists = rollout["rounds"][-1][0]
-        self.assertEqual(2, len(finalists))
-        # 8 和 6 的真实赢面差不多(都约 0.75),谁进决赛、决赛里谁赢面最高都是采样运气,
-        # 所以这里只看结构:DouZero 自己那手不能被淘汰,最后也只能出决赛两手之一。
-        self.assertIn("6", finalists, "DouZero 自己的 6 要活到最后两手")
-        self.assertIn(rollout["chosen"], finalists)
-        self.assertEqual([NAMES[c] for c in move], rollout["chosen"].split())
-
-    # 2026-11-16 21:10:00 土豪场:我是地主上家(农民)首出,地主只剩 5 张 2 2 K Q SJ,专吃单张。
-    # 按明牌求解首出单张全输,对子(3 3/4 4/6 6/7 7/10 10)、顺子(6-10、6-J、7-J)都能赢;
-    # 可后半局只取 DouZero 分数最高的 8 手,这一手前 8 名全是单张,对子和顺子根本没进模拟。
-    # 候选里每种牌型至少留一手(该牌型分数最高的),才可能挑出对子/顺子。
-    TYPES = dict(seat="landlord_up",
-                 hand=["BJ", "2", "A", "J", "10", "10", "9", "8", "7", "7", "6", "6", "4", "4", "3", "3"],
-                 bottom=["K", "8", "2"],
-                 history=[["9", "8", "7", "6", "5", "4", "3"], ["Q", "J", "10", "9", "8", "7", "6"], [],
-                          ["A", "K", "Q", "J", "10", "9", "8"], [], [], ["4"], ["J"], ["A"], [], []])
-
-    def test_late_candidates_cover_every_move_type(self):
-        report = {}
-        self.act(self.TYPES, report)
-        rollout = report.get("rollout")
-        self.assertIsNotNone(rollout, "后半局不管分差都要现场模拟")
-        kinds = {md.get_move_type(cards(label.split()))["type"]
-                 for label in rollout["rates"] if label != "pass"}
-        self.assertIn(md.TYPE_2_PAIR, kinds, "候选里要有一手对子")
-        self.assertIn(md.TYPE_8_SERIAL_SINGLE, kinds, "候选里要有一手顺子")
-
-    def test_a_clear_move_over_the_late_window_does_not_roll_out(self):
-        # CLEAR 三家还剩 44 张、顶两手差 0.306:不在后半局,不模拟
-        report = {}
-        self.act(self.CLEAR, report)
-        self.assertNotIn("rollout", report)
-
-    def test_the_late_call_answers_within_the_turn_clock(self):
-        started = time.monotonic()
-        self.act(self.LATE)
-        self.assertLess(time.monotonic() - started, 3.0)
-
-
-class LiveControlRegressionTest(unittest.TestCase):
-    # 2026-11-22 douzero-3426.log，请求按原样重放。
-    SHORT_FARMER = dict(
-        seat="landlord", hand=["BJ", "A", "J", "J", "10", "10", "9", "9", "7"], bottom=[],
-        history=[["3", "4", "5", "6", "7", "8"], ["10", "9", "8", "7", "6", "5"], [], [],
-                 ["3", "3"], [], [], ["J", "J"], [], [], ["K", "K", "K", "Q"], [],
-                 ["2", "2", "2", "4"], [], [], ["K"], ["2"], []],
-    )
-    TWO_PLAYS = dict(
-        seat="landlord_down", hand=["A", "A", "A", "4", "3", "3"], bottom=[],
-        history=[["7", "6", "5", "4", "3"], ["8", "9", "10", "J", "Q"], [], [],
-                 ["4", "5", "6", "7", "8"], [], ["J", "10", "9", "8", "7"], [], [], ["9"], ["2"], [], []],
-    )
-    STRAIGHT = dict(
-        seat="landlord_up", hand=["2", "Q", "Q", "8", "7", "6", "5", "4", "3"], bottom=[],
-        history=[["6"], ["10"], ["A"], ["2"], [], ["SJ"], [], [],
-                 ["8", "9", "10", "J", "Q", "K"], [], []],
-    )
-    PAIR_OF_TWOS = dict(
-        seat="landlord_down", hand=["2", "2", "A", "A", "K", "K", "9", "9", "8", "7", "7", "7",
-                                   "6", "6", "5", "4"], bottom=["A", "J", "6"],
-        history=[["5"], ["8"], ["Q"], ["K"]],
-    )
-    PAIR_SEQUENCE = dict(
-        seat="landlord_up",
-        hand=["2", "2", "A", "J", "J", "10", "10", "9", "9", "8", "7", "5", "5", "5", "4", "3"],
-        bottom=["A", "K", "6"],
-        history=[["4"], ["5"], ["Q"], ["K"], ["A"], [], ["SJ"], ["BJ"], [], [], ["3"]],
-    )
-    FOLLOW_PAIR = dict(
-        seat="landlord_up", hand=["2", "2", "A", "J", "10", "8", "7", "5", "5", "5", "4", "3"], bottom=[],
-        history=[["4"], ["5"], ["Q"], ["K"], ["A"], [], ["SJ"], ["BJ"], [], [], ["3"], ["10"], ["2"], [],
-                 [], ["3", "3"], ["4", "4"], ["9", "9"], [], [], ["J"], ["2"], [], [], ["6", "6"], ["7", "7"],
-                 [], ["8", "8"], ["Q", "Q"], [], ["A", "A"], []],
-    )
-
-    def test_130554_takes_the_lead_from_the_short_farmer(self):
-        stub = BeatLandlordTest.stub_rollout({"pass": 0.293, "BJ": -0.487}, games=300,
-                                            finalists=("pass", "BJ"))
-        with mock.patch("server.successive_halving", stub):
-            self.assertEqual(["BJ"], names(ROLLOUT_ADVISOR.act(**self.SHORT_FARMER)))
-
+class ShortOpponentEndgameTest(unittest.TestCase):
     def test_150450_searches_the_endgame_when_a_farmer_has_one_card(self):
         # 15:04 JJ:上家剩 1 张(7)、下家 12 张,看不见 13 张。原来不搜,结果先出单张 9 被下家 2 管住再喂上家走完;
         # 明牌搜出任意对子必赢
@@ -1736,7 +912,7 @@ class LiveControlRegressionTest(unittest.TestCase):
         real = endgame.best
         results = []
         with mock.patch("endgame.best", lambda *a, **k: results.append(real(*a, **k)) or results[-1]):
-            move = names(ROLLOUT_ADVISOR.act(**position))
+            move = names(ADVISOR.act(**position))
         # 残局搜索真的跑了、算完了;出的对子在各种分法下赢得比单张 9 多
         self.assertTrue(results and results[-1] is not None)
         wins, total, _, _ = results[-1]
@@ -1744,240 +920,8 @@ class LiveControlRegressionTest(unittest.TestCase):
         self.assertEqual(move[0], move[1])
         self.assertGreater(wins.get(tuple(sorted(cards(move))), 0), wins.get(tuple(sorted(cards(["9"]))), 0))
 
-    def test_162548_take_lead_kicker_is_the_low_card(self):
-        # 16:25 JJ:下家剩 2 张出 K K K 4,我当地主抢牌权出了 2 2 2 + 10;带牌该是顺子 4–10 头上的 4
-        position = dict(seat='landlord', hand=['BJ', '2', '2', '2', 'K', 'Q', '10', '10', '9', '8', '7', '7', '6', '5', '4'], bottom=['A', '9', '4'], history=[['3', '3'], ['J', 'J'], [], ['A', 'A'], [], [], ['9'], ['2'], [], [], ['10', '9', '8', '7', '6', '5', '4', '3'], [], [], ['K', 'K', 'K', '4'], []])
-        self.assertEqual(sorted(["2", "2", "2", "4"]), sorted(names(ROLLOUT_ADVISOR.act(**position))))
-
-    def test_163059_a_tie_in_finish_in_two_keeps_the_joker(self):
-        # 16:30 JJ:小王 A A A J J 先出。两手出完 A A A + J J 和 A A A + 小王被压机会一样,原来挑了带小王;
-        # DouZero 首选 A A A + J J,留着王
-        position = dict(seat='landlord_up', hand=['SJ', 'A', 'A', 'A', 'J', 'J'], bottom=[], history=[['4'], ['7'], ['Q'], [], ['K'], [], ['A'], [], ['2'], [], [], ['5', '6', '7', '8', '9'], [], [], ['3', '3'], ['9', '9'], [], ['K', 'K'], [], []])
-        self.assertEqual(sorted(["A", "A", "A", "J", "J"]), sorted(names(ROLLOUT_ADVISOR.act(**position))))
-
-    def test_123244_finishes_in_two(self):
-        self.assertEqual(["3", "3", "A", "A", "A"], names(ROLLOUT_ADVISOR.act(**self.TWO_PLAYS)))
-
-    def test_125913_keeps_douzero_on_a_noisy_straight_gap(self):
-        self.assert_keeps_douzero(self.STRAIGHT, ["3", "4", "5", "6", "7", "8"],
-                                  {"3 4 5 6 7 8": .487, "3 4 5 6 7": .434, "4 5 6 7 8": .684}, 50)
-
-    def test_105924_keeps_douzero_on_a_noisy_single_gap(self):
-        self.assert_keeps_douzero(self.PAIR_OF_TWOS, ["2"], {"2": .963, "A": 1.019, "pass": .926}, 54)
-
-    def test_131038_keeps_douzero_on_a_noisy_pair_sequence_split(self):
-        self.assert_keeps_douzero(self.PAIR_SEQUENCE, ["J"], {"J": -1.067, "10": -.960, "A": -1.147}, 75)
-
-    def test_131145_keeps_douzero_on_a_noisy_pass(self):
-        self.assert_keeps_douzero(self.FOLLOW_PAIR, ["2", "2"], {"2 2": -.243, "pass": -.049}, 185, gap_sd=1.9)
-
-    def test_distinct_known_bottom_cards_rule_out_the_landlords_one_move_finish(self):
-        from server import take_short_opponent_lead
-        infoset = SimpleNamespace(player_position="landlord_up", last_pid="landlord",
-                                  legal_actions=[[], cards(["BJ"])],
-                                  player_hand_cards=cards(["BJ", "7"]),
-                                  num_cards_left_dict={"landlord": 2, "landlord_down": 4, "landlord_up": 2},
-                                  other_hand_cards=cards(["4", "5", "9", "9", "10", "10"]),
-                                  three_landlord_cards=cards(["4", "5"]), card_play_action_seq=[])
-        self.assertIsNone(take_short_opponent_lead(infoset, [1, 0]))
-        infoset.three_landlord_cards = []
-        self.assertEqual(cards(["BJ"]), take_short_opponent_lead(infoset, [1, 0]))
-
-    def assert_keeps_douzero(self, request, expected, means, games, gap_sd=1.6):
-        report = {}
-
-        def stub(keys, own, scores, deal, play, budget, **kwargs):
-            # 固定同局得分差的样本数和方差，排除时钟差异。
-            labels = tuple(move_label(k) for k in keys)
-            return BeatLandlordTest.stub_rollout(means, games=games, gap_sd=gap_sd, finalists=labels)(
-                keys, own, scores, deal, play, budget, **kwargs)
-
-        with mock.patch("server.successive_halving", stub):
-            move = ROLLOUT_ADVISOR.act(**request, report=report)
-        self.assertEqual(expected, report["rollout"]["douzero"])
-        self.assertEqual(expected, names(move))
-
-
-class BeatLandlordTest(unittest.TestCase):
-    """农民接地主的牌:现场模拟最后选了不出、某手不炸的压牌又和不出差不到一个标准误差时,改出压牌。
-    用 2026-11-18 22:32:33 那一手的请求按公开入口 ROLLOUT_ADVISOR.act 测;模拟结果喂固定数据,
-    局数 / 平均得分 / 配对差都可控,机器快慢不会让测试偶尔变绿。"""
-
-    # 2026-11-18 22:32:33 普通场:我是地主上家(农民),手牌 5 5 6 7 7 7 7 8 A A;地主出 8 8、队友不出。
-    # 请求原样取自实机 douzero 服务打印的请求 / 回复日志(ddz-hint-lifted 那个会话的 advisor.log 第 541 行,
-    # t=22:32:33),带 auction:地主、队友都没加倍。回复 71 局:不出 0.85 / A A 0.80、平均得分 1.239 / 1.099,
-    # 差 0.14 在 1 个标准误差(约 0.19)内,当时回了不出。地主接着走 AKQJ109,我们只能炸 7777,
-    # 炸弹让输的翻倍;按可见信息明牌算到底 A A 才赢。重放这条完整请求(真代码、不 stub)5 次都回 A A;
-    # 同样 5 次去掉 auction 就都回不出,所以 auction 必须留在 fixture 里。
-    LOGGED = dict(seat="landlord_up",
-                  hand=["A", "A", "8", "7", "7", "7", "7", "6", "5", "5"],
-                  bottom=["SJ", "4", "6"],
-                  history=[["5"], ["9"], ["K"], [], [], ["9"], ["A"], [], ["2"], [], [], ["10", "10"], [],
-                           ["J", "J"], ["Q", "Q"], ["K", "K"], ["2", "2"], [], [], ["3", "3"], [], ["4", "4"],
-                           ["6", "6"], [], ["8", "8"], []],
-                  auction={"double": {"landlord": False, "landlord_down": False}})
-
-    # 同一手但把一张 7 换成 J:候选里没有炸弹(A A 照样能接 8 8),用来单独测「差太大」。
-    NO_BOMB = dict(LOGGED, hand=["A", "A", "8", "7", "7", "7", "6", "5", "5", "J"])
-
-    def act(self, position, report=None):
-        return ROLLOUT_ADVISOR.act(position["seat"], position["hand"], position["bottom"],
-                                   position["history"], report,
-                                   auction=parse_auction(position.get("auction")))
-
-    @staticmethod
-    def stub_rollout(means, games=71, gap_sd=1.6, finalists=("pass", "7 7 7 7")):
-        """喂固定的模拟结果:每手 [games] 局;配对差的标准差 [gap_sd]。
-
-        [means] 是 {标签: 平均得分},[finalists] 是最后还活着的两手(和实机那一手一样,淘汰轮会把其余候选筛掉)。
-        配对差的标准误差 = gap_sd / sqrt(games)。
-        """
-        def stub(keys, own, scores, deal, play, budget, cap=None, pairs=None, anchor=None, **kwargs):
-            by_label = {move_label(k): k for k in keys}
-            alive = [by_label[label] for label in finalists]
-            wins = {k: int(round((means[move_label(k)] + 1) / 2 * games)) for k in keys}
-            played = {k: games for k in keys}
-            earned = {k: means[move_label(k)] * games for k in keys}
-            if pairs is not None:
-                base = anchor if anchor is not None else own
-                for k in keys:
-                    if k == base:
-                        continue
-                    gap = means[move_label(k)] - means[move_label(base)]
-                    pairs[k] = [gap * games, (gap * gap + gap_sd * gap_sd) * games, games]
-            return wins, earned, played, [[list(alive), games]], alive
-        return stub
-
-    def test_the_logged_farmer_keeps_douzero_when_a_beat_has_no_clear_lead(self):
-        report = {}
-        stub = self.stub_rollout({"pass": 1.239, "A A": 1.099, "7 7 7 7": 1.239})
-        with mock.patch("server.successive_halving", stub):
-            move = self.act(self.LOGGED, report)
-        self.assertEqual([], move)
-        rollout = report.get("rollout")
-        self.assertIsNotNone(rollout)
-        self.assertEqual("pass", rollout["chosen"])
-        self.assertNotIn("beat", rollout)
-
-    def test_a_gap_of_one_standard_error_keeps_the_models_pair(self):
-        # 这一手模型首选 A A。不出的领先约 1.25 个配对标准误，证据不足。
-        report = {}
-        stub = self.stub_rollout({"pass": 1.239, "A": 1.000, "A A": 1.000}, finalists=("pass", "A A"))
-        with mock.patch("server.successive_halving", stub):
-            move = self.act(self.NO_BOMB, report)
-        self.assertEqual(["A", "A"], names(move))
-        self.assertNotIn("beat", report["rollout"])
-        self.assertNotIn("7 7 7 7", report["rollout"]["rates"], "这一手不该有炸弹候选")
-
-    def test_a_bomb_is_not_treated_as_a_beat(self):
-        # A A 差得开、只剩炸弹和不出差不多:炸弹翻倍,不能拿来接地主,继续不出
-        report = {}
-        stub = self.stub_rollout({"pass": 1.239, "A A": 1.000, "7 7 7 7": 1.239})
-        with mock.patch("server.successive_halving", stub):
-            move = self.act(self.LOGGED, report)
-        self.assertEqual([], move)
-        self.assertNotIn("beat", report["rollout"])
-        self.assertEqual(1.239, report["rollout"]["avg_score"]["7 7 7 7"], "炸弹和不出分一样也照样不接")
-
-    def test_only_plays_against_the_landlord_are_forced(self):
-        # 桌上要是队友的牌,或者我当地主,这条都不生效
-        import server
-        keys = [(), (14, 14)]
-        means = {(): 1.239, (14, 14): 1.099}
-        scores = {(): 1.2, (14, 14): 1.1}
-        played = {(): 71, (14, 14): 71}
-        pairs = {(14, 14): [-0.14 * 71, (1.6 ** 2 + 0.14 ** 2) * 71, 71]}
-        mate = SimpleNamespace(player_position="landlord_up", last_pid="landlord_down")
-        landlord = SimpleNamespace(player_position="landlord", last_pid="landlord_up")
-        self.assertIsNone(server.beat_landlord(mate, keys, means, scores, played, pairs, 71))
-        self.assertIsNone(server.beat_landlord(landlord, keys, means, scores, played, pairs, 71))
-        against = SimpleNamespace(player_position="landlord_up", last_pid="landlord")
-        self.assertEqual((14, 14), server.beat_landlord(against, keys, means, scores, played, pairs, 71))
-
-    def test_a_beat_simulated_less_than_the_finalists_is_not_taken(self):
-        # 淘汰得早、局数比决赛少的手,模拟不够,不认
-        import server
-        keys = [(), (14, 14)]
-        means = {(): 1.239, (14, 14): 1.099}
-        scores = {(): 1.2, (14, 14): 1.1}
-        pairs = {(14, 14): [-0.14 * 30, (1.6 ** 2 + 0.14 ** 2) * 30, 30]}
-        infoset = SimpleNamespace(player_position="landlord_up", last_pid="landlord")
-        played = {(): 71, (14, 14): 30}
-        self.assertIsNone(server.beat_landlord(infoset, keys, means, scores, played, pairs, 71))
-
-
-class HalvingScheduleTest(unittest.TestCase):
-    """边打边淘汰的排期:假时钟 + 假出牌函数,不跑 DouZero,所以每次结果都一样。"""
-
-    KEYS = ["pass", "8", "6", "J", "2", "A", "Q", "10"]
-    PROBS = {"8": 0.9, "J": 0.75, "6": 0.6, "A": 0.5, "Q": 0.4, "10": 0.3, "2": 0.2, "pass": 0.1}
-
-    def run_halving(self, own, probs=None, budget=2.5, per_game=0.01, seed=7):
-        import server
-        probs = probs or self.PROBS
-        now = [0.0]
-        rng = random.Random(seed)
-
-        def clock():
-            return now[0]
-
-        def deal():
-            return None
-
-        def play(_, key):
-            now[0] += per_game  # 每局 10 毫秒,和这台机器上后半局的实测差不多
-            return rng.random() < probs[key]
-
-        scores = {k: len(self.KEYS) - i for i, k in enumerate(self.KEYS)}
-        result = server.successive_halving(self.KEYS, own, scores, deal, play, budget,
-                                          cap=10 ** 9, clock=clock)
-        return result, now
-
-    def test_leader_survives_both_protected_moves(self):
-        import server
-        keys = ["9", "J", "8", "pass"]
-        rates = dict(zip(keys, [0.9, 0.8, 0.7, 0.6]))
-        survivors = server.halve(keys, "pass", rates, rates, protected="8")
-        self.assertEqual({"9", "8", "pass"}, set(survivors))
-
-    def test_final_round_keeps_all_three_candidates(self):
-        import server
-        keys = ["8", "9", "pass"]
-        scores = {"8": 3, "9": 2, "pass": 1}
-        _, _, played, rounds, finalists = server.successive_halving(
-            keys, "pass", scores, lambda: None, lambda _, key: scores[key],
-            1, cap=2, clock=lambda: 0, protected="8")
-        self.assertEqual(set(keys), set(finalists))
-        self.assertEqual(set(keys), set(rounds[-1][0]))
-        self.assertEqual({key: 2 for key in keys}, played)
-
-    def test_the_worse_half_is_dropped_and_the_final_two_get_most_games(self):
-        ((wins, earned, played, rounds, finalists), _) = (self.run_halving("pass"))
-        # 8 -> 4 -> 2,最后一轮只剩两手不再淘汰
-        self.assertEqual([4, 2, 2], [len(alive) for alive, _ in rounds])
-        self.assertGreaterEqual(rounds[0][1], 12, "第一轮淘汰前每手至少打满 12 局")
-        self.assertGreaterEqual(rounds[1][1], 12, "第二轮淘汰前也要打满 12 局")
-        rates = {k: wins[k] / played[k] for k in self.KEYS}
-        best = max(self.KEYS, key=lambda k: rates[k])
-        self.assertEqual("8", best)
-        self.assertIn("8", finalists)
-        # 最后两手打了最多局,淘汰掉的候选在淘汰那一轮就停手了
-        self.assertGreater(min(played[k] for k in finalists),
-                           max(played[k] for k in self.KEYS if k not in finalists))
-
-    def test_the_douzero_move_is_never_dropped(self):
-        # own 的假赢面最低,按赢面会被淘汰;它必须每一轮都在,而且换进来顶掉的只是最后一名
-        ((wins, earned, played, rounds, finalists), _) = self.run_halving("pass")
-        for alive, _ in rounds:
-            self.assertIn("pass", alive)
-        self.assertIn("pass", finalists)
-        self.assertEqual(2, len(rounds[-1][0]))
-
-
 class ActBudgetTest(unittest.TestCase):
-    """一手牌总共只给 ACT_TOTAL_BUDGET_S 秒:残局搜索、两手出完、现场模拟都在里面分,手机 4 秒不会超时。
-    按公开入口 ROLLOUT_ADVISOR.act 测(模拟默认开着)。"""
-
+    """出牌总预算不超过手机读超时。"""
     # 2026-11-16 12:18:11 土豪场实机:我是地主下家,手里 A 5 4 4 4,三家还剩 19 张。
     # 残局搜索 1.5 秒没结论、现场模拟又 2.5 秒,回复 4903 毫秒;手机 4 秒超时,标成 douzero_unreachable
     # 重发同一手,三次各约 4020 毫秒,最后按简单规则打完这一局。
@@ -1988,126 +932,15 @@ class ActBudgetTest(unittest.TestCase):
                            ["8"], ["9"], ["J"], ["K"], [], [], ["6", "6", "6", "10", "10"], ["J", "J", "J", "10", "10"],
                            ["A", "A", "A", "5", "5"], [], [], ["6"], ["9"], ["Q"], ["K"]])
 
-    def act(self, position, report=None):
-        return ROLLOUT_ADVISOR.act(position["seat"], position["hand"], position["bottom"],
-                                   position["history"], report)
-
     def test_the_logged_request_answers_inside_the_phone_clock(self):
         # 实机那一手回复 4903 毫秒,手机 4 秒就超时;总预算封顶后要在手机读超时(4000 毫秒)内答完
         started = time.monotonic()
-        self.act(self.LOGGED)
+        ADVISOR.act(**self.LOGGED)
         self.assertLess(time.monotonic() - started, 4.0)
 
     def test_the_turn_budget_stays_under_the_phone_timeout(self):
         # 手机端 core/.../DdzAdvisor.kt 的 ACT_READ_TIMEOUT_MS = 4000:总预算不能超过 3.6 秒,留出网络余量
         self.assertLessEqual(ACT_TOTAL_BUDGET_S, 3.6)
-
-    def test_a_non_endgame_close_call_still_gets_the_whole_rollout_budget(self):
-        # 不是残局(搜索立刻返回 None、不耗时)时,现场模拟能用的时间不能变少:还是拿满 ACT_ROLLOUT_BUDGET_S
-        import server
-        real = server.successive_halving
-        seen = []
-
-        def spy(keys, own, scores, deal, play, budget, **kwargs):
-            seen.append(budget)
-            return ({k: 0 for k in keys}, {k: 0.0 for k in keys}, {k: 1 for k in keys},
-                    [[list(keys), 1]], list(keys))
-
-        server.successive_halving = spy
-        try:
-            report = {}
-            self.act(CloseCallRolloutTest.LIVE, report)
-        finally:
-            server.successive_halving = real
-        self.assertEqual([ACT_ROLLOUT_BUDGET_S], seen)
-        self.assertEqual(1, report["rollout"]["games"])
-
-    def test_a_search_that_burns_the_clock_leaves_no_time_for_the_rollout(self):
-        # 残局搜索把总预算烧到只剩 ACT_ROLLOUT_MIN_S 以下、又没有结论:现场模拟整个跳过,保留 DouZero 那一手,
-        # 整手牌仍不超过 ACT_TOTAL_BUDGET_S
-        import endgame
-        real = endgame.best
-
-        def slow_best(*args, **kwargs):
-            time.sleep(ACT_TOTAL_BUDGET_S - ACT_ROLLOUT_MIN_S + 0.05)
-            return None
-
-        endgame.best = slow_best
-        try:
-            report = {}
-            started = time.monotonic()
-            self.act(CloseCallRolloutTest.LATE, report)
-            elapsed = time.monotonic() - started
-        finally:
-            endgame.best = real
-        self.assertLess(elapsed, ACT_TOTAL_BUDGET_S + 0.15)
-        self.assertEqual("no_time", report.get("rollout_skipped"))
-        self.assertNotIn("rollout", report)
-
-    def test_a_search_that_uses_its_own_budget_still_leaves_room_for_the_rollout(self):
-        # 残局搜索睡满自己的 ACT_ENDGAME_BUDGET_S 秒:总预算还剩 1.0 秒左右(仍在 ACT_ROLLOUT_MIN_S 之上),
-        # 现场模拟照常跑,只是模拟得少些
-        import endgame
-        real = endgame.best
-
-        def slow_best(*args, **kwargs):
-            time.sleep(ACT_ENDGAME_BUDGET_S)
-            return None
-
-        endgame.best = slow_best
-        try:
-            report = {}
-            started = time.monotonic()
-            self.act(CloseCallRolloutTest.LIVE, report)
-            elapsed = time.monotonic() - started
-        finally:
-            endgame.best = real
-        self.assertLess(elapsed, ACT_TOTAL_BUDGET_S + 0.15)
-        rollout = report.get("rollout")
-        self.assertIsNotNone(rollout, "残局搜索用掉 2.5 秒后还剩 1.0 秒,应该照常现场模拟")
-        self.assertGreater(rollout["budget_left"], ACT_ROLLOUT_MIN_S - 0.15)
-        self.assertLess(rollout["budget_left"], ACT_TOTAL_BUDGET_S - ACT_ENDGAME_BUDGET_S + 0.2)
-
-    def test_a_full_search_still_leaves_room_for_the_tiebreak(self):
-        # 残局搜索睡满自己的 ACT_ENDGAME_BUDGET_S 秒、现场模拟再吃掉剩下的:比手数(最多 0.2 秒)也要在
-        # ACT_TOTAL_BUDGET_S 内收尾。模拟截止时间要先给比手数留出 0.2 秒,比手数的 deadline 也不能超过总预算剩下的。
-        import endgame
-        import server
-        real_best, real_min_plays = endgame.best, endgame.min_plays
-        seen = []
-
-        def slow_best(*args, **kwargs):
-            time.sleep(ACT_ENDGAME_BUDGET_S)
-            return None
-
-        def recording_min_plays(hand, deadline=None):
-            seen.append((time.monotonic(), deadline))
-            return 3
-
-        endgame.best = slow_best
-        endgame.min_plays = recording_min_plays
-        labels = ("5 6 7 8 9", "4 5 6 7 8 9")
-        stub = BeatLandlordTest.stub_rollout(dict(zip(labels, (0.1, 0.18))), gap_sd=0.2, finalists=labels)
-
-        def halving(keys, own, scores, deal, play, budget, **kwargs):
-            time.sleep(budget)
-            return stub(keys, own, scores, deal, play, budget, **kwargs)
-
-        try:
-            # 配对领先可信，但差值小于直接换手门槛。现场模拟先用完自己的预算。
-            with mock.patch.object(server, "successive_halving", halving):
-                report = {}
-                started = time.monotonic()
-                self.act(CloseCallRolloutTest.TIEBREAK, report)
-                elapsed = time.monotonic() - started
-        finally:
-            endgame.best, endgame.min_plays = real_best, real_min_plays
-        self.assertLess(elapsed, ACT_TOTAL_BUDGET_S + 0.15)
-        self.assertTrue(seen, "模拟没换手时应该比手数")
-        called_at, deadline = seen[0]
-        self.assertGreater(deadline - called_at, 0.1, "模拟截止时间要给比手数留出余量")
-        self.assertLessEqual(deadline, started + ACT_TOTAL_BUDGET_S - ACT_BUDGET_SAFETY_S + 0.01)
-
 
 class AuctionProtocolTest(unittest.TestCase):
     """/act 的可选 auction 字段:合法时透传给 Advisor,格式不对就整块当没带,不报错;不带时出牌和原来一样。"""
@@ -2120,7 +953,7 @@ class AuctionProtocolTest(unittest.TestCase):
         captured = {}
 
         class FakeAdvisor:
-            def act(self, seat, hand, bottom, history, report=None, auction=None):
+            def act(self, seat, hand, bottom, history, auction=None):
                 captured["auction"] = auction
                 return []
 
@@ -2181,132 +1014,10 @@ class AuctionProtocolTest(unittest.TestCase):
         import server as server_module
         auction = server_module.parse_auction({"bid": {"landlord": 3},
                                                "double": {"landlord": True, "landlord_up": False}})
-        live = CloseCallRolloutTest.LATE
+        live = EndgameUnknownTest.LIVE
         play = ADVISOR.act(live["seat"], live["hand"], live["bottom"], live["history"], auction=auction)
         self.assertIsInstance(play, list)
         self.assertTrue(all(c in cards(live["hand"]) for c in play))
-
-
-class AuctionSamplingTest(unittest.TestCase):
-    """叫分 / 加倍给看不见的牌加权:地主叫 3 分 + 加倍时,发出来的地主整手牌平均更强,我自己的证据不参与。"""
-
-    def farmer_infoset(self):
-        env = new_game(7)
-        env.step()  # 地主出了第一手,现在轮到地主下家(农民)
-        info = env.game_infoset
-        self.assertEqual("landlord_down", info.player_position)
-        return info
-
-    def landlord_strength(self, hands):
-        return ADVISOR.opening_strength("landlord", hands["landlord"])
-
-    def test_landlord_bid_and_double_push_the_deal_towards_a_stronger_landlord(self):
-        import server as server_module
-        info = self.farmer_infoset()
-        auction = server_module.parse_auction({"bid": {"landlord": 3},
-                                               "double": {"landlord": True}})
-        plain_rng, weighted_rng = random.Random(20261117), random.Random(20261117)
-        plain = [self.landlord_strength(server_module.sample_hands(info, plain_rng))
-                 for _ in range(200)]
-        weighted = [self.landlord_strength(ADVISOR.sample_hands(info, weighted_rng, auction))
-                    for _ in range(200)]
-        self.assertGreater(sum(weighted) / len(weighted) - sum(plain) / len(plain), 0.05)
-
-    def forwards_per_deal(self, auction, info):
-        """发一手牌做了几次前向、每批几张:包住 Agent.opening_strengths 数一数(它是公开的批量入口)。"""
-        import server as server_module
-        calls = []
-        real = server_module.Agent.opening_strengths
-
-        def counting(agent, hands, deadline=None):
-            calls.append(len(hands))
-            return real(agent, hands, deadline)
-
-        with mock.patch.object(server_module.Agent, "opening_strengths", counting):
-            ADVISOR.sample_hands(info, random.Random(1), auction)
-        return calls
-
-    def test_a_weighted_deal_scores_all_candidates_in_one_forward_per_seat(self):
-        # 一次发 K 手候选,按证据座位各攒一批前向:证据只有地主时 1 次,地主 + 另一个对手时 2 次;
-        # 不能像拒绝采样那样每试一手就单独前向一次(当时最多 AUCTION_MAX_TRIES 次串行)
-        import server as server_module
-        info = self.farmer_infoset()
-        one = server_module.parse_auction({"bid": {"landlord": 3},
-                                           "double": {"landlord": True}})
-        self.assertEqual([server_module.AUCTION_MAX_TRIES], self.forwards_per_deal(one, info))
-        two = server_module.parse_auction({"bid": {"landlord": 3},
-                                           "double": {"landlord": True, "landlord_up": True}})
-        self.assertEqual([server_module.AUCTION_MAX_TRIES] * 2, self.forwards_per_deal(two, info))
-
-    def test_a_scoring_failure_falls_back_to_the_first_candidate(self):
-        # 牌力算不出来(例如现场模拟的截止时刻到了)不能让发牌卡死:收下第一手候选
-        import server as server_module
-        info = self.farmer_infoset()
-        auction = server_module.parse_auction({"bid": {"landlord": 3},
-                                               "double": {"landlord": True}})
-        with mock.patch.object(server_module.Agent, "opening_strengths",
-                               side_effect=server_module.endgame.Timeout):
-            got = ADVISOR.sample_hands(info, random.Random(5), auction)
-        self.assertEqual(server_module.sample_hands(info, random.Random(5)), got)
-
-    def test_without_auction_the_same_seed_deals_the_same_hands(self):
-        # 没有 auction 时完全走原来的 sample_hands:同一个种子发出来的牌一手不差
-        import server as server_module
-        info = self.farmer_infoset()
-        auction = server_module.parse_auction({})
-        for seed in (0, 1, 2):
-            self.assertEqual(server_module.sample_hands(info, random.Random(seed)),
-                             ADVISOR.sample_hands(info, random.Random(seed), auction))
-
-    def test_my_own_bid_does_not_weight_the_deal(self):
-        # 我是地主:叫 3 分的是我自己,看不到的对手没有证据,发牌与不加权完全一样
-        import server as server_module
-        info = new_game(7).game_infoset
-        self.assertEqual("landlord", info.player_position)
-        auction = server_module.parse_auction({"bid": {"landlord": 3},
-                                               "double": {"landlord": True}})
-        for seed in (0, 1, 2):
-            self.assertEqual(server_module.sample_hands(info, random.Random(seed)),
-                             ADVISOR.sample_hands(info, random.Random(seed), auction))
-
-
-class AuctionRolloutTest(unittest.TestCase):
-    """现场模拟也吃 auction:地主叫 3 分 + 加倍时,把看不见的牌往地主那边偏,我(农民)的模拟赢面应该更低。
-    用固定局数(不信时钟)让两边都可重放,只断言方向,不断言具体数值。"""
-
-    def farmer_position(self):
-        # seed 1 打到第 10 手:我是地主下家,顶两手分差在 CLOSE_MARGIN 以内,会现场模拟
-        env = new_game(1)
-        for _ in range(10):
-            env.step()
-        info = env.game_infoset
-        self.assertEqual("landlord_down", info.player_position)
-        return dict(seat=info.player_position, hand=names(info.player_hand_cards),
-                    bottom=names(info.three_landlord_cards),
-                    history=[names(m) for m in info.card_play_action_seq])
-
-    def rates(self, position, auction):
-        import server as server_module
-        report = {}
-        with mock.patch.object(server_module, "ACT_TOTAL_BUDGET_S", 60.0), \
-                mock.patch.object(server_module, "ACT_ROLLOUT_BUDGET_S", 60.0), \
-                mock.patch.object(server_module, "CLOSE_TOP", 2):
-            ROLLOUT_ADVISOR.act(position["seat"], position["hand"], position["bottom"],
-                                position["history"], report, auction=auction)
-        self.assertIn("rollout", report, "这一手顶两手分差很小,应该现场模拟")
-        return report["rollout"]["rates"]
-
-    def test_a_landlord_who_bid_three_and_doubled_lowers_my_rollout_win_rate(self):
-        import server as server_module
-        position = self.farmer_position()
-        plain = self.rates(position, None)
-        auction = server_module.parse_auction({"bid": {"landlord": 3},
-                                               "double": {"landlord": True}})
-        weighted = self.rates(position, auction)
-        # 同一个候选(两种发牌方式下 DouZero 选出的候选不变):加权后地主牌更强,我的赢面更低
-        self.assertIn("3 4 5 6 7", plain)
-        self.assertIn("3 4 5 6 7", weighted)
-        self.assertLess(weighted["3 4 5 6 7"], plain["3 4 5 6 7"] - 0.05)
 
 
 class AuctionEndgameTest(unittest.TestCase):
@@ -2393,226 +1104,6 @@ class EndgameRankingTest(unittest.TestCase):
     def test_one_percentage_point_is_included_in_the_tie(self):
         self.assertEqual([], self.play(60, 59, [1.0, 9.0], (60, 59)))
         self.assertEqual(["3"] * 4, self.play(60, 58.99, [1.0, 9.0], (60, 59)))
-
-
-class KeepComboRolloutTest(unittest.TestCase):
-    """复现 2026-11-20 10:20:22 普通场的出牌。"""
-
-    LIVE = dict(seat="landlord_down",
-                hand=["2", "2", "K", "Q", "J", "9", "9", "9", "8", "4", "4", "3", "3"],
-                bottom=[], history=[["5", "5"], ["A", "A"], [], [], ["7"], [], ["K"], ["SJ"], [],
-                                    ["BJ"], [], [], ["8", "7", "6", "5", "4"], [],
-                                    ["J", "10", "9", "8", "7"], [], [],
-                                    ["8", "7", "6", "5", "4", "3"], [], [], ["3"], ["6"]],
-                auction={"double": {"landlord": False, "landlord_up": False}})
-
-    def test_keep_combo_reaches_final_despite_early_noise(self):
-        import server as server_module
-        seen = {}
-
-        def play_out(hands, bottom, history, me, move):
-            key = " ".join(NAMES[c] for c in move) or "pass"
-            n = seen.get(key, 0)
-            seen[key] = n + 1
-            if key in ("8", "pass"):
-                return -1 if n < 20 else 1
-            if key == "9":
-                return -1 if 20 <= n < 40 else 1
-            return -1
-
-        original = server_module.successive_halving
-        def halving(*args, **kwargs):
-            return original(*args, **kwargs, clock=lambda: min(seen.get("9", 0) // 13, 2))
-
-        agent = ROLLOUT_ADVISOR.agents[self.LIVE["seat"]]
-        report = {}
-        with mock.patch.object(agent, "play_out", play_out), \
-                mock.patch.object(ROLLOUT_ADVISOR, "sample_hands", return_value={}), \
-                mock.patch.object(server_module, "successive_halving", halving), \
-                mock.patch.object(server_module, "ACT_ROLLOUT_GAMES", 100):
-            move = ROLLOUT_ADVISOR.act(self.LIVE["seat"], self.LIVE["hand"], self.LIVE["bottom"],
-                                       self.LIVE["history"], report,
-                                       auction=server_module.parse_auction(self.LIVE["auction"]))
-        self.assertEqual([], move, "不拆牌候选没能可信地领先 DouZero 的不出")
-        self.assertIn("8", report["rollout"]["rounds"][-1][0])
-        self.assertIn("9", report["rollout"]["rounds"][-1][0])
-        self.assertNotIn("tiebreak", report["rollout"])
-        self.assertEqual(100, seen["9"])
-        self.assertEqual(100, seen["8"])
-        self.assertEqual(seen["pass"], seen["8"])
-
-
-    def test_split_move_can_win_when_own_is_pass(self):
-        import server as server_module
-        seen = {}
-
-        def play_out(hands, bottom, history, me, move):
-            key = " ".join(NAMES[c] for c in move) or "pass"
-            seen[key] = seen.get(key, 0) + 1
-            return 1 if key == "9" else -1
-
-        original = server_module.successive_halving
-        def halving(*args, **kwargs):
-            return original(*args, **kwargs, clock=lambda: min(seen.get("9", 0) // 13, 2))
-
-        agent = ROLLOUT_ADVISOR.agents[self.LIVE["seat"]]
-        report = {}
-        with mock.patch.object(agent, "play_out", play_out), \
-                mock.patch.object(ROLLOUT_ADVISOR, "sample_hands", return_value={}), \
-                mock.patch.object(server_module, "successive_halving", halving), \
-                mock.patch.object(server_module, "ACT_ROLLOUT_GAMES", 100):
-            move = ROLLOUT_ADVISOR.act(self.LIVE["seat"], self.LIVE["hand"], self.LIVE["bottom"],
-                                       self.LIVE["history"], report,
-                                       auction=server_module.parse_auction(self.LIVE["auction"]))
-        self.assertEqual(["9"], names(move))
-        self.assertEqual({"9", "8", "pass"}, set(report["rollout"]["rounds"][-1][0]))
-        self.assertEqual(100, seen["9"])
-        self.assertEqual(seen["9"], seen["8"])
-        self.assertEqual(seen["9"], seen["pass"])
-
-
-    def act_with_rates(self, rate8, rate9):
-        import server as server_module
-        seen = {}
-
-        def play_out(hands, bottom, history, me, move):
-            key = " ".join(NAMES[c] for c in move) or "pass"
-            n = seen.get(key, 0)
-            seen[key] = n + 1
-            return 1 if (n * 37) % 100 < {"8": rate8, "9": rate9, "pass": 50}.get(key, 0) else -1
-
-        def values(infoset):
-            scores = {"pass": 0.30, "9": 0.29, "8": 0.28}
-            return server_module.torch.tensor([scores.get(
-                " ".join(NAMES[c] for c in action) or "pass", 0.1) for action in infoset.legal_actions])
-
-        original = server_module.successive_halving
-        def halving(*args, **kwargs):
-            return original(*args, **kwargs, clock=lambda: min(seen.get("9", 0) // 13, 2))
-
-        agent = ROLLOUT_ADVISOR.agents[self.LIVE["seat"]]
-        report = {}
-        with mock.patch.object(agent, "values", values), \
-                mock.patch.object(agent, "play_out", play_out), \
-                mock.patch.object(ROLLOUT_ADVISOR, "sample_hands", return_value={}), \
-                mock.patch.object(server_module, "successive_halving", halving), \
-                mock.patch.object(server_module, "ACT_ROLLOUT_GAMES", 100):
-            move = ROLLOUT_ADVISOR.act(self.LIVE["seat"], self.LIVE["hand"], self.LIVE["bottom"],
-                                       self.LIVE["history"], report,
-                                       auction=server_module.parse_auction(self.LIVE["auction"]))
-        return names(move), report["rollout"]
-
-    def test_similar_better_split_move_keeps_combo(self):
-        move, rollout = self.act_with_rates(80, 80)
-        self.assertEqual(["8"], move)
-        self.assertEqual("8", rollout["keep_combo"])
-        self.assertEqual(rollout["avg_score"]["8"], rollout["avg_score"]["9"])
-        self.assertGreater(rollout["avg_score"]["9"] - rollout["avg_score"]["pass"], 0.1)
-
-    def test_clearly_better_split_move_still_wins(self):
-        move, rollout = self.act_with_rates(70, 90)
-        self.assertEqual(["9"], move)
-        self.assertNotIn("keep_combo", rollout)
-        self.assertGreater(rollout["avg_score"]["9"] - rollout["avg_score"]["8"], 0.1)
-
-
-class LostBombAmountTest(unittest.TestCase):
-    """现场模拟按输赢金额比,不按胜率比:赢 +2^k、输 −2^k,k 是这一手起打出的炸弹 / 王炸个数。
-
-    按公开入口 ROLLOUT_ADVISOR.act 测;mock 掉 play_out 让炸弹和不出各自有确定的赢面,
-    其余候选一律输,这样最后两手一定是炸弹和不出。
-    """
-
-    # 2026-11-18 16:35:59 普通场,我是地主下家,地主出 2 2,现场模拟 rates={"pass": 0.48, "3 3 3 3": 0.55}。
-    LIVE = dict(seat="landlord_down",
-                hand=["2", "K", "J", "8", "8", "5", "4", "4", "4", "3", "3", "3", "3"],
-                bottom=["7", "Q", "K"],
-                history=[["5", "5"], ["10", "10"], ["A", "A"], [], [], ["8", "7", "6", "5", "4"],
-                         ["K", "Q", "J", "10", "9"], [], [], ["7", "7"], [], ["J", "J"], ["Q", "Q"], ["A", "A"], [],
-                         ["2", "2"]],
-                auction={"double": {"landlord": True, "landlord_up": False}})
-
-    def act(self, bomb_wins, pass_wins, report=None):
-        import server as server_module
-        seen = {}
-
-        def fake_play_out(hands, bottom, history, me, move):
-            key = "pass" if not move else " ".join(NAMES[c] for c in move)
-            n = seen.get(key, 0)
-            seen[key] = n + 1
-            target = {"3 3 3 3": bomb_wins, "pass": pass_wins}.get(key, 0.0)
-            won = (n % 100) < int(round(target * 100))
-            # 炸弹那一手打出去,这一局 k=1:赢 +2、输 −2;不出的局 k=0:赢 +1、输 −1
-            k = 1 if key == "3 3 3 3" else 0
-            return (2 ** k) if won else -(2 ** k)
-
-        agent = ROLLOUT_ADVISOR.agents[self.LIVE["seat"]]
-        auction = server_module.parse_auction(self.LIVE.get("auction"))
-        # 钉死局数,每手打满 100 局,赢面就是上面给的百分比,不受机器快慢影响
-        with mock.patch.object(agent, "play_out", fake_play_out), \
-                mock.patch.object(server_module, "ACT_ROLLOUT_GAMES", 100):
-            return ROLLOUT_ADVISOR.act(self.LIVE["seat"], self.LIVE["hand"], self.LIVE["bottom"],
-                                       self.LIVE["history"], report, auction=auction)
-
-    def test_a_bomb_that_still_wins_more_often_is_still_the_better_bet(self):
-        # 炸弹赢 0.55、不出赢 0.48:按金额炸弹 = 2×(0.55−0.45) = +0.20,不出 = 0.48−0.52 = −0.04,
-        # 炸弹仍然对。规则 B 是按金额比,不是一刀切禁炸。
-        report = {}
-        move = self.act(0.55, 0.48, report)
-        self.assertEqual(["3", "3", "3", "3"], names(move))
-        rollout = report.get("rollout")
-        self.assertIsNotNone(rollout)
-        self.assertEqual("3 3 3 3", rollout["chosen"])
-        self.assertIn("avg_score", rollout, "报告里要另带平均得分")
-        self.assertGreater(rollout["avg_score"]["3 3 3 3"], rollout["avg_score"]["pass"])
-
-    def test_a_bomb_that_wins_less_amount_should_pass(self):
-        # 炸弹赢 0.40、不出赢 0.35:按胜率选炸弹,按金额炸弹 −0.40 < 不出 −0.30,应该不出。
-        report = {}
-        move = self.act(0.40, 0.35, report)
-        self.assertEqual([], move)
-        rollout = report.get("rollout")
-        self.assertIsNotNone(rollout)
-        self.assertEqual("pass", rollout["chosen"])
-        self.assertIn("avg_score", rollout, "报告里要另带平均得分")
-        self.assertGreater(rollout["avg_score"]["pass"], rollout["avg_score"]["3 3 3 3"])
-        self.assertGreater(rollout["rates"]["3 3 3 3"], rollout["rates"]["pass"], "rates 还是胜率")
-
-
-class SwitchMarginScaleTest(unittest.TestCase):
-    """平均得分 = 2×胜率−1(不炸的局 ±1),换手门槛也要 ×2;不然 0.04 的胜率差会被当成过了 0.05。"""
-
-    LIVE = CloseCallRolloutTest.LIVE
-
-    def act(self, pass_wins, bj_wins, report):
-        import server as server_module
-        seen = {}
-
-        def fake_play_out(hands, bottom, history, me, move):
-            key = "pass" if not move else " ".join(NAMES[c] for c in move)
-            n = seen.get(key, 0)
-            seen[key] = n + 1
-            target = {"pass": pass_wins, "BJ": bj_wins}.get(key, 0.0)
-            return 1 if (n % 100) < int(round(target * 100)) else -1
-
-        agent = ROLLOUT_ADVISOR.agents[self.LIVE["seat"]]
-        with mock.patch.object(agent, "play_out", fake_play_out), \
-                mock.patch.object(server_module, "ACT_ROLLOUT_GAMES", 100):
-            return names(ROLLOUT_ADVISOR.act(self.LIVE["seat"], self.LIVE["hand"], self.LIVE["bottom"],
-                                             self.LIVE["history"], report))
-
-    def test_a_four_point_win_rate_gap_does_not_switch(self):
-        # 胜率 0.50 对 0.54,差 0.04 < 0.05;平均得分差 0.08,不能当过了 0.05
-        report = {}
-        self.assertEqual([], self.act(0.50, 0.54, report))
-        self.assertEqual("pass", report["rollout"]["chosen"])
-        self.assertLess(report["rollout"]["avg_score"]["BJ"] - report["rollout"]["avg_score"]["pass"], 0.1)
-
-    def test_a_six_point_win_rate_gap_switches(self):
-        # 胜率 0.50 对 0.56,差 0.06 > 0.05;平均得分差 0.12,要换
-        report = {}
-        self.assertEqual(["BJ"], self.act(0.50, 0.56, report))
-        self.assertEqual("BJ", report["rollout"]["chosen"])
 
 
 class CardsTest(unittest.TestCase):

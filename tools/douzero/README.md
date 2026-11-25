@@ -50,5 +50,6 @@ DDZ_CARDS_WEIGHTS=~/data/cardvision/runs/jj-v2.pt .venv/bin/python -I server.py 
 `POST /act` 的参数见 `server.py` 开头。识别到的出牌历史在 DouZero 的牌局里重放，对不上就返回
 `history_mismatch` 一类的错误，调用方把这一手交还模型。
 
-三家手里合起来剩 20 张以内时，`endgame.py` 把别家牌的各种分法摆开、按明牌算到底，有赢面更大的一手就换掉 DouZero 的选择
-（`ACT_ENDGAME_BUDGET_S` = 2.5 秒算不完就照用 DouZero）。算不了时还有两条硬规则：地主只剩一张、我是最后能管的农民就要管；队友只剩三张以内不压队友。
+出牌先过滤双王作带牌的非法动作，再取 DouZero 评分最高的一手。残局允许时，
+`endgame.best` 用最多 2.5 秒按历史似然计算各出法的胜率。模型首选在最高胜率的 1 个百分点内就保留，
+超出时改选该范围内模型评分最高的一手。搜索超时仍用模型首选。

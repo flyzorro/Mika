@@ -40,7 +40,7 @@ _ADVISOR = None
 def advisor():
     global _ADVISOR
     if _ADVISOR is None:
-        _ADVISOR = Advisor(WEIGHTS, rollout=False)
+        _ADVISOR = Advisor(WEIGHTS)
     return _ADVISOR
 
 

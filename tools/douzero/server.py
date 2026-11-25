@@ -14,7 +14,7 @@ POST /act  {"seat": "landlord" | "landlord_down" | "landlord_up",
                                    "landlord_down": false,
                                    "landlord_up": null}}}
 # auction 是这一局的叫分 / 加倍结果,只用来给「看不见的牌怎么分」加权:叫了三分、加了倍的那家更可能拿到强牌,
-# 现场模拟的发牌和残局搜索的分法都按这份证据偏一点。v1 只看地主的叫分(叫三分),加倍按座位看;
+# 残局搜索的分法按这份证据加权。v1 只看地主的叫分(叫三分),加倍按座位看;
 # 我自己的叫分 / 加倍不参与。字段格式不对(座位名不认识、叫分不在 0..3、类型不对)就整块当没带,照常出牌,不报错。
 
 ? 是地主出的最后一张:右上角压着绶带,手机上常认不准。按牌规补:15 种点数挨个代进去,
@@ -44,7 +44,6 @@ import threading
 import time
 from collections import Counter
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from statistics import NormalDist
 from types import SimpleNamespace
 
 import torch
@@ -56,7 +55,6 @@ from douzero.env.game import GameEnv
 # 用 -I 起服务时脚本所在目录不在 sys.path 里:残局搜索和服务放在一起
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import endgame  # noqa: E402
-from endgame import is_bomb  # noqa: E402
 
 SEATS = ["landlord", "landlord_down", "landlord_up"]
 RANKS = {"3": 3, "4": 4, "5": 5, "6": 6, "7": 7, "8": 8, "9": 9, "10": 10, "J": 11, "Q": 12, "K": 13,
@@ -109,78 +107,11 @@ SUPER_DOUBLE_WIN = 0.85
 BID_VALUE = 0.0
 # 条件抽样一次判多少副:攒成一批前向,弱地主牌被丢掉时也不至于把 2 秒预算全花在判断上
 BID_BATCH = 32
-# 几手分数几乎一样时 DouZero 基本是随手挑:差不到这个数就优先不拆三条/对子/炸弹。
-# 实机那手拆 10 10 10 去顶队友的 6 只比单张 9 高 0.009;再大就会盖住真正该拆的一手,0.05 只收真正的平局。
-KEEP_MARGIN = 0.05
-# 分数接近时现场模拟:2026-11-16 10:16 精英场,我是地主(BJ 2 A A A K K Q J 10 10 8 6 5 5 5 5 3 3),
-# 下家农民用单张 2 顶住。DouZero 给不出不出的 +0.121 对 BJ 的 +0.060,只差 0.06 就信了分数选了不出。
-# 按看得见的牌随机发几百副、三家都用 DouZero 打分打到底:不出赢 0.79、BJ 赢 0.69,分数那点差距并不可靠。
-# 所以顶两手的分数差不到 CLOSE_MARGIN 就现场模拟:取 CLOSE_MARGIN 以内最多 CLOSE_TOP 手,同一批发牌比出牌,
-# 只有配对得分差超过噪声才换。平均得分高出 2×SWITCH_MARGIN 时直接比较得分，
-# 较小但可信的差也能进入手数比较(不炸时得分 = 2×胜率−1,门槛也要 ×2)。
-# 2.5 秒内每手至少打 ACT_ROLLOUT_MIN_GAMES 局,手机这一手等 4 秒够。
-# 但开局每局都长:2026-11-16 10:58:14 精英场,我当地主的第一手(2 2 A K K Q Q J 9 8 8 8 7 7 6 5 5 5 5 4),
-# 2.5 秒只跑了 43 局,不到 60 局就白模拟了;单张 9 赢面 0.4 比单张 6 的 0.27 高 13 个点也换不掉。
-# 当时只给开局(三家手里还有 45 张以上)把下限降到 30 局;
-# 局数少更吵,不到 ACT_ROLLOUT_FULL_GAMES 局时改用 OPENING_SWITCH_MARGIN 才换。
-# 中局下限原来是 60:2026-11-19 10:44:32 普通场,我是地主上家,手 2 10 9 9 9 8 7 6 4 3,模拟 59 局:
-# 6 7 8 9 10 平均得分 −0.083、DouZero 那手单张 10 −1.085,差了 1 分,只因少 1 局整个作废,拆了顺子。
-# 胜率 0.8 时 60 局和 50 局的标准误差是 0.052 对 0.057,差不多;先降到 50(以后改成按配对标准误差判断)。
-# 后半局一次模拟最多 8 手,最后两手常常只有 35~45 局,50 也不够:2026-11-19 11:52 普通场,我是地主下家,
-# 11:52:36 K K 2.889 对 DouZero 的 2 2 1.422(45 局)、11:52:45 7 7 3.5 对 7 7 7 1.571(35 局)都被整个作废。
-# 所以开局 / 中局 / 后半局下限统一用 30 局,局数不到 ACT_ROLLOUT_FULL_GAMES 时换手门槛用更严的 OPENING_SWITCH_MARGIN。
-# 2026-11-19 10:22:39 普通场,我是地主(BJ 2 2 2 A Q Q 10 10 8 8 8 7 7 6 5 5 5),地主上家农民出单张 2、只剩 4 张,
-# 三家合计 37 张。DouZero:不出 -0.912、BJ -1.053,差 0.141,按 0.1 不模拟就信了分数,地主上家拿回出牌权,
-# 这一局输了 60 万。重放这一手把门槛临时放到 0.5:每次 103 局,不出胜率 0.81 / 平均得分 0.62~0.64,
-# BJ 0.85 / 0.728,平均得分差约 0.1,3 次里只有 1 次越过 2×SWITCH_MARGIN 换成 BJ——换不换都在噪声里,
-# 但至少该模拟,所以取 0.15。
-CLOSE_MARGIN = 0.15
-CLOSE_TOP = 3
-SWITCH_MARGIN = 0.05
-OPENING_SWITCH_MARGIN = 0.1
-ACT_ROLLOUT_BUDGET_S = 2.5
-ACT_ROLLOUT_GAMES = 300
-ACT_ROLLOUT_MIN_GAMES = 30
-ACT_ROLLOUT_FULL_GAMES = 50
-# 边打边淘汰时,淘汰轮每个候选至少打这么多局才淘汰:8 手按 1/4 预算在这台机器上只分到 7 局,
-# 7 局里 0.76 和 0.62 的差距一半是运气(见 close_rollout 里 13:10:11 那一手,8 就是被 7 局淘汰掉的)。
-HALVING_MIN_ROUND_GAMES = 12
-# 农民接地主的牌:现场模拟最后选了不出、而某手不炸的压牌和不出差不到这么多倍「配对差的标准误差」时,
-# 改出压牌。2026-11-18 22:32:33 普通场,我是地主上家,手牌 5 5 6 7 7 7 7 8 A A,地主出 8 8 队友不出。
-# 模拟 71 局:不出 0.85 / A A 0.80、平均得分 1.239 / 1.099,差 0.14,配对标准误差 0.19,当时回了不出;
-# 地主接着走 AKQJ109,我们只能炸 7777,炸弹让输的翻倍。按可见信息明牌算到底 A A 0.977、不出 0.955:
-# 局数只够分出 ±4 个点时,压一手比把出牌权交回去更稳,所以差在 1 个标准误差内就压(见 beat_landlord)。
-BEAT_MARGIN_SE = 1.0
-# 一手牌总共只给这么多秒:手机 /act 最多等 4 秒(连接 2 秒 + 读 4 秒,失败还重试一次),超了就当服务挂了。
-# 2026-11-16 12:18:11 土豪场,我是地主下家,手里 A 5 4 4 4,三家还剩 19 张:残局搜索先花掉 1.5 秒没结论,
-# 现场模拟又打满 2.5 秒,回复 4903 毫秒;手机 4 秒超时,标成 douzero_unreachable 重发同一手,三次各约 4020 毫秒,
-# 最后按简单规则打完这一局。所以从 Agent.act 进来起总共只给 3.5 秒(手机端读超时 4 秒,留 0.5 秒网络余量),
-# 残局搜索、两手出完、现场模拟、比手数都在这一个预算里分:
-# 残局搜索最多 ACT_ENDGAME_BUDGET_S 秒,现场模拟用 min(2.5, 剩下的 − 0.1 − 比手数的 0.2) 秒,
-# 剩下的不到 ACT_ROLLOUT_MIN_S 就整个不模拟,直接听 DouZero 的。
+# /act 总预算包含模型前向与残局搜索。
 ACT_TOTAL_BUDGET_S = 3.5
-ACT_BUDGET_SAFETY_S = 0.1
-ACT_ROLLOUT_MIN_S = 0.8
-# 残局搜索的时限要够把几百种分法(带 likelihood)算完:2026-11-17 12:14:32 精英场,我是地主上家(农民),
-# 手里 SJ A J 7 6 6 5,地主剩 6 张、队友剩 5 张,分法 462 种。本机(Apple M3 Max / macOS 26.7.2 / Python 3.14 venv)
-# 带 likelihood 实测 1.58~1.84 秒(6 次);原来给 1.5 秒,1.51 秒超时返回 None,退回模拟按均匀发牌出了 J,
-# 可明牌求解只有 6 6 能赢。给 2.5 秒,比实测最慢的 1.84 秒还多 0.66 秒;扣掉搜索,剩下的 1.0 秒还在
-# ACT_ROLLOUT_MIN_S 之上,现场模拟不会被整个跳过。
 ACT_ENDGAME_BUDGET_S = 2.5
 # 残局加权胜率距最高值 1 个百分点以内时，由 DouZero 打分决胜。
 ACT_ENDGAME_TIE_MARGIN = 0.01
-# 两手出完捷径要盖掉 DouZero 时,DouZero 首选比捷径那手高出这么多分就不盖,走原来的流程。
-# 2026-11-19 12:13:20 精英场那手(DouZero 7 9 9 9 +2.282、捷径 Q Q Q Q 只有 +1.335,差 0.95)就是这么被盖掉的。
-# 取 0.5:比 KEEP_MARGIN / CLOSE_MARGIN(0.05 / 0.1)大得多,只拦「DouZero 明显更看好」的情况。
-# 按 eval_finish_two.py 的配对自对弈 210 副(主角地主 / 农民,改前 vs 改后带这个门槛)定:
-# 配对差总额 +27、每副 +0.129(95% CI −0.009~+0.266),没亏;捷径触发 88 -> 90 次,没有挡掉有用的捷径。
-SHORTCUT_MARGIN = 0.5
-# 对手牌少、又没进残局搜索时,现场模拟不再均匀发牌:把牌最少的那家所有可能的剩牌枚举出来,
-# 按他最近两手出牌的 likelihood(含「留着炸弹先走杂牌」)加权,每种不同的剩牌算一个假设。
-# 2026-11-19 15:08:02 那手他剩 4 张、分法 207 种,枚举 + 打分实测约 0.3 秒;剩 5 张分法 398 种
-# (8568 种摆法)约 0.7 秒,都还在现场模拟 2.5 秒的预算里。再往上枚举就吃不满模拟局数,
-# 所以从 5 起,超时 / 分法太多(MAX_SPLITS)就退回原来的随机发牌。
-SHORT_HAND = 5
 # 残局分法似然:每家对手取最近 [LIKELIHOOD_MOVES] 手不是不出的出牌,各手概率相乘。取 2 是因为
 # 2026-11-16 20:51:41 土豪场那一手,下家倒数第二手 10 10 10 + Q:如果手里还留着 4、9 这种低单张,
 # 正常会拿小牌当带牌而不是 Q。只看最近一手 7 7 看不出这点,两手里的三带一才把「剩零散小牌」的分法压下去。
@@ -207,22 +138,9 @@ LIKELIHOOD_FLOOR = 0.2
 # T_bid 取地主 q65(叫三分的手牌约占 35%),T_dbl 取 q80(加倍约占 20%),τ 取地主 q35~q65 分位间距的
 # 一半 0.456。按这组值在随机牌上的边际概率:P(叫三分)=0.385、P(地主加倍)=0.242、P(农民加倍)=0.291
 # (T 由分位数定,logistic 较宽时边际会偏离 35% / 20%,但方向与门槛不变)。
-# 现场模拟有 auction 时一次发这么多手候选做 importance resampling:按证据座位把这 K 手攒成一批前向。
-# 2026-11-17 实测(2.5 秒模拟预算):K=8 时中局 72~75 局、后半局 88~100 局;K=4 时中局 80~86、
-# 后半局 123~127;K=2 时中局 82~99、后半局 150~158。K=8/4 要把 8/4 手都算一遍,比旧拒绝采样平均
-# 只算的 2.48 手(中局)还贵,模拟局数反而比改前更少;K=2 才回到改前的中局水平(最终 3 次 92~94),
-# 后半局还从 115 涨到 150 左右,所以取 2。
-AUCTION_MAX_TRIES = 2
 AUCTION_BID_T = -0.021
 AUCTION_DOUBLE_T = {"landlord": 0.595, "farmer": 0.237}
 AUCTION_TAU = 0.456
-# 后半局不管分差都现场模拟:三家手里合起来只剩 LATE_CARDS 张时,DouZero 分数最高的 LATE_TOP 手(不出也算一手)都模拟一遍。
-# 2026-11-16 11:43:53 土豪场,我是地主下家,手里 2 2 K Q J 10 9 8 8 8 4 3 3,三家还剩 33 张。
-# DouZero 给 8 9 10 J Q K +0.736、8 9 10 J Q +0.627,只差 0.109,按 CLOSE_MARGIN 不模拟,信分数出了 8..K,输了。
-# 离线按看得见的牌打 400 局:3 3 8 8 8 赢 0.98、8..K 只赢 0.82;明牌搜索也确认 8..K 必输。
-# 后半局每手都短、2.5 秒够每手打 60 局以上,就不再拿分差当理由;仍要高出 SWITCH_MARGIN 才换。
-LATE_CARDS = 35
-LATE_TOP = 8
 WEIGHTS = os.environ.get("DOUZERO_WEIGHTS", os.path.join(os.path.dirname(__file__), "baselines", "douzero_ADP"))
 
 
@@ -362,55 +280,6 @@ class Replay:
         return move
 
 
-def breaks_combo(move, hand):
-    """这手是不是从手里某个点数里只拿了一部分:三条拆单、对子拆单、炸弹拆开。不出不算。"""
-    in_hand = Counter(hand)
-    return any(0 < n < in_hand[rank] for rank, n in Counter(move).items())
-
-
-def is_simple_combo(move):
-    """单张、对子、三条,以及带牌的三带一/三带二。顺子、连对、飞机、炸弹、王炸都不算。"""
-    counts = tuple(sorted(Counter(move).values()))
-    return counts in ((1,), (2,), (3,), (1, 3), (2, 3))
-
-
-def splits_bomb(move):
-    """这手是不是把某个点数的四张拆开用了:四带二、四带两对、飞机带翅膀里塞了炸弹等,而不是单独当炸弹出。
-    拆开就少一次 ×2;四张一起出、王炸、不出都不算。"""
-    return md.get_move_type(sorted(move))["type"] != md.TYPE_4_BOMB \
-        and any(n == 4 for n in Counter(move).values())
-
-
-def single_kickers(move):
-    """三带一/飞机带单里当带牌的单张;三条本身(哪怕三条是 A/2)不算。飞机带对不在其中。"""
-    kind = md.get_move_type(sorted(move))["type"]
-    if kind not in (md.TYPE_6_3_1, md.TYPE_11_SERIAL_3_1):
-        return []
-    return [rank for rank, n in Counter(move).items() if n == 1]
-
-
-def straight_runs(hand):
-    """手里的点数连成的顺子段(3 到 A;2 和王不连):[[3, 4, 5, ...], ...]。"""
-    runs = []
-    for rank in sorted({r for r in hand if r < RANKS["2"]}):
-        if runs and rank == runs[-1][-1] + 1:
-            runs[-1].append(rank)
-        else:
-            runs.append([rank])
-    return runs
-
-
-def loose_single(rank, hand, rest):
-    """[rank] 能不能当换带牌的零散小单张:手里只有一张、不超过 K;顺子看 [rest](出完当前的牌以后剩下的手牌),
-    在里面 5 张以上的顺子中,只有当拿走它顺子还剩 5 张(在顺子两头且顺子至少 6 张)时才拿得走。"""
-    if Counter(hand)[rank] != 1 or rank > RANKS["K"]:
-        return False
-    for run in straight_runs(rest):
-        if rank in run and len(run) >= 5:
-            return len(run) >= 6 and rank in (run[0], run[-1])
-    return True
-
-
 def legal(move, before):
     """[move] 接在 [before] 这串出牌后面合不合规:让 DouZero 的牌局按只拿着这手牌来生成能出的牌。"""
     probe = GameEnv({s: None for s in SEATS})
@@ -506,36 +375,6 @@ def deal(seat, hand, bottom, history):
     return {s: sorted(hands[s] + played[s]) for s in SEATS}
 
 
-def move_label(move):
-    """一手牌在诊断里的名字:不出叫 pass,其余按点数从小到大写出来(如 "5 5 5 5")。"""
-    return " ".join(NAMES[c] for c in move) if move else "pass"
-
-
-def late_picks(order, actions, top=LATE_TOP):
-    """后半局候选:每种牌型先取 DouZero 分数最高的一手,名额还有剩再按分数从高到低补满。
-
-    [order] 是按 DouZero 分数从高到低排好的合法出牌下标。牌型按 DouZero 的 move_detector.get_move_type 区分,
-    「不出」也算一种。牌型种类比 [top] 还多时,只留代表手分数最高的前 [top] 种。
-    DouZero 自己那手就是 order[0],必然是它那种牌型的第一个代表,天然在候选里。
-    """
-    kinds = {i: md.get_move_type(sorted(actions[i]))["type"] for i in order}
-    seen, reps = set(), []
-    for i in order:
-        if kinds[i] in seen:
-            continue
-        seen.add(kinds[i])
-        reps.append(i)
-    picks = reps[:top]
-    if len(picks) < top:
-        taken = set(picks)
-        for i in order:
-            if len(picks) >= top:
-                break
-            if i not in taken:
-                picks.append(i)
-    return picks
-
-
 def opening_state(seat, hand):
     """[seat] 开局时拿着整手 [hand] 的 info set:自己领出,其他两家只按张数算。
 
@@ -625,260 +464,6 @@ def history_state(history, hands, seat, index, frame, without=()):
     )
 
 
-def pass_frames(history, me):
-    """[me] 的对手在能一手走完时却选择了不出的那些手:[(座位, 那手之后他出的牌, 当时要压的牌)]。
-
-    不出时如果是新一轮领出(上家就是他自己,或两家都不出回到他)不算,领出不能不出。
-    """
-    out = []
-    for i, move in enumerate(history):
-        seat = SEATS[i % 3]
-        if move or seat == me:
-            continue
-        after, _, _, _, last = history_frame(history, i)
-        if last:
-            out.append((seat, after[seat], last))
-    return out
-
-
-def take_short_opponent_lead(infoset, values):
-    """残局没算完时，防止桌上的短手对家接回出牌权一手走完。"""
-    me = infoset.player_position
-    short = infoset.last_pid
-    actions = infoset.legal_actions
-    if short == me or (me != "landlord" and short != "landlord") or [] not in actions:
-        return None
-    left = infoset.num_cards_left_dict
-    if left.get(short) not in (1, 2):
-        return None
-    far = next(seat for seat in SEATS if seat not in (me, short))
-    unknown = infoset.other_hand_cards
-    kept = infoset.three_landlord_cards if short == "landlord" else ()
-    ways = endgame.splits(unknown, short, left[short], far, left[far], kept)
-    if not ways:
-        return None
-    # 和残局似然一样：假定短手此前有机会当场出完时不会选择不出。
-    passes = [(after, last) for seat, after, last in pass_frames(infoset.card_play_action_seq, me)
-              if seat == short]
-    holdings = []
-    for hand, _ in ways:
-        for after, last in passes:
-            whole = tuple(sorted(hand + tuple(after)))
-            if len(whole) in (len(last), 4, 2) and whole in endgame.moves(whole, last):
-                break
-        else:
-            holdings.append(hand)
-    # 13:05:54 地主不接下家的单张 2，下家剩的 A A 直接走完。均匀发牌把对子摊薄了。
-    # 只要还有一种可行的整手能领出，就先压牌。优先选短手连一张也接不上的牌，
-    # 如这局的大王。接下来照常决策，每次重新看谁领出、还剩几张。
-    if not any(hand in endgame.moves(hand, ()) for hand in holdings):
-        return None
-    beats = [i for i, action in enumerate(actions) if action]
-    best = max(beats, key=lambda i: (
-        len(actions[i]) == len(infoset.player_hand_cards),
-        not any(endgame.moves(hand, actions[i]) - {()} for hand in holdings), float(values[i])))
-    return actions[best]
-
-
-def fewer_plays(hand, keys, rates, scores, own, deadline=None):
-    """模拟赢面差不多时,在赢面不低于 DouZero 那手([own])的候选里挑出完剩下手数最少的一手。
-
-    [keys] 是候选手牌(已排序的元组),[rates] 是模拟赢面,[scores] 是 DouZero 分数。
-    赢面比 [own] 低的候选不用手数翻案(模拟都说更差);拆了炸弹的候选也不翻案(少一次 ×2);手数一样多时挑赢面高的,
-    再挑分数高的。返回 (选中的一手, 比过的手数),没有更少手的候选返回 None。一手都算不完(到 [deadline])也返回 None。
-    """
-    if deadline is None:
-        deadline = time.monotonic() + endgame.MIN_PLAYS_BUDGET_S
-    plays = {own: endgame.min_plays(endgame.minus(hand, own), deadline)}
-    if plays[own] is None:
-        return None
-    picked = None
-    for k in keys:
-        if k == own or rates[k] < rates[own] or splits_bomb(k):
-            continue
-        plays[k] = endgame.min_plays(endgame.minus(hand, k), deadline)
-        if plays[k] is None:
-            return None
-        if plays[k] < plays[own] and (picked is None or (
-                plays[k], -rates[k], -scores[k]) < (plays[picked], -rates[picked], -scores[picked])):
-            picked = k
-    return None if picked is None else (picked, plays)
-
-
-def paired_error(stat):
-    """配对差均值的标准误差:[stat] = [Σ差, Σ差², 局数],差是同一批发牌下两手得分之差。
-    局数不到 2 时返回 None。"""
-    total, total_sq, n = stat
-    if n < 2:
-        return None
-    mean = total / n
-    variance = max(0.0, (total_sq - n * mean * mean) / (n - 1))
-    return math.sqrt(variance / n)
-
-
-def rollout_leads(stat, critical, min_games):
-    """同一副牌两种出法的得分差，单侧下界大于零才认。只计两手都完成的局。"""
-    if stat is None or stat[2] < min_games:
-        return False
-    total, _, n = stat
-    return total / n > critical * paired_error(stat)
-
-
-def beat_landlord(infoset, keys, means, scores, played, pairs, games):
-    """农民接地主的牌:现场模拟最后选了不出时,某手不炸的压牌和不出差不到一个标准误差,就改出这手压牌。
-
-    只在「要压的是地主出的牌」时生效([infoset.last_pid] == "landlord"):桌上是队友的牌不动,
-    我当地主也不动。炸弹 / 王炸不算压牌(翻倍,已有专门逻辑)。
-    压牌要和决赛打一样多局([games])才认:淘汰得早、局数少的手不能因为标准误差大就翻案。
-    平均得分差 = 不出 − 压牌;不超过 BEAT_MARGIN_SE 个配对标准误差([pairs] 见 successive_halving)才算在噪声内。
-    在够格的手里挑平均得分最高的,再按 DouZero 分数。返回压牌,没有就返回 None。
-    """
-    if infoset.player_position == "landlord" or infoset.last_pid != "landlord" or () not in keys:
-        return None
-    best = None
-    for k in keys:
-        if not k or is_bomb(k) or played.get(k, 0) < games:
-            continue
-        error = paired_error(pairs[k]) if k in pairs else None
-        if error is None or means[()] - means[k] > BEAT_MARGIN_SE * error:
-            continue
-        if best is None or (means[k], scores[k]) > (means[best], scores[best]):
-            best = k
-    return best
-
-
-def sample_hands(infoset, rng):
-    """只按看得见的信息随机发牌:别人两家合起来的手牌分给两家、张数对得上。
-    我是农民时地主没打出去的底牌一定还在他手里,先把这几张留出来(sample 与 deal 是同一个意思)。"""
-    me = infoset.player_position
-    left = infoset.num_cards_left_dict
-    unseen = list(infoset.other_hand_cards)
-    rng.shuffle(unseen)
-    hands = {me: list(infoset.player_hand_cards)}
-    if me != "landlord":
-        kept = list((Counter(infoset.three_landlord_cards) & Counter(unseen)).elements())
-        hands["landlord"] = kept
-        unseen = list((Counter(unseen) - Counter(kept)).elements())
-    for s in [s for s in SEATS if s != me]:
-        need = left[s] - len(hands.get(s, []))
-        hands[s] = hands.get(s, []) + unseen[:need]
-        unseen = unseen[need:]
-    return {s: sorted(hands[s] + list(infoset.played_cards[s])) for s in SEATS}
-
-
-def halve(alive, own, rates, scores, protected=None):
-    """一轮打完:按累计平均得分去掉较差的一半(向上取整),DouZero 选的那手 [own] 永远留着。
-
-    留几名向上取整:8 手留 4、5~7 手留 3~4、3 手留 2、2 手不再淘汰。
-    [own] 和可选的 [protected] 排在淘汰区时换进来,顶掉分数最低的非保留候选;第一名不能淘汰,必要时多留一手。
-    """
-    keep = (len(alive) + 1) // 2
-    ranked = sorted(alive, key=lambda k: (-rates[k], -scores[k], k))
-    if len(ranked) <= 2:
-        return ranked
-    survivors = ranked[:keep]
-    required = [k for k in (own, protected) if k in alive]
-    for k in required:
-        if k not in survivors:
-            removable = next((candidate for candidate in reversed(survivors)
-                              if candidate not in required and candidate != ranked[0]), None)
-            if removable is not None:
-                survivors.remove(removable)
-            survivors.append(k)
-    return survivors
-
-
-def round_shares(count):
-    """每个候选时每一轮拿多少预算:淘汰轮各拿 1/(淘汰轮数+2),决赛拿剩下的。
-
-    8 手是 [1/4, 1/4, 1/2]:第一轮每手约 0.6 秒,按每局 4 毫秒够打 12~15 局,先把差的 4 手筛掉;
-    4 手再筛到 2 手;最后两手用掉剩下的一半时间。4~7 手有两次淘汰,也是 [1/4, 1/4, 1/2];
-    4 手只有一次淘汰,给 [1/3, 2/3]。2~3 手淘汰和不淘汰差不多,原有的顶两手/开局行为就是三手用全部时间
-    轮着打完,为了不动这些结果直接一轮打完(最多一次淘汰,这里取零次)。
-    """
-    if count <= 3:
-        return [1.0]
-    cuts, n = 0, count
-    while n > 2:
-        n = (n + 1) // 2
-        cuts += 1
-    share = 1 / (cuts + 2)
-    return [share] * cuts + [1 - share * cuts]
-
-
-def successive_halving(keys, own, scores, deal, play, budget, cap=ACT_ROLLOUT_GAMES,
-                      min_round_games=HALVING_MIN_ROUND_GAMES, clock=time.monotonic,
-                      pairs=None, anchor=None, protected=None):
-    """把 [budget] 秒分成几轮边打边淘汰:每轮还活着的候选都打同一批新发的牌,轮末去掉较差的一半。
-
-    [deal]() 发一批牌(这一轮里所有还活着的候选共用),[play](hands, key) 拿这批牌打一局、返回这局的结果:
-    赢了是正的 2^k、输了是负的 2^k(k 是这一手起打出的炸弹 / 王炸个数);布尔值 True/False 也照收。
-    淘汰轮按 round_shares 分到的时间收手,但每个候选至少打满 [min_round_games] 局才淘汰——
-    8 手按 1/4 预算只分到七八局,七八局的赢面差一半是运气,不能拿来淘汰。每个候选最多打 [cap] 局;
-    最后一轮用掉剩下的全部时间,决赛可以有三手。淘汰轮按累计平均得分淘汰,见 halve。
-    [protected] 是同 [own] 一样保留到决赛的候选。
-    传 [pairs] 时顺便记下每个候选和 [anchor](默认 [own])在同一批发牌上的得分差，用于配对标准误差：
-    pairs[k] = [Σ差, Σ差², 局数]。
-    返回 (每个候选累计赢的局数, 每个候选累计得分, played, 每轮 [留下的候选, 这一轮每个候选至少打了几局],
-    最后还活着的候选)。赢的局数只用来在报告里算胜率;淘汰和最后比较都用平均得分,炸弹让这一局翻倍。
-    [clock] 只为测试换成假时钟,线上就是 time.monotonic。
-    """
-    started = clock()
-    anchor = own if anchor is None else anchor
-    rollout_deadline = started + budget
-    wins = {k: 0 for k in keys}
-    earned = {k: 0.0 for k in keys}
-    played = {k: 0 for k in keys}
-    alive = list(keys)
-    shares = round_shares(len(keys))
-    rounds = []
-    for i, _ in enumerate(shares):
-        # 淘汰轮按预算的固定比例收手(但先打满下限);最后一轮把剩下的时间全用掉
-        last = i == len(shares) - 1
-        round_deadline = rollout_deadline if last \
-            else min(rollout_deadline, started + budget * sum(shares[:i + 1]))
-        floor = 0 if last else min_round_games
-        before = {k: played[k] for k in alive}
-
-        def round_over():
-            if clock() >= rollout_deadline:
-                return True
-            return clock() >= round_deadline and all(played[k] - before[k] >= floor for k in alive)
-
-        while not round_over() and any(played[k] < cap for k in alive):
-            hands = deal()  # 这一批发牌,这一轮里所有候选都用
-            results = {}
-            for k in alive:
-                if played[k] >= cap:
-                    continue
-                if clock() >= rollout_deadline:
-                    break
-                played[k] += 1
-                result = play(hands, k)
-                results[k] = float(result)
-                if result > 0:
-                    wins[k] += 1
-                earned[k] += float(result)
-            if pairs is not None and anchor in results:
-                base = results[anchor]
-                for k, value in results.items():
-                    if k == anchor:
-                        continue
-                    stat = pairs.setdefault(k, [0.0, 0.0, 0])
-                    difference = value - base
-                    stat[0] += difference
-                    stat[1] += difference * difference
-                    stat[2] += 1
-        games = min(played[k] - before[k] for k in alive)
-        if last or len(alive) <= 2:
-            rounds.append([list(alive), games])
-            break
-        means = {k: (earned[k] / played[k] if played[k] else 0.0) for k in keys}
-        alive = halve(alive, own, means, scores, protected)
-        rounds.append([list(alive), games])
-    return wins, earned, played, rounds, alive
-
-
 class Agent:
     """同 DouZero 的 DeepAgent,只是权重按纯张量加载:checkpoint 是 pickle,不按张量读会执行文件里的代码。"""
 
@@ -887,311 +472,26 @@ class Agent:
         self.model = model_dict[seat]()
         self.model.load_state_dict(torch.load(path, map_location="cpu", weights_only=True))
         self.model.eval()
-        # 分数接近时要不要现场模拟;测试里造局面时关掉,免得每走一步都花 2.5 秒
-        self.rollout = True
-        # 三家「只按 DouZero 打分」的对手,现场模拟时用;由 Advisor 建好后填进来
-        self.plain = {}
-        # 带 auction 时现场模拟要按对手牌力加权;由 Advisor 建好后填进来
-        self.advisor = None
 
-    def act(self, infoset, report=None, likelihood=None, auction=None):
-        # 一手牌的总预算从这里开始算:下面 DouZero 打分、残局搜索、两手出完、现场模拟、比手数都只能用剩下的时间
+    def act(self, infoset, likelihood=None):
         deadline = time.monotonic() + ACT_TOTAL_BUDGET_S
-        # 斗地主经典版不允许大小王一起当带牌(飞机带单的翅膀、四带二的两张单牌):DouZero 的合法出牌里有,
-        # 先剔掉,后面 DouZero 打分、残局搜索、两手出完都只看这份
-        infoset.legal_actions = endgame.without_double_joker_kickers(infoset.legal_actions)
-        if len(infoset.legal_actions) == 1:
-            return infoset.legal_actions[0]
+        actions = endgame.without_double_joker_kickers(infoset.legal_actions)
+        infoset.legal_actions = actions
+        if len(actions) == 1:
+            return actions[0]
         values = self.values(infoset)
-        move = infoset.legal_actions[int(torch.argmax(values))]
-        # 剩的牌少时按明牌把各种分法算到底，在胜率接近最高的几手里挑 DouZero 打分最高的。
-        # 下面几条硬规则只在搜索也认为不吃亏时才换。搜索最多 ACT_ENDGAME_BUDGET_S 秒,总预算不够时只给剩下的
-        left_s = deadline - time.monotonic()
-        solved = endgame.best(infoset, budget=min(ACT_ENDGAME_BUDGET_S, left_s), likelihood=likelihood) \
-            if left_s > 0 else None
-        allowed = None
-        if solved is not None:
-            wins, total, _, _ = solved
-            score = {tuple(sorted(a)): float(values[i]) for i, a in enumerate(infoset.legal_actions)}
-            top = max(wins.get(m, 0) for m in score)
-            cutoff = top - ACT_ENDGAME_TIE_MARGIN * total
-            allowed = {m for m in score if wins.get(m, 0) >= cutoff}
-            picked = max(allowed, key=score.get)
-            if tuple(sorted(move)) not in allowed:
-                return self.swap_high_kickers(infoset, list(picked), ok=lambda m: tuple(sorted(m)) in allowed)
-        mate = {"landlord_down": "landlord_up", "landlord_up": "landlord_down"}.get(infoset.player_position)
+        move = actions[int(torch.argmax(values))]
+        budget = min(ACT_ENDGAME_BUDGET_S, deadline - time.monotonic())
+        solved = endgame.best(infoset, budget=budget, likelihood=likelihood) if budget > 0 else None
         if solved is None:
-            control = take_short_opponent_lead(infoset, values)
-            if control is not None:
-                # 抢牌权那手也换带牌:16:25 JJ 2 2 2 + 10 抢牌权,带牌应是顺子 4–10 头上的 4(换带牌不影响能不能压住短手)
-                control = self.swap_high_kickers(infoset, control, ok=lambda m: True)
-                if report is not None:
-                    report["take_lead"] = move_label(control)
-                return control
-            # 剩的牌多、搜不动:自己能两手出完、第一手很难被压时,先出那手再出完(DouZero 偶尔先出一张会被王压的单张)
-            others = [p for p in endgame.SEATS if p != infoset.player_position]
-            left = infoset.num_cards_left_dict
-            rival = tuple(sorted(infoset.last_move)) if [] in infoset.legal_actions else ()
-            # 我是农民时,地主没出过的底牌一定还在他手里:先从看不见的牌里留出来,别让捷径按纯随机发牌估被压机会
-            kept = tuple((Counter(infoset.three_landlord_cards) & Counter(infoset.other_hand_cards)).elements()) \
-                if infoset.player_position != "landlord" else ()
-            quick = endgame.finish_in_two(tuple(sorted(infoset.player_hand_cards)), infoset.legal_actions, rival,
-                                          sorted(infoset.other_hand_cards), left[others[0]], left[others[1]],
-                                          deadline=deadline - ACT_BUDGET_SAFETY_S, kept=kept,
-                                          b_is_mate=infoset.player_position != "landlord",
-                                          prefer=tuple(sorted(move)))
-            # 桌上那手是队友出的:捷径不能直接压他,把它和「不出」一起交给下面的现场模拟比;地主没有队友,照旧走捷径
-            forced = None
-            # 12:32:44 地主下家领出，捷径和模型都选 AAA33；直接走这条两手出完路线。
-            if quick is not None and (tuple(sorted(move)) != quick[0]
-                                      or (not rival and len(quick[0]) < len(infoset.player_hand_cards))):
-                scores = {tuple(sorted(a)): float(values[i]) for i, a in enumerate(infoset.legal_actions)}
-                if mate and infoset.last_pid == mate and [] in infoset.legal_actions:
-                    if tuple(sorted(move)) != quick[0]:
-                        forced = [list(quick[0]), []]
-                elif splits_bomb(quick[0]) or splits_bomb(minus(infoset.player_hand_cards, quick[0])):
-                    # 捷径把炸弹拆成四带二(或塞进别的牌型)会少一次 ×2:回到正常流程,让炸弹能单独炸出去
-                    pass
-                elif max(scores.values()) - scores.get(quick[0], float("-inf")) > SHORTCUT_MARGIN:
-                    # DouZero 首选比捷径那手高出一大截:分数差得开,捷径不该盖掉它,照原来的流程出
-                    pass
-                else:
-                    return list(quick[0])
-            # 分数只差一点点时,现场按看得见的牌模拟几百局再定;模拟了就以它为准,不再走下面那条不拆牌的规则
-            rolled = self.close_rollout(infoset, values, move, deadline, report, auction, required=forced) \
-                if self.rollout else None
-            if rolled is not None:
-                move, info = rolled
-                if report is not None:
-                    report["rollout"] = info
-                # 局数不到下限,模拟不算数:不压队友
-                if forced is not None and info["games"] < info["min_games"]:
-                    move = []
-            elif forced is not None:
-                # 时间不够、模拟整个跳过:同样不压队友,也不退回捷径
-                move = []
-            else:
-                # 分数几乎一样的几手里优先不拆牌:DouZero 常常随手拆三条、对子去顶一张小牌
-                move = self.keep_combos(infoset, values, move)
-        ok = lambda m: allowed is None or tuple(sorted(m)) in allowed
-        # 地主只剩一张、桌上是他的牌、我是他前面最后一个能管的农民:不管就是让他出完。DouZero 残局偶尔会选不出,
-        # 能管就挑管得上的里面分最高的
-        if not move and infoset.player_position == "landlord_up" and infoset.last_pid == "landlord" \
-                and infoset.num_cards_left_dict["landlord"] == 1:
-            beats = [i for i, a in enumerate(infoset.legal_actions) if a and ok(a)]
-            if beats:
-                move = infoset.legal_actions[max(beats, key=lambda i: float(values[i]))]
-        # 桌上是队友的牌、队友只剩三张以内:不去压他(自己这手出完就赢的除外),让他接着出完。DouZero 残局偶尔会拿王压队友的 2,
-        # 自己接过来再出单张,让只剩一张的地主走了
-        if move and mate and infoset.last_pid == mate and infoset.num_cards_left_dict[mate] <= 3 \
-                and len(move) < len(infoset.player_hand_cards) and [] in infoset.legal_actions and ok([]):
-            move = []
-        return self.swap_high_kickers(infoset, move, ok)
-
-    def swap_high_kickers(self, infoset, move, ok):
-        """三带一/飞机带单的带牌比手里最小的零散小单张大,或这张带牌在手里不止一张(拆了对子 / 三条)时,
-        换成那张小单张:带牌只是凑数,留着大牌和整副对子当控制牌。
-
-        2026-11-16 10:04 实机:地主出 10 10 10 + 7,我 K K K + A;丢掉的 A 正是后来被 2 2 2 + J 压住的关键。
-        2026-11-19 用户实机观察:打三张总带一个大牌,不只 A/2。单张王(20/30)不换。
-        没有能换的小牌、换完不合规、或者残局搜索认为原来那手更好时,保持 DouZero 的选择。
-        """
-        if not move or len(move) == len(infoset.player_hand_cards):
             return move
-        hand = infoset.player_hand_cards
-        in_hand = Counter(hand)
-        rest = list(hand)
-        for r in move:
-            rest.remove(r)
-        swapped = list(move)
-        for rank in sorted(single_kickers(move)):
-            if rank >= RANKS["SJ"]:
-                continue
-            pick = next((c for c in sorted(rest) if loose_single(c, hand, rest)), None)
-            if pick is None:
-                if in_hand[rank] > 1 or rank in (RANKS["A"], RANKS["2"]):
-                    return move
-                continue
-            if rank not in (RANKS["A"], RANKS["2"]) and in_hand[rank] == 1 and rank <= pick:
-                continue
-            rest.remove(pick)
-            swapped.remove(rank)
-            swapped.append(pick)
-        if sorted(swapped) not in [sorted(a) for a in infoset.legal_actions] or not ok(swapped):
+        wins, total, _, _ = solved
+        scores = {tuple(sorted(action)): float(value) for action, value in zip(actions, values)}
+        cutoff = max(wins.get(key, 0) for key in scores) - ACT_ENDGAME_TIE_MARGIN * total
+        allowed = {key for key in scores if wins.get(key, 0) >= cutoff}
+        if tuple(sorted(move)) in allowed:
             return move
-        return swapped
-
-    def keep_combos(self, infoset, values, move):
-        """最高分那手是单张/对子/三条(含三带一/三带二)且拆牌时,在 KEEP_MARGIN 以内的不拆出牌里挑分数最高的。
-        不出、顺子、连对、飞机、炸弹、王炸都不参与;都不拆或都拆就保持原选择。"""
-        if not move or not is_simple_combo(move):
-            return move
-        top = float(values.max())
-        hand = infoset.player_hand_cards
-        best, best_score = None, None
-        for i, action in enumerate(infoset.legal_actions):
-            score = float(values[i])
-            if not action or top - score > KEEP_MARGIN or breaks_combo(action, hand) \
-                    or not is_simple_combo(action):
-                continue
-            if best_score is None or score > best_score:
-                best, best_score = action, score
-        return move if best is None else best
-
-    def close_rollout(self, infoset, values, move, deadline=None, report=None, auction=None, required=None):
-        """顶两手的分数差不到 CLOSE_MARGIN 时,按看得见的牌随机发一批牌,每一手都用 DouZero 打分打到完,比赢面。
-
-        [required] 是必须放进候选的几手(桌上是队友的牌时,两手出完那手和「不出」):不管分差、牌型都塞进来,
-        其余候选仍按原来的方式挑;不在合法出牌里的跳过。
-
-        候选中有拆牌的简单牌型时,把分数最高的不拆牌简单牌型候选保留到决赛。
-        后半局(三家手里合起来不超过 LATE_CARDS 张)不管分差多大都模拟:每种牌型先留 DouZero 分数最高的一手,
-        名额还有剩再按分数补满 LATE_TOP 手(见 late_picks)。
-        模拟不把所有候选平分到最后:分几轮边打边淘汰,见 successive_halving。2026-11-16 13:10:11 土豪场,
-        我是地主下家,三家还剩 35 张,回复 rollout games 27、min_games 60:8 手轮着模拟,2.5 秒下来每手只打了
-        27 局,不到 60 局整个模拟作废,仍出 DouZero 的 6;可 8 的模拟赢面 0.75 比 6 的 0.68 高 7 个点。
-        现在第一轮 8 手各打十来局、淘汰差的 4 手,第二轮 4 手再淘汰 2 手,最后两手用掉剩下的时间(一半预算),
-        每手打满 60 局以上,8 才换得出来。同一批发牌拿来比所有还活着的候选(控制随机性)。
-        最后的赢面按每个候选打过的全部局数累计算,一手最多打 ACT_ROLLOUT_GAMES 局,或者到时限为止。
-        时限是 min(ACT_ROLLOUT_BUDGET_S, [deadline] 剩下的 − ACT_BUDGET_SAFETY_S − endgame.MIN_PLAYS_BUDGET_S):
-        一手牌总共只有 ACT_TOTAL_BUDGET_S 秒,残局搜索花掉的要从这里扣,还要给比手数留出 0.2 秒。
-        剩下的不到 ACT_ROLLOUT_MIN_S 就整个不模拟(回复里记 rollout_skipped: no_time),直接听 DouZero 的。
-        候选至少与 DouZero 首选打满 ACT_ROLLOUT_MIN_GAMES 个同副牌的配对。
-        配对得分差的单侧下界要大于零，拆牌和剩余手数规则也只在这些候选里挑。
-        返回 (选定的一手, 写进回复的诊断);分数差得开、不用模拟时返回 None。
-        """
-        # 分数从高到低;同分时把 DouZero 挑的那手放最前,后面「仍听 DouZero」才有确定的参照
-        own = tuple(sorted(move))
-        order = sorted(range(len(infoset.legal_actions)),
-                       key=lambda i: (-float(values[i]), tuple(sorted(infoset.legal_actions[i])) != own))
-        top = float(values[order[0]])
-        # 后半局不设分差门槛:每种牌型先留分数最高的一手,再按分数补满 LATE_TOP 手;不出也算一种牌型
-        late = sum(infoset.num_cards_left_dict.values()) <= LATE_CARDS
-        picks = late_picks(order, infoset.legal_actions) if late \
-            else [i for i in order if top - float(values[i]) < CLOSE_MARGIN][:CLOSE_TOP]
-        if required:
-            index = {tuple(sorted(a)): i for i, a in enumerate(infoset.legal_actions)}
-            forced = [index[k] for k in (tuple(sorted(m)) for m in required) if k in index]
-            picks += [i for i in forced if i not in picks]
-        hand = infoset.player_hand_cards
-        actions = infoset.legal_actions
-        protected = None
-        if any(is_simple_combo(actions[i]) and breaks_combo(actions[i], hand) for i in picks):
-            intact = [i for i in picks if is_simple_combo(actions[i]) and not breaks_combo(actions[i], hand)]
-            if intact:
-                protected = tuple(sorted(actions[max(intact, key=lambda i: float(values[i]))]))
-        if len(picks) < 2:
-            return None
-        # 总预算快用完了:模拟来不及打满下限,不如直接听 DouZero 的,别让手机等到超时
-        if deadline is None:
-            deadline = time.monotonic() + ACT_TOTAL_BUDGET_S
-        left = deadline - time.monotonic()
-        if left < ACT_ROLLOUT_MIN_S:
-            if report is not None:
-                report["rollout_skipped"] = "no_time"
-            return None
-        budget = min(ACT_ROLLOUT_BUDGET_S, left - ACT_BUDGET_SAFETY_S - endgame.MIN_PLAYS_BUDGET_S)
-        candidates = [infoset.legal_actions[i] for i in picks]
-        keys = [tuple(sorted(c)) for c in candidates]
-        by_key = dict(zip(keys, candidates))
-        labels = {k: move_label(c) for k, c in zip(keys, candidates)}
-        scores = {k: float(values[i]) for k, i in zip(keys, picks)}
-        # 同一手牌、同一段历史每次拿到同一个种子:手机重发同一手,答案也不变
-        rng = random.Random(hash((tuple(sorted(infoset.player_hand_cards)),
-                                  tuple(tuple(m) for m in infoset.card_play_action_seq))))
-        history = [list(m) for m in infoset.card_play_action_seq]
-        # 边打边淘汰:每个还活着的候选打同一批新发的牌,轮末淘汰较差的候选,决赛用掉剩下的时间。
-        # 带 auction 时发牌按证据加权(拒绝采样);对手牌少时按似然加权枚举他的剩牌。枚举 + 打分的时间
-        # 也算在这份预算里,算不完就退回原来的发牌(见 Advisor.sample_hands / short_hand_plan)。
-        sampler_deadline = time.monotonic() + budget
-        sampler = lambda: self.advisor.sample_hands(  # noqa: E731
-            infoset, rng, auction, deadline=sampler_deadline)
-        # 局数上限显式传 ACT_ROLLOUT_GAMES:留作默认参数会被 def 时绑死,测试里改常量就不生效了
-        # pairs 记每个候选和 DouZero 首选的逐局得分差。
-        pairs = {}
-        wins, earned, played, rounds, finalists = successive_halving(
-            keys, own, scores, sampler,
-            lambda hands, k: self.play_out(hands, infoset.three_landlord_cards, history,
-                                           infoset.player_position, by_key[k]),
-            budget, cap=ACT_ROLLOUT_GAMES, pairs=pairs, anchor=own, protected=protected)
-        games = min(played[k] for k in finalists)
-        if games == 0:
-            return None
-        rates = {k: (wins[k] / played[k] if played[k] else 0.0) for k in keys}
-        means = {k: (earned[k] / played[k] if played[k] else 0.0) for k in keys}
-        chosen = move
-        tie = None
-        beat = None
-        keep_combo = None
-        min_games = ACT_ROLLOUT_MIN_GAMES
-        # 同一批样本既筛候选又比得分。用全部初始挑战者做 Bonferroni 校正，
-        # 压低挑中偶然高分的机会。配对正态近似是换牌门槛。
-        critical = NormalDist().inv_cdf(1 - 0.05 / (len(keys) - 1))
-        supported = [k for k in keys if k in finalists and rollout_leads(pairs.get(k), critical, min_games)]
-        if supported:
-            # 只在决赛候选(淘汰掉的不再参选)里挑平均得分最高的;同分仍按 DouZero 分数顺序。
-            # 炸弹让这一局翻倍,所以要按得分比,不能只看胜率。
-            best = max(supported, key=means.get)
-            margin = SWITCH_MARGIN if games >= ACT_ROLLOUT_FULL_GAMES else OPENING_SWITCH_MARGIN
-            # 不炸的局得分 ±1,平均得分 = 2×胜率−1:同样的胜率差,平均得分差是它的 2 倍。
-            # 原来的 0.05 / 0.1 是按胜率定的门槛,按平均得分比要 ×2,不然等于把换手门槛减半。
-            if means[best] - means[own] >= 2 * margin:
-                if is_simple_combo(best) and breaks_combo(best, hand) and protected in supported \
-                        and means[best] - means[protected] < 2 * margin:
-                    keep_combo = protected
-                    chosen = by_key[protected]
-                else:
-                    chosen = by_key[best]
-            else:
-                # 差不到门槛时挑出完剩下手数更少的:2026-11-16 11:58:20 土豪场,我是地主上家领出,
-                # 手里 BJ 2 J 9 8 7 6 5 5 5 5 4。DouZero 出 5 6 7 8 9,模拟 152 局 5..9 赢 0.59、4..9 赢 0.64,
-                # 差不到 0.1 的门槛仍出 5..9;可 4..9 出完剩 BJ 2 J 5 5 5 三手,5..9 剩 BJ 2 J 5 5 5 4 四手。
-                # 平均得分不低于 DouZero 那手的候选里手数更少就换;淘汰掉的候选也不再参选。
-                # 手数比较也吃一手牌的总预算:截止时刻取 min(自己的 0.2 秒, 总预算剩下的 − 0.1),
-                # 总预算没余量就不比了(模拟截止时间已经先给它留出 0.2 秒)。
-                tie_left = deadline - time.monotonic() - ACT_BUDGET_SAFETY_S
-                if tie_left > 0:
-                    tie = fewer_plays(infoset.player_hand_cards, supported, means, scores, own,
-                                      time.monotonic() + min(endgame.MIN_PLAYS_BUDGET_S, tie_left))
-                if tie is not None:
-                    chosen = by_key[tie[0]]
-            if not chosen and own == ():
-                # 压地主也必须有配对证据，只在已过门槛的压牌里挑。
-                beat = beat_landlord(infoset, [own, *supported], means, scores, played, pairs, games)
-                if beat is not None:
-                    chosen = by_key[beat]
-        info = {"games": games, "min_games": min_games, "budget_left": round(left, 2),
-                "rates": {labels[k]: round(rates[k], 2) for k in keys},
-                "avg_score": {labels[k]: round(means[k], 3) for k in keys},
-                "rounds": [[[labels[k] for k in alive], n] for alive, n in rounds],
-                "douzero": [NAMES[c] for c in own], "chosen": move_label(chosen)}
-        if late:
-            info["late"] = True
-        if keep_combo is not None:
-            info["keep_combo"] = labels[keep_combo]
-        if tie is not None:
-            info["tiebreak"] = "fewer_plays"
-            info["plays"] = {labels[k]: n for k, n in tie[1].items()}
-        if beat is not None:
-            info["beat"] = labels[beat]
-            info["beat_margin"] = round(BEAT_MARGIN_SE * paired_error(pairs[beat]), 3)
-        return chosen, info
-
-    def play_out(self, hands, bottom, history, me, move):
-        """按 [hands] 开局把 [history] 重放到现在,我先出 [move],之后三家都按 DouZero 打分打到完。
-
-        返回这一局的得分:赢 +2^k、输 −2^k,k 是这一手起(含候选这一手)打出的炸弹 / 王炸个数。
-        斗地主每个炸弹把整局输赢 ×2,所以模拟要按金额比,不能只比赢面;历史里已经出过的炸弹不算。
-        """
-        replay = Replay(history)
-        players = {s: _RolloutAgent(replay, self.plain[s], move if s == me else None) for s in SEATS}
-        env = GameEnv(players)
-        env.card_play_init({**{s: list(hands[s]) for s in SEATS}, "three_landlord_cards": list(bottom)})
-        while not env.game_over:
-            env.step()
-        k = env.bomb_num - sum(1 for m in history if is_bomb(m))
-        score = 2 ** k
-        return score if env.num_wins["landlord" if me == "landlord" else "farmer"] else -score
+        return list(max(allowed, key=scores.get))
 
     def values(self, infoset):
         obs = get_obs(infoset)
@@ -1241,140 +541,10 @@ class Plain:
         return infoset.legal_actions[int(torch.argmax(self.agent.values(infoset)))]
 
 
-class _RolloutAgent:
-    """现场模拟里的玩家:重放历史时照抄历史;重放完我先出指定的那一手(只一次),之后都按 DouZero 打分。"""
-
-    def __init__(self, replay, plain, forced=None):
-        self.replay = replay
-        self.plain = plain
-        self.forced = forced
-
-    def act(self, infoset):
-        if self.replay.moves:
-            return self.replay.act(infoset)
-        if self.forced is not None:
-            move, self.forced = self.forced, None
-            return list(move)
-        return self.plain.act(infoset)
-
-
 class Advisor:
-    def __init__(self, weights, rollout=True):
+    def __init__(self, weights):
         self.agents = {s: Agent(s, os.path.join(weights, f"{s}.ckpt")) for s in SEATS}
         self.plain = {s: Plain(self.agents[s]) for s in SEATS}
-        # 对手牌少时候选分法的枚举结果:一次现场模拟要发上百手牌,同一局面只算一次
-        self.short_plans = {}
-        for agent in self.agents.values():
-            agent.rollout = rollout
-            agent.plain = self.plain
-            agent.advisor = self
-
-    def short_hand_plan(self, infoset, auction=None, deadline=None):
-        """牌最少的那家对手剩 ≤ [SHORT_HAND] 张时,把他所有可能的剩牌按 likelihood 加权。
-
-        返回 ({座位: 这手牌}, 权重) 的列表,权重是 likelihood(只看他最近两手出牌,每种不同的剩牌
-        算一个假设);牌不少 / 枚举不完 / 算不出来(例如到 [deadline])时返回 None,调用方退回原来的发牌。
-        只枚举牌最少的那一家,另一家拿剩下的;
-        我是农民、牌最少的是地主时,他没打出去的底牌先留在他手里(同 sample_hands)。
-        枚举 + 打分要算进现场模拟的预算里,所以结果按局面缓存:一次模拟里只算一次。
-        """
-        me = infoset.player_position
-        others = [s for s in SEATS if s != me]
-        left = infoset.num_cards_left_dict
-        short = min(others, key=lambda s: (left[s], SEATS.index(s)))
-        if left[short] > SHORT_HAND:
-            return None
-        if deadline is not None and time.monotonic() > deadline:
-            return None
-        key = (me, tuple(sorted(infoset.player_hand_cards)), tuple(tuple(m) for m in infoset.card_play_action_seq),
-               tuple(left[s] for s in SEATS), tuple(sorted(infoset.other_hand_cards)),
-               tuple(sorted(infoset.three_landlord_cards)), repr(auction))
-        if key in self.short_plans:
-            return self.short_plans[key]
-        if len(self.short_plans) > 8:
-            self.short_plans.clear()
-        unknown = sorted(infoset.other_hand_cards)
-        if len(unknown) != left[others[0]] + left[others[1]]:
-            return None
-        far = others[0] if others[1] == short else others[1]
-        kept = ()
-        if me != "landlord" and short == "landlord":
-            kept = tuple(sorted((Counter(infoset.three_landlord_cards) & Counter(unknown)).elements()))
-        ways = endgame.splits(unknown, short, left[short], far, left[far], kept=kept)
-        if ways is None:
-            return None
-        splits = [{me: tuple(sorted(infoset.player_hand_cards)), short: ha, far: hb} for ha, hb in ways]
-        if deadline is None:
-            deadline = time.monotonic() + ACT_ROLLOUT_BUDGET_S
-        try:
-            # 只看他最近两手出牌(第 1 条),不掺叫分 / 加倍:这里估的是「他打这些牌时手里留了什么」,
-            # 叫分那一路已经在别的分支里用过。每种不同的剩牌算一个假设,不再按同点数的摆法数放大:
-            # 4 4 4 4 这种少见的留法不该仅仅因为摆法少就被压掉(2026-11-19 15:08:02 那手)。
-            likes = self.likelihood([list(m) for m in infoset.card_play_action_seq], me, None,
-                                    seats=[short])(splits, deadline)
-        except endgame.Timeout:
-            return None
-        weights = list(likes)
-        if sum(weights) <= 0:
-            return None
-        plan = []
-        for (ha, hb), weight in zip(ways, weights):
-            if weight == 0:
-                continue
-            current = {me: tuple(sorted(infoset.player_hand_cards)), short: ha, far: hb}
-            plan.append(({s: sorted(list(current[s]) + list(infoset.played_cards[s])) for s in SEATS}, weight))
-        self.short_plans[key] = plan
-        return plan
-
-    def sample_hands(self, infoset, rng, auction=None, deadline=None):
-        """现场模拟发牌:牌最少的那家对手剩 ≤ [SHORT_HAND] 张时,按 likelihood 加权枚举他的剩牌;
-        否则没有 auction 时完全走原来的 sample_hands(同一个种子一手不差)。
-
-        有证据时一次发 K 手候选(K = [AUCTION_MAX_TRIES]),按证据座位把这 K 手的开局牌力攒成一批前向
-        (每个座位一次,不再一手一手串行),再按权重从这 K 手里抽一手:权重是各条证据的似然相乘,在 0..1,
-        即 importance resampling。权重全 0 / 牌力算不出来(例如到 [deadline])时收下第一手,不能让模拟卡死。
-        只给我看不见的对手加权:我自己的叫分 / 加倍不算证据。
-        """
-        plan = self.short_hand_plan(infoset, auction, deadline)
-        if plan is not None:
-            pick = rng.random() * sum(weight for _, weight in plan)
-            for hands, weight in plan:
-                pick -= weight
-                if pick <= 0:
-                    return hands
-            return plan[-1][0]
-        me = infoset.player_position
-        seats = auction.seats(me) if auction is not None else []
-        if not seats:
-            return sample_hands(infoset, rng)
-        hands = [sample_hands(infoset, rng) for _ in range(AUCTION_MAX_TRIES)]
-        try:
-            strength = [dict() for _ in hands]
-            for seat in seats:
-                values = self.agents[seat].opening_strengths([h[seat] for h in hands], deadline)
-                for k, value in enumerate(values):
-                    strength[k][seat] = value
-            logs = [auction.log_weight(me, s) for s in strength]
-        except (endgame.Timeout, Mismatch):
-            return hands[0]
-        top = max(logs)
-        if top == float("-inf"):
-            return hands[0]
-        # 减去最大值再 exp:权重再小也至少有一个是 1,不会整批下溢成 0;总权重为 0 只是防御
-        weights = [math.exp(x - top) for x in logs]
-        total = sum(weights)
-        if total <= 0:
-            return hands[0]
-        pick = rng.random() * total
-        for hand, weight in zip(hands, weights):
-            pick -= weight
-            if pick <= 0:
-                return hand
-        return hands[-1]
-
-    def opening_strength(self, seat, hand):
-        """[seat] 开局拿着 [hand] 的牌力:DouZero 这家模型给所有合法出牌打分的最高分。"""
-        return self.agents[seat].opening_strengths([hand])[0]
 
     def bid(self, hand, games=BID_GAMES, budget=ROLLOUT_BUDGET_S):
         """拿这 17 张当地主能赢几成:看不见的牌随机发成底牌和两家,DouZero 自己跟自己打 [games] 局。
@@ -1524,15 +694,11 @@ class Advisor:
         # 局数不到 ROLLOUT_MIN_GAMES 时也报真实赢面,由端点按 games 决定不加倍;不能把「不知道」写成 0 赢面。
         return min(rates.values()), played * len(seats)
 
-    def likelihood(self, history, me, auction=None, seats=None):
+    def likelihood(self, history, me, auction=None):
         """给 endgame.best 的似然回调:按两家对手最近 [LIKELIHOOD_MOVES] 手不是不出的出牌,判断一种分法像不像他们当时会这么出。
 
-        [seats] 可选:只给这几家对手的出牌打分(默认两家都看)。现场模拟估计牌最少那一家的手牌时只传他,
-        另一家很早以前的出牌和这一手关系不大,却会在 200 多种分法里把权重整个带走。两家最近一轮都做走完检查。
-
-        每个对手的每一手都把他当时的手牌和局面用 history 倒推出来,用他自己座位的 DouZero 模型给当时所有
-        合法出牌打分,取这一手的 log softmax 概率 P(那手 | 当时手牌);同一对手各手 log 概率相加,
-        [seats] 里的对手再相加。只看最近一手不够:下家倒数第二手 10 10 10 + Q 才是「他手里没有 4/9
+        用对手模型给历史局面的合法出牌打分,取这一手的 log softmax 概率 P(那手 | 当时手牌);同一对手各手 log 概率相加,
+        两家对手再相加。只看最近一手不够:下家倒数第二手 10 10 10 + Q 才是「他手里没有 4/9
         这种零散小牌」的证据。
         用 float64 在对数空间算,再减去所有分法里最大的 log 似然后 exp:相对权重不变,但对手真出过一手
         模型觉得极差的牌时不会像 float32 概率相乘那样下溢成 0(那会让 total=0、残局搜索整个退回 DouZero)。
@@ -1546,7 +712,7 @@ class Advisor:
         模型打分,把证据的 log 似然加进同一个对数空间;没有出牌历史、只有 auction 时也生效。
         我自己的叫分 / 加倍不算证据(auction.seats 已经把我排除)。
         """
-        watched = set(SEATS) - {me} if seats is None else set(seats)
+        watched = set(SEATS) - {me}
 
         def callback(splits_hands, deadline):
             indices = {}
@@ -1649,7 +815,7 @@ class Advisor:
         """一批 [seat] 的 info set 攒成一次前向,返回每个 info set 各手的 DouZero 分数。"""
         return self.agents[seat].state_values(states, deadline)
 
-    def act(self, seat, hand, bottom, history, report=None, auction=None):
+    def act(self, seat, hand, bottom, history, auction=None):
         hand, bottom = cards(hand), cards(bottom)
         history = resolve(hand, [[str(c) if str(c).startswith("?") else cards([c])[0] for c in m] for m in history])
         if len(history) % 3 != SEATS.index(seat):
@@ -1664,8 +830,7 @@ class Advisor:
                 raise Mismatch("game_already_over")
         if env.acting_player_position != seat:
             raise Mismatch("not_your_turn")
-        return self.agents[seat].act(env.game_infoset, report,
-                                     likelihood=self.likelihood(history, seat, auction), auction=auction)
+        return self.agents[seat].act(env.game_infoset, likelihood=self.likelihood(history, seat, auction))
 
 
 class Cards:
@@ -1711,10 +876,9 @@ def handler(advisor, card_reader=None):
                     return self.reply(200, {"double": enough and should_double(win, seat),
                                             "super": enough and should_super(win, seat),
                                             "win": round(win, 2), "games": games, "ms": ms()}, body)
-                report = {}
                 move = advisor.act(body["seat"], body["hand"], body.get("bottom", []), body.get("history", []),
-                                   report, auction=parse_auction(body.get("auction")))
-                self.reply(200, {"play": [NAMES[c] for c in move], "ms": ms(), **report}, body)
+                                   auction=parse_auction(body.get("auction")))
+                self.reply(200, {"play": [NAMES[c] for c in move], "ms": ms()}, body)
             except Mismatch as e:
                 self.reply(200, {"error": str(e)}, body)
             except (KeyError, ValueError, TypeError) as e:
@@ -1752,9 +916,4 @@ def handler(advisor, card_reader=None):
 
 if __name__ == "__main__":
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 3426
-    # 出牌时的现场模拟默认关掉,分数接近时直接用 DouZero 的首选(残局搜索、两手出完、抢牌权等规则照旧);DDZ_ROLLOUT=1 才打开。
-    # 2026-11-22 JJ 真机:每手只有十几到几十局,模拟在噪声里一再推翻 DouZero(拆 9 9 10 10 J J、先出 4 不出 A A A 3 3)。
-    # 同一批 178 副自对弈:不模拟 58.4%,原来的模拟 55.1%,只在差距显著时才换 55.6%(差距都在置信区间内),
-    # 每手还慢约 25 倍。用户决定关掉。
-    rollout = os.environ.get("DDZ_ROLLOUT", "0") == "1"
-    ThreadingHTTPServer(("0.0.0.0", port), handler(Advisor(WEIGHTS, rollout=rollout), Cards(os.environ.get("DDZ_CARDS_WEIGHTS")))).serve_forever()
+    ThreadingHTTPServer(("0.0.0.0", port), handler(Advisor(WEIGHTS), Cards(os.environ.get("DDZ_CARDS_WEIGHTS")))).serve_forever()
