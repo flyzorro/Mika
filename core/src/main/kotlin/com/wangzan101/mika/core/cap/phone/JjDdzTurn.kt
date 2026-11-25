@@ -644,10 +644,10 @@ internal object JjDdzTurn {
             DdzSeen.Unsure -> return
             DdzSeen.Pass -> if (trick.sawOtherBeforePass) trick.otherPassed = true
             else -> {
-                // 他可能真的压了一手。桌上还摆着已记过的牌，可以等随后出现的不出。
+                // 只放过本轮仍摆着的旧牌。前轮出过同点数，本轮仍可能用另一张压上。
                 if (otherSeen is DdzSeen.Cards) {
                     val otherRanks = (steady(s, table, sideOf(other)) as? DdzSeen.Cards)?.ranks ?: return
-                    if (otherRanks != tracker.lastOpponentPlay(other)) return
+                    if (!tracker.samePlayAgain(other, otherRanks)) return
                 }
                 trick.sawOtherBeforePass = true
             }
@@ -776,6 +776,7 @@ internal object JjDdzTurn {
             trace(s, "landlord_mismatch tracker=${tracker.landlord} costume=$lord")
             tracker.fail("landlord_mismatch")
         }
+        if (tracker.broken == null) tracker.checkJjDecision(hand, leading = view.phase == DdzPhase.Lead)
         val asked = PhoneDdzTurn.clock()
         val play = if (tracker.broken == null) askDouZero(s, tracker, hand) else null
         trace(s, "${view.phase} hand=${hand.joinToString(" ")} history=${tracker.history.joinToString("/") { it.joinToString(" ") }} seat=${runCatching { tracker.seat() }.getOrNull()} play=$play")

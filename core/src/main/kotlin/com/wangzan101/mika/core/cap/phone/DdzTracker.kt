@@ -435,13 +435,11 @@ internal class DdzTracker(
         return start.takeIf { it >= 0 }
     }
 
-    /** 这一轮还没人管的那手牌是谁出的;新一轮为 null。 */
-    private fun trickLeaderSeat(): DdzSeat? {
-        val start = trickStart() ?: return null
-        val index = history.indexOfLast { it.isNotEmpty() }
-        if (index < start) return null
-        return confirmedSeats.getOrNull(index)
-    }
+    /** 最近的非空动作，后面已有两个不出则进入下一轮。点数未认清也能确定谁领出。 */
+    private fun trickLeaderIndex(): Int? =
+        history.indexOfLast { it.isNotEmpty() }.takeIf { it >= 0 && history.lastIndex - it < 2 }
+
+    private fun trickLeaderSeat(): DdzSeat? = trickLeaderIndex()?.let { confirmedSeats[it] }
 
     /**
      * 闹钟从 [active] 走到了 [turn]:中间的几家都出完了。走过自己(包括从自己这里走开)而工具没出过牌([mine] 会把
@@ -740,6 +738,17 @@ internal class DdzTracker(
     internal fun jjAdvisoryBottom(hand: List<String>): List<String> =
         bottom?.takeIf { fitsJjBottom(it, hand) }.orEmpty()
 
+    /** 动作逐手核过规则。发请求前，再和此刻的手牌及领出/跟牌按钮核对。 */
+    internal fun checkJjDecision(hand: List<String>, leading: Boolean) {
+        if (leading != (trickLeaderIndex() == null)) return fail("history_phase")
+        if (hand.size != remainingBeforePlay(DdzSeat.Me)) return fail(DdzSessionReason.HAND_DRIFT)
+        if (DdzSeat.entries.any { remainingBeforePlay(it) <= 0 }) return fail("hand_finished")
+        val known = history.flatten().filterNot { it.startsWith(DdzCards.UNKNOWN) } + hand
+        if (known.groupingBy { it }.eachCount().any { (rank, n) -> rank !in DdzCards.RANKS || n > DdzCards.copies(rank) }) {
+            fail("card_count_mismatch")
+        }
+    }
+
     private fun fitsJjBottom(cards: List<String>, hand: List<String>): Boolean {
         val owner = landlord ?: return false
         if (cards.size != 3 || cards.any { it !in DdzCards.RANKS } || hand.size != remainingBeforePlay(DdzSeat.Me)) return false
@@ -832,6 +841,10 @@ internal class DdzTracker(
     }
 
     private fun record(seat: DdzSeat, cards: List<String>) {
+        if (broken != null) return
+        if (seat != (confirmedSeats.lastOrNull()?.next ?: landlord)) return fail("out_of_turn")
+        if (cards.isEmpty() && trickLeaderIndex() == null) return fail("pass_on_lead")
+        if (illegal(cards)) return fail("illegal_${seat.name.lowercase()}")
         unsureThisTrick -= seat
         history += cards.toList()
         confirmedSeats += seat
@@ -844,7 +857,7 @@ internal class DdzTracker(
     }
 
     /** 这一手就是本轮这家已经出过、还摆在桌上的那一手:不能当成又出了一手。 */
-    private fun samePlayAgain(seat: DdzSeat, cards: List<String>): Boolean {
+    internal fun samePlayAgain(seat: DdzSeat, cards: List<String>): Boolean {
         if (cards.isEmpty()) return false
         val start = trickStart() ?: return false
         val index = history.indices.lastOrNull { it >= start && history[it].isNotEmpty() && confirmedSeats.getOrNull(it) == seat }
@@ -1094,22 +1107,9 @@ internal class DdzTracker(
         return !DdzSnapshotRecovery.beats(lead, move)
     }
 
-    /** 这一轮还没人管的那手牌;两次「不出」之后、或者历史里有认不准的牌(判不了)都为 null。 */
-    private fun trickLead(): DdzSnapshotRecovery.Move? {
-        var active: DdzSnapshotRecovery.Move? = null
-        var passes = 0
-        for (cards in history) {
-            val move = DdzSnapshotRecovery.classify(cards) ?: return null
-            if (move.kind == DdzSnapshotRecovery.Kind.Pass) {
-                if (active != null) passes++
-                if (passes == 2) { active = null; passes = 0 }
-            } else {
-                active = move
-                passes = 0
-            }
-        }
-        return active
-    }
+    /** 只核对当前要压的牌，以前认不准的点数不影响这一轮。 */
+    private fun trickLead(): DdzSnapshotRecovery.Move? =
+        trickLeaderIndex()?.let { DdzSnapshotRecovery.classify(history[it]) }
 
     private fun seatOf(side: DdzSide) = if (side == DdzSide.Left) DdzSeat.Left else DdzSeat.Right
 
