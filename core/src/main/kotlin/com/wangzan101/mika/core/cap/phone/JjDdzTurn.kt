@@ -8,6 +8,8 @@ import com.wangzan101.mika.core.tool.ToolExecution
 import com.wangzan101.mika.core.screen.uistate.RawFrame
 import com.wangzan101.mika.core.screen.uistate.screen
 import com.wangzan101.mika.core.screen.uistate.VisibleTextLine
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.delay
 import kotlinx.serialization.json.JsonArray
@@ -116,13 +118,18 @@ internal object JjDdzTurn {
             val log = handLog ?: return
             handLog = null
             runCatching {
-                val reason = if (log.sawResultPage) "settlement" else end
+                val reason = if (log.ending.sawResult) "settlement" else end
+                val samples = log.ending.samples().ifEmpty {
+                    recentShots.filter { it.hand == log.index }.map { it.jpeg }.ifEmpty { listOfNotNull(log.tableShot) }
+                }
                 JjHandLog.write(log.snapshot(sessionId, advisorHost, reason, tracker ?: closed),
-                    log.settlementShot, log.tableShot, readShotText, dumpDirectory)
+                    log.ending.candidates(), log.tableShot, readShotText, dumpDirectory) {
+                    dumpFrames(samples, "unknown", "hand_${log.index}_${sessionId}_")
+                }
             }.onFailure { println("JJTRACE hand_log_error ${it.message}") }
         }
 
-        private class Shot(val at: Long, val jpeg: ByteArray)
+        private class Shot(val at: Long, val jpeg: ByteArray, val hand: Int?)
         private val recentShots = ArrayDeque<Shot>(DUMP_FRAMES)
         private val sampledShots = ArrayDeque<Shot>(DUMP_HISTORY_SECONDS + 1)
         var tracker: DdzTracker? = null
@@ -169,7 +176,7 @@ internal object JjDdzTurn {
         var handCount = 0
 
         fun rememberShot(jpeg: ByteArray) {
-            val shot = Shot(PhoneDdzTurn.clock(), jpeg)
+            val shot = Shot(PhoneDdzTurn.clock(), jpeg, handLog?.index)
             if (recentShots.size == DUMP_FRAMES) recentShots.removeFirst()
             recentShots.addLast(shot)
             if (sampledShots.lastOrNull()?.at?.div(SECOND_MS) == shot.at / SECOND_MS) sampledShots.removeLast()
@@ -182,6 +189,10 @@ internal object JjDdzTurn {
             val cutoff = PhoneDdzTurn.clock() - DUMP_HISTORY_SECONDS * SECOND_MS
             val sampled = sampledShots.filter { it.at >= cutoff && it !in recentShots }.takeLast(DUMP_HISTORY_SECONDS)
             val frames = (sampled + recentShots).map { it.jpeg }
+            dumpFrames(frames, reason)
+        }
+
+        private fun dumpFrames(frames: List<ByteArray>, reason: String, prefix: String = "") {
             if (frames.isEmpty()) return
             val at = System.currentTimeMillis()
             dumpWriter.execute {
@@ -197,7 +208,7 @@ internal object JjDdzTurn {
                     var timestamp = at
                     var basename: String
                     do {
-                        basename = "${format.format(Date(timestamp++))}_$safeReason"
+                        basename = "$prefix${format.format(Date(timestamp++))}_$safeReason"
                     } while ((0 until DUMP_FRAMES + DUMP_HISTORY_SECONDS).any { File(dir, "${basename}_$it.jpg").exists() })
                     frames.forEachIndexed { i, jpeg -> File(dir, "${basename}_$i.jpg").writeBytes(jpeg) }
                     println("JJTRACE dump $basename frames=${frames.size}")
@@ -263,9 +274,9 @@ internal object JjDdzTurn {
     }
 
     private suspend fun drive(ctx: ToolContext, s: Session): ToolExecution =
-        withContext(JjTimeoutCounter { s.handLog?.failure("timeouts") }) { poll(ctx, s) }
+        withContext(JjTimeoutCounter { s.handLog?.failure("timeouts") }) { poll(ctx, s, this) }
 
-    private suspend fun poll(ctx: ToolContext, s: Session): ToolExecution {
+    private suspend fun poll(ctx: ToolContext, s: Session, scope: CoroutineScope): ToolExecution {
         while (true) {
             if (s.stopped) return result(s)
             if (ctx.screen.peek().packageName != JjDdzScreen.PACKAGE) return pause(s, DdzSessionReason.APP_SWITCH)
@@ -274,7 +285,20 @@ internal object JjDdzTurn {
             val t1 = PhoneDdzTurn.clock()
             val jpeg = frame?.let { ctx.screen.quickShot() }
             val t2 = PhoneDdzTurn.clock()
-            val cards = jpeg?.let { readCards(s, it) }
+            val view = frame?.let(JjDdzScreen::read)
+            val log = s.handLog
+            val empty = s.noHand > 0 || s.expectedHand?.isEmpty() == true
+            val checkBadges = log != null && view?.phase == DdzPhase.Other
+            val seenCounts = if (frame != null && checkBadges) JjDdzScreen.counts(frame) else null
+            if (frame != null && view != null && jpeg != null && !view.phase.mine()) {
+                log?.ending?.observe(frame, view, seenCounts, t2, empty, jpeg)
+            }
+            // Sample while the ordinary opponent /cards call is in flight. Extra JPEGs never
+            // go to /cards. A decision cancels the sampler without joining screenshot or OCR work.
+            val sampler = if (jpeg != null && view?.phase == DdzPhase.Other && log != null && !log.ending.samplingFinished(t2)) {
+                scope.launch { sampleDuringCardRead(ctx, s, log, empty) }
+            } else null
+            val cards = try { jpeg?.let { readCards(s, it) } } finally { sampler?.cancel() }
             val t3 = PhoneDdzTurn.clock()
             // 真机 15:13:23–37:14 秒没有一张截图到电脑,工具一步没动,超时进了托管;当时分不清卡在截屏、网络还是电脑。
             // 慢的一轮和失败的一轮都打出来,各步用了多久
@@ -283,18 +307,16 @@ internal object JjDdzTurn {
                 trace(s, "frame raw=${t1 - t0}ms${if (frame == null) "(null)" else ""} shot=${t2 - t1}ms${if (frame != null && jpeg == null) "(null)" else ""} " +
                     "cards=${t3 - t2}ms${if (jpeg != null && cards == null) "(null)" else ""} fails=${s.detectFailures + if (cards == null) 1 else 0}")
             }
-            if (frame == null || cards == null) {
+            if (frame == null || view == null || cards == null) {
                 if (++s.detectFailures >= DETECT_FAILURES) return pause(s, DdzSessionReason.SERVICE_UNAVAILABLE)
                 waitOrSteer { delay(POLL_MS) } ?: return result(s)
                 continue
             }
             s.detectFailures = 0
-            val view = JjDdzScreen.read(frame)
             val payout = !view.phase.mine() && JjDdzScreen.payoutVisible(frame)
-            if (view.phase == DdzPhase.Result) s.handLog?.sawResultPage = true
-            if (payout || view.phase == DdzPhase.Result && s.handLog?.settlementShot == null) {
-                s.handLog?.settlementShot = jpeg
-            }
+            // Play/recovery keeps its original positive-only decoder, including its alternate layout.
+            fun trackerCounts() = if (checkBadges && seenCounts != null && 0 !in seenCounts.values) seenCounts
+                else JjDdzScreen.counts(frame, includeZero = false)
             val table = JjCards.table(cards, frame.width)
             s.handCount = table.hand.size
             if (!view.phase.mine()) s.acted = false
@@ -318,7 +340,13 @@ internal object JjDdzTurn {
                 continue
             }
             if (table.hand.isEmpty()) {
-                observeClearedTable(s, table, view, JjDdzScreen.counts(frame), JjDdzScreen.explosion(frame))
+                if (!view.phase.mine()) {
+                    log?.ending?.observe(frame, view, seenCounts, t2, empty = true, jpeg)
+                    val played = (table.mine as? DdzSeen.Cards)?.ranks
+                    val allPlayed = played != null && seenCounts != null && 0 !in seenCounts.values && played.sorted() == s.lastRanks?.sorted()
+                    if (s.expectedHand?.isEmpty() == true || allPlayed) log?.ending?.ownHandCleared()
+                }
+                observeClearedTable(s, table, view, trackerCounts(), JjDdzScreen.explosion(frame))
                 if (++s.noHand == NEW_HAND_GAP && s.tracker != null) {
                     // 一手打完。记牌先留着:王炸、炸弹的特效会挡住手牌好几帧,手牌原样回来就不是新的一手
                     s.closed = s.tracker
@@ -371,6 +399,11 @@ internal object JjDdzTurn {
                 s.closedHand = null
             }
             s.noHand = 0
+            if (log != null && log === s.handLog && log.ending.captured > 0 && !payout &&
+                view.phase != DdzPhase.Result && view.phase != DdzPhase.Call && seenCounts?.containsValue(0) != true &&
+                !table.handUnsure && JjDdzScreen.handAtBottom(frame) &&
+                (table.handRanks == s.lastRanks || table.handRanks == s.expectedHand)
+            ) log.ending.resumed(t2)
             if (!payout && view.phase != DdzPhase.Result && view.phase != DdzPhase.Call) s.handLog?.tableShot = jpeg
             if (!table.handUnsure) {
                 playedWithoutMe(s, table.handRanks)?.let { trace(s, "played_without_me cards=${it.joinToString(" ")} left=${table.hand.size}") }
@@ -380,7 +413,7 @@ internal object JjDdzTurn {
             val decisionAt = PhoneDdzTurn.clock()
             val settleExpired = view.phase.mine() && !s.acted && s.settleSince != 0L && decisionAt - s.settleSince >= SETTLE_MS
             val before = tracker.history.size
-            val counts = if (tracker.landlord != null && tracker.broken == null) JjDdzScreen.counts(frame) else null
+            val counts = if (tracker.landlord != null && tracker.broken == null) trackerCounts() else null
             observe(s, table, view, settleExpired, counts)
             // 刚补记的牌后面可能还有一家要确认，留出读稳那一手的时间。
             if (settleExpired && !tracker.ready() && tracker.history.asSequence().drop(before).any { DdzCards.UNKNOWN in it }) {
@@ -409,6 +442,30 @@ internal object JjDdzTurn {
                 }
             }
             waitOrSteer { delay(POLL_MS) } ?: return result(s)
+        }
+    }
+
+    private suspend fun sampleDuringCardRead(ctx: ToolContext, s: Session, log: JjHandLog, empty: Boolean) {
+        try {
+            while (true) {
+                delay(JjEndFrames.INTERVAL_MS)
+                if (s.handLog !== log) return
+                val probe = ctx.screen.rawFrame(JjDdzScreen.ROWS) ?: return
+                log.ending.probes++
+                val view = JjDdzScreen.read(probe)
+                if (view.phase.mine() || view.phase == DdzPhase.AutoPlay) return
+                val counts = JjDdzScreen.counts(probe)
+                val now = PhoneDdzTurn.clock()
+                if (log.ending.observe(probe, view, counts, now, empty, null)) {
+                    if (ctx.screen.peek().packageName != JjDdzScreen.PACKAGE) return
+                    ctx.screen.quickShot()?.let { log.ending.observe(probe, view, counts, now, empty, it) }
+                }
+                if (log.ending.samplingFinished(now)) return
+            }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            println("JJTRACE end_sample_error hand=${log.index} ${e.message}")
         }
     }
 
