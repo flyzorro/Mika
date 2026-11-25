@@ -72,7 +72,44 @@ internal object JjDdzScreen {
     private val LORD_BANDS = mapOf(DdzSeat.Left to (440..590), DdzSeat.Right to (1830..1960))
     private const val LORD_PIXELS = 40
 
-    val ROWS = listOf(TOP_ROW, BOTTOM_ROW) + CLOCK_ROWS + AGAIN_ROWS + listOf(903, 980) + LORD_ROWS
+    val ROWS = (listOf(TOP_ROW, BOTTOM_ROW) + CLOCK_ROWS + AGAIN_ROWS + listOf(903, 980) + LORD_ROWS +
+        (448..490 step 2)).distinct()
+
+    /** 海景、船舷两种牌桌的剩牌立牌位置不同。两个数字都读清才用，单帧遮挡不能作补牌证据。 */
+    fun counts(frame: RawFrame): Map<DdzSide, Int>? {
+        if (frame.height != FRAME_HEIGHT || frame.width < frame.height) return null
+        fun badge(x: Int, y: Int, tilt: Int, minGreen: Int): Int? {
+            val cx = (x * frame.width / 2412.0).roundToInt()
+            val ink = Array(17) { row ->
+                val dy = row * 2 - 16
+                val start = cx - 24 + (dy * tilt * 0.22).roundToInt()
+                BooleanArray(49) { col -> (frame.pixel(start + col, y + dy) shr 8 and 255) > minGreen }
+            }
+            val cols = DdzScreen.runs(49, gap = 1, minWidth = 3) { c -> ink.any { it[c] } }
+            if (cols.size !in 1..2) return null
+            var n = 0
+            for (col in cols) {
+                val digit = DdzCards.jjCountDigit(Array(ink.size) { ink[it].copyOfRange(col.first, col.last + 1) }) ?: return null
+                n = n * 10 + digit
+            }
+            return n.takeIf { it in 1..20 }
+        }
+        fun layout(left: Int?, right: Int?) =
+            if (left != null && right != null) mapOf(DdzSide.Left to left, DdzSide.Right to right) else null
+        return layout(badge(307, 464, 1, 181), badge(2132, 464, -1, 181))
+            ?: layout(badge(326, 474, 1, 148), badge(2151, 474, -1, 165))
+    }
+
+    /** 清桌过场的两行橙色火光。爆炸也可能是四张炸弹，还要靠立牌区分。 */
+    fun explosion(frame: RawFrame): Boolean {
+        if (frame.height != FRAME_HEIGHT) return false
+        return listOf(TOP_ROW, BOTTOM_ROW).all { y ->
+            (frame.width / 4 until 3 * frame.width / 4 step 4).count { x ->
+                val p = frame.pixel(x, y)
+                (p shr 16 and 255) > 240 && (p shr 8 and 255) in 101..219 && (p and 255) < 120
+            } >= 4
+        }
+    }
 
     fun read(frame: RawFrame): JjView {
         if (frame.height != FRAME_HEIGHT) return JjView(DdzPhase.Other, emptyList(), null)
