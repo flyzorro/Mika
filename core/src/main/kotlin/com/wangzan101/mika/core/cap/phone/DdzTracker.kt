@@ -97,14 +97,14 @@ internal class DdzTracker(
     /**
      * 每一帧喂进来:[turn] 此刻轮到谁(没人或看不出为 null),[read] 读某家出牌区,[bottom] 读底牌,
      * [leadingWith20] 此刻轮到自己先出、手里 20 张,[leading] 此刻轮到自己先出,[hand] 读自己的手牌(核对底牌用)。
-     * [opponentPlayedAfterMine] 表示我的按钮连续出现期间，已经读稳了对手的新出牌。
+     * [newTurnAfterMine] 表示我的按钮连续出现期间，牌桌和手牌已确认回到了我的下一次决策。
      */
     fun observe(
         rawTurn: DdzSeat?, read: (DdzSide) -> DdzSeen, bottom: () -> List<String>?, leadingWith20: Boolean = false, leading: Boolean = false,
         counts: () -> Map<DdzSide, Int?> = { emptyMap() }, hand: () -> List<String>? = { null }, checkOpponentDeck: Boolean = false,
         opponentBoxes: ((DdzSide) -> List<JjCard>)? = null, expireOpponentDeckRetries: Boolean = false,
         repeatedOpponentPlay: ((DdzSide, List<String>) -> Boolean)? = null,
-        opponentPlayedAfterMine: Boolean = false,
+        newTurnAfterMine: Boolean = false,
         deadlineCounts: Map<DdzSide, Int>? = null,
     ) {
         if (broken != null) return
@@ -214,7 +214,7 @@ internal class DdzTracker(
         if (rawTurn == DdzSeat.Me && turn != DdzSeat.Me) recordPlayShownAsMyTurnBegins(read)
         // 轮到自己先出,说明上一轮最后出牌的是自己、后面两家都没要;闯关的牌桌一轮结束就清桌,连「不出」都不留
         val seen = if (leading) { side: DdzSide -> read(side).let { if (it == DdzSeen.Empty) DdzSeen.Pass else it } } else read
-        if (turn != DdzSeat.Me || opponentPlayedAfterMine) leftMe = true
+        if (turn != DdzSeat.Me || newTurnAfterMine) leftMe = true
         // 我出的牌没人要得起:两家都被秒过(闹钟没在他们头上停过),又轮到我先出。两家都摆着「不出」,
         // 就不是我刚出完、按钮还留着的那几帧(那时桌上没有他们的「不出」)
         if (turn == DdzSeat.Me && !leftMe && leading && read(DdzSide.Left) == DdzSeen.Pass && read(DdzSide.Right) == DdzSeen.Pass) leftMe = true

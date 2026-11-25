@@ -464,7 +464,12 @@ internal object JjDdzTurn {
             ranks != s.opponentPlaysAtAction[side] && ranks != tracker.lastOpponentPlay(seat)?.sorted() &&
                 repeated(side, cards.ranks) && DdzSnapshotRecovery.classify(cards.ranks) != null
         }
-        if (opponentPlayedAfterMine) s.acted = false
+        // 自己的王炸清桌后可能直接回到领出按钮，两家都不留气泡。手牌须与打掉双王后完全吻合。
+        val leadAfterMyRocket = view.phase == DdzPhase.Lead && tracker.confirmedSeats.lastOrNull() == DdzSeat.Me &&
+            DdzSnapshotRecovery.classify(tracker.history.last())?.kind == DdzSnapshotRecovery.Kind.Rocket &&
+            table.left == DdzSeen.Empty && table.right == DdzSeen.Empty && table.mine == DdzSeen.Empty &&
+            !table.handUnsure && s.expectedHand?.sorted() == table.handRanks.sorted()
+        if (opponentPlayedAfterMine || leadAfterMyRocket) s.acted = false
         // 补齐旧一轮后，闹钟可能还停在上一家。等领出者的闹钟或新牌读稳，再接受后续的轮转。
         s.recoveredLeader?.let { leader ->
             val side = sideOf(leader)
@@ -496,7 +501,7 @@ internal object JjDdzTurn {
                 boxes.takeIf { (table.seen(side) is DdzSeen.Cards || steady) && repeated(side, boxes.map { it.rank }) }.orEmpty()
             },
             expireOpponentDeckRetries = settleExpired,
-            opponentPlayedAfterMine = opponentPlayedAfterMine,
+            newTurnAfterMine = opponentPlayedAfterMine || leadAfterMyRocket,
             deadlineCounts = counts.takeIf { settleExpired && !table.handUnsure },
         )
         // 刚读定炸前那一家的不出，队头才轮到炸家。这一帧可能是新领出的最后一帧。
