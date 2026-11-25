@@ -167,6 +167,8 @@ ACT_ROLLOUT_MIN_S = 0.8
 # 可明牌求解只有 6 6 能赢。给 2.5 秒,比实测最慢的 1.84 秒还多 0.66 秒;扣掉搜索,剩下的 1.0 秒还在
 # ACT_ROLLOUT_MIN_S 之上,现场模拟不会被整个跳过。
 ACT_ENDGAME_BUDGET_S = 2.5
+# 残局加权胜率距最高值 1 个百分点以内时，由 DouZero 打分决胜。
+ACT_ENDGAME_TIE_MARGIN = 0.01
 # 两手出完捷径要盖掉 DouZero 时,DouZero 首选比捷径那手高出这么多分就不盖,走原来的流程。
 # 2026-11-19 12:13:20 精英场那手(DouZero 7 9 9 9 +2.282、捷径 Q Q Q Q 只有 +1.335,差 0.95)就是这么被盖掉的。
 # 取 0.5:比 KEEP_MARGIN / CLOSE_MARGIN(0.05 / 0.1)大得多,只拦「DouZero 明显更看好」的情况。
@@ -902,7 +904,7 @@ class Agent:
             return infoset.legal_actions[0]
         values = self.values(infoset)
         move = infoset.legal_actions[int(torch.argmax(values))]
-        # 剩的牌少时按明牌把各种分法算到底:有赢面更大的一手就换成它(赢面一样大的里挑 DouZero 打分最高的)。
+        # 剩的牌少时按明牌把各种分法算到底，在胜率接近最高的几手里挑 DouZero 打分最高的。
         # 下面几条硬规则只在搜索也认为不吃亏时才换。搜索最多 ACT_ENDGAME_BUDGET_S 秒,总预算不够时只给剩下的
         left_s = deadline - time.monotonic()
         solved = endgame.best(infoset, budget=min(ACT_ENDGAME_BUDGET_S, left_s), likelihood=likelihood) \
@@ -911,10 +913,9 @@ class Agent:
         if solved is not None:
             wins, total, _, _ = solved
             score = {tuple(sorted(a)): float(values[i]) for i, a in enumerate(infoset.legal_actions)}
-            # 每手的值为赢的摆法权重减去输的摆法权重。
-            endgame_scores = {m: 2 * wins.get(m, 0) - total for m in score}
-            top = max(endgame_scores.values())
-            allowed = {m for m in score if endgame_scores[m] == top}
+            top = max(wins.get(m, 0) for m in score)
+            cutoff = top - ACT_ENDGAME_TIE_MARGIN * total
+            allowed = {m for m in score if wins.get(m, 0) >= cutoff}
             picked = max(allowed, key=score.get)
             if tuple(sorted(move)) not in allowed:
                 return self.swap_high_kickers(infoset, list(picked), ok=lambda m: tuple(sorted(m)) in allowed)

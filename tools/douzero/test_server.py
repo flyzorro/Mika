@@ -397,6 +397,28 @@ class KickerChoiceTest(unittest.TestCase):
 
 
 class EndgameTest(unittest.TestCase):
+    def test_jj_passes_on_teammates_trio_when_endgame_rates_are_close(self):
+        # 2026-11-25 12:51:47 JJ：队友出 666 带 33，AAA 带 JJ 的加权胜率只比不出高约 0.1 个百分点。
+        import endgame
+        hand = ["BJ", "A", "A", "A", "K", "J", "J", "8", "4", "4"]
+        history = [["5", "5", "4", "4", "3", "3"], ["7", "7", "8", "8", "9", "9"], [], [],
+                   ["10"], ["Q"], ["SJ"], [], [], ["J", "10", "9", "8", "7", "6"], [],
+                   ["A", "K", "Q", "J", "10", "9"], [], [], ["6", "6", "6", "3", "3"], []]
+        best = endgame.best
+
+        def check_search(*args, **kwargs):
+            result = best(*args, **kwargs)
+            self.assertIsNotNone(result)
+            wins, total, _, _ = result
+            gap = (wins[tuple(cards(["J", "J", "A", "A", "A"]))] - wins[()]) / total
+            self.assertGreater(gap, 0)
+            self.assertLess(gap, 0.01)
+            return result
+
+        with mock.patch.object(endgame, "best", side_effect=check_search) as search:
+            self.assertEqual([], ADVISOR.act("landlord_down", hand, [], history))
+        search.assert_called_once()
+
     def test_the_search_finds_the_forced_win_douzero_missed(self):
         # 地主只剩一张(最大到 J)、我小王是场上最大:小王接过来,再出对子、A、Q、8 一路走完
         import time
@@ -2367,6 +2389,10 @@ class EndgameRankingTest(unittest.TestCase):
         for scores, expected in [([1.0, 9.0], []), ([9.0, 1.0], ["3", "3", "3", "3"])]:
             with self.subTest(scores=scores):
                 self.assertEqual(expected, self.play(60, 60, scores, (60, 60)))
+
+    def test_one_percentage_point_is_included_in_the_tie(self):
+        self.assertEqual([], self.play(60, 59, [1.0, 9.0], (60, 59)))
+        self.assertEqual(["3"] * 4, self.play(60, 58.99, [1.0, 9.0], (60, 59)))
 
 
 class KeepComboRolloutTest(unittest.TestCase):
