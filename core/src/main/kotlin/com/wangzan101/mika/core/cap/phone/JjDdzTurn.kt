@@ -839,6 +839,8 @@ internal object JjDdzTurn {
         var confirmed = settled(ctx, s, hand) ?: return null
         var current = confirmed.table
         var want = target(current, ranks) ?: return null
+        val quad = ranks.groupingBy { it }.eachCount().entries.singleOrNull { it.value == 4 }?.key
+        var triedQuad = false
         var stalledRounds = 0
         // 读不到自己的剩余秒数，用轮数兜底：按每轮抬一张计，另留一轮放提示牌和两轮重试。
         var roundsLeft = wanted.size + SELECT_EXTRA_ROUNDS
@@ -847,8 +849,15 @@ internal object JjDdzTurn {
             // 先把多抬的(游戏自己提示抬起的牌)放下、读稳了再抬要的:一边放一边抬,游戏会退回只剩提示牌(真机 20:04、20:07)
             val drop = current.lifted - want
             val missing = want - current.lifted
-            val batch = drop.ifEmpty { missing }
-            for ((offset, i) in batch.sorted().withIndex()) {
+            // JJ 点一张可能直接选中炸弹，并放下带牌。先点一次核对；若只抬了一张，补齐四张再点带牌。
+            val batch = if (drop.isNotEmpty()) drop.sorted() else {
+                val (bomb, wings) = missing.partition { hand[it] == quad }
+                if (bomb.isNotEmpty() && !triedQuad) {
+                    triedQuad = true
+                    bomb.take(1)
+                } else bomb + wings
+            }
+            for ((offset, i) in batch.withIndex()) {
                 // pressAt 等松手。最后一张由 settled 在首次截屏前等动画。
                 if (offset > 0) delay(LIFT_MS)
                 tap(ctx, JjCards.tapX(current, i), JjCards.HAND_TAP_Y)
