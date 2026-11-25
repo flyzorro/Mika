@@ -80,6 +80,7 @@ internal class DdzTracker(
     private var jjBoxes: ((DdzSide) -> List<JjCard>)? = null
     private var jjRepeatedPlay: ((DdzSide, List<String>) -> Boolean)? = null
     private var jjRetriesExpired = false
+    private var jjCanRecordMyPass: ((List<String>) -> Boolean)? = null
     private val jjPendingBoxes = mutableMapOf<DdzSeat, List<JjCard>>()
     private val jjMaskedReads = mutableMapOf<DdzSeat, List<String>>()
     /**
@@ -107,7 +108,8 @@ internal class DdzTracker(
         opponentBoxes: ((DdzSide) -> List<JjCard>)? = null, expireOpponentDeckRetries: Boolean = false,
         repeatedOpponentPlay: ((DdzSide, List<String>) -> Boolean)? = null,
         opponentPlayedAfterMine: Boolean = false,
-        deadlineCounts: Map<DdzSide, Int>? = null,
+        jjCounts: Map<DdzSide, Int>? = null,
+        canRecordMyPass: ((List<String>) -> Boolean)? = null,
     ) {
         if (broken != null) return
         val checkHand = if (checkOpponentDeck) hand() else null
@@ -115,6 +117,7 @@ internal class DdzTracker(
         jjBoxes = opponentBoxes.takeIf { checkHand != null }
         jjRepeatedPlay = repeatedOpponentPlay
         jjRetriesExpired = expireOpponentDeckRetries
+        jjCanRecordMyPass = canRecordMyPass
         if (jjBoxes == null) jjPendingBoxes.clear()
         frameNo++
         // 轮到我要连着两帧:炸弹的特效会让一帧像是我的按钮,当成轮到我又走开,就会给我记一手不出
@@ -230,15 +233,15 @@ internal class DdzTracker(
         inferOwnLeadPasses(turn, leading)
         // 还等着右家,左家却已经亮出压上来的新一手:右家这一下不出,只是「不出」没读到(见 [inferRightPassBeforeLeftPlay])
         if ((turn == null || turn == DdzSeat.Right) && inferRightPassBeforeLeftPlay(read)) return
-        resolve(seen, deadlineCounts)
+        resolve(seen, jjCounts)
         // 闹钟已经在这个最后出牌的人这里(没有走动的这一步):先记下,等他下一步动作再判中间各家
-        if (turn != null && turn == active && advanceLeaderAwait(turn, read)) resolve(seen, deadlineCounts)
+        if (turn != null && turn == active && advanceLeaderAwait(turn, read)) resolve(seen, jjCounts)
         // 张数少了的那家出过牌了:闹钟还没离开他(出得太快、清桌太快)也当他这一手出完,马上读
         for (seat in listOf(DdzSeat.Left, DdzSeat.Right)) {
             if (active != DdzSeat.Me && waiting.none { it.first == seat } && (unplayed(seat) ?: 0) > 0 && reaches(seat)) {
                 note("n=${seat.name}${count[seat]}")
                 advance(seat.next)
-                resolve(seen, deadlineCounts)
+                resolve(seen, jjCounts)
             }
         }
         if (turn == null || turn == active) return
@@ -246,8 +249,8 @@ internal class DdzTracker(
         if (awaitMeAfterInfer) return
         advance(turn)
         inferOwnLeadPasses(turn, leading)
-        resolve(seen, deadlineCounts)
-        if (advanceLeaderAwait(turn, read)) resolve(seen, deadlineCounts)
+        resolve(seen, jjCounts)
+        if (advanceLeaderAwait(turn, read)) resolve(seen, jjCounts)
     }
 
     /**
@@ -318,7 +321,7 @@ internal class DdzTracker(
         // 这一帧还看得见这一手:走 steady,不在这里抢着记
         if (read(sideOf(turn)) == lastSeen[turn]) return false
         // 后面那两家里有一家像是出了牌(还摆着、读到过、张数少了):不是两家都不出,别补
-        if (!waiting.drop(1).all { (seat, _) -> seat == DdzSeat.Me || passedSince(seat, read) }) return false
+        if (!waiting.drop(1).all { (seat, _) -> if (seat == DdzSeat.Me) mayPass(cards) else passedSince(seat, read) }) return false
         record(turn, cards)
         waiting.removeFirst()
         lastSeen -= turn
@@ -350,7 +353,7 @@ internal class DdzTracker(
         if (played != null && played != seen.ranks.size) return false
         // 中间那几家这一帧都得像不出(见 [passedSince],和 #65 补记「不出」用的是同一条):
         // 摆着牌、读到过牌、张数少了都不补
-        if (!waiting.takeWhile { it.first != leader }.all { (seat, _) -> seat == DdzSeat.Me || passedSince(seat, read) }) return false
+        if (!waiting.takeWhile { it.first != leader }.all { (seat, _) -> if (seat == DdzSeat.Me) mayPass() else passedSince(seat, read) }) return false
         // 新的一手也要读稳:牌可能还在落,一帧认错不算
         if (!steady(leader to seen.ranks, if (played == null) settling.steadyFrames else settling.countedFrames)) return false
         while (waiting.isNotEmpty() && waiting.first().first != leader) {
@@ -407,7 +410,10 @@ internal class DdzTracker(
         val reads = PendingReads()
         for ((seat, _) in waiting) {
             if (seat == leader) break
-            if (seat == DdzSeat.Me) continue
+            if (seat == DdzSeat.Me) {
+                if (!mayPass()) reads.looksPassed = false
+                continue
+            }
             reads.any = true
             val seen = rememberUnsure(seat, read(sideOf(seat)))
             if (seen != DdzSeen.Empty && seen != DdzSeen.Pass) {
@@ -468,6 +474,7 @@ internal class DdzTracker(
         while (waiting.isNotEmpty()) {
             val seat = waiting.first().first
             if (seat == DdzSeat.Me) {
+                if (!mayPass()) return
                 record(seat, emptyList())
                 waiting.removeFirst()
                 lastSeen -= seat
@@ -566,9 +573,11 @@ internal class DdzTracker(
     /** 轮到自己时能不能交给 DouZero:别家的都读到了、历史没断。 */
     fun ready(): Boolean = broken == null && landlord != null && waiting.isEmpty() && active == DdzSeat.Me && !awaitingRocketLead
 
-    /** 可按顺序记下一手的对手。还有待确认动作时为空。 */
-    internal fun nextOpponent(): DdzSeat? =
-        active?.takeIf { broken == null && landlord != null && it != DdzSeat.Me && waiting.isEmpty() && !awaitMeAfterInfer }
+    /** 默认等队列清空；核对立牌时也可以确认队头已出完的一手。 */
+    internal fun nextOpponent(includeWaiting: Boolean = false): DdzSeat? {
+        if (broken != null || landlord == null || awaitMeAfterInfer || !includeWaiting && waiting.isNotEmpty()) return null
+        return (waiting.firstOrNull()?.first ?: active)?.takeUnless { it == DdzSeat.Me }
+    }
 
     internal fun lastOpponentPlay(seat: DdzSeat): List<String>? = lastPlay[seat]
 
@@ -672,7 +681,7 @@ internal class DdzTracker(
         return true
     }
 
-    private fun remainingBeforePlay(seat: DdzSeat): Int {
+    internal fun remainingBeforePlay(seat: DdzSeat): Int {
         val dealt = if (seat == landlord) FIRST else FARMER
         return dealt - history.indices.sumOf { i -> if (confirmedSeats[i] == seat) history[i].size else 0 }
     }
@@ -975,7 +984,7 @@ internal class DdzTracker(
         }
     }
 
-    private fun resolve(read: (DdzSide) -> DdzSeen, deadlineCounts: Map<DdzSide, Int>?) {
+    private fun resolve(read: (DdzSide) -> DdzSeen, jjCounts: Map<DdzSide, Int>?) {
         // 队头还没读稳,后面几家却已经出过了:先记住他们的读数,等排到队头再记(见下面的 seen_then_cleared)
         for ((seat, _) in waiting.drop(1)) {
             if (seat == DdzSeat.Me) continue
@@ -989,7 +998,12 @@ internal class DdzTracker(
         }
         while (waiting.isNotEmpty()) {
             val (seat, tries) = waiting.first()
-            if (seat == DdzSeat.Me) { record(seat, emptyList()); waiting.removeFirst(); continue }
+            if (seat == DdzSeat.Me) {
+                if (!mayPass()) return
+                record(seat, emptyList())
+                waiting.removeFirst()
+                continue
+            }
             val raw = rememberUnsure(seat, read(sideOf(seat)))
             rememberOpponentBoxes(seat, raw)
             val seen = if (raw is DdzSeen.Cards) filledUnknown(raw.ranks) ?: raw else raw
@@ -1028,8 +1042,9 @@ internal class DdzTracker(
                     } else {
                         // 地主最后一张的 ? 后面猜的点数一帧一个样:比稳不稳时只看 ?,不看猜的;照着猜的补出来的也不算
                         val key = DdzSeen.Cards((raw as? DdzSeen.Cards)?.ranks?.map { if (it.startsWith(DdzCards.UNKNOWN)) DdzCards.UNKNOWN else it } ?: seen.ranks)
-                        // JJ 超时前才读定队头时，下家可能已连续亮牌。用刚补齐的历史核对两个立牌。
-                        val counted = deadlineCounts != null && countsMatchPlay(seat, seen.ranks.size, deadlineCounts) &&
+                        // 新领出或等到决策期限时，用两个立牌和连续读到的点数确认。
+                        val counted = jjCounts != null && (jjRetriesExpired || trickLeaderIndex() == null) &&
+                            countsMatchPlay(seat, seen.ranks.size, jjCounts) &&
                             jjRepeatedPlay?.invoke(sideOf(seat), seen.ranks) == true && seen.ranks.all { it in DdzCards.RANKS } &&
                             !illegal(seen.ranks)
                         if (!counted && !steady(seat to key, if (played == null) settling.steadyFrames else settling.countedFrames)) return
@@ -1128,6 +1143,9 @@ internal class DdzTracker(
     /** 只核对当前要压的牌，以前认不准的点数不影响这一轮。 */
     private fun trickLead(): DdzSnapshotRecovery.Move? =
         trickLeaderIndex()?.let { DdzSnapshotRecovery.classify(history[it]) }
+
+    private fun mayPass(cards: List<String>? = trickLeaderIndex()?.let(history::get)): Boolean =
+        jjCanRecordMyPass?.let { check -> cards != null && check(cards) } ?: true
 
     private fun seatOf(side: DdzSide) = if (side == DdzSide.Left) DdzSeat.Left else DdzSeat.Right
 

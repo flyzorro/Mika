@@ -17,6 +17,56 @@ class JjOpponentTurnsReplayTest {
     private val beforeBomb = "3 3/9 9/10 10/J J//K K/A A///9//K///3/K/2///4/9/2/SJ///7//2///7 6 5 4 3///Q Q Q 4/"
     private val beforePairs = "3 3/4 4/A A/2 2///5 5//8 8/A A//"
     private val beforeThrees = "4 4/Q Q//"
+    private val beforeKings = "5 5//A A///3 4 5 6 7 8 9 10///3/6/8/2///Q Q//"
+
+    @Test fun silentPassWithOneSixPreservesTwosAndTheNextNines() {
+        val tracker = replaySilentPass(beforeKings, listOf("6"))
+        assertNull("trace=${tracker.trace}", tracker.broken)
+        assertEquals(moves("$beforeKings/K K/2 2///9 9"), tracker.history)
+        assertEquals(listOf(DdzSeat.Right, DdzSeat.Left, DdzSeat.Me, DdzSeat.Right), tracker.confirmedSeats.takeLast(4))
+    }
+
+    @Test fun silentPassIsNotInferredWhenMyRocketCanBeatTheTwos() {
+        // A seven-card straight earlier leaves two cards now. Both jokers are still available.
+        val before = beforeKings.replace("9 10", "9")
+        val tracker = replaySilentPass(before, listOf("BJ", "SJ"))
+        assertFalse(tracker.confirmedSeats.drop(moves(before).size + 1).contains(DdzSeat.Me))
+    }
+
+    @Test fun clockLeavingMeDoesNotPassMyHigherPairOnASettledTrick() {
+        val before = moves(beforeKings.replace("9 10", "9") + "/7 7/9 9/")
+        val tracker = DdzTracker(DdzSettlingPolicy.HUMAN).apply { restore(DdzSeat.Right, emptyList(), before, DdzSeat.Me) }
+        val session = JjDdzTurn.Session("", 1).also { it.tracker = tracker }
+        val hand = listOf(1100.0, 1196.0).map { x -> JjCard("J", x, 770.0, x + 40, 850.0, 0.99) }
+        repeat(3) {
+            JjDdzTurn.observe(session, JjCards.table(hand, 2412), JjView(DdzPhase.Other, emptyList(), DdzSeat.Right))
+        }
+        assertEquals(before, tracker.history)
+    }
+
+    private fun replaySilentPass(before: String, hand: List<String>): DdzTracker {
+        val tracker = DdzTracker(DdzSettlingPolicy.HUMAN)
+        tracker.restore(DdzSeat.Right, emptyList(), moves(before), DdzSeat.Me)
+        tracker.mine(listOf("K", "K"), jjHandAfterPlay = hand)
+        val session = JjDdzTurn.Session("", 1).also {
+            it.tracker = tracker
+            it.expectedHand = hand
+        }
+        val frames = javaClass.getResourceAsStream("/ddz-jj/replay-162209.tsv")!!.bufferedReader().use { it.readLines() }
+        for (line in frames.drop(1)) {
+            val (frame, clock, left, right, boxes) = line.split('\t')
+            val turn = clock.takeUnless { it == "-" }?.let(DdzSeat::valueOf)
+            val cards = JjCards.parse(boxes)!!.flatMap { card ->
+                if (card.cy < 700) listOf(card) else hand.mapIndexed { i, rank ->
+                    card.copy(rank = rank, x0 = card.x0 + 96 * i, x1 = card.x1 + 96 * i)
+                }
+            }
+            JjDdzTurn.observe(session, JjCards.table(cards, 2412), JjView(DdzPhase.Other, emptyList(), turn),
+                counts = mapOf(DdzSide.Left to left.toInt(), DdzSide.Right to right.toInt()))
+            if (frame == "14") assertEquals(moves("$before/K K"), tracker.history)
+        }
+        return tracker
+    }
 
     @Test fun leftAcesAndBothPassesSurviveTheClockGap() {
         val tracker = replay("124355", beforeAces, DdzSeat.Left)
