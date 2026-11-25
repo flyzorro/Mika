@@ -54,6 +54,20 @@ class JjHiddenRocketTest {
         assertTrue("trace=${tracker.trace}", tracker.ready())
     }
 
+    @Test fun handResultIncludesRecoveredRocketButLeavesUnfinishedReplayUnscored() {
+        replayJ()
+        val result = JjHandLog(3).snapshot("replay", "mac.local", "hand_gap", tracker)
+        assertEquals(3, result.hand)
+        assertEquals("landlord_down", result.role)
+        assertEquals("left", result.landlord)
+        assertEquals(1, result.bombs)
+        assertEquals(1, result.rockets)
+        assertFalse(result.history_complete)
+        assertNull(result.win)
+        assertNull(result.spring)
+        assertEquals("unknown", result.evidence)
+    }
+
     @Test fun hiddenRocketAfterRightPassPreservesTheNextAutoPass() {
         val history = moves("4 4/K K///5 5 8 8 9 9 9 10 10 10//")
         tracker.restore(DdzSeat.Left, emptyList(), history, DdzSeat.Me)

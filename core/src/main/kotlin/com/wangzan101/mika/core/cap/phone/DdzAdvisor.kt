@@ -3,6 +3,7 @@ package com.wangzan101.mika.core.cap.phone
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.net.HttpURLConnection
+import java.net.SocketTimeoutException
 import java.net.URI
 
 /** 本机或局域网里的 DouZero 出牌服务(tools/douzero)。一手要在倒计时里出完,连不上就快点放弃。 */
@@ -65,6 +66,7 @@ internal object DdzAdvisor {
                 conn.disconnect()
             }
         }.onFailure { e ->
+            if (e is SocketTimeoutException) coroutineContext[JjTimeoutCounter]?.count?.invoke()
             println("DDZTRACE advisor_error url=$url path=$path err=${e::class.simpleName}: ${e.message}")
         }.getOrNull()
     }

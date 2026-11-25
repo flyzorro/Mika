@@ -7,6 +7,8 @@ import com.wangzan101.mika.core.tool.ToolContext
 import com.wangzan101.mika.core.tool.ToolExecution
 import com.wangzan101.mika.core.screen.uistate.RawFrame
 import com.wangzan101.mika.core.screen.uistate.screen
+import com.wangzan101.mika.core.screen.uistate.VisibleTextLine
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.delay
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
@@ -15,6 +17,8 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.put
 import java.io.File
+import java.net.URI
+import java.util.UUID
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -94,7 +98,41 @@ internal object JjDdzTurn {
         var sawPasses = false
     }
 
-    internal class Session(val advisor: String, var handsLeft: Int, private val dumpDirectory: () -> File? = { null }) {
+    internal class Session(
+        val advisor: String, var handsLeft: Int,
+        private val readShotText: suspend (ByteArray) -> List<VisibleTextLine>? = { null },
+        private val dumpDirectory: () -> File? = { null },
+    ) {
+        private val sessionId = UUID.randomUUID().toString()
+        private val advisorHost = runCatching { URI(advisor).host }.getOrNull()
+        private var handIndex = 0
+        var handLog: JjHandLog? = null
+            private set
+
+        fun startLog() { handLog = JjHandLog(++handIndex) }
+
+        fun closeHand(resumable: Boolean) {
+            if (tracker != null) {
+                closed = tracker
+                closedHand = expectedHand ?: lastRanks
+                tracker = null
+                expectedHand = null
+                handsPlayed++
+                handsLeft--
+                handLog?.endedAt = System.currentTimeMillis()
+            }
+            if (!resumable) closedHand = null
+        }
+
+        @Synchronized fun finishLog(end: String) {
+            val log = handLog ?: return
+            handLog = null
+            runCatching {
+                JjHandLog.write(log.snapshot(sessionId, advisorHost, end, tracker ?: closed),
+                    log.settlementShot, log.tableShot, readShotText, dumpDirectory)
+            }.onFailure { println("JJTRACE hand_log_error ${it.message}") }
+        }
+
         private class Shot(val at: Long, val jpeg: ByteArray)
         private val recentShots = ArrayDeque<Shot>(DUMP_FRAMES)
         private val sampledShots = ArrayDeque<Shot>(DUMP_HISTORY_SECONDS + 1)
@@ -193,7 +231,7 @@ internal object JjDdzTurn {
 
     private suspend fun readCards(s: Session, jpeg: ByteArray): List<JjCard>? {
         s.rememberShot(jpeg)
-        return detect(s.advisor, jpeg)
+        return detect(s.advisor, jpeg).also { if (it == null) s.handLog?.failure("cards_error") }
     }
 
     fun active(ctx: ToolContext): Boolean = ctx[STATE]?.let { !it.stopped } == true
@@ -203,6 +241,7 @@ internal object JjDdzTurn {
         if (action == "stop") {
             val s = ctx[STATE] ?: return refused("not_started")
             s.stopped = true
+            s.finishLog(if (s.closed != null) "hand_gap" else "stopped")
             s.state = DdzSessionState.Stopped
             s.reason = DdzSessionReason.USER_STOP
             return result(s)
@@ -212,7 +251,8 @@ internal object JjDdzTurn {
             val advisor = a.str("advisor") ?: return refused("advisor_required")
             if (!a.bool("auto", false)) return refused("jj_auto_only")
             if (!PhoneDdzTurn.probeAdvisor(advisor)) return refused(DdzSessionReason.SERVICE_UNAVAILABLE)
-            val s = Session(advisor, a.int("hands", 1, MAX_HANDS) ?: 1, ctx.screen::jjDumpDirectory)
+            ctx[STATE]?.let { it.finishLog(if (it.closed != null) "hand_gap" else "replaced") }
+            val s = Session(advisor, a.int("hands", 1, MAX_HANDS) ?: 1, ctx.screen::readShotText, ctx.screen::jjDumpDirectory)
             s.lastHandAt = PhoneDdzTurn.clock()
             ctx[STATE] = s
             return drive(ctx, s)
@@ -233,7 +273,10 @@ internal object JjDdzTurn {
         }
     }
 
-    private suspend fun drive(ctx: ToolContext, s: Session): ToolExecution {
+    private suspend fun drive(ctx: ToolContext, s: Session): ToolExecution =
+        withContext(JjTimeoutCounter { s.handLog?.failure("timeouts") }) { poll(ctx, s) }
+
+    private suspend fun poll(ctx: ToolContext, s: Session): ToolExecution {
         while (true) {
             if (s.stopped) return result(s)
             if (ctx.screen.peek().packageName != JjDdzScreen.PACKAGE) return pause(s, DdzSessionReason.APP_SWITCH)
@@ -251,41 +294,55 @@ internal object JjDdzTurn {
                 trace(s, "frame raw=${t1 - t0}ms${if (frame == null) "(null)" else ""} shot=${t2 - t1}ms${if (frame != null && jpeg == null) "(null)" else ""} " +
                     "cards=${t3 - t2}ms${if (jpeg != null && cards == null) "(null)" else ""} fails=${s.detectFailures + if (cards == null) 1 else 0}")
             }
-            if (frame == null || cards == null) {
+            val view = frame?.let(JjDdzScreen::read)
+            val payout = view != null && !view.phase.mine() && JjDdzScreen.payoutVisible(frame)
+            if (jpeg != null && (payout || view?.phase == DdzPhase.Result && s.handLog?.settlementShot == null)) {
+                s.handLog?.settlementShot = jpeg
+            }
+            if (view?.phase == DdzPhase.Result) {
+                s.closeHand(resumable = false)
+                s.finishLog("settlement")
+                if (s.handsLeft <= 0) {
+                    s.state = DdzSessionState.Result
+                    return result(s)
+                }
+            }
+            if (frame == null || view == null || cards == null) {
                 if (++s.detectFailures >= DETECT_FAILURES) return pause(s, DdzSessionReason.SERVICE_UNAVAILABLE)
                 waitOrSteer { delay(POLL_MS) } ?: return result(s)
                 continue
             }
             s.detectFailures = 0
-            val view = JjDdzScreen.read(frame)
             val table = JjCards.table(cards, frame.width)
             s.handCount = table.hand.size
             if (!view.phase.mine()) s.acted = false
             // 游戏替我过牌也会换闹钟；按钮闪帧时保留本轮的读稳计时。
             if (view.turn == DdzSeat.Left || view.turn == DdzSeat.Right) s.settleSince = 0
+            val previousPhase = s.lastPhase
             s.lastPhase = view.phase
             // 托管(超时后游戏替我打):先把它取消,不然按钮都不出来。「取消托管」盖在手牌上,看不到手牌就不点:
             // 斗地主大厅泳池的池水在同一处也是这种蓝
             if (view.phase == DdzPhase.AutoPlay && table.hand.isNotEmpty()) {
+                if (s.handLog == null && s.tracker == null && s.closed == null) s.startLog()
+                if (previousPhase != DdzPhase.AutoPlay) s.handLog?.failure("auto_play")
                 s.resetTurnReads()
                 if (PhoneDdzTurn.clock() - s.againAt > AGAIN_GAP_MS) {
+                    s.handLog?.failure("cancel_auto")
                     trace(s, "cancel_auto")
-                    tap(ctx, view.buttons[0].x, JjDdzScreen.AUTO_TAP_Y)
+                    tap(ctx, s, view.buttons[0].x, JjDdzScreen.AUTO_TAP_Y)
                     s.againAt = PhoneDdzTurn.clock()
                 }
                 waitOrSteer { delay(POLL_MS) } ?: return result(s)
                 continue
             }
-            if (table.hand.isEmpty()) {
-                observeClearedTable(s, table, view, JjDdzScreen.counts(frame), JjDdzScreen.explosion(frame))
-                if (++s.noHand == NEW_HAND_GAP && s.tracker != null) {
+            if (table.hand.isEmpty() || view.phase == DdzPhase.Result) {
+                val explosion = JjDdzScreen.explosion(frame)
+                observeClearedTable(s, table, view, JjDdzScreen.counts(frame), explosion)
+                if (++s.noHand >= NEW_HAND_GAP && s.tracker != null && !explosion) {
                     // 一手打完。记牌先留着:王炸、炸弹的特效会挡住手牌好几帧,手牌原样回来就不是新的一手
-                    s.closed = s.tracker
-                    s.closedHand = s.expectedHand ?: s.lastRanks
-                    s.tracker = null
-                    s.expectedHand = null
-                    s.handsPlayed++
-                    if (--s.handsLeft <= 0) {
+                    s.closeHand(resumable = true)
+                    if (s.handsLeft <= 0) {
+                        s.finishLog("hand_gap")
                         s.state = DdzSessionState.Result
                         return result(s)
                     }
@@ -293,16 +350,19 @@ internal object JjDdzTurn {
                 // 终局页:还没打够就点「再来一局」(白名单里唯一会点的结算按钮)
                 if (view.phase == DdzPhase.Result && PhoneDdzTurn.clock() - s.againAt > AGAIN_GAP_MS) {
                     think()
-                    tap(ctx, view.buttons[0].x, JjDdzScreen.AGAIN_TAP_Y)
+                    tap(ctx, s, view.buttons[0].x, JjDdzScreen.AGAIN_TAP_Y)
                     s.againAt = PhoneDdzTurn.clock()
                     s.lastHandAt = s.againAt
                 }
-                if (PhoneDdzTurn.clock() - s.lastHandAt > IDLE_MS) return pause(s, DdzSessionReason.UNKNOWN_SCENE)
+                if (PhoneDdzTurn.clock() - s.lastHandAt > IDLE_MS) {
+                    if (s.closed != null) s.finishLog("hand_gap")
+                    return pause(s, DdzSessionReason.UNKNOWN_SCENE)
+                }
                 waitOrSteer { delay(POLL_MS) } ?: return result(s)
                 continue
             }
             s.lastHandAt = PhoneDdzTurn.clock()
-            if (s.noHand >= NEW_HAND_GAP || s.tracker == null) {
+            if (s.tracker == null) {
                 val back = s.closed?.takeIf {
                     table.hand.size != HAND_SIZE && !table.handUnsure && table.handRanks.sorted() == s.closedHand?.sorted()
                 }
@@ -315,15 +375,23 @@ internal object JjDdzTurn {
                     // 真机 15:04:王炸特效挡了手牌 3 秒,当成一手打完、又当成中途进来,按规则先出了单张 9 输掉
                     trace(s, "resume_after_gap hand=${table.handRanks.joinToString(" ")}")
                     s.tracker = back
+                    s.handLog?.endedAt = null
                     s.handsPlayed--
                     s.handsLeft++
                 } else {
-                    newHand(s, table, view)
+                    newHand(s, table)
                 }
                 s.closed = null
                 s.closedHand = null
             }
             s.noHand = 0
+            if (view.phase == DdzPhase.Call && !table.handUnsure && table.hand.size == HAND_SIZE &&
+                (s.tracker?.landlord != null || s.bid && table.handRanks.sorted() != s.bidHand)) {
+                trace(s, "redeal")
+                newHand(s, table)
+                s.acted = false
+            }
+            if (!payout && view.phase != DdzPhase.Result && view.phase != DdzPhase.Call) s.handLog?.tableShot = jpeg
             if (!table.handUnsure) {
                 playedWithoutMe(s, table.handRanks)?.let { trace(s, "played_without_me cards=${it.joinToString(" ")} left=${table.hand.size}") }
                 s.lastRanks = table.handRanks
@@ -343,6 +411,9 @@ internal object JjDdzTurn {
                 val lord = view.redLord ?: DdzSeat.Me
                 s.lordFrames = if (lord == s.lordSeen) s.lordFrames + 1 else 1
                 s.lordSeen = lord
+                val playing = tracker.landlord != null || view.phase == DdzPhase.Lead || view.phase == DdzPhase.Follow
+                val stableFrames = if (lord == DdzSeat.Me) ME_LORD_FRAMES else LORD_FRAMES
+                if (playing && s.lordFrames >= stableFrames) s.handLog?.stableLandlord = lord
             }
             if (tracker.broken != null && !s.brokenLogged) {
                 s.brokenLogged = true
@@ -643,12 +714,23 @@ internal object JjDdzTurn {
     }
 
     /** 看到新发的 17 张从头记;轮到我出牌时才第一次看到手牌(张数不对)是中途进来的,这一手只按规则打完。 */
-    private fun newHand(s: Session, table: JjTable, view: JjView) {
+    private fun newHand(s: Session, table: JjTable) {
         val previousBottom = (s.tracker ?: s.closed)?.bottom
         if (previousBottom?.size == 3 && s.bottomCenters.size == 3) {
             s.staleBottom = BottomRow(s.bottomCenters, previousBottom)
         }
-        s.tracker = DdzTracker(DdzSettlingPolicy.HUMAN, onBroken = s::dump)
+        if (s.closed != null || s.tracker != null) {
+            val end = when {
+                s.tracker != null && s.tracker?.landlord == null && s.bid && s.handLog?.stableLandlord == null -> "redeal"
+                else -> "new_hand"
+            }
+            s.finishLog(end)
+        }
+        if (s.handLog == null) s.startLog()
+        s.tracker = DdzTracker(DdzSettlingPolicy.HUMAN) { reason ->
+            s.handLog?.breaks?.merge(reason.take(120), 1, Int::plus)
+            s.dump(reason)
+        }
         s.bottomVotes.forEach { it.clear() }
         s.bottomCenters = emptyList()
         s.emptyBottomInCall = 0
@@ -668,18 +750,20 @@ internal object JjDdzTurn {
     private suspend fun decide(ctx: ToolContext, s: Session, view: JjView, table: JjTable, width: Int, decisionAt: Long): Boolean {
         val tracker = s.tracker ?: return false
         if (view.phase == DdzPhase.Call) {
-            // 都不叫重新发牌(真机 10:02):手一直没空,还当已经叫过,叫分超时进了托管
-            if (s.bid && !table.handUnsure && table.hand.size == HAND_SIZE && table.handRanks.sorted() != s.bidHand) {
-                trace(s, "redeal")
-                newHand(s, table, view)
-            }
-            if (s.bid || table.handUnsure || table.hand.size != HAND_SIZE) return false
-            val level = PhoneDdzTurn.adviseBid(s.advisor, table.handRanks)?.level ?: ConservativeDdzPolicy.callLevel(table.handRanks)
+            if (s.bid) return false
+            val buttons = view.buttons.map { JjBidButton(JjDdzScreen.callLevel(it, width), it.color != JjColor.Gray) }
+            s.handLog?.bid = JjBid(null, null, null, buttons)
+            if (table.handUnsure || table.hand.size != HAND_SIZE) return false
+            val advice = PhoneDdzTurn.adviseBid(s.advisor, table.handRanks)
+            s.handLog?.advisorReply(advice != null)
+            val level = advice?.level ?: ConservativeDdzPolicy.callLevel(table.handRanks)
             // 按位置认几分(漏认一个按钮时按序号会错位:2026-11-21 想叫 3 分点成了不叫);想叫的分不能叫(灰的)就不叫
             val button = view.buttons.firstOrNull { level > 0 && JjDdzScreen.callLevel(it, width) == level && it.color == JjColor.Yellow }
                 ?: view.buttons[0]
             trace(s, "call level=$level x=${button.x} buttons=${view.buttons.map { "${JjDdzScreen.callLevel(it, width)}${it.color.name.first()}" }}")
-            tap(ctx, button.x, JjDdzScreen.TAP_Y)
+            val tapped = tap(ctx, s, button.x, JjDdzScreen.TAP_Y)
+            s.handLog?.bid = JjBid(JjDdzScreen.callLevel(button, width).takeIf { tapped }, level,
+                if (advice == null) "fallback" else "advisor", buttons)
             s.bid = true
             s.bidHand = table.handRanks.sorted()
             return true
@@ -690,7 +774,7 @@ internal object JjDdzTurn {
             s.settleSince = 0
             trace(s, "only_pass ready=${tracker.ready()}")
             think()
-            tap(ctx, view.buttons[0].x, JjDdzScreen.TAP_Y)
+            tap(ctx, s, view.buttons[0].x, JjDdzScreen.TAP_Y)
             if (tracker.ready()) tracker.mine(emptyList())
             return true
         }
@@ -719,18 +803,19 @@ internal object JjDdzTurn {
                 tracker.fail(DdzSessionReason.INVALID_ADVISOR_PLAY)
                 return byRules(ctx, s, view, table)
             }
-            tap(ctx, view.buttons[0].x, JjDdzScreen.TAP_Y)
+            tap(ctx, s, view.buttons[0].x, JjDdzScreen.TAP_Y)
             tracker.mine(emptyList())
             return true
         }
         val want = PhoneDdzTurn.pick(hand, play)
         val playX = want?.let { select(ctx, s, it, table) }
         if (playX == null) {
+            s.handLog?.failure("select_failed")
             trace(s, "select_failed want=$want")
             tracker.fail(DdzSessionReason.REJECTED_ACTION)
             return byRules(ctx, s, view, table, rejectedPlay = play)
         }
-        tap(ctx, playX, JjDdzScreen.TAP_Y)
+        tap(ctx, s, playX, JjDdzScreen.TAP_Y)
         tracker.mine(play)
         s.expectedHand = hand.toMutableList().apply { play.forEach { remove(it) } }
         return true
@@ -752,14 +837,16 @@ internal object JjDdzTurn {
                 ?.takeUnless { it.sorted() == rejectedPlay?.sorted() }
             val want = play?.let { target(table, it) }
             val x = want?.let { select(ctx, s, it, table) }
+            if (want != null && x == null) s.handLog?.failure("select_failed")
             trace(s, "rules_follow play=$play playable=${x != null}")
             if (x != null) {
-                if (tap(ctx, x, JjDdzScreen.TAP_Y)) {
+                if (tap(ctx, s, x, JjDdzScreen.TAP_Y)) {
+                    s.handLog?.failure("rules_fallback")
                     s.expectedHand = table.handRanks.filterIndexed { i, _ -> i !in want }
                 }
                 return true
             }
-            tap(ctx, view.buttons[0].x, JjDdzScreen.TAP_Y)
+            if (tap(ctx, s, view.buttons[0].x, JjDdzScreen.TAP_Y)) s.handLog?.failure("rules_fallback")
             return true
         }
         // 先出:有对子或三张先出最小的那组,没有才出最小的单张。记牌断了不知道别家剩几张,
@@ -767,8 +854,12 @@ internal object JjDdzTurn {
         val want = smallestGroup(table) ?: setOf(table.hand.lastIndex)
         val x = select(ctx, s, want, table)
         trace(s, "rules_lead want=${want.map { table.hand[it].rank }} playable=${x != null}")
-        if (x == null) return false
-        if (tap(ctx, x, JjDdzScreen.TAP_Y)) {
+        if (x == null) {
+            s.handLog?.failure("select_failed")
+            return false
+        }
+        if (tap(ctx, s, x, JjDdzScreen.TAP_Y)) {
+            s.handLog?.failure("rules_fallback")
             s.expectedHand = table.handRanks.filterIndexed { i, _ -> i !in want }
         }
         return true
@@ -930,7 +1021,7 @@ internal object JjDdzTurn {
             for ((offset, i) in batch.withIndex()) {
                 // pressAt 等松手。最后一张由 settled 在首次截屏前等动画。
                 if (offset > 0) delay(LIFT_MS)
-                tap(ctx, JjCards.tapX(current, i), JjCards.HAND_TAP_Y)
+                tap(ctx, s, JjCards.tapX(current, i), JjCards.HAND_TAP_Y)
             }
             val before = current.lifted
             confirmed = settled(ctx, s, hand) ?: return null
@@ -1001,6 +1092,7 @@ internal object JjDdzTurn {
             put("history", JsonArray(tracker.history.map { m -> JsonArray(m.map(::JsonPrimitive)) }))
         }.toString()
         val reply = PhoneDdzTurn.advise(s.advisor, body)
+            .also { s.handLog?.advisorReply(it != null) }
             ?.let { runCatching { kotlinx.serialization.json.Json.parseToJsonElement(it) as? JsonObject }.getOrNull() }
         if (reply == null) {
             tracker.fail(DdzSessionReason.SERVICE_UNAVAILABLE)
@@ -1012,8 +1104,13 @@ internal object JjDdzTurn {
     }
 
     /** JJ 的牌局是 Unity,在 Mika 的屏上帧率低:按住 [HOLD_MS] 再抬,50ms 的点按会漏(2026-11-21 19:13 点牌全没反应)。 */
-    private suspend fun tap(ctx: ToolContext, x: Int, y: Int): Boolean =
-        ctx.screen.pressAt(x, y, HOLD_MS).also { if (!it) println("JJTRACE tap_failed x=$x y=$y") }
+    private suspend fun tap(ctx: ToolContext, s: Session, x: Int, y: Int): Boolean =
+        ctx.screen.pressAt(x, y, HOLD_MS).also {
+            if (!it) {
+                s.handLog?.failure("tap_failed")
+                println("JJTRACE tap_failed x=$x y=$y")
+            }
+        }
 
     private fun pause(s: Session, reason: String): ToolExecution {
         // 停下也打一行:电脑上看 logcat 的监视才知道工具交还了模型

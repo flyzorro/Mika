@@ -153,6 +153,7 @@ class AppAccessScreenPortTest {
                 Double::class.javaPrimitiveType -> 0.0
                 Boolean::class.javaPrimitiveType -> false
                 String::class.java -> ""
+                ByteArray::class.java -> byteArrayOf()
                 Int::class.javaObjectType -> null
                 List::class.java -> emptyList<Any>()
                 SystemAction::class.java -> SystemAction.ShowAlarms
@@ -254,6 +255,7 @@ class AppAccessScreenPortTest {
         val OWN = setOf("getAppAccess", "checkAppAccess")
 
         /** 不碰任何 App 界面、原样转交的成员;按目标挑 App 的系统动作由端口自己看名单。加进来要说得出为什么。 */
-        val PASS_THROUGH = setOf("systemAction", "systemCommand", "bulkCalendarInsert", "listApps", "otherProfiles", "appCopies", "getAfterTask", "getCanShareAudio", "getCanShareImage")
+        // readShotText consumes only supplied bytes; jjDumpDirectory resolves an app-local path.
+        val PASS_THROUGH = setOf("readShotText", "jjDumpDirectory", "systemAction", "systemCommand", "bulkCalendarInsert", "listApps", "otherProfiles", "appCopies", "getAfterTask", "getCanShareAudio", "getCanShareImage")
     }
 }
